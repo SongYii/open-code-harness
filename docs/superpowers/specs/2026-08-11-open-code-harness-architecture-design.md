@@ -215,10 +215,10 @@ Eval Runner 直接驱动应用层或 headless Engine，不依赖 TUI。ACP 测�
 |---|---|---|
 | ACP 公开协议 | ACP 官方 schema | 实现、适配和 conformance |
 | MCP 公开协议 | MCP 官方 schema/SDK | client adapter 和安全管线 |
-| Harness 内部领域 | Go 类型与状态规则 | 生成 JSON Schema、fixture 和 TS 投影类型 |
+| Harness 内部领域 | Go 类型与状态规则 | 维护 replay/migration schema 和 fixture；不作为客户端 API 发布 |
 | Harness ACP 扩展 | Go wire types | 生成 schema、TS 类型与兼容性测试 |
 
-生成物可以提交到仓库，但禁止手工修改。CI 必须检测生成物漂移和破坏性协议变更。
+只有明确发布的 ACP 投影或 Harness 扩展才生成 TypeScript 类型。TUI 不得导入内部领域事件类型。生成物可以提交到仓库，但禁止手工修改。CI 必须检测生成物漂移和破坏性协议变更。
 
 ## 8. 生命周期、错误和背压
 
