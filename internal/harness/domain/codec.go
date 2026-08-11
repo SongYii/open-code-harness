@@ -96,7 +96,7 @@ func marshalEvent(event Event) (json.RawMessage, string, error) {
 		if err := validateTurnID(event.TurnID); err != nil {
 			return nil, "", err
 		}
-		if event.Input == "" {
+		if strings.TrimSpace(event.Input) == "" {
 			return nil, "", invalidEventError("turn input is required")
 		}
 		return marshalEventData(event, EventTurnStarted)
@@ -221,6 +221,10 @@ func validateRecordedEventMetadata(record RecordedEvent) error {
 	}
 	if record.OccurredAt.IsZero() {
 		return invalidEventError("event timestamp is required")
+	}
+	formatted := record.OccurredAt.UTC().Format(time.RFC3339Nano)
+	if _, err := time.Parse(time.RFC3339Nano, formatted); err != nil {
+		return invalidEventError("event timestamp is outside RFC3339 range")
 	}
 	return nil
 }
