@@ -14,9 +14,33 @@ func Decide(state Session, command Command) ([]UncommittedEvent, error) {
 		return decideFailTurn(state, command)
 	case InterruptTurn:
 		return decideInterruptTurn(state, command)
+	case CloseSession:
+		return decideCloseSession(state, command)
 	default:
 		return nil, domainError(CodeInvalidCommand, "command type cannot be decided")
 	}
+}
+
+func decideCloseSession(state Session, command CloseSession) ([]UncommittedEvent, error) {
+	if !state.Exists() {
+		return nil, domainError(CodeSessionNotFound, "session not found")
+	}
+	if _, err := ParseSessionID(string(command.SessionID)); err != nil {
+		return nil, err
+	}
+	if command.SessionID != state.ID {
+		return nil, domainError(CodeInvalidCommand, "command session ID does not match state")
+	}
+	if state.Status == SessionStatusClosed {
+		return nil, domainError(CodeSessionClosed, "session is closed")
+	}
+	if state.Status != SessionStatusActive {
+		return nil, domainError(CodeInvalidCommand, "session is not active")
+	}
+	if state.ActiveTurnID != "" {
+		return nil, domainError(CodeTurnAlreadyRunning, "a turn is already running")
+	}
+	return []UncommittedEvent{{Event: SessionClosed{}}}, nil
 }
 
 func decideCreateSession(state Session, command CreateSession) ([]UncommittedEvent, error) {

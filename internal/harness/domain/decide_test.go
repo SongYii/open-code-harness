@@ -110,6 +110,57 @@ func TestDecideStartTurnRejectsBlankInput(t *testing.T) {
 	}
 }
 
+func TestDecideCloseSession(t *testing.T) {
+	t.Parallel()
+
+	state := activeSessionForTest(t)
+	events, err := Decide(state, CloseSession{SessionID: state.ID})
+	if err != nil {
+		t.Fatalf("Decide() error = %v", err)
+	}
+	want := []UncommittedEvent{{Event: SessionClosed{}}}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("Decide() = %#v, want %#v", events, want)
+	}
+}
+
+func TestDecideCloseSessionRejectsRunningTurn(t *testing.T) {
+	t.Parallel()
+
+	state := runningTurnForTest(t)
+	_, err := Decide(state, CloseSession{SessionID: state.ID})
+	if !IsCode(err, CodeTurnAlreadyRunning) {
+		t.Fatalf("Decide() error = %v, want code %q", err, CodeTurnAlreadyRunning)
+	}
+}
+
+func TestClosedSessionRejectsNonCreateCommands(t *testing.T) {
+	t.Parallel()
+
+	state := activeSessionForTest(t)
+	state.Status = SessionStatusClosed
+
+	tests := []struct {
+		name string
+		cmd  Command
+	}{
+		{"start", StartTurn{SessionID: state.ID, TurnID: TurnID("turn-1"), Input: "inspect repository"}},
+		{"complete", CompleteTurn{SessionID: state.ID, TurnID: TurnID("turn-1")}},
+		{"fail", FailTurn{SessionID: state.ID, TurnID: TurnID("turn-1"), Code: "provider_error", Message: "provider failed"}},
+		{"interrupt", InterruptTurn{SessionID: state.ID, TurnID: TurnID("turn-1"), Reason: "user_cancelled"}},
+		{"close", CloseSession{SessionID: state.ID}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Decide(state, tt.cmd)
+			if !IsCode(err, CodeSessionClosed) {
+				t.Fatalf("Decide() error = %v, want code %q", err, CodeSessionClosed)
+			}
+		})
+	}
+}
+
 func TestTerminalTurnTransitions(t *testing.T) {
 	t.Parallel()
 

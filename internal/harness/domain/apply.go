@@ -36,9 +36,35 @@ func Apply(state Session, record RecordedEvent) (Session, error) {
 		return applyTurnFailed(state, record, event)
 	case TurnInterrupted:
 		return applyTurnInterrupted(state, record, event)
+	case SessionClosed:
+		return applySessionClosed(state, record)
 	default:
 		return Session{}, domainError(CodeInvalidEvent, "event type cannot be applied")
 	}
+}
+
+func applySessionClosed(state Session, record RecordedEvent) (Session, error) {
+	if !state.Exists() {
+		return Session{}, domainError(CodeSessionNotFound, "session not found")
+	}
+	if record.SessionID != state.ID {
+		return Session{}, domainError(CodeInvalidEvent, "event session ID does not match state")
+	}
+	if state.Status == SessionStatusClosed {
+		return Session{}, domainError(CodeSessionClosed, "session is closed")
+	}
+	if state.Status != SessionStatusActive {
+		return Session{}, domainError(CodeInvalidEvent, "session is not active")
+	}
+	if state.ActiveTurnID != "" {
+		return Session{}, domainError(CodeTurnAlreadyRunning, "a turn is already running")
+	}
+
+	next := state.Clone()
+	next.Status = SessionStatusClosed
+	next.ActiveTurnID = ""
+	next.Version = record.Sequence
+	return next, nil
 }
 
 func applyTurnStarted(state Session, record RecordedEvent, event TurnStarted) (Session, error) {

@@ -190,3 +190,27 @@ func TestApplyTerminalStatesAreMutuallyExclusive(t *testing.T) {
 		}
 	}
 }
+
+func TestApplySessionClosed(t *testing.T) {
+	t.Parallel()
+
+	state := activeSessionForTest(t)
+	record := recordedForTest(state, SessionClosed{})
+	got, err := Apply(state, record)
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if got.Status != SessionStatusClosed || got.ActiveTurnID != "" || got.Version != record.Sequence {
+		t.Fatalf("Apply() state = %#v", got)
+	}
+}
+
+func TestApplySessionClosedRejectsRunningTurn(t *testing.T) {
+	t.Parallel()
+
+	state := runningTurnForTest(t)
+	_, err := Apply(state, recordedForTest(state, SessionClosed{}))
+	if !IsCode(err, CodeTurnAlreadyRunning) {
+		t.Fatalf("Apply() error = %v, want code %q", err, CodeTurnAlreadyRunning)
+	}
+}
