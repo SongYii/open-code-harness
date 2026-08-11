@@ -111,6 +111,65 @@ func TestDecodeJSONLAcceptsExactlyOneMiBRecordAndRejectsLargerRecord(t *testing.
 	}
 }
 
+func TestDecodeJSONLReportsLaterOversizedRecordLine(t *testing.T) {
+	t.Parallel()
+
+	overLimit := jsonlRecordOfSize(t, maxJSONLRecordSize+1)
+	prefixes := []struct {
+		name     string
+		records  []RecordedEvent
+		wantLine int
+	}{
+		{
+			name: "line 2",
+			records: []RecordedEvent{
+				replayRecord(1, SessionCreated{WorkspaceRoot: "/workspace"}),
+			},
+			wantLine: 2,
+		},
+		{
+			name: "line 4",
+			records: []RecordedEvent{
+				replayRecord(1, SessionCreated{WorkspaceRoot: "/workspace"}),
+				replayRecord(2, TurnStarted{TurnID: "turn-1", Input: "inspect"}),
+				replayRecord(3, TurnCompleted{TurnID: "turn-1"}),
+			},
+			wantLine: 4,
+		},
+	}
+	endings := []struct {
+		name             string
+		suffix           string
+		wantScannerCause bool
+	}{
+		{name: "EOF"},
+		{name: "LF", suffix: "\n"},
+		{name: "CRLF", suffix: "\r\n", wantScannerCause: true},
+	}
+
+	for _, prefix := range prefixes {
+		for _, ending := range endings {
+			t.Run(prefix.name+" with "+ending.name, func(t *testing.T) {
+				input := replayJSONL(t, prefix.records) + "\n" + string(overLimit) + ending.suffix
+				records, err := DecodeJSONL(strings.NewReader(input))
+				if !IsCode(err, CodeInvalidEvent) {
+					t.Fatalf("DecodeJSONL() error = %v, want code %q", err, CodeInvalidEvent)
+				}
+				if records != nil {
+					t.Fatalf("DecodeJSONL() records = %#v, want nil", records)
+				}
+				wantLine := fmt.Sprintf("JSONL line %d:", prefix.wantLine)
+				if !strings.Contains(err.Error(), wantLine) {
+					t.Fatalf("DecodeJSONL() error = %v, want %q", err, wantLine)
+				}
+				if ending.wantScannerCause && !strings.Contains(err.Error(), "token too long") {
+					t.Fatalf("DecodeJSONL() error = %v, want scanner token-too-long cause", err)
+				}
+			})
+		}
+	}
+}
+
 func TestDecodeJSONLPreservesReaderError(t *testing.T) {
 	sentinel := errors.New("reader failed")
 	_, err := DecodeJSONL(failingReader{err: sentinel})

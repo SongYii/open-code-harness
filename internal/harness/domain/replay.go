@@ -33,7 +33,11 @@ func DecodeJSONL(reader io.Reader) ([]RecordedEvent, error) {
 		records = append(records, record)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, jsonlLineError(trackedReader.errorLine, invalidEventError("invalid JSONL stream"), scanner)
+		errorLine := line + 1
+		if trackedReader.lastError != nil && errors.Is(err, trackedReader.lastError) {
+			errorLine = trackedReader.errorLine
+		}
+		return nil, jsonlLineError(errorLine, invalidEventError("invalid JSONL stream"), scanner)
 	}
 	if len(records) == 0 {
 		return nil, invalidEventError("JSONL stream is empty")
@@ -45,12 +49,14 @@ type jsonlTrackingReader struct {
 	reader    io.Reader
 	line      int
 	errorLine int
+	lastError error
 }
 
 func (reader *jsonlTrackingReader) Read(buffer []byte) (int, error) {
 	read, err := reader.reader.Read(buffer)
 	newlines := bytes.Count(buffer[:read], []byte{'\n'})
 	if err != nil {
+		reader.lastError = err
 		reader.errorLine = reader.line + newlines
 		if read > 0 && buffer[read-1] == '\n' {
 			reader.errorLine--
