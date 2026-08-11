@@ -69,19 +69,43 @@ func TestDecodeJSONLRejectsEmptyAndBlankRecords(t *testing.T) {
 func TestDecodeJSONLAcceptsExactlyOneMiBRecordAndRejectsLargerRecord(t *testing.T) {
 	exactlyOneMiB := jsonlRecordOfSize(t, maxJSONLRecordSize)
 
-	for _, input := range []string{string(exactlyOneMiB), string(exactlyOneMiB) + "\n"} {
-		records, err := DecodeJSONL(strings.NewReader(input))
-		if err != nil {
-			t.Fatalf("DecodeJSONL() exact %d-byte record error = %v", maxJSONLRecordSize, err)
-		}
-		if len(records) != 1 {
-			t.Fatalf("DecodeJSONL() exact %d-byte record count = %d, want 1", maxJSONLRecordSize, len(records))
-		}
+	for _, test := range []struct {
+		name   string
+		suffix string
+	}{
+		{name: "EOF"},
+		{name: "LF", suffix: "\n"},
+		{name: "CRLF", suffix: "\r\n"},
+	} {
+		t.Run("exact limit with "+test.name, func(t *testing.T) {
+			records, err := DecodeJSONL(strings.NewReader(string(exactlyOneMiB) + test.suffix))
+			if err != nil {
+				t.Fatalf("DecodeJSONL() exact %d-byte record error = %v", maxJSONLRecordSize, err)
+			}
+			if len(records) != 1 {
+				t.Fatalf("DecodeJSONL() exact %d-byte record count = %d, want 1", maxJSONLRecordSize, len(records))
+			}
+		})
 	}
 
-	_, err := DecodeJSONL(strings.NewReader(string(jsonlRecordOfSize(t, maxJSONLRecordSize+1))))
-	if !IsCode(err, CodeInvalidEvent) {
-		t.Fatalf("DecodeJSONL() over-limit record error = %v, want code %q", err, CodeInvalidEvent)
+	overLimit := jsonlRecordOfSize(t, maxJSONLRecordSize+1)
+	for _, test := range []struct {
+		name   string
+		suffix string
+	}{
+		{name: "EOF"},
+		{name: "LF", suffix: "\n"},
+		{name: "CRLF", suffix: "\r\n"},
+	} {
+		t.Run("over limit with "+test.name, func(t *testing.T) {
+			records, err := DecodeJSONL(strings.NewReader(string(overLimit) + test.suffix))
+			if !IsCode(err, CodeInvalidEvent) {
+				t.Fatalf("DecodeJSONL() over-limit record error = %v, want code %q", err, CodeInvalidEvent)
+			}
+			if records != nil {
+				t.Fatalf("DecodeJSONL() over-limit records = %#v, want nil", records)
+			}
+		})
 	}
 }
 
@@ -93,6 +117,23 @@ func TestDecodeJSONLPreservesReaderError(t *testing.T) {
 	}
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("DecodeJSONL() error = %v, want wrapped reader error", err)
+	}
+}
+
+func TestDecodeJSONLPreservesReaderErrorWhenPartialTokenFailsToDecode(t *testing.T) {
+	sentinel := errors.New("reader failed after data")
+	records, err := DecodeJSONL(dataAndErrorReader{data: []byte(`{"schemaVersion":`), err: sentinel})
+	if !IsCode(err, CodeInvalidEvent) {
+		t.Fatalf("DecodeJSONL() error = %v, want code %q", err, CodeInvalidEvent)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("DecodeJSONL() error = %v, want wrapped reader error", err)
+	}
+	if !strings.Contains(err.Error(), "line 1") {
+		t.Fatalf("DecodeJSONL() error = %v, want line 1 context", err)
+	}
+	if records != nil {
+		t.Fatalf("DecodeJSONL() records = %#v, want nil", records)
 	}
 }
 
@@ -272,3 +313,14 @@ func (reader failingReader) Read([]byte) (int, error) {
 }
 
 var _ io.Reader = failingReader{}
+
+type dataAndErrorReader struct {
+	data []byte
+	err  error
+}
+
+func (reader dataAndErrorReader) Read(buffer []byte) (int, error) {
+	return copy(buffer, reader.data), reader.err
+}
+
+var _ io.Reader = dataAndErrorReader{}
