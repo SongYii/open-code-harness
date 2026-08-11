@@ -16,6 +16,9 @@ func Apply(state Session, record RecordedEvent) (Session, error) {
 		return Session{}, domainError(CodeInvalidEvent, "event timestamp is required")
 	}
 	record.OccurredAt = record.OccurredAt.UTC()
+	if _, ok := record.Event.(SessionCreated); ok && !state.isPristine() {
+		return Session{}, domainError(CodeSessionAlreadyExists, "session already exists")
+	}
 	if record.Sequence != state.Version+1 {
 		return Session{}, domainError(CodeSequenceMismatch, "event sequence does not follow session version")
 	}
@@ -29,7 +32,7 @@ func Apply(state Session, record RecordedEvent) (Session, error) {
 }
 
 func applySessionCreated(state Session, record RecordedEvent, event SessionCreated) (Session, error) {
-	if state.Exists() {
+	if !state.isPristine() {
 		return Session{}, domainError(CodeSessionAlreadyExists, "session already exists")
 	}
 	if event.WorkspaceRoot == "" {

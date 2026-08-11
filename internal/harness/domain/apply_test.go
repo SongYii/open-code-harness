@@ -46,3 +46,20 @@ func TestApplyRejectsNonInitialSequence(t *testing.T) {
 		t.Fatalf("Apply() error = %v, want code %q", err, CodeSequenceMismatch)
 	}
 }
+
+func TestApplySessionCreatedRejectsNonPristineState(t *testing.T) {
+	t.Parallel()
+
+	_, err := Apply(Session{Version: 1}, RecordedEvent{
+		SchemaVersion: 1,
+		ID:            EventID("event-3"),
+		CommandID:     CommandID("command-3"),
+		SessionID:     SessionID("session-1"),
+		Sequence:      2,
+		OccurredAt:    time.Now(),
+		Event:         SessionCreated{WorkspaceRoot: "/workspace"},
+	})
+	if !IsCode(err, CodeSessionAlreadyExists) {
+		t.Fatalf("Apply() error = %v, want code %q", err, CodeSessionAlreadyExists)
+	}
+}

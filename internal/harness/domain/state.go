@@ -40,3 +40,13 @@ type Session struct {
 }
 
 func (s Session) Exists() bool { return s.ID != "" }
+
+func (s Session) isPristine() bool {
+	return s.ID == "" &&
+		s.Status == "" &&
+		s.Version == 0 &&
+		s.WorkspaceRoot == "" &&
+		s.ActiveTurnID == "" &&
+		s.TurnOrder == nil &&
+		s.Turns == nil
+}
