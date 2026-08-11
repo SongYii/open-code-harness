@@ -1,7 +1,9 @@
 package domain
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"reflect"
 	"strings"
@@ -61,6 +63,36 @@ func TestDecodeJSONLRejectsEmptyAndBlankRecords(t *testing.T) {
 				t.Fatalf("DecodeJSONL() error = %v, want line %d context", err, test.wantLine)
 			}
 		})
+	}
+}
+
+func TestDecodeJSONLAcceptsExactlyOneMiBRecordAndRejectsLargerRecord(t *testing.T) {
+	exactlyOneMiB := jsonlRecordOfSize(t, maxJSONLRecordSize)
+
+	for _, input := range []string{string(exactlyOneMiB), string(exactlyOneMiB) + "\n"} {
+		records, err := DecodeJSONL(strings.NewReader(input))
+		if err != nil {
+			t.Fatalf("DecodeJSONL() exact %d-byte record error = %v", maxJSONLRecordSize, err)
+		}
+		if len(records) != 1 {
+			t.Fatalf("DecodeJSONL() exact %d-byte record count = %d, want 1", maxJSONLRecordSize, len(records))
+		}
+	}
+
+	_, err := DecodeJSONL(strings.NewReader(string(jsonlRecordOfSize(t, maxJSONLRecordSize+1))))
+	if !IsCode(err, CodeInvalidEvent) {
+		t.Fatalf("DecodeJSONL() over-limit record error = %v, want code %q", err, CodeInvalidEvent)
+	}
+}
+
+func TestDecodeJSONLPreservesReaderError(t *testing.T) {
+	sentinel := errors.New("reader failed")
+	_, err := DecodeJSONL(failingReader{err: sentinel})
+	if !IsCode(err, CodeInvalidEvent) {
+		t.Fatalf("DecodeJSONL() error = %v, want code %q", err, CodeInvalidEvent)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("DecodeJSONL() error = %v, want wrapped reader error", err)
 	}
 }
 
@@ -208,3 +240,35 @@ func replayRecord(sequence uint64, event Event) RecordedEvent {
 		Event:         event,
 	}
 }
+
+func jsonlRecordOfSize(t *testing.T, size int) []byte {
+	t.Helper()
+	record := replayRecord(1, SessionCreated{WorkspaceRoot: "x"})
+	encoded, err := MarshalRecordedEvent(record)
+	if err != nil {
+		t.Fatalf("MarshalRecordedEvent() base record error = %v", err)
+	}
+	workspaceRootSize := size - len(encoded) + 1
+	if workspaceRootSize < 1 {
+		t.Fatalf("record size %d is too small", size)
+	}
+	record.Event = SessionCreated{WorkspaceRoot: strings.Repeat("x", workspaceRootSize)}
+	encoded, err = MarshalRecordedEvent(record)
+	if err != nil {
+		t.Fatalf("MarshalRecordedEvent() sized record error = %v", err)
+	}
+	if len(encoded) != size {
+		t.Fatalf("encoded record size = %d, want %d", len(encoded), size)
+	}
+	return encoded
+}
+
+type failingReader struct {
+	err error
+}
+
+func (reader failingReader) Read([]byte) (int, error) {
+	return 0, reader.err
+}
+
+var _ io.Reader = failingReader{}
