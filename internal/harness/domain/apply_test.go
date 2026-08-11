@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
@@ -61,5 +62,47 @@ func TestApplySessionCreatedRejectsNonPristineState(t *testing.T) {
 	})
 	if !IsCode(err, CodeSessionAlreadyExists) {
 		t.Fatalf("Apply() error = %v, want code %q", err, CodeSessionAlreadyExists)
+	}
+}
+
+func TestApplyTurnStarted(t *testing.T) {
+	t.Parallel()
+
+	state := activeSessionForTest(t)
+	record := recordedForTest(state, TurnStarted{
+		TurnID: TurnID("turn-1"), Input: "inspect repository",
+	})
+
+	got, err := Apply(state, record)
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if got.Version != 2 || got.ActiveTurnID != TurnID("turn-1") {
+		t.Fatalf("Apply() state = %#v", got)
+	}
+	if !reflect.DeepEqual(got.TurnOrder, []TurnID{TurnID("turn-1")}) {
+		t.Fatalf("Apply() turn order = %#v, want %#v", got.TurnOrder, []TurnID{TurnID("turn-1")})
+	}
+	wantTurn := Turn{
+		ID: TurnID("turn-1"), Status: TurnStatusRunning,
+		Input: "inspect repository", StartedAt: record.OccurredAt,
+	}
+	if got.Turns[TurnID("turn-1")] != wantTurn {
+		t.Fatalf("Apply() turn = %#v, want %#v", got.Turns[TurnID("turn-1")], wantTurn)
+	}
+}
+
+func TestApplyTurnStartedDoesNotMutateInputState(t *testing.T) {
+	state := activeSessionForTest(t)
+	before := state.Clone()
+
+	_, err := Apply(state, recordedForTest(state, TurnStarted{
+		TurnID: TurnID("turn-1"), Input: "inspect repository",
+	}))
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if !reflect.DeepEqual(state, before) {
+		t.Fatalf("Apply() mutated input: got %#v want %#v", state, before)
 	}
 }

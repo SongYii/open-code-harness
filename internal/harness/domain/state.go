@@ -41,6 +41,21 @@ type Session struct {
 
 func (s Session) Exists() bool { return s.ID != "" }
 
+func (s Session) Clone() Session {
+	clone := s
+	if s.TurnOrder != nil {
+		clone.TurnOrder = make([]TurnID, len(s.TurnOrder))
+		copy(clone.TurnOrder, s.TurnOrder)
+	}
+	if s.Turns != nil {
+		clone.Turns = make(map[TurnID]Turn, len(s.Turns))
+		for id, turn := range s.Turns {
+			clone.Turns[id] = turn
+		}
+	}
+	return clone
+}
+
 func (s Session) isPristine() bool {
 	return s.ID == "" &&
 		s.Status == "" &&
