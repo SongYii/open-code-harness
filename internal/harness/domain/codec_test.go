@@ -202,6 +202,8 @@ func TestUnmarshalRecordedEventAcceptsRFC3339NanoTimestampForms(t *testing.T) {
 		{name: "whole seconds UTC", timestamp: "2026-08-11T01:02:03Z", wantUTC: "2026-08-11T01:02:03Z"},
 		{name: "fraction and positive offset", timestamp: "2026-08-11T01:02:03.1+08:00", wantUTC: "2026-08-10T17:02:03.1Z"},
 		{name: "nanoseconds and negative offset", timestamp: "2026-08-11T01:02:03.123456789-07:30", wantUTC: "2026-08-11T08:32:03.123456789Z"},
+		{name: "maximum positive offset", timestamp: "2026-08-11T01:02:03+23:59", wantUTC: "2026-08-10T01:03:03Z"},
+		{name: "maximum negative offset", timestamp: "2026-08-11T01:02:03-23:59", wantUTC: "2026-08-12T01:01:03Z"},
 	}
 
 	for _, test := range tests {
@@ -213,6 +215,20 @@ func TestUnmarshalRecordedEventAcceptsRFC3339NanoTimestampForms(t *testing.T) {
 			}
 			if got := record.OccurredAt.Format(time.RFC3339Nano); got != test.wantUTC {
 				t.Fatalf("OccurredAt = %q, want %q", got, test.wantUTC)
+			}
+		})
+	}
+}
+
+func TestUnmarshalRecordedEventRejectsRFC3339OffsetOutsideBounds(t *testing.T) {
+	t.Parallel()
+
+	for _, offset := range []string{"+24:00", "-24:00", "+00:60", "-00:60", "+23:60", "-23:60"} {
+		t.Run(offset, func(t *testing.T) {
+			input := `{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-11T01:02:03` + offset + `","type":"session.created","data":{"workspaceRoot":"/workspace"}}`
+			_, err := UnmarshalRecordedEvent([]byte(input))
+			if !IsCode(err, CodeInvalidEvent) {
+				t.Fatalf("UnmarshalRecordedEvent() offset %q error = %v, want code %q", offset, err, CodeInvalidEvent)
 			}
 		})
 	}
@@ -345,6 +361,54 @@ func TestMarshalRecordedEventRejectsTimestampOutsideRFC3339YearRange(t *testing.
 	_, err := MarshalRecordedEvent(record)
 	if !IsCode(err, CodeInvalidEvent) {
 		t.Fatalf("MarshalRecordedEvent() error = %v, want code %q", err, CodeInvalidEvent)
+	}
+}
+
+func TestMarshalRecordedEventRejectsInvalidUTF8MetadataIDs(t *testing.T) {
+	t.Parallel()
+
+	invalid := "identifier-\xff"
+	tests := []struct {
+		name   string
+		mutate func(*RecordedEvent)
+	}{
+		{name: "event ID", mutate: func(record *RecordedEvent) { record.ID = EventID(invalid) }},
+		{name: "session ID", mutate: func(record *RecordedEvent) { record.SessionID = SessionID(invalid) }},
+		{name: "command ID", mutate: func(record *RecordedEvent) { record.CommandID = CommandID(invalid) }},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			record := codecTestRecord(SessionCreated{WorkspaceRoot: "/workspace"})
+			test.mutate(&record)
+			encoded, err := MarshalRecordedEvent(record)
+			if !IsCode(err, CodeInvalidEvent) {
+				t.Fatalf("MarshalRecordedEvent() = %q, error = %v, want code %q", encoded, err, CodeInvalidEvent)
+			}
+		})
+	}
+}
+
+func TestMarshalRecordedEventRejectsInvalidUTF8EventPayloads(t *testing.T) {
+	t.Parallel()
+
+	invalid := "value-\xff"
+	for _, test := range []struct {
+		name  string
+		event Event
+	}{
+		{name: "workspace root", event: SessionCreated{WorkspaceRoot: invalid}},
+		{name: "turn input", event: TurnStarted{TurnID: "turn-1", Input: invalid}},
+		{name: "failure code", event: TurnFailed{TurnID: "turn-1", Code: invalid, Message: "provider failed"}},
+		{name: "failure message", event: TurnFailed{TurnID: "turn-1", Code: "provider_error", Message: invalid}},
+		{name: "interruption reason", event: TurnInterrupted{TurnID: "turn-1", Reason: invalid}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			encoded, err := MarshalRecordedEvent(codecTestRecord(test.event))
+			if !IsCode(err, CodeInvalidEvent) {
+				t.Fatalf("MarshalRecordedEvent() = %q, error = %v, want code %q", encoded, err, CodeInvalidEvent)
+			}
+		})
 	}
 }
 

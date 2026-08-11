@@ -1,9 +1,6 @@
 package domain
 
-import (
-	"math"
-	"strings"
-)
+import "math"
 
 const schemaVersion = 1
 
@@ -101,7 +98,7 @@ func applyTurnStarted(state Session, record RecordedEvent, event TurnStarted) (S
 	if _, err := ParseTurnID(string(event.TurnID)); err != nil {
 		return Session{}, domainError(CodeInvalidEvent, "turn ID is invalid")
 	}
-	if strings.TrimSpace(event.Input) == "" {
+	if !hasRequiredText(event.Input) {
 		return Session{}, domainError(CodeInvalidEvent, "turn input is required")
 	}
 	if _, exists := state.Turns[event.TurnID]; exists {
@@ -136,10 +133,10 @@ func applyTurnCompleted(state Session, record RecordedEvent, event TurnCompleted
 }
 
 func applyTurnFailed(state Session, record RecordedEvent, event TurnFailed) (Session, error) {
-	if strings.TrimSpace(event.Code) == "" {
+	if !hasRequiredText(event.Code) {
 		return Session{}, domainError(CodeInvalidEvent, "failure code is required")
 	}
-	if strings.TrimSpace(event.Message) == "" {
+	if !hasRequiredText(event.Message) {
 		return Session{}, domainError(CodeInvalidEvent, "failure message is required")
 	}
 	turn, err := requireRunningTurnForEvent(state, record.SessionID, event.TurnID)
@@ -150,7 +147,7 @@ func applyTurnFailed(state Session, record RecordedEvent, event TurnFailed) (Ses
 }
 
 func applyTurnInterrupted(state Session, record RecordedEvent, event TurnInterrupted) (Session, error) {
-	if strings.TrimSpace(event.Reason) == "" {
+	if !hasRequiredText(event.Reason) {
 		return Session{}, domainError(CodeInvalidEvent, "interruption reason is required")
 	}
 	turn, err := requireRunningTurnForEvent(state, record.SessionID, event.TurnID)
@@ -206,7 +203,7 @@ func applySessionCreated(state Session, record RecordedEvent, event SessionCreat
 	if !state.isPristine() {
 		return Session{}, domainError(CodeSessionAlreadyExists, "session already exists")
 	}
-	if strings.TrimSpace(event.WorkspaceRoot) == "" {
+	if !hasRequiredText(event.WorkspaceRoot) {
 		return Session{}, domainError(CodeInvalidEvent, "workspace root is required")
 	}
 

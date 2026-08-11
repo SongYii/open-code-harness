@@ -1,6 +1,9 @@
 package domain
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 type SessionID string
 type TurnID string
@@ -36,11 +39,15 @@ func ParseEventID(value string) (EventID, error) {
 }
 
 func validateID(value string) error {
-	if value == "" || strings.TrimSpace(value) != value {
+	if value == "" || !utf8.ValidString(value) || strings.TrimSpace(value) != value {
 		return &DomainError{
 			Code:    CodeInvalidID,
-			Message: "identifier must not be blank or padded",
+			Message: "identifier must be valid UTF-8 and not blank or padded",
 		}
 	}
 	return nil
+}
+
+func hasRequiredText(value string) bool {
+	return utf8.ValidString(value) && strings.TrimSpace(value) != ""
 }

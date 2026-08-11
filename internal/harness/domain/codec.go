@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
-	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -99,7 +98,7 @@ func ensureSingleJSONValue(decoder *json.Decoder) error {
 func marshalEvent(event Event) (json.RawMessage, string, error) {
 	switch event := event.(type) {
 	case SessionCreated:
-		if strings.TrimSpace(event.WorkspaceRoot) == "" {
+		if !hasRequiredText(event.WorkspaceRoot) {
 			return nil, "", invalidEventError("workspace root is required")
 		}
 		return marshalEventData(event, EventSessionCreated)
@@ -107,7 +106,7 @@ func marshalEvent(event Event) (json.RawMessage, string, error) {
 		if err := validateTurnID(event.TurnID); err != nil {
 			return nil, "", err
 		}
-		if strings.TrimSpace(event.Input) == "" {
+		if !hasRequiredText(event.Input) {
 			return nil, "", invalidEventError("turn input is required")
 		}
 		return marshalEventData(event, EventTurnStarted)
@@ -120,7 +119,7 @@ func marshalEvent(event Event) (json.RawMessage, string, error) {
 		if err := validateTurnID(event.TurnID); err != nil {
 			return nil, "", err
 		}
-		if strings.TrimSpace(event.Code) == "" || strings.TrimSpace(event.Message) == "" {
+		if !hasRequiredText(event.Code) || !hasRequiredText(event.Message) {
 			return nil, "", invalidEventError("failure code and message are required")
 		}
 		return marshalEventData(event, EventTurnFailed)
@@ -128,7 +127,7 @@ func marshalEvent(event Event) (json.RawMessage, string, error) {
 		if err := validateTurnID(event.TurnID); err != nil {
 			return nil, "", err
 		}
-		if strings.TrimSpace(event.Reason) == "" {
+		if !hasRequiredText(event.Reason) {
 			return nil, "", invalidEventError("interruption reason is required")
 		}
 		return marshalEventData(event, EventTurnInterrupted)
@@ -433,8 +432,13 @@ func hasRFC3339NanoGrammar(value string) bool {
 	if len(value)-index != 6 || (value[index] != '+' && value[index] != '-') || value[index+3] != ':' {
 		return false
 	}
-	return isASCIIDigit(value[index+1]) && isASCIIDigit(value[index+2]) &&
-		isASCIIDigit(value[index+4]) && isASCIIDigit(value[index+5])
+	if !isASCIIDigit(value[index+1]) || !isASCIIDigit(value[index+2]) ||
+		!isASCIIDigit(value[index+4]) || !isASCIIDigit(value[index+5]) {
+		return false
+	}
+	offsetHour := int(value[index+1]-'0')*10 + int(value[index+2]-'0')
+	offsetMinute := int(value[index+4]-'0')*10 + int(value[index+5]-'0')
+	return offsetHour < 24 && offsetMinute < 60
 }
 
 func isASCIIDigit(value byte) bool {

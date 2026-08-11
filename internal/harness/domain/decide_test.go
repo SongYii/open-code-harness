@@ -238,3 +238,71 @@ func TestDecideTerminalRejectsInvalidCommand(t *testing.T) {
 		})
 	}
 }
+
+func TestDecideRejectsInvalidUTF8CommandFields(t *testing.T) {
+	t.Parallel()
+
+	invalid := "value-\xff"
+	tests := []struct {
+		name  string
+		state Session
+		cmd   Command
+		code  ErrorCode
+	}{
+		{
+			name: "create session ID",
+			cmd:  CreateSession{SessionID: SessionID(invalid), WorkspaceRoot: "/workspace"},
+			code: CodeInvalidID,
+		},
+		{
+			name: "create workspace root",
+			cmd:  CreateSession{SessionID: "session-1", WorkspaceRoot: invalid},
+			code: CodeInvalidCommand,
+		},
+		{
+			name:  "start session ID",
+			state: activeSessionForTest(t),
+			cmd:   StartTurn{SessionID: SessionID(invalid), TurnID: "turn-1", Input: "inspect"},
+			code:  CodeInvalidID,
+		},
+		{
+			name:  "start turn ID",
+			state: activeSessionForTest(t),
+			cmd:   StartTurn{SessionID: "session-1", TurnID: TurnID(invalid), Input: "inspect"},
+			code:  CodeInvalidID,
+		},
+		{
+			name:  "start input",
+			state: activeSessionForTest(t),
+			cmd:   StartTurn{SessionID: "session-1", TurnID: "turn-1", Input: invalid},
+			code:  CodeInvalidCommand,
+		},
+		{
+			name:  "failure code",
+			state: runningTurnForTest(t),
+			cmd:   FailTurn{SessionID: "session-1", TurnID: "turn-1", Code: invalid, Message: "provider failed"},
+			code:  CodeInvalidCommand,
+		},
+		{
+			name:  "failure message",
+			state: runningTurnForTest(t),
+			cmd:   FailTurn{SessionID: "session-1", TurnID: "turn-1", Code: "provider_error", Message: invalid},
+			code:  CodeInvalidCommand,
+		},
+		{
+			name:  "interruption reason",
+			state: runningTurnForTest(t),
+			cmd:   InterruptTurn{SessionID: "session-1", TurnID: "turn-1", Reason: invalid},
+			code:  CodeInvalidCommand,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			events, err := Decide(test.state, test.cmd)
+			if !IsCode(err, test.code) {
+				t.Fatalf("Decide() events = %#v, error = %v, want code %q", events, err, test.code)
+			}
+		})
+	}
+}

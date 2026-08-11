@@ -1,6 +1,8 @@
 package domain
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -235,6 +237,26 @@ func TestReplayRejectsTypedRecordOutsideCodecContract(t *testing.T) {
 	}
 	if !reflect.DeepEqual(state, Session{}) {
 		t.Fatalf("Replay() state = %#v, want zero Session", state)
+	}
+}
+
+func TestInvalidUTF8CannotDivergeBetweenTypedAndWireReplay(t *testing.T) {
+	t.Parallel()
+
+	invalid := "workspace-\xff"
+	record := replayRecord(1, SessionCreated{WorkspaceRoot: invalid})
+	rewrittenPayload, err := json.Marshal(record.Event)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if !bytes.Contains(rewrittenPayload, []byte(`\ufffd`)) {
+		t.Fatalf("json.Marshal() = %q, want replacement escape proving invalid UTF-8 rewrite", rewrittenPayload)
+	}
+
+	state, replayErr := Replay([]RecordedEvent{record})
+	encoded, marshalErr := MarshalRecordedEvent(record)
+	if !IsCode(replayErr, CodeInvalidEvent) || !IsCode(marshalErr, CodeInvalidEvent) {
+		t.Fatalf("typed Replay() state = %#v, error = %v; MarshalRecordedEvent() = %q, error = %v; want invalid_event at both boundaries", state, replayErr, encoded, marshalErr)
 	}
 }
 

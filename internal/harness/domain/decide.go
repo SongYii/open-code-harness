@@ -1,7 +1,5 @@
 package domain
 
-import "strings"
-
 func Decide(state Session, command Command) ([]UncommittedEvent, error) {
 	switch command := command.(type) {
 	case CreateSession:
@@ -50,7 +48,7 @@ func decideCreateSession(state Session, command CreateSession) ([]UncommittedEve
 	if _, err := ParseSessionID(string(command.SessionID)); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(command.WorkspaceRoot) == "" {
+	if !hasRequiredText(command.WorkspaceRoot) {
 		return nil, domainError(CodeInvalidCommand, "workspace root is required")
 	}
 	return []UncommittedEvent{{Event: SessionCreated{WorkspaceRoot: command.WorkspaceRoot}}}, nil
@@ -75,7 +73,7 @@ func decideStartTurn(state Session, command StartTurn) ([]UncommittedEvent, erro
 	if _, err := ParseTurnID(string(command.TurnID)); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(command.Input) == "" {
+	if !hasRequiredText(command.Input) {
 		return nil, domainError(CodeInvalidCommand, "turn input is required")
 	}
 	if _, exists := state.Turns[command.TurnID]; exists {
@@ -101,10 +99,10 @@ func decideFailTurn(state Session, command FailTurn) ([]UncommittedEvent, error)
 	if _, err := requireRunningTurn(state, command.SessionID, command.TurnID); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(command.Code) == "" {
+	if !hasRequiredText(command.Code) {
 		return nil, domainError(CodeInvalidCommand, "failure code is required")
 	}
-	if strings.TrimSpace(command.Message) == "" {
+	if !hasRequiredText(command.Message) {
 		return nil, domainError(CodeInvalidCommand, "failure message is required")
 	}
 	return []UncommittedEvent{{Event: TurnFailed{
@@ -118,7 +116,7 @@ func decideInterruptTurn(state Session, command InterruptTurn) ([]UncommittedEve
 	if _, err := requireRunningTurn(state, command.SessionID, command.TurnID); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(command.Reason) == "" {
+	if !hasRequiredText(command.Reason) {
 		return nil, domainError(CodeInvalidCommand, "interruption reason is required")
 	}
 	return []UncommittedEvent{{Event: TurnInterrupted{

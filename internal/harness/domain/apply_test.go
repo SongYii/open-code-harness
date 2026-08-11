@@ -167,6 +167,59 @@ func TestApplyRejectsSessionVersionOverflow(t *testing.T) {
 	}
 }
 
+func TestApplyRejectsInvalidUTF8MetadataIDs(t *testing.T) {
+	t.Parallel()
+
+	invalid := "identifier-\xff"
+	tests := []struct {
+		name   string
+		mutate func(*RecordedEvent)
+		code   ErrorCode
+	}{
+		{name: "event ID", mutate: func(record *RecordedEvent) { record.ID = EventID(invalid) }, code: CodeInvalidID},
+		{name: "session ID", mutate: func(record *RecordedEvent) { record.SessionID = SessionID(invalid) }, code: CodeInvalidID},
+		{name: "command ID", mutate: func(record *RecordedEvent) { record.CommandID = CommandID(invalid) }, code: CodeInvalidCommand},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			record := recordedForTest(Session{}, SessionCreated{WorkspaceRoot: "/workspace"})
+			test.mutate(&record)
+			state, err := Apply(Session{}, record)
+			if !IsCode(err, test.code) {
+				t.Fatalf("Apply() state = %#v, error = %v, want code %q", state, err, test.code)
+			}
+		})
+	}
+}
+
+func TestApplyRejectsInvalidUTF8EventPayloads(t *testing.T) {
+	t.Parallel()
+
+	invalid := "value-\xff"
+	tests := []struct {
+		name  string
+		state Session
+		event Event
+	}{
+		{name: "workspace root", event: SessionCreated{WorkspaceRoot: invalid}},
+		{name: "turn input", state: activeSessionForTest(t), event: TurnStarted{TurnID: "turn-1", Input: invalid}},
+		{name: "failure code", state: runningTurnForTest(t), event: TurnFailed{TurnID: "turn-1", Code: invalid, Message: "provider failed"}},
+		{name: "failure message", state: runningTurnForTest(t), event: TurnFailed{TurnID: "turn-1", Code: "provider_error", Message: invalid}},
+		{name: "interruption reason", state: runningTurnForTest(t), event: TurnInterrupted{TurnID: "turn-1", Reason: invalid}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			record := recordedForTest(test.state, test.event)
+			state, err := Apply(test.state, record)
+			if !IsCode(err, CodeInvalidEvent) {
+				t.Fatalf("Apply() state = %#v, error = %v, want code %q", state, err, CodeInvalidEvent)
+			}
+		})
+	}
+}
+
 func TestApplyTurnStarted(t *testing.T) {
 	t.Parallel()
 
