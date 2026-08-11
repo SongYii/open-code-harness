@@ -8,6 +8,12 @@ func Decide(state Session, command Command) ([]UncommittedEvent, error) {
 		return decideCreateSession(state, command)
 	case StartTurn:
 		return decideStartTurn(state, command)
+	case CompleteTurn:
+		return decideCompleteTurn(state, command)
+	case FailTurn:
+		return decideFailTurn(state, command)
+	case InterruptTurn:
+		return decideInterruptTurn(state, command)
 	default:
 		return nil, domainError(CodeInvalidCommand, "command type cannot be decided")
 	}
@@ -58,4 +64,73 @@ func decideStartTurn(state Session, command StartTurn) ([]UncommittedEvent, erro
 		TurnID: command.TurnID,
 		Input:  command.Input,
 	}}}, nil
+}
+
+func decideCompleteTurn(state Session, command CompleteTurn) ([]UncommittedEvent, error) {
+	if _, err := requireRunningTurn(state, command.SessionID, command.TurnID); err != nil {
+		return nil, err
+	}
+	return []UncommittedEvent{{Event: TurnCompleted{TurnID: command.TurnID}}}, nil
+}
+
+func decideFailTurn(state Session, command FailTurn) ([]UncommittedEvent, error) {
+	if _, err := requireRunningTurn(state, command.SessionID, command.TurnID); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(command.Code) == "" {
+		return nil, domainError(CodeInvalidCommand, "failure code is required")
+	}
+	if strings.TrimSpace(command.Message) == "" {
+		return nil, domainError(CodeInvalidCommand, "failure message is required")
+	}
+	return []UncommittedEvent{{Event: TurnFailed{
+		TurnID:  command.TurnID,
+		Code:    command.Code,
+		Message: command.Message,
+	}}}, nil
+}
+
+func decideInterruptTurn(state Session, command InterruptTurn) ([]UncommittedEvent, error) {
+	if _, err := requireRunningTurn(state, command.SessionID, command.TurnID); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(command.Reason) == "" {
+		return nil, domainError(CodeInvalidCommand, "interruption reason is required")
+	}
+	return []UncommittedEvent{{Event: TurnInterrupted{
+		TurnID: command.TurnID,
+		Reason: command.Reason,
+	}}}, nil
+}
+
+func requireRunningTurn(state Session, sessionID SessionID, turnID TurnID) (Turn, error) {
+	if !state.Exists() {
+		return Turn{}, domainError(CodeSessionNotFound, "session not found")
+	}
+	if _, err := ParseSessionID(string(sessionID)); err != nil {
+		return Turn{}, err
+	}
+	if sessionID != state.ID {
+		return Turn{}, domainError(CodeInvalidCommand, "command session ID does not match state")
+	}
+	if state.Status == SessionStatusClosed {
+		return Turn{}, domainError(CodeSessionClosed, "session is closed")
+	}
+	if state.Status != SessionStatusActive {
+		return Turn{}, domainError(CodeInvalidCommand, "session is not active")
+	}
+	if _, err := ParseTurnID(string(turnID)); err != nil {
+		return Turn{}, err
+	}
+	if state.ActiveTurnID == "" {
+		return Turn{}, domainError(CodeTurnNotRunning, "no turn is running")
+	}
+	if state.ActiveTurnID != turnID {
+		return Turn{}, domainError(CodeTurnMismatch, "command turn ID does not match active turn")
+	}
+	turn, ok := state.Turns[state.ActiveTurnID]
+	if !ok || turn.Status != TurnStatusRunning {
+		return Turn{}, domainError(CodeTurnNotRunning, "active turn is not running")
+	}
+	return turn, nil
 }

@@ -109,3 +109,81 @@ func TestDecideStartTurnRejectsBlankInput(t *testing.T) {
 		t.Fatalf("Decide() error = %v, want code %q", err, CodeInvalidCommand)
 	}
 }
+
+func TestTerminalTurnTransitions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cmd  Command
+		want Event
+	}{
+		{"complete", CompleteTurn{SessionID: SessionID("session-1"), TurnID: TurnID("turn-1")}, TurnCompleted{TurnID: TurnID("turn-1")}},
+		{"fail", FailTurn{SessionID: SessionID("session-1"), TurnID: TurnID("turn-1"), Code: "provider_rate_limit", Message: "retry budget exhausted"}, TurnFailed{TurnID: TurnID("turn-1"), Code: "provider_rate_limit", Message: "retry budget exhausted"}},
+		{"interrupt", InterruptTurn{SessionID: SessionID("session-1"), TurnID: TurnID("turn-1"), Reason: "user_cancelled"}, TurnInterrupted{TurnID: TurnID("turn-1"), Reason: "user_cancelled"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := runningTurnForTest(t)
+			events, err := Decide(state, tt.cmd)
+			if err != nil {
+				t.Fatalf("Decide() error = %v", err)
+			}
+			if len(events) != 1 || !reflect.DeepEqual(events[0].Event, tt.want) {
+				t.Fatalf("Decide() = %#v, want %#v", events, tt.want)
+			}
+		})
+	}
+}
+
+func TestDecideTerminalRejectsInvalidCommand(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		state Session
+		cmd   Command
+		code  ErrorCode
+	}{
+		{
+			name:  "wrong turn ID",
+			state: runningTurnForTest(t),
+			cmd:   CompleteTurn{SessionID: SessionID("session-1"), TurnID: TurnID("turn-2")},
+			code:  CodeTurnMismatch,
+		},
+		{
+			name:  "no running turn",
+			state: activeSessionForTest(t),
+			cmd:   CompleteTurn{SessionID: SessionID("session-1"), TurnID: TurnID("turn-1")},
+			code:  CodeTurnNotRunning,
+		},
+		{
+			name:  "blank failure code",
+			state: runningTurnForTest(t),
+			cmd:   FailTurn{SessionID: SessionID("session-1"), TurnID: TurnID("turn-1"), Code: "  ", Message: "retry budget exhausted"},
+			code:  CodeInvalidCommand,
+		},
+		{
+			name:  "blank failure message",
+			state: runningTurnForTest(t),
+			cmd:   FailTurn{SessionID: SessionID("session-1"), TurnID: TurnID("turn-1"), Code: "provider_rate_limit", Message: "  "},
+			code:  CodeInvalidCommand,
+		},
+		{
+			name:  "blank interruption reason",
+			state: runningTurnForTest(t),
+			cmd:   InterruptTurn{SessionID: SessionID("session-1"), TurnID: TurnID("turn-1"), Reason: "  "},
+			code:  CodeInvalidCommand,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Decide(tt.state, tt.cmd)
+			if !IsCode(err, tt.code) {
+				t.Fatalf("Decide() error = %v, want code %q", err, tt.code)
+			}
+		})
+	}
+}

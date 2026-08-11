@@ -1,5 +1,7 @@
 package domain
 
+import "strings"
+
 const schemaVersion = 1
 
 func Apply(state Session, record RecordedEvent) (Session, error) {
@@ -28,6 +30,12 @@ func Apply(state Session, record RecordedEvent) (Session, error) {
 		return applySessionCreated(state, record, event)
 	case TurnStarted:
 		return applyTurnStarted(state, record, event)
+	case TurnCompleted:
+		return applyTurnCompleted(state, record, event)
+	case TurnFailed:
+		return applyTurnFailed(state, record, event)
+	case TurnInterrupted:
+		return applyTurnInterrupted(state, record, event)
 	default:
 		return Session{}, domainError(CodeInvalidEvent, "event type cannot be applied")
 	}
@@ -70,6 +78,81 @@ func applyTurnStarted(state Session, record RecordedEvent, event TurnStarted) (S
 	next.TurnOrder = append(next.TurnOrder, event.TurnID)
 	next.Version = record.Sequence
 	return next, nil
+}
+
+func applyTurnCompleted(state Session, record RecordedEvent, event TurnCompleted) (Session, error) {
+	turn, err := requireRunningTurnForEvent(state, record.SessionID, event.TurnID)
+	if err != nil {
+		return Session{}, err
+	}
+	return applyTerminalTurn(state, record, turn, TurnStatusCompleted, "", "", ""), nil
+}
+
+func applyTurnFailed(state Session, record RecordedEvent, event TurnFailed) (Session, error) {
+	if strings.TrimSpace(event.Code) == "" {
+		return Session{}, domainError(CodeInvalidEvent, "failure code is required")
+	}
+	if strings.TrimSpace(event.Message) == "" {
+		return Session{}, domainError(CodeInvalidEvent, "failure message is required")
+	}
+	turn, err := requireRunningTurnForEvent(state, record.SessionID, event.TurnID)
+	if err != nil {
+		return Session{}, err
+	}
+	return applyTerminalTurn(state, record, turn, TurnStatusFailed, event.Code, event.Message, ""), nil
+}
+
+func applyTurnInterrupted(state Session, record RecordedEvent, event TurnInterrupted) (Session, error) {
+	if strings.TrimSpace(event.Reason) == "" {
+		return Session{}, domainError(CodeInvalidEvent, "interruption reason is required")
+	}
+	turn, err := requireRunningTurnForEvent(state, record.SessionID, event.TurnID)
+	if err != nil {
+		return Session{}, err
+	}
+	return applyTerminalTurn(state, record, turn, TurnStatusInterrupted, "", "", event.Reason), nil
+}
+
+func requireRunningTurnForEvent(state Session, sessionID SessionID, turnID TurnID) (Turn, error) {
+	if !state.Exists() {
+		return Turn{}, domainError(CodeSessionNotFound, "session not found")
+	}
+	if sessionID != state.ID {
+		return Turn{}, domainError(CodeInvalidEvent, "event session ID does not match state")
+	}
+	if state.Status == SessionStatusClosed {
+		return Turn{}, domainError(CodeSessionClosed, "session is closed")
+	}
+	if state.Status != SessionStatusActive {
+		return Turn{}, domainError(CodeInvalidEvent, "session is not active")
+	}
+	if _, err := ParseTurnID(string(turnID)); err != nil {
+		return Turn{}, domainError(CodeInvalidEvent, "turn ID is invalid")
+	}
+	if state.ActiveTurnID == "" {
+		return Turn{}, domainError(CodeTurnNotRunning, "no turn is running")
+	}
+	if state.ActiveTurnID != turnID {
+		return Turn{}, domainError(CodeTurnMismatch, "event turn ID does not match active turn")
+	}
+	turn, ok := state.Turns[state.ActiveTurnID]
+	if !ok || turn.Status != TurnStatusRunning {
+		return Turn{}, domainError(CodeTurnNotRunning, "active turn is not running")
+	}
+	return turn, nil
+}
+
+func applyTerminalTurn(state Session, record RecordedEvent, turn Turn, status TurnStatus, failureCode, failureText, interruptWhy string) Session {
+	next := state.Clone()
+	turn.Status = status
+	turn.EndedAt = record.OccurredAt
+	turn.FailureCode = failureCode
+	turn.FailureText = failureText
+	turn.InterruptWhy = interruptWhy
+	next.Turns[turn.ID] = turn
+	next.ActiveTurnID = ""
+	next.Version = record.Sequence
+	return next
 }
 
 func applySessionCreated(state Session, record RecordedEvent, event SessionCreated) (Session, error) {

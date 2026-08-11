@@ -106,3 +106,87 @@ func TestApplyTurnStartedDoesNotMutateInputState(t *testing.T) {
 		t.Fatalf("Apply() mutated input: got %#v want %#v", state, before)
 	}
 }
+
+func TestApplyTerminalTurnEvents(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		event Event
+		want  Turn
+	}{
+		{
+			name:  "complete",
+			event: TurnCompleted{TurnID: TurnID("turn-1")},
+			want:  Turn{ID: TurnID("turn-1"), Status: TurnStatusCompleted, Input: "inspect repository"},
+		},
+		{
+			name:  "fail",
+			event: TurnFailed{TurnID: TurnID("turn-1"), Code: "provider_rate_limit", Message: "retry budget exhausted"},
+			want:  Turn{ID: TurnID("turn-1"), Status: TurnStatusFailed, Input: "inspect repository", FailureCode: "provider_rate_limit", FailureText: "retry budget exhausted"},
+		},
+		{
+			name:  "interrupt",
+			event: TurnInterrupted{TurnID: TurnID("turn-1"), Reason: "user_cancelled"},
+			want:  Turn{ID: TurnID("turn-1"), Status: TurnStatusInterrupted, Input: "inspect repository", InterruptWhy: "user_cancelled"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := runningTurnForTest(t)
+			record := recordedForTest(state, tt.event)
+			got, err := Apply(state, record)
+			if err != nil {
+				t.Fatalf("Apply() error = %v", err)
+			}
+			if got.Version != record.Sequence || got.ActiveTurnID != "" {
+				t.Fatalf("Apply() state = %#v", got)
+			}
+			want := tt.want
+			want.StartedAt = state.Turns[TurnID("turn-1")].StartedAt
+			want.EndedAt = record.OccurredAt
+			if got.Turns[TurnID("turn-1")] != want {
+				t.Fatalf("Apply() turn = %#v, want %#v", got.Turns[TurnID("turn-1")], want)
+			}
+		})
+	}
+}
+
+func TestApplyTerminalRejectsMismatchedRunningTurn(t *testing.T) {
+	t.Parallel()
+
+	state := runningTurnForTest(t)
+	before := state.Clone()
+	_, err := Apply(state, recordedForTest(state, TurnCompleted{TurnID: TurnID("turn-2")}))
+	if !IsCode(err, CodeTurnMismatch) {
+		t.Fatalf("Apply() error = %v, want code %q", err, CodeTurnMismatch)
+	}
+	if !reflect.DeepEqual(state, before) {
+		t.Fatalf("Apply() mutated input: got %#v want %#v", state, before)
+	}
+}
+
+func TestApplyTerminalStatesAreMutuallyExclusive(t *testing.T) {
+	t.Parallel()
+
+	state := runningTurnForTest(t)
+	completed, err := Apply(state, recordedForTest(state, TurnCompleted{TurnID: TurnID("turn-1")}))
+	if err != nil {
+		t.Fatalf("apply completion: %v", err)
+	}
+	before := completed.Clone()
+
+	for _, event := range []Event{
+		TurnFailed{TurnID: TurnID("turn-1"), Code: "provider_rate_limit", Message: "retry budget exhausted"},
+		TurnInterrupted{TurnID: TurnID("turn-1"), Reason: "user_cancelled"},
+	} {
+		_, err := Apply(completed, recordedForTest(completed, event))
+		if !IsCode(err, CodeTurnNotRunning) {
+			t.Fatalf("Apply() error = %v, want code %q", err, CodeTurnNotRunning)
+		}
+		if !reflect.DeepEqual(completed, before) {
+			t.Fatalf("Apply() mutated completed state: got %#v want %#v", completed, before)
+		}
+	}
+}
