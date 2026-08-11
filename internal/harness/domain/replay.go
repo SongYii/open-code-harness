@@ -2,6 +2,7 @@ package domain
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -11,7 +12,8 @@ import (
 const maxJSONLRecordSize = 1 << 20
 
 func DecodeJSONL(reader io.Reader) ([]RecordedEvent, error) {
-	scanner := bufio.NewScanner(reader)
+	trackedReader := &jsonlTrackingReader{reader: reader, line: 1, errorLine: 1}
+	scanner := bufio.NewScanner(trackedReader)
 	scanner.Buffer(make([]byte, 64*1024), maxJSONLRecordSize+2)
 
 	var records []RecordedEvent
@@ -31,12 +33,34 @@ func DecodeJSONL(reader io.Reader) ([]RecordedEvent, error) {
 		records = append(records, record)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, jsonlLineError(line+1, invalidEventError("invalid JSONL stream"), scanner)
+		return nil, jsonlLineError(trackedReader.errorLine, invalidEventError("invalid JSONL stream"), scanner)
 	}
 	if len(records) == 0 {
 		return nil, invalidEventError("JSONL stream is empty")
 	}
 	return records, nil
+}
+
+type jsonlTrackingReader struct {
+	reader    io.Reader
+	line      int
+	errorLine int
+}
+
+func (reader *jsonlTrackingReader) Read(buffer []byte) (int, error) {
+	read, err := reader.reader.Read(buffer)
+	newlines := bytes.Count(buffer[:read], []byte{'\n'})
+	if err != nil {
+		reader.errorLine = reader.line + newlines
+		if read > 0 && buffer[read-1] == '\n' {
+			reader.errorLine--
+		}
+		if reader.errorLine < reader.line {
+			reader.errorLine = reader.line
+		}
+	}
+	reader.line += newlines
+	return read, err
 }
 
 func jsonlLineError(line int, err error, scanner *bufio.Scanner) error {

@@ -137,6 +137,28 @@ func TestDecodeJSONLPreservesReaderErrorWhenPartialTokenFailsToDecode(t *testing
 	}
 }
 
+func TestDecodeJSONLAttributesReaderErrorAfterCompleteRecordToThatLine(t *testing.T) {
+	t.Parallel()
+
+	sentinel := errors.New("reader failed with complete record")
+	line := replayJSONL(t, []RecordedEvent{
+		replayRecord(1, SessionCreated{WorkspaceRoot: "/workspace"}),
+	}) + "\n"
+	records, err := DecodeJSONL(dataAndErrorReader{data: []byte(line), err: sentinel})
+	if !IsCode(err, CodeInvalidEvent) {
+		t.Fatalf("DecodeJSONL() error = %v, want code %q", err, CodeInvalidEvent)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("DecodeJSONL() error = %v, want wrapped reader error", err)
+	}
+	if !strings.Contains(err.Error(), "line 1") {
+		t.Fatalf("DecodeJSONL() error = %v, want line 1 context", err)
+	}
+	if records != nil {
+		t.Fatalf("DecodeJSONL() records = %#v, want nil", records)
+	}
+}
+
 func TestReplayRejectsCorruptStreamsWithoutPartialState(t *testing.T) {
 	created := replayRecord(1, SessionCreated{WorkspaceRoot: "/workspace"})
 	startedAtThree := replayRecord(3, TurnStarted{TurnID: "turn-1", Input: "inspect"})
@@ -198,6 +220,21 @@ func TestReplayRejectsCorruptStreamsWithoutPartialState(t *testing.T) {
 				t.Fatalf("Replay() state = %#v, want zero Session on error", state)
 			}
 		})
+	}
+}
+
+func TestReplayRejectsTypedRecordOutsideCodecContract(t *testing.T) {
+	t.Parallel()
+
+	record := replayRecord(1, SessionCreated{WorkspaceRoot: "/workspace"})
+	record.Event = SessionCreated{WorkspaceRoot: " \t "}
+
+	state, err := Replay([]RecordedEvent{record})
+	if !IsCode(err, CodeInvalidEvent) {
+		t.Fatalf("Replay() error = %v, want code %q", err, CodeInvalidEvent)
+	}
+	if !reflect.DeepEqual(state, Session{}) {
+		t.Fatalf("Replay() state = %#v, want zero Session", state)
 	}
 }
 

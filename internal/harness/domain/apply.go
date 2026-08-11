@@ -1,6 +1,9 @@
 package domain
 
-import "strings"
+import (
+	"math"
+	"strings"
+)
 
 const schemaVersion = 1
 
@@ -14,8 +17,23 @@ func Apply(state Session, record RecordedEvent) (Session, error) {
 	if record.CommandID == "" {
 		return Session{}, domainError(CodeInvalidCommand, "command ID is required")
 	}
+	if _, err := ParseEventID(string(record.ID)); err != nil {
+		return Session{}, domainError(CodeInvalidID, "event ID is invalid")
+	}
+	if _, err := ParseSessionID(string(record.SessionID)); err != nil {
+		return Session{}, domainError(CodeInvalidID, "session ID is invalid")
+	}
+	if _, err := ParseCommandID(string(record.CommandID)); err != nil {
+		return Session{}, domainError(CodeInvalidCommand, "command ID is invalid")
+	}
 	if record.OccurredAt.IsZero() {
 		return Session{}, domainError(CodeInvalidEvent, "event timestamp is required")
+	}
+	if err := validateRecordedEventIdentityAndTimestamp(record); err != nil {
+		return Session{}, err
+	}
+	if state.Version == math.MaxUint64 {
+		return Session{}, domainError(CodeSequenceMismatch, "session version cannot advance")
 	}
 	record.OccurredAt = record.OccurredAt.UTC()
 	if _, ok := record.Event.(SessionCreated); ok && !state.isPristine() {
@@ -83,7 +101,7 @@ func applyTurnStarted(state Session, record RecordedEvent, event TurnStarted) (S
 	if _, err := ParseTurnID(string(event.TurnID)); err != nil {
 		return Session{}, domainError(CodeInvalidEvent, "turn ID is invalid")
 	}
-	if event.Input == "" {
+	if strings.TrimSpace(event.Input) == "" {
 		return Session{}, domainError(CodeInvalidEvent, "turn input is required")
 	}
 	if _, exists := state.Turns[event.TurnID]; exists {
@@ -94,6 +112,9 @@ func applyTurnStarted(state Session, record RecordedEvent, event TurnStarted) (S
 	}
 
 	next := state.Clone()
+	if next.Turns == nil {
+		next.Turns = make(map[TurnID]Turn)
+	}
 	next.Turns[event.TurnID] = Turn{
 		ID:        event.TurnID,
 		Status:    TurnStatusRunning,
@@ -185,7 +206,7 @@ func applySessionCreated(state Session, record RecordedEvent, event SessionCreat
 	if !state.isPristine() {
 		return Session{}, domainError(CodeSessionAlreadyExists, "session already exists")
 	}
-	if event.WorkspaceRoot == "" {
+	if strings.TrimSpace(event.WorkspaceRoot) == "" {
 		return Session{}, domainError(CodeInvalidEvent, "workspace root is required")
 	}
 

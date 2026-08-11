@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -65,6 +66,107 @@ func TestApplySessionCreatedRejectsNonPristineState(t *testing.T) {
 	}
 }
 
+func TestApplyRejectsRecordedEventsOutsideCodecContract(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		state  Session
+		record RecordedEvent
+		code   ErrorCode
+	}{
+		{
+			name: "padded event ID",
+			record: RecordedEvent{
+				SchemaVersion: 1, ID: " event-1", CommandID: "command-1", SessionID: "session-1",
+				Sequence: 1, OccurredAt: time.Date(2026, 8, 11, 1, 2, 3, 0, time.UTC),
+				Event: SessionCreated{WorkspaceRoot: "/workspace"},
+			},
+			code: CodeInvalidID,
+		},
+		{
+			name: "padded command ID",
+			record: RecordedEvent{
+				SchemaVersion: 1, ID: "event-1", CommandID: "command-1 ", SessionID: "session-1",
+				Sequence: 1, OccurredAt: time.Date(2026, 8, 11, 1, 2, 3, 0, time.UTC),
+				Event: SessionCreated{WorkspaceRoot: "/workspace"},
+			},
+			code: CodeInvalidCommand,
+		},
+		{
+			name: "padded session ID",
+			record: RecordedEvent{
+				SchemaVersion: 1, ID: "event-1", CommandID: "command-1", SessionID: "session-1 ",
+				Sequence: 1, OccurredAt: time.Date(2026, 8, 11, 1, 2, 3, 0, time.UTC),
+				Event: SessionCreated{WorkspaceRoot: "/workspace"},
+			},
+			code: CodeInvalidID,
+		},
+		{
+			name: "timestamp outside RFC3339 range",
+			record: RecordedEvent{
+				SchemaVersion: 1, ID: "event-1", CommandID: "command-1", SessionID: "session-1",
+				Sequence: 1, OccurredAt: time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC),
+				Event: SessionCreated{WorkspaceRoot: "/workspace"},
+			},
+			code: CodeInvalidEvent,
+		},
+		{
+			name: "whitespace-only workspace root",
+			record: RecordedEvent{
+				SchemaVersion: 1, ID: "event-1", CommandID: "command-1", SessionID: "session-1",
+				Sequence: 1, OccurredAt: time.Date(2026, 8, 11, 1, 2, 3, 0, time.UTC),
+				Event: SessionCreated{WorkspaceRoot: " \t "},
+			},
+			code: CodeInvalidEvent,
+		},
+		{
+			name:  "whitespace-only turn input",
+			state: activeSessionForTest(t),
+			record: RecordedEvent{
+				SchemaVersion: 1, ID: "event-2", CommandID: "command-2", SessionID: "session-1",
+				Sequence: 2, OccurredAt: time.Date(2026, 8, 11, 1, 2, 4, 0, time.UTC),
+				Event: TurnStarted{TurnID: "turn-1", Input: " \t "},
+			},
+			code: CodeInvalidEvent,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := Apply(test.state, test.record)
+			if !IsCode(err, test.code) {
+				t.Fatalf("Apply() state = %#v, error = %v, want code %q", got, err, test.code)
+			}
+		})
+	}
+}
+
+func TestApplyRejectsSessionVersionOverflow(t *testing.T) {
+	t.Parallel()
+
+	state := Session{
+		ID:            "session-1",
+		Status:        SessionStatusActive,
+		Version:       math.MaxUint64,
+		WorkspaceRoot: "/workspace",
+		Turns:         map[TurnID]Turn{},
+	}
+	before := state.Clone()
+	record := RecordedEvent{
+		SchemaVersion: 1, ID: "event-overflow", CommandID: "command-overflow", SessionID: "session-1",
+		Sequence: 0, OccurredAt: time.Date(2026, 8, 11, 1, 2, 3, 0, time.UTC), Event: SessionClosed{},
+	}
+
+	got, err := Apply(state, record)
+	if !IsCode(err, CodeSequenceMismatch) {
+		t.Fatalf("Apply() state = %#v, error = %v, want code %q", got, err, CodeSequenceMismatch)
+	}
+	if !reflect.DeepEqual(state, before) {
+		t.Fatalf("Apply() mutated input: got %#v, want %#v", state, before)
+	}
+}
+
 func TestApplyTurnStarted(t *testing.T) {
 	t.Parallel()
 
@@ -104,6 +206,31 @@ func TestApplyTurnStartedDoesNotMutateInputState(t *testing.T) {
 	}
 	if !reflect.DeepEqual(state, before) {
 		t.Fatalf("Apply() mutated input: got %#v want %#v", state, before)
+	}
+}
+
+func TestApplyTurnStartedAllocatesTurnsForValidActiveSessionWithNilMap(t *testing.T) {
+	t.Parallel()
+
+	state := Session{
+		ID:            SessionID("session-1"),
+		Status:        SessionStatusActive,
+		Version:       1,
+		WorkspaceRoot: "/workspace",
+	}
+	record := recordedForTest(state, TurnStarted{
+		TurnID: TurnID("turn-1"), Input: "inspect repository",
+	})
+
+	got, err := Apply(state, record)
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if state.Turns != nil {
+		t.Fatalf("Apply() mutated input Turns = %#v, want nil", state.Turns)
+	}
+	if got.Turns == nil || got.Turns[TurnID("turn-1")].Status != TurnStatusRunning {
+		t.Fatalf("Apply() Turns = %#v, want allocated running turn", got.Turns)
 	}
 }
 

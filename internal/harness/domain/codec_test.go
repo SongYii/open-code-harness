@@ -114,6 +114,115 @@ func TestUnmarshalRecordedEventRejectsInvalidWire(t *testing.T) {
 	}
 }
 
+func TestUnmarshalRecordedEventRejectsNonStrictJSON(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input []byte
+	}{
+		{
+			name:  "case-variant envelope key",
+			input: []byte(`{"SchemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-10T17:02:03.456Z","type":"session.created","data":{"workspaceRoot":"/workspace"}}`),
+		},
+		{
+			name:  "duplicate envelope key",
+			input: []byte(`{"schemaVersion":1,"id":"event-1","id":"event-2","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-10T17:02:03.456Z","type":"session.created","data":{"workspaceRoot":"/workspace"}}`),
+		},
+		{
+			name:  "case-variant session-created payload key",
+			input: []byte(`{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-10T17:02:03.456Z","type":"session.created","data":{"WorkspaceRoot":"/workspace"}}`),
+		},
+		{
+			name:  "case-variant turn-started payload key",
+			input: []byte(`{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-10T17:02:03.456Z","type":"turn.started","data":{"turnId":"turn-1","input":"inspect"}}`),
+		},
+		{
+			name:  "duplicate session-created payload key",
+			input: []byte(`{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-10T17:02:03.456Z","type":"session.created","data":{"workspaceRoot":"/workspace","workspaceRoot":"/other"}}`),
+		},
+		{
+			name:  "duplicate turn-started payload key",
+			input: []byte(`{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-10T17:02:03.456Z","type":"turn.started","data":{"turnID":"turn-1","input":"inspect","input":"replace"}}`),
+		},
+		{
+			name: "invalid raw UTF-8 in metadata",
+			input: invalidUTF8JSON(
+				`{"schemaVersion":1,"id":"event-`,
+				`","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-10T17:02:03.456Z","type":"session.created","data":{"workspaceRoot":"/workspace"}}`,
+			),
+		},
+		{
+			name: "invalid raw UTF-8 in payload",
+			input: invalidUTF8JSON(
+				`{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-10T17:02:03.456Z","type":"session.created","data":{"workspaceRoot":"/work`,
+				`space"}}`,
+			),
+		},
+		{
+			name:  "lone high surrogate in metadata",
+			input: []byte(`{"schemaVersion":1,"id":"event-\ud800","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-10T17:02:03.456Z","type":"session.created","data":{"workspaceRoot":"/workspace"}}`),
+		},
+		{
+			name:  "lone low surrogate in metadata",
+			input: []byte(`{"schemaVersion":1,"id":"event-\udc00","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-10T17:02:03.456Z","type":"session.created","data":{"workspaceRoot":"/workspace"}}`),
+		},
+		{
+			name:  "mispaired surrogate in payload",
+			input: []byte(`{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-10T17:02:03.456Z","type":"session.created","data":{"workspaceRoot":"/work\ud800\u0041space"}}`),
+		},
+		{
+			name:  "lone surrogate in representative turn payload",
+			input: []byte(`{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-10T17:02:03.456Z","type":"turn.started","data":{"turnID":"turn-1","input":"inspect\ud800"}}`),
+		},
+		{
+			name:  "comma fractional timestamp",
+			input: []byte(`{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-10T17:02:03,456Z","type":"session.created","data":{"workspaceRoot":"/workspace"}}`),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := UnmarshalRecordedEvent(test.input)
+			if !IsCode(err, CodeInvalidEvent) {
+				t.Fatalf("UnmarshalRecordedEvent() error = %v, want code %q", err, CodeInvalidEvent)
+			}
+		})
+	}
+}
+
+func TestUnmarshalRecordedEventAcceptsRFC3339NanoTimestampForms(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		timestamp string
+		wantUTC   string
+	}{
+		{name: "whole seconds UTC", timestamp: "2026-08-11T01:02:03Z", wantUTC: "2026-08-11T01:02:03Z"},
+		{name: "fraction and positive offset", timestamp: "2026-08-11T01:02:03.1+08:00", wantUTC: "2026-08-10T17:02:03.1Z"},
+		{name: "nanoseconds and negative offset", timestamp: "2026-08-11T01:02:03.123456789-07:30", wantUTC: "2026-08-11T08:32:03.123456789Z"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			input := `{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"` + test.timestamp + `","type":"session.created","data":{"workspaceRoot":"/workspace"}}`
+			record, err := UnmarshalRecordedEvent([]byte(input))
+			if err != nil {
+				t.Fatalf("UnmarshalRecordedEvent() error = %v", err)
+			}
+			if got := record.OccurredAt.Format(time.RFC3339Nano); got != test.wantUTC {
+				t.Fatalf("OccurredAt = %q, want %q", got, test.wantUTC)
+			}
+		})
+	}
+}
+
+func invalidUTF8JSON(prefix, suffix string) []byte {
+	data := append([]byte(prefix), 0xff)
+	return append(data, suffix...)
+}
+
 func TestSessionLifecycleFixtureUsesCanonicalCodecRecords(t *testing.T) {
 	t.Parallel()
 
