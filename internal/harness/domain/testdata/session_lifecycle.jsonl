@@ -1,0 +1,6 @@
+{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-fixture","sequence":1,"occurredAt":"2026-08-11T01:02:03Z","type":"session.created","data":{"workspaceRoot":"/workspace"}}
+{"schemaVersion":1,"id":"event-2","commandId":"command-2","sessionId":"session-fixture","sequence":2,"occurredAt":"2026-08-11T01:02:04Z","type":"turn.started","data":{"turnID":"turn-1","input":"first turn"}}
+{"schemaVersion":1,"id":"event-3","commandId":"command-3","sessionId":"session-fixture","sequence":3,"occurredAt":"2026-08-11T01:02:05Z","type":"turn.completed","data":{"turnID":"turn-1"}}
+{"schemaVersion":1,"id":"event-4","commandId":"command-4","sessionId":"session-fixture","sequence":4,"occurredAt":"2026-08-11T01:02:06Z","type":"turn.started","data":{"turnID":"turn-2","input":"second turn"}}
+{"schemaVersion":1,"id":"event-5","commandId":"command-5","sessionId":"session-fixture","sequence":5,"occurredAt":"2026-08-11T01:02:07Z","type":"turn.interrupted","data":{"turnID":"turn-2","reason":"user_cancelled"}}
+{"schemaVersion":1,"id":"event-6","commandId":"command-6","sessionId":"session-fixture","sequence":6,"occurredAt":"2026-08-11T01:02:08Z","type":"session.closed","data":{}}
