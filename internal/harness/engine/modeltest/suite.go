@@ -93,6 +93,47 @@ func Run(t *testing.T, factory Factory) {
 		}
 	})
 
+	t.Run("expresses startup stream pairs and close accounting", func(t *testing.T) {
+		startup := errors.New("startup")
+		closeErr := errors.New("close")
+		cases := []struct {
+			name               string
+			config             Config
+			stream, startupErr bool
+		}{
+			{"nil nil", Config{ReturnNilStream: true}, false, false},
+			{"nil error", Config{StartupError: startup}, false, true},
+			{"stream error", Config{StartupError: startup, ReturnStreamOnStartupError: true}, true, true},
+			{"nil precedence", Config{StartupError: startup, ReturnStreamOnStartupError: true, ReturnNilStream: true}, false, true},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				probe := factory(request(tc.name), tc.config)
+				stream, err := probe.Stream(context.Background(), request(tc.name))
+				if (stream != nil) != tc.stream || (err != nil) != tc.startupErr {
+					t.Fatalf("Stream() = (%v, %v), want stream=%t error=%t", stream, err, tc.stream, tc.startupErr)
+				}
+				if stream != nil {
+					_ = stream.Close()
+				}
+				if got := probe.CloseCalls(); got != map[bool]int{true: 1, false: 0}[tc.stream] {
+					t.Fatalf("CloseCalls() = %d", got)
+				}
+			})
+		}
+		probe := factory(request("close"), Config{CloseError: closeErr})
+		stream, err := probe.Stream(context.Background(), request("close"))
+		if err != nil || stream == nil {
+			t.Fatal("wanted usable stream")
+		}
+		if err := stream.Close(); !errors.Is(err, closeErr) {
+			t.Fatalf("Close() = %v, want close error", err)
+		}
+		if probe.CloseCalls() != 1 || probe.NextCalls() != 0 {
+			t.Fatalf("counts = (%d, %d), want (1, 0)", probe.CloseCalls(), probe.NextCalls())
+		}
+	})
+
 	t.Run("returns configured mid-stream error", func(t *testing.T) {
 		midstream := errors.New("connection lost")
 		probe := factory(request("midstream"), Config{Steps: []ContractStep{{Err: midstream}}})
@@ -114,13 +155,13 @@ func Run(t *testing.T, factory Factory) {
 			t.Fatalf("Stream() = (%v, %v), want usable stream", stream, err)
 		}
 		defer stream.Close()
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := newDoneObservedContext(context.Background())
 		result := make(chan error, 1)
 		go func() { _, err := stream.Next(ctx); result <- err }()
 		select {
-		case err := <-result:
-			t.Fatalf("Next() returned before cancellation: %v", err)
-		case <-time.After(20 * time.Millisecond):
+		case <-ctx.entered:
+		case <-time.After(time.Second):
+			t.Fatal("Next() did not begin waiting for context cancellation")
 		}
 		cancel()
 		select {
@@ -206,15 +247,7 @@ func RunRuntime(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewEmitter() error = %v", err)
 		}
-		invalid := []engine.RuntimePayload{
-			{Type: engine.RuntimeModelStreamStarted, Text: "no"},
-			{Type: engine.RuntimeModelStreamCompleted, Code: "no"},
-			{Type: engine.RuntimeModelTextDelta},
-			{Type: engine.RuntimeModelTextDelta, Text: "\xff"},
-			{Type: engine.RuntimeModelStreamFailed, Text: "no", Code: "model_stream"},
-			{Type: engine.RuntimeModelStreamInterrupted},
-			{Type: engine.RuntimeEventType("unknown")},
-		}
+		invalid := []engine.RuntimePayload{{Type: engine.RuntimeModelStreamStarted, Text: "text"}, {Type: engine.RuntimeModelStreamStarted, Code: "code"}, {Type: engine.RuntimeModelStreamCompleted, Text: "text"}, {Type: engine.RuntimeModelStreamCompleted, Code: "code"}, {Type: engine.RuntimeAppendCompleted, Text: "text"}, {Type: engine.RuntimeAppendCompleted, Code: "code"}, {Type: engine.RuntimeModelTextDelta}, {Type: engine.RuntimeModelTextDelta, Text: "\xff"}, {Type: engine.RuntimeModelTextDelta, Text: "text", Code: "code"}, {Type: engine.RuntimeModelStreamFailed, Text: "text", Code: "model_stream"}, {Type: engine.RuntimeModelStreamFailed}, {Type: engine.RuntimeModelStreamInterrupted, Text: "text", Code: "canceled"}, {Type: engine.RuntimeModelStreamInterrupted}, {Type: engine.RuntimeEventType("unknown")}}
 		for _, payload := range invalid {
 			if err := emitter.Emit(context.Background(), payload); !engine.IsCode(err, engine.CodeInvalidRequest) {
 				t.Errorf("Emit(%#v) error = %v, want invalid_request", payload, err)
@@ -266,10 +299,24 @@ func RunRuntime(t *testing.T) {
 		if _, err := engine.NewEmitter(typedNil, correlation()); !engine.IsCode(err, engine.CodeInvalidRequest) {
 			t.Fatalf("NewEmitter(typed nil) = %v, want invalid_request", err)
 		}
-		bad := correlation()
-		bad.ItemID = " "
-		if _, err := engine.NewEmitter(&captureSink{}, bad); !engine.IsCode(err, engine.CodeInvalidRequest) {
-			t.Fatalf("NewEmitter(bad correlation) = %v, want invalid_request", err)
+		for _, mutate := range []func(*engine.Correlation){func(c *engine.Correlation) { c.SessionID = " " }, func(c *engine.Correlation) { c.TurnID = " " }, func(c *engine.Correlation) { c.ItemID = " " }, func(c *engine.Correlation) { c.CommandID = " " }} {
+			bad := correlation()
+			mutate(&bad)
+			if _, err := engine.NewEmitter(&captureSink{}, bad); !engine.IsCode(err, engine.CodeInvalidRequest) {
+				t.Fatalf("NewEmitter(bad correlation) = %v, want invalid_request", err)
+			}
+		}
+	})
+
+	t.Run("runtime cancellation after sink attempt is primary", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		sink := cancelingSink{cancel: cancel, err: errors.New("delivery")}
+		emitter, _ := engine.NewEmitter(&sink, correlation())
+		if err := emitter.Emit(ctx, engine.RuntimePayload{Type: engine.RuntimeModelStreamStarted}); !engine.IsCode(err, engine.CodeCanceled) {
+			t.Fatalf("Emit() = %v, want canceled", err)
+		}
+		if len(sink.events) != 1 || sink.events[0].Ordinal != 1 {
+			t.Fatalf("attempts = %#v, want ordinal 1 attempt", sink.events)
 		}
 	})
 
@@ -296,6 +343,33 @@ func RunRuntime(t *testing.T) {
 type captureSink struct {
 	events []engine.RuntimeEvent
 	err    error
+}
+
+type cancelingSink struct {
+	events []engine.RuntimeEvent
+	cancel context.CancelFunc
+	err    error
+}
+
+func (sink *cancelingSink) Emit(_ context.Context, event engine.RuntimeEvent) error {
+	sink.events = append(sink.events, event)
+	sink.cancel()
+	return sink.err
+}
+
+type doneObservedContext struct {
+	context.Context
+	entered chan struct{}
+	once    sync.Once
+}
+
+func newDoneObservedContext(parent context.Context) (*doneObservedContext, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	return &doneObservedContext{Context: ctx, entered: make(chan struct{})}, cancel
+}
+func (ctx *doneObservedContext) Done() <-chan struct{} {
+	ctx.once.Do(func() { close(ctx.entered) })
+	return ctx.Context.Done()
 }
 
 func (sink *captureSink) Emit(_ context.Context, event engine.RuntimeEvent) error {

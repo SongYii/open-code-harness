@@ -37,9 +37,6 @@ type ScriptedModel struct {
 }
 
 func NewScriptedModel(expected engine.ModelRequest, config ScriptedModelConfig) (*ScriptedModel, error) {
-	if !reflect.DeepEqual(expected, expected) {
-		return nil, errors.New("unreachable")
-	}
 	config.Steps = append([]ScriptedStep(nil), config.Steps...)
 	return &ScriptedModel{expected: expected, config: config}, nil
 }

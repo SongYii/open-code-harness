@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"errors"
+	"math"
 	"reflect"
 	"unicode/utf8"
 
@@ -77,6 +79,9 @@ func (emitter *Emitter) Emit(ctx context.Context, payload RuntimePayload) error 
 	if cause := ctx.Err(); cause != nil {
 		return &Error{Code: CodeCanceled, Cause: cause}
 	}
+	if emitter.nextOrdinal == math.MaxUint64 {
+		return &Error{Code: CodeDelivery, Cause: errRuntimeOrdinalExhausted}
+	}
 	emitter.nextOrdinal++
 	event := RuntimeEvent{Correlation: emitter.correlation, Ordinal: emitter.nextOrdinal, Type: payload.Type, Text: payload.Text, Code: payload.Code}
 	if err := emitter.sink.Emit(ctx, event); err != nil {
@@ -87,6 +92,8 @@ func (emitter *Emitter) Emit(ctx context.Context, payload RuntimePayload) error 
 	}
 	return nil
 }
+
+var errRuntimeOrdinalExhausted = errors.New("runtime ordinal exhausted")
 
 func validCorrelation(correlation Correlation) bool {
 	_, sessionErr := domain.ParseSessionID(string(correlation.SessionID))

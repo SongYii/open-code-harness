@@ -43,14 +43,23 @@ func (err *Error) Is(target error) bool {
 		return false
 	}
 	wanted, ok := target.(*Error)
-	return ok && wanted != nil && err.Code == wanted.Code
+	return ok && wanted != nil && validErrorCode(wanted.Code) && err.Code == wanted.Code
 }
 
 // IsCode traverses complete wrapped and joined trees without matching typed-nil
 // *Error values.
 func IsCode(err error, wanted ErrorCode) bool {
-	if err == nil || wanted == "" {
+	if err == nil || !validErrorCode(wanted) {
 		return false
 	}
 	return errors.Is(err, &Error{Code: wanted})
+}
+
+func validErrorCode(code ErrorCode) bool {
+	switch code {
+	case CodeInvalidRequest, CodeModelStartup, CodeModelStream, CodeCanceled, CodeOutputLimit, CodeDelivery, CodeInvalidStream:
+		return true
+	default:
+		return false
+	}
 }
