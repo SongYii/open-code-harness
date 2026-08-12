@@ -42,8 +42,9 @@ Open Code Harness 是面向工业应用的开源 code-agent harness。本里程�
 
 ## 3. 行业项目实证评审
 
-本设计只采用官方仓库和一手技术文档中的实现证据。只有符合 Open Code Harness
-章程的思想才会被采用；参考项目不是本项目依赖，也不直接决定本项目 API。
+本设计只把官方仓库、官方文档与语言/运行时文档作为一手证据。社区项目只能作为明确
+标注的非权威上下文，不能单独建立本项目合同。只有符合 Open Code Harness 章程的思想
+才会被采用；参考项目不是本项目依赖，也不直接决定本项目 API。
 
 ### 3.1 Pi agent core
 
@@ -127,9 +128,10 @@ Runtime 执行，而不是走 benchmark 专用捷径。
 
 证据：<https://github.com/maka-agent/maka-agent/blob/main/ARCHITECTURE.md>
 
-### 3.6 DeepSeek-Reasonix
+### 3.6 DeepSeek-Reasonix（社区、非权威上下文）
 
-Reasonix 有意针对 DeepSeek 优化：稳定提示前缀以提高缓存命中、模型专用工具调用
+DeepSeek-Reasonix 是社区项目，不是 DeepSeek 官方仓库，在本文仅作非权威上下文。
+它有意针对 DeepSeek 优化：稳定提示前缀以提高缓存命中、模型专用工具调用
 修复、flash/pro 成本路由、结果裁剪和并行安全标注。
 
 以后采用：provider capability profile、由 trace 驱动的优化与 A/B 评测、显式的
@@ -219,6 +221,20 @@ snapshot、index、transcript model 和 UI state 都是未来可丢弃 projectio
 可消耗最终未入库的 ID，这不违反原子性；持久状态不变且已提交 record sequence 无空洞。
 端口不承诺 ID/Clock 的事务性或无空洞。
 
+本里程碑还规定：`Append` 返回非 nil error 表示请求批次没有提交；批次一旦提交，即使
+caller cancellation 在 commit point 后并发发生，adapter 也必须返回已提交 records。
+Application 只有在以下条件全部满足后才接受返回批次：数量准确；sequence 以无溢出的
+方式严格等于 `ExpectedVersion+1..+N`；Session/Command ID 匹配；schema version、Event ID、
+timestamp 与事件形状有效；event type、payload 和 order 与请求逐项相等；整批共享同一个
+非零 UTC occurrence time。ordered Apply 必须成功，且最终 Version 必须等于
+`ExpectedVersion + N`。任何 metadata/event mismatch、Apply failure 或 final-version mismatch
+都是 `internal/store_contract_violation`，有 Apply cause 时保持可 unwrap。该检查会 fail closed，
+但无法回滚一个已经提交后谎报结果的 Store。
+
+进程内 `MemoryEventStore` 能满足该无模糊错误合同。未来 remote Store 若可能提交成功但
+丢失 acknowledgement，就不能诚实实现当前端口；成为生产 adapter 前必须加入稳定的
+exact-retry batch identity 或显式 unknown-commit outcome。
+
 ### 4.5 持久事实与运行时信号分离
 
 领域事件重建权威状态；运行时信号服务实时消费者，可按适配器已记录策略合并或丢弃。
@@ -258,6 +274,12 @@ terminal metadata，failed/interrupted 不持久化部分 assistant 文本。
 每次 Item 或 Turn 终态转换前后，`ActiveItemID`、ItemOrder、Items map key、ownership、
 payload kind、timestamp 与 status 必须互相一致；损坏前置状态返回 `invalid_event`，不得
 静默修复。`caller_canceled` 和 `runtime_delivery_failed` 是首批稳定中断 code。
+
+Application admission 使用一个领域复合命令
+`StartAssistantTurn{SessionID, TurnID, ItemID, Input}`，校验完整的已知 pre-effect transition，
+并在一个 decision batch 中准确返回 `TurnStarted`、`AssistantMessageStarted`。低层命令可为
+兼容性保留为 domain building block，但 Application 绝不暴露拆分的 Turn-start/Item-start
+持久分支。
 
 `ModelAttempt`、usage、tool/reasoning/image Item 留待后续。这是范围控制，不允许把
 provider 专用数据塞进 assistant-message Item。
@@ -342,6 +364,24 @@ engine；engine 不导入 memory adapter、ACP、TUI、provider SDK、持久化�
 
 ## 6. Turn 执行流程
 
+`RunTurn` 有四个不可逆阶段：
+
+| 阶段 | 持久边界 | Context | 必须结果 |
+| --- | --- | --- | --- |
+| Preflight | 无 | caller context | 失败无 record、无模型调用 |
+| Admission | 原子 started Turn + Item | caller context | 成功后才允许调用模型 |
+| Execution | 只有 runtime started/delta | caller context | Engine 负责 stream cancel 与 `Close` |
+| Terminalization | 原子 terminal Item + Turn | success 使用 caller context；failure/interruption 使用有界 detached context | 精确一个 terminal batch，或显式 running persistence/conflict 结果 |
+
+admission 前的精确顺序为：校验请求和 typed-nil 依赖；Load 完整 stream；Replay 并校验
+权威状态；调用纯领域 `CheckStartAssistantTurnEligibility`；生成 Turn、Item、Command ID；
+校验所有生成 ID；构造唯一 run-scoped Emitter；Decide `StartAssistantTurn`；原子 append
+admission batch；最后调用 `TurnRunner`。eligibility predicate 的有限范围是 Session 存在、
+active、完整结构合法且没有 running Turn 或 Item；它不校验尚未生成的 ID 或 request input。
+领域 `Decide(StartAssistantTurn)` 在 command-field checks 前调用同一个 predicate，Application
+绝不复制这些 invariant。因此 missing、closed、corrupt 或 already-running Session 不消耗
+run ID；ID source 以 nil error 返回非法 ID 或 Emitter 构造失败也不会遗留 running Turn。
+
 ### 6.1 成功 Turn
 
 ```text
@@ -349,9 +389,12 @@ caller
   → application.RunTurn
   → EventStore.Load
   → domain.Replay
-  → domain.Decide(StartTurn)
-  → EventStore.Append(expectedVersion)          [turn.started]
-  → EventStore.Append(expectedVersion + 1)      [assistant.message.started]
+  → domain.CheckStartAssistantTurnEligibility
+  → 校验生成的 Turn/Item/Command ID
+  → 构造唯一 engine.Emitter
+  → domain.Decide(StartAssistantTurn)
+  → EventStore.Append(expectedVersion)          [turn.started,
+                                                 assistant.message.started]
   → Model.Stream
   → RuntimeSink(model.stream.started)
   → RuntimeSink(model.text.delta)*
@@ -362,7 +405,11 @@ caller
   → RunTurnResult
 ```
 
-终态 Item 与 Turn 事件在同一个原子批次 append。Item 终态在前、Turn 终态在后，
+Admission 是一个原子批次：`StartAssistantTurn` 依次决定 `turn.started` 与
+`assistant.message.started`；二者共享 command ID 和 occurrence timestamp，并将加载版本
+推进 2。admission 失败或提交前取消时两条都不可见，模型调用次数为零。
+
+终态 Item 与 Turn 事件同样在一个原子批次 append。Item 终态在前、Turn 终态在后，
 二者共享 command ID 和 occurrence timestamp。调用方绝不能看到缺少最终 message
 事实的 `turn.completed`。
 
@@ -378,18 +425,27 @@ caller
 
 ### 6.4 取消
 
-每个不可逆边界前检查取消，并将 context 传入模型 stream 与 sink。Turn/Item 已启动
-后，取消会尝试原子追加二者的 interrupted 事实。若中断提交成功，即使 provider 随后
-返回普通 abort error，结果仍为 interrupted。
+每个边界都检查取消，模型和 RuntimeSink 始终接收原 caller context。atomic admission
+提交后，Engine failure、caller cancellation 或终态前 delivery failure 都在同一调用栈
+创建有界 cleanup context：
 
-初始 Turn append 前取消不写入；终态提交后的取消不能替换终态。
+```go
+cleanupBase := context.WithoutCancel(ctx)
+cleanupCtx, cancel := context.WithTimeout(cleanupBase, s.config.TerminalCommitTimeout)
+defer cancel()
+```
+
+detached context 只用于 failure/interruption append，绝不用于模型、retry、普通 success
+或 RuntimeSink delivery。admission 前取消不写入；终态已提交后观察到取消不能替换终态。
 
 ### 6.5 Append 失败
 
-初始 Turn append 失败时绝不调用模型。终态批量 append 失败时由 Application 返回
-persistence failure，
-不得把模型成功报告为 Turn 成功。事件流可能停留在 running 边界，生产级 reconciliation
-由未来持久化/恢复里程碑承担；当前失败必须显式且可测试，不能静默修复。
+admission 失败时绝不调用模型。模型成功后先在 completed batch 前检查 caller
+cancellation，并使用 caller context append；若返回 records，持久 completion 胜出。
+若 append 失败且 `ctx.Err() != nil`，无模糊错误规则允许用 bounded cleanup context
+尝试一次 interrupted pair；其他 persistence failure 或 conflict 不制造第二个终态。
+任一 terminal append 失败都返回已知 admission records、running 状态且
+`TerminalCommitted == false`；生产 reconciliation 是 GA 前阻断能力。
 
 ### 6.6 Runtime sink 失败
 
@@ -398,17 +454,66 @@ persistence failure，
 后的 delivery 失败或 caller cancellation 不能改写持久成功，返回结果只携带与执行状态
 分离的 delivery warning/error。
 
+### 6.7 Result 与 error 代数
+
+`RunTurn` 有意同时返回 value 与 error。`Records` 是本调用已知提交的每个批次的防御复制
+与有序拼接：admission 后两条，terminalization 后再加两条。`Text` 精确等于 completed
+输出（空成功也有效）；failed/interrupted 的 Text 为空，partial delta 永不成为最终文本。
+
+| 结果 | Result status/text | `TerminalCommitted` | Error category |
+| --- | --- | --- | --- |
+| completed 且 delivery 成功 | completed / exact text | true | nil |
+| completed，但终态 delivery 失败/被抑制 | completed / exact text，warning | true | delivery |
+| model startup/stream/close failure，终态已提交 | failed / empty | true | model |
+| provider stream 非法，终态已提交 | failed / empty | true | model (`invalid_stream`) |
+| output limit，终态已提交 | failed / empty | true | output_limit |
+| caller cancellation，终态已提交 | interrupted / empty | true | canceled |
+| 终态前 sink failure，中断已提交 | interrupted / empty | true | delivery |
+| admission/load/terminal persistence 或 conflict failure | absent 或 running / empty | false | persistence、conflict 或 internal |
+| request validation failure | zero result | false | validation |
+
+accepted admission 前的任何 failure 都返回 zero `RunTurnResult`：IDs/status 为零值、
+text/records 为空、terminal=false、warning=nil。accepted admission 后、terminal batch
+验收前的任何返回都携带 Session/Turn/Item ID、running status、两条 admission records、
+empty text、terminal=false、warning=nil。terminalization 验收后再追加两条 records，并按表
+设置 failed/interrupted/completed、Text 和 terminal flag。`DeliveryWarning` 只在
+post-terminal runtime delivery 失败或被抑制时非 nil，并保留该 cause；返回的 application
+error 按优先级保留 primary execution 与 terminalization causes。
+
+只有已验收并 Apply terminal batch 后，Application 才能发送 `append.completed`，随后准确
+发送一个 `model.stream.completed`、`model.stream.failed` 或
+`model.stream.interrupted`。没有 terminal commit 就没有这些 signal。后续 delivery failure
+写入 `DeliveryWarning`；若不存在更早执行错误，它是返回 category，否则保持更早 category
+为主并 join delivery cause。取消后缺少 runtime terminal signal 不能被解释为缺少持久终态。
+
+```text
+success:     model.stream.started, delta*, append.completed, model.stream.completed
+failure:     model.stream.started?, delta*, append.completed, model.stream.failed
+interrupted: model.stream.started?, delta*, append.completed, model.stream.interrupted
+```
+
+错误优先级是：阻止 terminalization 的 Store contract/conflict/persistence；原始
+model/output/canceled/delivery execution error；post-terminal delivery warning。
+terminalization 失败时，`errors.Join` 保留 execution 与 append cause，outer category 描述
+持久 running 边界。
+
 ## 7. 并发与事务语义
 
 - EventStore CAS 是同一 Session 并发控制的权威；
-- 两个调用方可加载同一版本，但只有一个初始 Turn append 能提交，失败方不调用模型；
-- 不同 Session 可以并发执行；
+- atomic admission CAS 是同 Session `RunTurn` 的线性化点；两个调用方可加载同一版本并
+  完成 preflight，但只有一个 admission 能提交，失败方不调用模型；
+- 加载到 already-running Turn 的调用在 `domain.Decide` 前后不 append 且模型调用为零；
+- `CloseSession` 与 admission 竞争只由 CAS 决定，只有一个合法 append 胜出且都不 retry；
+- 不同 Session 可通过同一 Service/TurnRunner 并发执行；共享 Model 与 RuntimeSink 实现遵守
+  Tasks 5–6 的并发合同；
 - CAS 冲突后不自动重试，避免未来重复模型成本或外部工作；
 - append 批次要么按序全部提交，要么一个也不提交；
 - 冲突、已取消、非法请求或预提交注入故障不读取 Clock、不申请 Event ID；候选 append
   精确读取一次 Clock；后期校验失败可消耗未使用的不透明 Event ID，但不得推进 stream version；
 - MemoryEventStore 必须在同 Session 冲突和独立 Session 并行下通过 `go test -race`；
 - 并发测试使用 barrier/channel 建立顺序，不使用时间 sleep。
+- terminal conflict 不 retry，也不改写为 model failure；结果是本调用本地权威下的
+  running/unknown，`TerminalCommitted == false`，caller 必须 reload。
 
 ## 8. 错误模型
 
@@ -427,6 +532,23 @@ Application/Engine 错误必须结构化并保留 cause，至少区分：
 
 每个错误都必须说明持久终态是否已提交。错误文案不是兼容契约；稳定类别/代码和类型化
 字段才是。
+
+caller input 与 `domain.Decide` 拒绝属于 validation；空 Load 是
+`validation/session_not_found`；ID source error 是 `internal/id_generation_failed`；
+nil error 返回非法 ID 是 `internal/id_generator_contract_violation`。Store 提供 records 的
+Replay/Apply failure 和任何 append-return mismatch 都是
+`internal/store_contract_violation`，绝不是 caller validation。普通 Load/Append dependency
+error 是 persistence；任意 `VersionConflictError`（含 cleanup）是 conflict。dependency
+error 仅包裹 `context.Canceled` 不会变成 caller cancel，除非 supplied context 确实已取消。
+
+Application `Error`、`IsCategory` 与 `VersionConflictError` 必须 nil-safe，并遍历完整
+wrapped/joined error tree，包括 later sibling、direct typed nil 与 joined typed nil。
+
+一个生成的 `CommandID` 关联同一 RunTurn 的两个 append batch 与全部 runtime event；它不是
+idempotency 或 Store deduplication key。由于跨两个 append，`(SessionID, CommandID)` 不能
+唯一标识一次 append request。Service 不自动 reload、re-decide、append retry 或 model
+retry；caller 不得盲重试不确定响应。未来公共幂等需要独立 caller-stable operation identity、
+exact batch identity 和明确的 return/resume/new-Turn 语义。
 
 ## 9. 确定性适配器与契约套件
 
@@ -482,16 +604,23 @@ enginescenariotest.Run(harness)
 
 ### 取消与 delivery
 
-- 首次 append 前取消；Turn 启动后、模型前取消；流中取消；取消与完成竞争；
+- atomic admission 前取消、admission 后立即取消、流中取消、取消与完成竞争；
 - 终态提交前后 sink 失败；每个已启动 Item/Turn 最多进入一个终态。
 
 ### 存储与并发
 
-- load 失败；初始 append 失败阻止模型调用；终态批次失败不报告成功；
+- load 失败；atomic admission 失败阻止模型调用且无 partial start；终态批次失败不报告成功；
 - 故障注入证明无部分批次；同 Session 并发一胜一冲突；
 - 32 个独立 Session 无数据竞争地完成；加载/返回记录不能改变存储状态；
 - `go test -race ./... -count=1` 通过。
 - 稳定 Engine code 匹配遍历完整 joined error tree，并安全处理直接或 joined typed nil。
+- generated-ID source error 与 nil-error invalid ID 都发生在 admission 前；
+- exact append-return 拒绝覆盖数量、溢出、metadata、event type/payload/order、共享 UTC 时间、
+  ordered Apply success 和 final Version；
+- Application category/conflict 匹配覆盖 nested join、后续 matching sibling、direct/joined
+  typed nil；
+- 以 barrier 覆盖 Load、admission commit、terminal entry 与 terminal return；terminal
+  persistence/conflict/Store-contract failure 后 running boundary 可重放且无隐藏 retry。
 
 ### 仓库边界
 
@@ -541,6 +670,10 @@ MCP、Skills、memory、subagent 与多 Agent graph；OpenTelemetry 和完整场
 
 排除这些能力是为了保持依赖顺序正确，不会降低当前 Engine、EventStore 契约、Item
 生命周期或确定性适配器的质量要求。
+
+admission 后进程退出，以及 terminal persistence/conflict/contract failure，都可能留下
+持久 running boundary。本里程碑不执行 startup repair、continuation 或 blind retry；返回
+records 与 Replay 必须让边界可检查，并把生产 reconciliation 明确列为 GA 前阻断能力。
 
 ## 14. 被否决的替代方案
 

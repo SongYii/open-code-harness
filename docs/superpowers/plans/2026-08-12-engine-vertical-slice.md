@@ -13,6 +13,9 @@
 - Module path remains `github.com/SongYii/open-code-harness`; minimum Go language version remains `1.26`.
 - Add no third-party dependency in this milestone.
 - This is a pre-v0 industrial-quality slice, not a tutorial, prototype, or claim of general availability.
+- Architecture evidence uses official primary sources; explicitly labeled
+  community projects, including DeepSeek-Reasonix, are non-authoritative context
+  and cannot independently establish a contract.
 - Dependency direction is `adapters/testkit → application → engine + domain`; `domain` imports neither `application` nor `engine`, and `engine` imports no concrete adapter, provider SDK, ACP, TUI, or testkit package.
 - The application service is the only command authority. No adapter may manufacture durable lifecycle events after invoking a model independently.
 - `RunTurn` is synchronous. The core creates no unbounded channel and no detached goroutine.
@@ -23,10 +26,20 @@
 - Runtime deltas are transient. Only the final successful assistant text, stable failure/interruption data, and Turn/Item lifecycle facts are durable.
 - An assistant Item belongs to one Turn; this milestone permits at most one running Item and one running Turn per Session.
 - Item and Turn terminal events commit in one atomic EventStore append batch.
+- `StartAssistantTurn` decides `turn.started` then
+  `assistant.message.started`; admission commits them in one atomic batch before
+  any model call.
 - EventStore compare-and-swap is authoritative. A conflict is returned to the caller and is never retried automatically.
 - A Session version is the length of its authoritative contiguous recorded-event stream. `ExpectedVersion` must equal that length; a successful batch of `N` events advances it to `ExpectedVersion + N`.
 - `Load` returns the complete authoritative stream in this milestone. Snapshots, indexes, and transcript projections are deferred caches and may never replace the stream as CAS authority.
 - Every append batch is all-or-nothing; cancellation before commit and injected pre-commit failure write nothing.
+- In this milestone a non-nil `Append` error means the batch did not commit;
+  after commit an adapter returns the committed records despite concurrent
+  caller cancellation. A remote adapter with ambiguous acknowledgement must
+  extend the port with exact retry identity or an unknown-commit outcome.
+- One RunTurn `CommandID` is correlation lineage across two append batches and
+  runtime events, not idempotency or Store deduplication. Service performs no
+  automatic reload, re-decision, append retry, or model retry.
 - Event IDs are opaque uniqueness tokens, not an ordered sequence. A failed pre-commit attempt may consume generated IDs; only committed record sequence values are gapless. No transactional or gap-free ID-generator guarantee is implied.
 - `ScriptedModel` and `MemoryEventStore` implement formal production ports. Production code contains no scripted/test-mode branch.
 - Concurrency tests use barriers or channels, never timing sleeps.
@@ -37,6 +50,36 @@
 
 This plan implements the approved `2026-08-12-engine-vertical-slice-design.md`: assistant-message Item lifecycle, formal EventStore/Model/RuntimeSink ports, deterministic adapters, application service, bounded model-only Turn execution, failure/cancellation semantics, replay, and verification evidence. It does not add a real provider, retry policy, production persistence, crash reconciliation, tools, Tool Runtime, Policy, approvals, ACP, TUI, MCP, Context Engine, OpenTelemetry, or subagents.
 
+`RunTurn` implementation and tests use this four-phase matrix:
+
+| Phase | Durable boundary | Context | Outcome |
+| --- | --- | --- | --- |
+| Preflight | none | caller | no records and no model on failure |
+| Admission | atomic started Turn + Item | caller | sole legal model-call boundary |
+| Execution | runtime started/deltas | caller | Engine owns cancellation and Close |
+| Terminalization | atomic terminal Item + Turn | caller for success; bounded detached only for failure/interruption persistence | one terminal batch or explicit running failure |
+
+Its value/error return shapes are fixed before implementation:
+
+| Outcome | Status / Text | Terminal | Error |
+| --- | --- | --- | --- |
+| completed and delivered | completed / exact output | true | nil |
+| completed with terminal delivery warning | completed / exact output | true | delivery |
+| model/close failure | failed / empty | true after terminal commit | model |
+| invalid stream | failed / empty | true after terminal commit | model (`invalid_stream`) |
+| output limit | failed / empty | true after terminal commit | output_limit |
+| caller cancellation | interrupted / empty | true after terminal commit | canceled |
+| pre-terminal sink failure | interrupted / empty | true after terminal commit | delivery |
+| load/admission/terminal Store failure | zero or running / empty | false | persistence, conflict, or internal |
+| request rejection | zero / empty | false | validation |
+
+All failures before accepted admission return a zero `RunTurnResult` (zero
+IDs/status, empty Text/Records, false terminal flag, nil warning). After accepted
+admission, every nonterminal return has the generated IDs, running status, two
+admission records, empty Text, false terminal flag, and nil warning. Accepted
+terminalization appends its two records and sets the terminal status/text/flag.
+Only failed or suppressed post-terminal delivery sets `DeliveryWarning`.
+
 ## File Map
 
 | Path | Responsibility |
@@ -44,7 +87,7 @@ This plan implements the approved `2026-08-12-engine-vertical-slice-design.md`: 
 | `internal/harness/domain/ids.go` | Add strong `ItemID` parsing |
 | `internal/harness/domain/state.go` | Assistant Item state and deep immutable clone |
 | `internal/harness/domain/events.go` | Stable assistant-message event catalog |
-| `internal/harness/domain/commands.go` | Start Item and atomic Item/Turn terminal commands |
+| `internal/harness/domain/commands.go` | Atomic Turn/Item admission and terminal commands |
 | `internal/harness/domain/decide.go` | Item/Turn command invariants and event decisions |
 | `internal/harness/domain/apply.go` | Apply Item lifecycle and prevent Turn termination with a running Item |
 | `internal/harness/domain/codec.go` | Strict schema-v1 JSON for new events |
@@ -54,7 +97,7 @@ This plan implements the approved `2026-08-12-engine-vertical-slice-design.md`: 
 | `internal/harness/application/doc.go` | Application authority contract |
 | `internal/harness/application/ports.go` | EventStore, Clock, IDGenerator, and append request |
 | `internal/harness/application/errors.go` | Conflict and stable application error taxonomy |
-| `internal/harness/application/append.go` | Decide/append/apply helper with no retry |
+| `internal/harness/application/append.go` | Exact append-return acceptance and apply helper with no retry |
 | `internal/harness/application/service.go` | Service configuration and dependency validation |
 | `internal/harness/application/session.go` | CreateSession, LoadSession, and CloseSession use cases |
 | `internal/harness/application/turn.go` | RunTurn orchestration and terminalization |
@@ -392,6 +435,13 @@ type IDGenerator interface {
 ```
 
 Document on `Append` that `ExpectedVersion` is exact per-Session CAS against the authoritative stream length; one request is atomic; success returns exactly the newly recorded batch; the store assigns contiguous sequences and metadata; cancellation before commit writes nothing; and implementations return defensive copies. `Load` returns the complete authoritative stream and an absent stream as an empty slice with no error. Application use cases, not the Store, map that absence to `session_not_found`.
+
+For this milestone, also document that a non-nil `Append` error means the
+requested batch did not commit, while a committed batch is returned even when
+caller cancellation races after the commit point. Future remote stores with an
+ambiguous acknowledgement must extend the port with exact idempotent retry
+identity or an explicit unknown-commit outcome; they cannot weaken this method
+silently.
 
 Document the replay and snapshot boundary: Application reconstructs state only by replaying `Load` results. This milestone has no snapshot port. A future snapshot is a discardable projection/cache and cannot determine append acceptance, recorded sequence, or authoritative version.
 
@@ -898,23 +948,90 @@ git commit -m "feat(engine): run bounded model streams"
 
 ---
 
-### Task 7: Build the Application Service and Session Use Cases
+### Task 7: Add Atomic Admission and Build the Application Session Service
 
 **Files:**
+- Modify: `internal/harness/domain/commands.go`
+- Modify: `internal/harness/domain/decide.go`
+- Modify: `internal/harness/domain/decide_test.go`
+- Modify: `docs/architecture/domain-events.md`
+- Modify: `internal/harness/application/ports.go`
+- Modify: `internal/harness/application/ports_test.go`
+- Modify: `internal/harness/application/eventstoretest/suite.go`
+- Modify: `internal/harness/adapters/memory/event_store_test.go`
 - Create: `internal/harness/application/service.go`
 - Create: `internal/harness/application/append.go`
 - Create: `internal/harness/application/session.go`
 - Create: `internal/harness/application/session_test.go`
+- Modify: `internal/harness/application/errors.go`
+- Create: `internal/harness/application/errors_test.go`
 
 **Interfaces:**
 - Consumes: `EventStore`, `IDGenerator`, domain `Decide`/`Apply`/`Replay`, and `engine.TurnRunner`
 - Produces: `Config`, `DefaultConfig()`, `NewService(...)`
 - Produces: `CreateSession`, `LoadSession`, and `CloseSession`
-- Produces one internal decide/append/apply path reused by RunTurn
+- Produces: domain `StartAssistantTurn`, which atomically decides
+  `turn.started` then `assistant.message.started`
+- Produces: pure domain `CheckStartAssistantTurnEligibility`, shared by
+  Application preflight and `Decide(StartAssistantTurn)`
+- Strengthens the EventStore documentation and contract suite with the
+  no-ambiguous-error commit/return rule
+- Produces one internal exact append/apply acceptance path reused by every use case
 
-- [ ] **Step 1: Write failing session use-case tests through real ports**
+- [ ] **Step 1: Write the failing atomic-admission domain tests**
 
-Use `MemoryEventStore`, `FixedClock`, `SequenceIDs`, and a valid scripted runner. Test create → load → close, duplicate creation conflict, close missing Session, close with a running Turn, store load failure, append failure, generated-ID failure, and canceled context before append. Assert domain failures become `CategoryValidation`, store failures become `CategoryPersistence`, conflicts become `CategoryConflict`, and every error has `TerminalCommitted == false`.
+Add `CommandStartAssistantTurn = "assistant.turn.start"` and
+`StartAssistantTurn{SessionID, TurnID, ItemID, Input}` to
+`domain/commands.go`, with the normal `CommandType` and `TargetSessionID`
+methods. Add the pure
+`CheckStartAssistantTurnEligibility(Session) error`. Its finite scope is:
+Session exists and is active, the complete Session/Turn/Item structure is
+valid, and no Turn or Item is running. It does not inspect request input or
+not-yet-generated IDs. `Decide(StartAssistantTurn)` calls this exact predicate
+before validating command fields; Application calls it after Replay, so no
+invariant is duplicated outside Domain. Test both entry points against the same
+eligibility table. Then test that one `Decide` call returns exactly this ordered
+batch and applies from an active Session to version `+2`:
+
+```text
+turn.started
+assistant.message.started
+```
+
+Test invalid IDs/input, closed Session, already-running Turn, existing Item,
+and malformed state. The command is pure: it creates no metadata and mutates no
+state. Update `docs/architecture/domain-events.md` before Application RunTurn
+work begins; retain `StartTurn` and `StartAssistantMessage` only for lower-level
+domain compatibility, never as split Application admission branches.
+
+- [ ] **Step 2: Deliver and prove the EventStore no-ambiguous-error contract**
+
+Update the `EventStore.Append` interface documentation in
+`internal/harness/application/ports.go`: a non-nil error means the requested
+batch did not commit; once committed, Append returns the committed records even
+if caller cancellation races after the commit point. Update `ports_test.go` and
+`eventstoretest/suite.go` with the contract assertion, and invoke it from
+`internal/harness/adapters/memory/event_store_test.go`. Use a deterministic
+post-commit/pre-return barrier wrapper around the MemoryEventStore contract
+harness: wait until the underlying append has returned its committed records,
+hold the outer adapter response, cancel the caller context, release the barrier,
+and assert the exact committed records are returned with nil error and are
+loadable. Use no sleep and add no production test hook. This test distinguishes
+post-commit cancellation from the existing canceled-before-commit case.
+
+- [ ] **Step 3: Write failing session use-case tests through real ports**
+
+Use `MemoryEventStore`, `FixedClock`, `SequenceIDs`, and a valid scripted runner.
+Test create → load → close, duplicate creation conflict, close missing Session,
+close with a running Turn, corrupt loaded replay, store load failure, append
+failure, every generated-ID error, nil-error invalid generated IDs, and canceled
+context before append. Assert domain failures become `CategoryValidation`,
+Store-supplied replay corruption becomes
+`CategoryInternal/store_contract_violation`, source errors become
+`CategoryInternal/id_generation_failed`, invalid generated values become
+`CategoryInternal/id_generator_contract_violation`, store failures become
+`CategoryPersistence`, conflicts become `CategoryConflict`, and every error has
+`TerminalCommitted == false`.
 
 ```go
 func TestCreateLoadCloseSession(t *testing.T) {
@@ -934,13 +1051,13 @@ func TestCreateLoadCloseSession(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run focused tests and verify Service APIs are absent**
+- [ ] **Step 4: Run focused tests and verify the new command and Service APIs are absent**
 
-Run: `go test ./internal/harness/application -run 'Test(Create|Load|Close)Session' -count=1`
+Run: `go test ./internal/harness/domain ./internal/harness/application -run 'Test(DecideStartAssistantTurn|Create|Load|Close)Session' -count=1`
 
-Expected: FAIL because the Service and request/result types do not exist.
+Expected: FAIL because atomic admission and the Service APIs do not exist.
 
-- [ ] **Step 3: Fix exact service configuration and constructor validation**
+- [ ] **Step 5: Fix exact service configuration and constructor validation**
 
 ```go
 const (
@@ -960,23 +1077,45 @@ func DefaultConfig() Config {
 func NewService(store EventStore, ids IDGenerator, runner *engine.TurnRunner, config Config) (*Service, error)
 ```
 
-Reject nil dependencies, non-positive output limit, and non-positive terminal timeout as `CategoryValidation`. Store immutable configuration on `Service`.
+Reject nil or typed-nil dependencies, non-positive output limit, and
+non-positive terminal timeout as `CategoryValidation`. Store immutable
+configuration on `Service`.
 
-- [ ] **Step 4: Implement one decide/append/apply helper**
+- [ ] **Step 6: Implement one exact append/apply acceptance path**
 
-The unexported helper accepts context, current state, command, and command ID. It calls `domain.Decide`, extracts concrete events, calls one `EventStore.Append` with `ExpectedVersion: state.Version`, and applies the returned records in order to a cloned state. It validates that the store returned exactly the requested count with contiguous metadata. It never reloads or retries a conflict.
+Each use case calls `domain.Decide` at its specified preflight point. The
+unexported helper accepts context, current state, the already-decided concrete
+events, and command ID; calls one `EventStore.Append` with
+`ExpectedVersion: state.Version`; and validates before
+acceptance that: returned count equals request count; sequence is exactly
+`ExpectedVersion+1..+N` without overflow; every Session/Command ID matches;
+schema version, Event ID, timestamp, and event shape are valid; returned event
+type, payload, and order exactly equal the requested events; the whole batch
+shares one non-zero UTC occurrence time; ordered Apply succeeds; and the final
+Version equals `ExpectedVersion + N`. Return defensive records and state. Any
+metadata/event mismatch, Apply failure, or final-version mismatch is
+`CategoryInternal/store_contract_violation`, preserving an apply cause when
+present. There is no independent expected-state oracle. Never reload or retry.
 
 Map errors at the boundary:
 
 ```text
-domain error            → validation / domain_rejected
+caller/domain Decide    → validation / domain_rejected
 VersionConflictError    → conflict / version_conflict
-context.Canceled        → canceled / canceled
+ctx.Err at boundary     → canceled / canceled
 other load/append error → persistence / load_failed or append_failed
-bad returned records    → internal / store_contract_violation
+Replay/Apply/bad records→ internal / store_contract_violation
+ID source error         → internal / id_generation_failed
+nil-error invalid ID    → internal / id_generator_contract_violation
 ```
 
-- [ ] **Step 5: Implement CreateSession, LoadSession, and CloseSession**
+Only the actual supplied `ctx.Err()` establishes caller cancellation; a
+dependency error that merely wraps `context.Canceled` remains a dependency
+error. Make application `Error`, `IsCategory`, `VersionConflictError`, and its
+matcher nil-safe across complete wrapped/joined trees. Tests include nested
+joins, a matching later sibling, direct typed nil, and typed nil inside a join.
+
+- [ ] **Step 7: Implement exact Session-use-case preflight**
 
 ```go
 type CreateSessionRequest struct { WorkspaceRoot string }
@@ -985,20 +1124,30 @@ type CloseSessionRequest struct { SessionID domain.SessionID }
 type CloseSessionResult struct { Session domain.Session; Records []domain.RecordedEvent }
 ```
 
-`CreateSession` generates Session and command IDs, decides against pristine state, and appends at version `0`. `LoadSession` loads then replays; an empty stream is `CategoryValidation/session_not_found`. `CloseSession` loads/replays, generates one command ID, decides, and appends. All returned slices and state are defensive copies.
+`CreateSession` validates `WorkspaceRoot`, generates and validates Session and
+Command IDs, constructs the pristine command, and appends at version zero;
+source failures occur before persistence. `LoadSession` validates Session ID
+before Load, maps an empty stream to `CategoryValidation/session_not_found`,
+maps corrupt Replay to `CategoryInternal/store_contract_violation`, and returns
+a deep defensive state copy. `CloseSession` validates Session ID, loads and
+replays, decides whether close is legal, and only then generates and validates
+its Command ID immediately before the shared append/apply helper. A running Turn
+is a domain rejection. No use case retries.
 
-- [ ] **Step 6: Format, verify, and commit**
+- [ ] **Step 8: Format, verify, and commit**
 
-Run: `gofmt -w internal/harness/application`
+Run: `gofmt -w internal/harness/domain internal/harness/application`
 
 Run: `go test -race ./internal/harness/application -run 'Test(Create|Load|Close)Session' -count=1`
+
+Run: `go test -race ./internal/harness/adapters/memory -run 'TestEventStoreContract' -count=1`
 
 Run: `go test -race ./... -count=1`
 
 Expected: all PASS.
 
 ```bash
-git add internal/harness/application
+git add internal/harness/domain internal/harness/application internal/harness/adapters/memory/event_store_test.go docs/architecture/domain-events.md
 git commit -m "feat(application): add session service"
 ```
 
@@ -1039,7 +1188,13 @@ func TestRunTurnPersistsExactAssistantMessage(t *testing.T) {
 }
 ```
 
-Assert durable type order after `session.created` is `turn.started`, `assistant.message.started`, `assistant.message.completed`, `turn.completed`. Assert the last two share a command ID and are consecutive records returned by one append. Assert runtime order is `model.stream.started`, deltas, `append.completed`, `model.stream.completed`, with ordinals `1..N` and identical correlation IDs.
+Assert durable type order after `session.created` is `turn.started`,
+`assistant.message.started`, `assistant.message.completed`, `turn.completed`.
+Assert the first pair and last pair are each records from one append, each pair
+shares one occurrence time, all four share the invocation CommandID, and both
+pairs are contiguous. Assert runtime order is `model.stream.started`, deltas,
+`append.completed`, `model.stream.completed`, with ordinals `1..N` and
+identical correlation IDs.
 
 - [ ] **Step 2: Add sequential Turn and defensive-result tests**
 
@@ -1073,18 +1228,25 @@ type RunTurnResult struct {
 ```
 
 Reject invalid Session ID, blank/invalid UTF-8 input, and nil or typed-nil sink
-before generating IDs or loading state.
+before Load and before generating IDs. Validate request before every other
+side effect. Counting Store and ID sources prove request rejection precedes
+Load/IDs; Replay plus the shared pure domain eligibility predicate precedes
+IDs; missing, closed, corrupt, and already-running state consumes no run IDs;
+and all generated-ID validation plus Emitter construction precedes
+Decide/admission.
 
 - [ ] **Step 5: Implement the successful orchestration in one authority**
 
-Use this exact order:
+Use this exact preflight/admission/success order:
 
 ```text
-Load → Replay
-generate TurnID, ItemID, CommandID
-Decide/Append turn.started at loaded version
-Decide/Append assistant.message.started at next version
+validate request and typed-nil dependencies
+Load complete stream → Replay and validate authoritative state
+domain.CheckStartAssistantTurnEligibility
+generate and validate TurnID, ItemID, CommandID
 create one engine.Emitter with all correlation IDs
+Decide StartAssistantTurn
+Append [turn.started, assistant.message.started] atomically at loaded version
 TurnRunner.Run using Service.MaxAssistantBytes
 Decide CompleteAssistantTurn
 Append [assistant.message.completed, turn.completed] atomically
@@ -1093,7 +1255,11 @@ Emit model.stream.completed
 return completed result with defensive terminal records
 ```
 
-Every append in one `RunTurn` uses the same command ID. If the initial append conflicts, return immediately and prove the model call count remains zero. Do not emit `model.stream.completed` until the terminal batch is durable.
+Every append and runtime event in one `RunTurn` uses the same CommandID as
+correlation lineage, not idempotency. If atomic admission fails, conflicts, or
+the caller is canceled before commit, neither start event is visible and the
+model call count is zero. Admission advances version by two. Do not emit any
+terminal runtime signal until the terminal batch is accepted and applied.
 
 - [ ] **Step 6: Handle post-commit delivery failure without rewriting success**
 
@@ -1125,7 +1291,7 @@ git commit -m "feat(application): persist successful turns"
 
 ---
 
-### Task 9: Complete Failure, Cancellation, Delivery, and Persistence Semantics
+### Task 9: Complete the Four-Phase Result, Failure, and Concurrency Semantics
 
 **Files:**
 - Modify: `internal/harness/application/turn.go`
@@ -1135,7 +1301,7 @@ git commit -m "feat(application): persist successful turns"
 
 **Interfaces:**
 - Consumes: typed Engine and application errors plus atomic fail/interruption commands
-- Produces deterministic terminalization for every post-start outcome
+- Produces deterministic terminalization for every post-admission outcome
 - Consumes the `testkit.ScriptedStep` entered/release barriers defined in Task 5
 
 - [ ] **Step 1: Verify deterministic ScriptedModel barriers in orchestration tests**
@@ -1174,15 +1340,28 @@ caller cancellation or runtime delivery failure before terminal commit:
 
 Assert partial deltas are absent from durable state; stable codes are present; raw provider error objects are not stored; each pair shares one command ID; and returned application errors report `TerminalCommitted == true` only after the pair commits.
 
-- [ ] **Step 3: Write cancellation boundary tests with barriers**
+- [ ] **Step 3: Write cancellation and phase-boundary tests with barriers**
 
-Test: cancellation before any append writes nothing; cancellation immediately after `turn.started` but before Item start appends only `turn.interrupted`; cancellation during streaming appends the interrupted Item/Turn pair; cancellation released concurrently with model completion selects exactly one terminal pair; cancellation after completed terminal commit cannot replace success.
+Test cancellation before admission writes nothing; cancellation immediately
+after atomic admission, during streaming, at completed-terminal entry, and at
+completed-terminal return; cancellation racing model completion selects exactly
+one terminal pair; cancellation after accepted completion cannot replace it.
+There is no split-start state or `turn.started`-only cleanup branch.
 
 Use wrapper stores/streams that announce entry and wait on channels. Do not add hooks to production Service for tests.
 
 - [ ] **Step 4: Write delivery and persistence failure tests**
 
-Test sink failure on `model.stream.started` and on a delta; initial append failure prevents any model call; Item-start append failure leaves a visible running Turn and does not call the model; terminal batch injected failure leaves no partial assistant/Turn terminal fact and never reports success; terminal append cancellation falls back to an interrupted cleanup commit; load failure stays persistence; and a cleanup append failure reports persistence with `TerminalCommitted == false` while preserving the original cause with `errors.Join`.
+Test sink failure on `model.stream.started` and on a delta; atomic admission
+failure prevents every model call and exposes neither start event; exact
+append-return violations cover count, sequence overflow/gap, wrong
+Session/Command ID, invalid metadata, timestamp mismatch, changed event
+type/payload/order, Apply failure, and wrong final Version; terminal batch failure leaves no partial terminal fact
+and never reports success; completed append failure while `ctx.Err() != nil`
+falls back once to interrupted cleanup; another completed persistence error or
+conflict does not invent a second outcome; cleanup failure reports its
+persistence/conflict/internal category with `TerminalCommitted == false` while
+preserving the original execution and append causes with `errors.Join`.
 
 - [ ] **Step 5: Run focused tests and verify the missing terminal mappings**
 
@@ -1192,14 +1371,20 @@ Expected: FAIL because RunTurn currently implements only successful and post-com
 
 - [ ] **Step 6: Implement bounded synchronous terminal cleanup**
 
-For cancellation after a durable start, create cleanup context exactly as follows and `defer cancel()` in the same call stack:
+For every Engine failure after atomic admission, create cleanup context exactly
+as follows and `defer cancel()` in the same call stack:
 
 ```go
 cleanupBase := context.WithoutCancel(ctx)
 cleanupCtx, cancel := context.WithTimeout(cleanupBase, s.config.TerminalCommitTimeout)
 ```
 
-If the Item was not durable, decide `InterruptTurn{Reason: "caller_canceled"}`; if it was durable, decide `InterruptAssistantTurn{Code: "caller_canceled", Message: ""}`. For delivery failure before terminal commit, decide `InterruptAssistantTurn{Code: "runtime_delivery_failed", Message: ""}`.
+The detached bounded context is used only for failure/interruption terminal
+append. RuntimeSink always receives the original caller context; model work,
+success append, and all delivery remain on caller context. Because admission is
+atomic, every post-admission interruption uses
+`InterruptAssistantTurn{Code: "caller_canceled", Message: ""}`. Delivery before
+terminal commit uses `runtime_delivery_failed`.
 
 Map Engine failure codes to durable values without storing provider prose:
 
@@ -1214,9 +1399,33 @@ On successful failure/interruption append, emit `append.completed` followed by `
 
 - [ ] **Step 7: Make terminal-commit reporting unambiguous**
 
-All returned `application.Error` values set `TerminalCommitted` from observed durable state, not from intended outcome. A terminal append error always returns false. A completed/failed/interrupted batch followed by sink error returns true. Return `RunTurnResult.Status == running` when persistence leaves a running boundary; never manufacture a terminal result.
+Implement and table-test the complete return algebra from the design. `Records`
+is the defensive ordered concatenation of all batches known committed by this
+call (two after admission; four after terminalization), including on errors.
+Completed returns exact text, including empty; failed/interrupted return empty
+text and no partial delta. Set `Status`, `TerminalCommitted`,
+`DeliveryWarning`, and outer category from observed durable state. A terminal
+append error returns running/false; committed terminal facts followed by sink
+failure return terminal/true.
 
-- [ ] **Step 8: Format, verify, and commit**
+Error precedence is terminalization Store contract/conflict/persistence,
+original execution model/output/canceled/delivery, then post-terminal warning.
+Only after accepted terminal records emit `append.completed` followed by exactly
+one terminal model signal. A delivery warning cannot rewrite durable state.
+
+- [ ] **Step 8: Prove CAS concurrency and the recovery gap without hidden retry**
+
+Use Store barriers around Load, admission commit, terminal entry, and terminal
+return. Two same-Session calls may finish preflight but atomic admission permits
+one winner; the loser calls the model zero times. Already-running RunTurn is
+rejected before append. `CloseSession` racing admission has one CAS winner.
+Different Sessions execute concurrently through one Service/runner. Terminal
+conflict is not retried and returns running/false. Replay must preserve the
+running boundary left by process-death simulation or terminal
+persistence/conflict/contract failure; no success signal and no extra model call
+may appear. Document startup reconciliation as GA-blocking and deferred.
+
+- [ ] **Step 9: Format, verify, and commit**
 
 Run: `gofmt -w internal/harness/application internal/harness/testkit`
 
@@ -1282,7 +1491,12 @@ The shared table includes success, startup failure, mid-stream failure, cancella
 
 - [ ] **Step 2: Add authoritative concurrency tests**
 
-For one Session, wrap `Load` with a two-party barrier so both calls observe the same version. Start two `RunTurn` calls and assert exactly one initial append wins, the loser is `CategoryConflict`, and total model call count is one. For different Sessions, run 32 complete Turns concurrently against one MemoryEventStore and shared SequenceIDs; assert all replay to completed and the race detector reports no issue.
+For one Session, wrap `Load` with a two-party barrier so both calls observe the
+same version. Start two `RunTurn` calls and assert exactly one atomic admission
+wins, the loser is `CategoryConflict`, neither partial admission is observable,
+and total model call count is one. For different Sessions, run 32 complete
+Turns concurrently against one MemoryEventStore and shared SequenceIDs; assert
+all replay to completed and the race detector reports no issue.
 
 - [ ] **Step 3: Add the exact successful durable trace fixture**
 
