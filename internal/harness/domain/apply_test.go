@@ -241,8 +241,9 @@ func TestApplyTurnStarted(t *testing.T) {
 	wantTurn := Turn{
 		ID: TurnID("turn-1"), Status: TurnStatusRunning,
 		Input: "inspect repository", StartedAt: record.OccurredAt,
+		ItemOrder: []ItemID{}, Items: map[ItemID]Item{},
 	}
-	if got.Turns[TurnID("turn-1")] != wantTurn {
+	if !reflect.DeepEqual(got.Turns[TurnID("turn-1")], wantTurn) {
 		t.Fatalf("Apply() turn = %#v, want %#v", got.Turns[TurnID("turn-1")], wantTurn)
 	}
 }
@@ -326,7 +327,9 @@ func TestApplyTerminalTurnEvents(t *testing.T) {
 			want := tt.want
 			want.StartedAt = state.Turns[TurnID("turn-1")].StartedAt
 			want.EndedAt = record.OccurredAt
-			if got.Turns[TurnID("turn-1")] != want {
+			want.ItemOrder = []ItemID{}
+			want.Items = map[ItemID]Item{}
+			if !reflect.DeepEqual(got.Turns[TurnID("turn-1")], want) {
 				t.Fatalf("Apply() turn = %#v, want %#v", got.Turns[TurnID("turn-1")], want)
 			}
 		})
@@ -392,5 +395,249 @@ func TestApplySessionClosedRejectsRunningTurn(t *testing.T) {
 	_, err := Apply(state, recordedForTest(state, SessionClosed{}))
 	if !IsCode(err, CodeTurnAlreadyRunning) {
 		t.Fatalf("Apply() error = %v, want code %q", err, CodeTurnAlreadyRunning)
+	}
+}
+
+func TestApplyAssistantMessageLifecycle(t *testing.T) {
+	t.Parallel()
+
+	state := runningTurnForTest(t)
+	started := recordedForTest(state, AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"})
+	state, err := Apply(state, started)
+	if err != nil {
+		t.Fatalf("start item: %v", err)
+	}
+
+	completed := recordedForTest(state, AssistantMessageCompleted{
+		TurnID: "turn-1", ItemID: "item-1", Text: "你好, exact bytes\n",
+	})
+	state, err = Apply(state, completed)
+	if err != nil {
+		t.Fatalf("complete item: %v", err)
+	}
+
+	turn := state.Turns["turn-1"]
+	item := turn.Items["item-1"]
+	payload, ok := item.Payload.(AssistantMessagePayload)
+	if !ok || item.Status != ItemStatusCompleted || payload.Text != "你好, exact bytes\n" {
+		t.Fatalf("item = %#v", item)
+	}
+	if item.ID != "item-1" || item.TurnID != "turn-1" || item.Kind != ItemKindAssistantMessage {
+		t.Fatalf("item identity = %#v", item)
+	}
+	if !item.StartedAt.Equal(started.OccurredAt) || !item.EndedAt.Equal(completed.OccurredAt) || item.Terminal != nil {
+		t.Fatalf("item lifecycle metadata = %#v", item)
+	}
+	if turn.ActiveItemID != "" || !reflect.DeepEqual(turn.ItemOrder, []ItemID{"item-1"}) {
+		t.Fatalf("turn item state = %#v", turn)
+	}
+}
+
+func TestApplyAssistantMessageTerminalEvents(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		event        Event
+		status       ItemStatus
+		terminalCode string
+		message      string
+	}{
+		{name: "failed", event: AssistantMessageFailed{TurnID: "turn-1", ItemID: "item-1", Code: "provider_error", Message: "safe display"}, status: ItemStatusFailed, terminalCode: "provider_error", message: "safe display"},
+		{name: "interrupted", event: AssistantMessageInterrupted{TurnID: "turn-1", ItemID: "item-1", Code: "caller_canceled", Message: ""}, status: ItemStatusInterrupted, terminalCode: "caller_canceled"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := runningTurnForTest(t)
+			var err error
+			state, err = Apply(state, recordedForTest(state, AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"}))
+			if err != nil {
+				t.Fatalf("start item: %v", err)
+			}
+			record := recordedForTest(state, test.event)
+			state, err = Apply(state, record)
+			if err != nil {
+				t.Fatalf("terminal item: %v", err)
+			}
+			item := state.Turns["turn-1"].Items["item-1"]
+			payload, ok := item.Payload.(AssistantMessagePayload)
+			if !ok || payload.Text != "" || item.Status != test.status {
+				t.Fatalf("item = %#v", item)
+			}
+			if item.Terminal == nil || item.Terminal.Code != test.terminalCode || item.Terminal.Message != test.message {
+				t.Fatalf("terminal = %#v", item.Terminal)
+			}
+			if !item.EndedAt.Equal(record.OccurredAt) || state.Turns["turn-1"].ActiveItemID != "" {
+				t.Fatalf("terminal lifecycle = %#v", item)
+			}
+		})
+	}
+}
+
+func TestApplyAssistantMessageRejectsInvalidTransitionsWithoutMutation(t *testing.T) {
+	t.Parallel()
+
+	running := runningTurnForTest(t)
+	withItem, err := Apply(running, recordedForTest(running, AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"}))
+	if err != nil {
+		t.Fatalf("start item fixture: %v", err)
+	}
+	completed, err := Apply(withItem, recordedForTest(withItem, AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "done"}))
+	if err != nil {
+		t.Fatalf("complete item fixture: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		state Session
+		event Event
+	}{
+		{name: "second active item", state: withItem, event: AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-2"}},
+		{name: "duplicate item ID", state: completed, event: AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"}},
+		{name: "terminal wrong item", state: withItem, event: AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-2", Text: "done"}},
+		{name: "terminal twice", state: completed, event: AssistantMessageFailed{TurnID: "turn-1", ItemID: "item-1", Code: "provider_error", Message: "safe"}},
+		{name: "blank terminal code", state: withItem, event: AssistantMessageInterrupted{TurnID: "turn-1", ItemID: "item-1", Code: " ", Message: "safe"}},
+		{name: "invalid terminal message", state: withItem, event: AssistantMessageFailed{TurnID: "turn-1", ItemID: "item-1", Code: "provider_error", Message: "bad-\xff"}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			before := test.state.Clone()
+			_, err := Apply(test.state, recordedForTest(test.state, test.event))
+			if !IsCode(err, CodeInvalidEvent) {
+				t.Fatalf("Apply() error = %v, want code %q", err, CodeInvalidEvent)
+			}
+			if !reflect.DeepEqual(test.state, before) {
+				t.Fatalf("Apply() mutated input: got %#v want %#v", test.state, before)
+			}
+		})
+	}
+}
+
+func TestApplyAssistantMessageRejectsMalformedTurnPreState(t *testing.T) {
+	t.Parallel()
+
+	valid := runningTurnForTest(t)
+	valid, err := Apply(valid, recordedForTest(valid, AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"}))
+	if err != nil {
+		t.Fatalf("start item fixture: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*Turn)
+	}{
+		{name: "duplicate order", mutate: func(turn *Turn) { turn.ItemOrder = append(turn.ItemOrder, "item-1") }},
+		{name: "order missing map item", mutate: func(turn *Turn) { turn.ItemOrder = nil }},
+		{name: "map key mismatch", mutate: func(turn *Turn) {
+			item := turn.Items["item-1"]
+			delete(turn.Items, "item-1")
+			turn.Items["item-2"] = item
+			turn.ItemOrder[0] = "item-2"
+		}},
+		{name: "wrong owner", mutate: func(turn *Turn) { item := turn.Items["item-1"]; item.TurnID = "turn-2"; turn.Items["item-1"] = item }},
+		{name: "turn identity mismatch", mutate: func(turn *Turn) {
+			turn.ID = "turn-2"
+			item := turn.Items["item-1"]
+			item.TurnID = "turn-2"
+			turn.Items["item-1"] = item
+		}},
+		{name: "active ID missing", mutate: func(turn *Turn) { turn.ActiveItemID = "" }},
+		{name: "running ended", mutate: func(turn *Turn) { item := turn.Items["item-1"]; item.EndedAt = time.Now(); turn.Items["item-1"] = item }},
+		{name: "running terminal", mutate: func(turn *Turn) {
+			item := turn.Items["item-1"]
+			item.Terminal = &ItemTerminal{Code: "bad"}
+			turn.Items["item-1"] = item
+		}},
+		{name: "payload kind mismatch", mutate: func(turn *Turn) {
+			item := turn.Items["item-1"]
+			item.Kind = ItemKind("unknown")
+			turn.Items["item-1"] = item
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := valid.Clone()
+			turn := state.Turns["turn-1"]
+			test.mutate(&turn)
+			state.Turns["turn-1"] = turn
+			before := state.Clone()
+			_, err := Apply(state, recordedForTest(state, AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "done"}))
+			if !IsCode(err, CodeInvalidEvent) {
+				t.Fatalf("Apply() error = %v, want code %q", err, CodeInvalidEvent)
+			}
+			if !reflect.DeepEqual(state, before) {
+				t.Fatalf("Apply() mutated malformed input: got %#v want %#v", state, before)
+			}
+		})
+	}
+}
+
+func TestApplyTerminalTurnRejectsActiveOrMalformedItem(t *testing.T) {
+	t.Parallel()
+
+	state := runningTurnForTest(t)
+	state, err := Apply(state, recordedForTest(state, AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"}))
+	if err != nil {
+		t.Fatalf("start item: %v", err)
+	}
+	before := state.Clone()
+	_, err = Apply(state, recordedForTest(state, TurnCompleted{TurnID: "turn-1"}))
+	if !IsCode(err, CodeInvalidEvent) {
+		t.Fatalf("Apply() error = %v, want code %q", err, CodeInvalidEvent)
+	}
+	if !reflect.DeepEqual(state, before) {
+		t.Fatalf("Apply() mutated input: got %#v want %#v", state, before)
+	}
+}
+
+func TestSessionCloneDeepCopiesTurnItems(t *testing.T) {
+	t.Parallel()
+
+	state := runningTurnForTest(t)
+	state, err := Apply(state, recordedForTest(state, AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"}))
+	if err != nil {
+		t.Fatalf("start item: %v", err)
+	}
+	state, err = Apply(state, recordedForTest(state, AssistantMessageFailed{TurnID: "turn-1", ItemID: "item-1", Code: "provider_error", Message: "safe"}))
+	if err != nil {
+		t.Fatalf("fail item: %v", err)
+	}
+	before := state.Clone()
+	clone := state.Clone()
+	turn := clone.Turns["turn-1"]
+	turn.ItemOrder[0] = "changed"
+	item := turn.Items["item-1"]
+	item.Payload = AssistantMessagePayload{Text: "changed"}
+	item.Terminal.Code = "changed"
+	turn.Items["item-1"] = item
+	clone.Turns["turn-1"] = turn
+	if !reflect.DeepEqual(state, before) {
+		t.Fatalf("mutating clone changed source: got %#v want %#v", state, before)
+	}
+}
+
+type mutableUnknownEvent struct{ Values []string }
+
+func (mutableUnknownEvent) EventType() string { return "test.mutable" }
+
+func TestCloneRecordedEventsDeepCopiesEventsAndRejectsUnknownTypes(t *testing.T) {
+	t.Parallel()
+
+	records := []RecordedEvent{{Event: AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "original"}}}
+	cloned, err := CloneRecordedEvents(records)
+	if err != nil {
+		t.Fatalf("CloneRecordedEvents() error = %v", err)
+	}
+	cloned[0].Event = AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "changed"}
+	if records[0].Event.(AssistantMessageCompleted).Text != "original" {
+		t.Fatalf("mutating cloned records changed source = %#v", records)
+	}
+
+	_, err = CloneRecordedEvents([]RecordedEvent{{Event: mutableUnknownEvent{Values: []string{"mutable"}}}})
+	if !IsCode(err, CodeInvalidEvent) {
+		t.Fatalf("CloneRecordedEvents() unknown event error = %v, want code %q", err, CodeInvalidEvent)
 	}
 }

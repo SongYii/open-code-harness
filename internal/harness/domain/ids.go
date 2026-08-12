@@ -7,6 +7,7 @@ import (
 
 type SessionID string
 type TurnID string
+type ItemID string
 type CommandID string
 type EventID string
 
@@ -22,6 +23,13 @@ func ParseTurnID(value string) (TurnID, error) {
 		return "", err
 	}
 	return TurnID(value), nil
+}
+
+func ParseItemID(value string) (ItemID, error) {
+	if err := validateID(value); err != nil {
+		return "", err
+	}
+	return ItemID(value), nil
 }
 
 func ParseCommandID(value string) (CommandID, error) {
