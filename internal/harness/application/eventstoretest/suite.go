@@ -5,6 +5,7 @@ package eventstoretest
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -28,7 +29,69 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("atomic injected failure", func(t *testing.T) { testAtomicInjectedFailure(t, factory(t)) })
 	t.Run("one-shot load failure", func(t *testing.T) { testOneShotLoadFailure(t, factory(t)) })
 	t.Run("canceled append", func(t *testing.T) { testCanceledAppend(t, factory(t)) })
+	t.Run("post-commit cancellation returns committed batch", func(t *testing.T) {
+		testPostCommitCancellation(t, factory(t))
+	})
 	t.Run("defensive copies", func(t *testing.T) { testDefensiveCopies(t, factory(t)) })
+}
+
+func testPostCommitCancellation(t *testing.T, harness Harness) {
+	t.Helper()
+	requireHarness(t, harness)
+	ctx, cancel := context.WithCancel(context.Background())
+	committed := make(chan []domain.RecordedEvent, 1)
+	release := make(chan struct{})
+	store := &postCommitBarrierStore{
+		EventStore: harness.Store,
+		committed:  committed,
+		release:    release,
+	}
+	request := application.AppendRequest{
+		SessionID: "session-contract-post-commit", CommandID: "command-contract-post-commit",
+		Events: []domain.Event{domain.SessionCreated{WorkspaceRoot: "/post-commit"}},
+	}
+
+	type result struct {
+		records []domain.RecordedEvent
+		err     error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		records, err := store.Append(ctx, request)
+		resultCh <- result{records: records, err: err}
+	}()
+
+	committedRecords := <-committed
+	cancel()
+	close(release)
+	got := <-resultCh
+	if got.err != nil || !equalRecords(got.records, committedRecords) {
+		t.Fatalf("Append() after post-commit cancellation = (%#v, %v), want exact committed records", got.records, got.err)
+	}
+	loaded, err := harness.Store.Load(context.Background(), request.SessionID)
+	if err != nil || !equalRecords(loaded, committedRecords) {
+		t.Fatalf("Load() after post-commit cancellation = (%#v, %v), want committed batch %#v", loaded, err, committedRecords)
+	}
+}
+
+type postCommitBarrierStore struct {
+	application.EventStore
+	committed chan<- []domain.RecordedEvent
+	release   <-chan struct{}
+}
+
+func (store *postCommitBarrierStore) Append(ctx context.Context, request application.AppendRequest) ([]domain.RecordedEvent, error) {
+	records, err := store.EventStore.Append(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	store.committed <- records
+	<-store.release
+	return records, nil
+}
+
+func equalRecords(left, right []domain.RecordedEvent) bool {
+	return reflect.DeepEqual(left, right)
 }
 
 func testContiguousMetadataAndLoad(t *testing.T, harness Harness) {

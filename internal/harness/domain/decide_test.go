@@ -3,7 +3,169 @@ package domain
 import (
 	"reflect"
 	"testing"
+	"time"
 )
+
+func TestStartAssistantTurnEligibilityIsSharedWithDecide(t *testing.T) {
+	t.Parallel()
+
+	closed := activeSessionForTest(t)
+	closed.Status = SessionStatusClosed
+	malformed := activeSessionForTest(t)
+	malformed.TurnOrder = []TurnID{"turn-missing"}
+	malformedContainers := activeSessionForTest(t)
+	malformedContainers.TurnOrder = nil
+	malformedContainers.Turns = nil
+	running := runningTurnForTest(t)
+	withCompletedItem := terminalAssistantItemForTest(t)
+	var err error
+	withCompletedItem, err = Apply(withCompletedItem, recordedForTest(withCompletedItem, TurnCompleted{TurnID: "turn-1"}))
+	if err != nil {
+		t.Fatalf("complete fixture turn: %v", err)
+	}
+	malformedItemTimeline := withCompletedItem.Clone()
+	turn := malformedItemTimeline.Turns["turn-1"]
+	item := turn.Items["item-1"]
+	item.StartedAt = turn.StartedAt.Add(-time.Second)
+	turn.Items["item-1"] = item
+	malformedItemTimeline.Turns["turn-1"] = turn
+
+	tests := []struct {
+		name  string
+		state Session
+		code  ErrorCode
+	}{
+		{name: "active", state: activeSessionForTest(t)},
+		{name: "closed", state: closed, code: CodeSessionClosed},
+		{name: "running turn", state: running, code: CodeTurnAlreadyRunning},
+		{name: "completed item is eligible", state: withCompletedItem},
+		{name: "malformed", state: malformed, code: CodeInvalidCommand},
+		{name: "malformed containers", state: malformedContainers, code: CodeInvalidCommand},
+		{name: "malformed item timeline", state: malformedItemTimeline, code: CodeInvalidCommand},
+		{name: "missing", state: Session{}, code: CodeSessionNotFound},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			eligibilityErr := CheckStartAssistantTurnEligibility(test.state)
+			_, decideErr := Decide(test.state, StartAssistantTurn{
+				SessionID: test.state.ID,
+				TurnID:    "turn-new",
+				ItemID:    "item-new",
+				Input:     "inspect repository",
+			})
+			if !IsCode(eligibilityErr, test.code) && !(test.code == "" && eligibilityErr == nil) {
+				t.Fatalf("CheckStartAssistantTurnEligibility() error = %v, want code %q", eligibilityErr, test.code)
+			}
+			if !IsCode(decideErr, test.code) && !(test.code == "" && decideErr == nil) {
+				t.Fatalf("Decide() error = %v, want code %q", decideErr, test.code)
+			}
+		})
+	}
+}
+
+func TestDecideStartAssistantTurnReturnsAtomicOrderedBatch(t *testing.T) {
+	t.Parallel()
+
+	state := activeSessionForTest(t)
+	before := state.Clone()
+	events, err := Decide(state, StartAssistantTurn{
+		SessionID: state.ID,
+		TurnID:    "turn-atomic",
+		ItemID:    "item-atomic",
+		Input:     "inspect repository",
+	})
+	if err != nil {
+		t.Fatalf("Decide() error = %v", err)
+	}
+	want := []UncommittedEvent{
+		{Event: TurnStarted{TurnID: "turn-atomic", Input: "inspect repository"}},
+		{Event: AssistantMessageStarted{TurnID: "turn-atomic", ItemID: "item-atomic"}},
+	}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("Decide() = %#v, want %#v", events, want)
+	}
+	if !reflect.DeepEqual(state, before) {
+		t.Fatalf("Decide() mutated state: got %#v, want %#v", state, before)
+	}
+
+	now := time.Date(2026, 8, 12, 2, 3, 4, 0, time.UTC)
+	for index, event := range events {
+		state, err = Apply(state, RecordedEvent{
+			SchemaVersion: 1,
+			ID:            EventID("event-atomic-" + string(rune('1'+index))),
+			CommandID:     "command-atomic",
+			SessionID:     state.ID,
+			Sequence:      state.Version + 1,
+			OccurredAt:    now,
+			Event:         event.Event,
+		})
+		if err != nil {
+			t.Fatalf("Apply(event %d) error = %v", index, err)
+		}
+	}
+	if state.Version != before.Version+2 || state.ActiveTurnID != "turn-atomic" {
+		t.Fatalf("state after atomic batch = %#v", state)
+	}
+	turn := state.Turns["turn-atomic"]
+	if turn.ActiveItemID != "item-atomic" || turn.Items["item-atomic"].Status != ItemStatusRunning {
+		t.Fatalf("turn after atomic batch = %#v", turn)
+	}
+}
+
+func TestDecideStartAssistantTurnRejectsInvalidCommandFields(t *testing.T) {
+	t.Parallel()
+
+	state := activeSessionForTest(t)
+	tests := []struct {
+		name string
+		cmd  StartAssistantTurn
+	}{
+		{name: "session ID", cmd: StartAssistantTurn{SessionID: " session-1", TurnID: "turn-1", ItemID: "item-1", Input: "hello"}},
+		{name: "session mismatch", cmd: StartAssistantTurn{SessionID: "session-2", TurnID: "turn-1", ItemID: "item-1", Input: "hello"}},
+		{name: "turn ID", cmd: StartAssistantTurn{SessionID: state.ID, TurnID: " turn-1", ItemID: "item-1", Input: "hello"}},
+		{name: "item ID", cmd: StartAssistantTurn{SessionID: state.ID, TurnID: "turn-1", ItemID: " item-1", Input: "hello"}},
+		{name: "blank input", cmd: StartAssistantTurn{SessionID: state.ID, TurnID: "turn-1", ItemID: "item-1", Input: "  "}},
+		{name: "invalid UTF-8 input", cmd: StartAssistantTurn{SessionID: state.ID, TurnID: "turn-1", ItemID: "item-1", Input: string([]byte{0xff})}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if events, err := Decide(state, test.cmd); err == nil || events != nil {
+				t.Fatalf("Decide() = (%#v, %v), want rejection", events, err)
+			}
+		})
+	}
+}
+
+func TestDecideStartAssistantTurnRejectsExistingTurnOrItem(t *testing.T) {
+	t.Parallel()
+
+	state := terminalAssistantItemForTest(t)
+	state, err := Apply(state, recordedForTest(state, TurnCompleted{TurnID: "turn-1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		cmd  StartAssistantTurn
+		code ErrorCode
+	}{
+		{name: "turn", cmd: StartAssistantTurn{SessionID: state.ID, TurnID: "turn-1", ItemID: "item-2", Input: "hello"}, code: CodeTurnAlreadyExists},
+		{name: "item", cmd: StartAssistantTurn{SessionID: state.ID, TurnID: "turn-2", ItemID: "item-1", Input: "hello"}, code: CodeItemAlreadyExists},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			before := state.Clone()
+			events, err := Decide(state, test.cmd)
+			if events != nil || !IsCode(err, test.code) {
+				t.Fatalf("Decide() = (%#v, %v), want code %q", events, err, test.code)
+			}
+			if !reflect.DeepEqual(state, before) {
+				t.Fatal("Decide() mutated state")
+			}
+		})
+	}
+}
 
 func TestDecideCreateSession(t *testing.T) {
 	t.Parallel()
@@ -270,6 +432,7 @@ func TestDecideAssistantCommandsExposeStableMetadata(t *testing.T) {
 		command Command
 		name    string
 	}{
+		{command: StartAssistantTurn{SessionID: "session-1"}, name: "assistant.turn.start"},
 		{command: StartAssistantMessage{SessionID: "session-1"}, name: "assistant.message.start"},
 		{command: CompleteAssistantTurn{SessionID: "session-1"}, name: "assistant.turn.complete"},
 		{command: FailAssistantTurn{SessionID: "session-1"}, name: "assistant.turn.fail"},

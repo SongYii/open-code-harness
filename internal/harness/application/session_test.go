@@ -1,0 +1,464 @@
+package application_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/SongYii/open-code-harness/internal/harness/adapters/memory"
+	"github.com/SongYii/open-code-harness/internal/harness/application"
+	"github.com/SongYii/open-code-harness/internal/harness/domain"
+	"github.com/SongYii/open-code-harness/internal/harness/engine"
+	"github.com/SongYii/open-code-harness/internal/harness/testkit"
+)
+
+func TestCreateLoadCloseSession(t *testing.T) {
+	service, store := newSessionServiceForTest(t, testkit.NewSequenceIDs())
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+	loaded, err := service.LoadSession(context.Background(), created.SessionID)
+	if err != nil {
+		t.Fatalf("LoadSession() error = %v", err)
+	}
+	if loaded.Status != domain.SessionStatusActive || loaded.Version != 1 {
+		t.Fatalf("loaded state = %#v", loaded)
+	}
+	closed, err := service.CloseSession(context.Background(), application.CloseSessionRequest{SessionID: created.SessionID})
+	if err != nil {
+		t.Fatalf("CloseSession() error = %v", err)
+	}
+	if closed.Session.Status != domain.SessionStatusClosed || closed.Session.Version != 2 {
+		t.Fatalf("closed state = %#v", closed.Session)
+	}
+	records, err := store.Load(context.Background(), created.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := sessionEventTypes(records), []string{"session.created", "session.closed"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("event types = %v, want %v", got, want)
+	}
+	created.Records[0].Event = domain.SessionCreated{WorkspaceRoot: "/mutated"}
+	closed.Records[0].Event = domain.SessionCreated{WorkspaceRoot: "/mutated"}
+	loaded.TurnOrder = append(loaded.TurnOrder, "turn-mutated")
+	fresh, err := service.LoadSession(context.Background(), created.SessionID)
+	if err != nil || fresh.WorkspaceRoot != "/workspace" || len(fresh.TurnOrder) != 0 {
+		t.Fatalf("fresh LoadSession() = (%#v, %v), want defensive state", fresh, err)
+	}
+}
+
+func TestCreateSessionRejectsDuplicateAsConflict(t *testing.T) {
+	service, _ := newSessionServiceForTest(t, &sessionIDs{sessionID: "session-duplicate", commandID: "command-duplicate"})
+	if _, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/first"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/second"})
+	assertApplicationError(t, err, application.CategoryConflict, "version_conflict")
+}
+
+func TestLoadSessionMapsMissingCorruptAndStoreFailure(t *testing.T) {
+	t.Run("missing", func(t *testing.T) {
+		service, _ := newSessionServiceForTest(t, testkit.NewSequenceIDs())
+		_, err := service.LoadSession(context.Background(), "session-missing")
+		assertApplicationError(t, err, application.CategoryValidation, "session_not_found")
+	})
+
+	t.Run("corrupt replay", func(t *testing.T) {
+		store := &sessionStore{loadRecords: []domain.RecordedEvent{{
+			SchemaVersion: 1, ID: "event-corrupt", CommandID: "command-corrupt", SessionID: "session-corrupt",
+			Sequence: 2, OccurredAt: validSessionTime(), Event: domain.SessionCreated{WorkspaceRoot: "/workspace"},
+		}}}
+		service := newSessionServiceWithStore(t, store, testkit.NewSequenceIDs())
+		_, err := service.LoadSession(context.Background(), "session-corrupt")
+		assertApplicationError(t, err, application.CategoryInternal, "store_contract_violation")
+	})
+
+	t.Run("load failure", func(t *testing.T) {
+		cause := errors.New("load unavailable")
+		store := &sessionStore{loadErr: fmt.Errorf("adapter: %w", cause)}
+		service := newSessionServiceWithStore(t, store, testkit.NewSequenceIDs())
+		_, err := service.LoadSession(context.Background(), "session-load")
+		assertApplicationError(t, err, application.CategoryPersistence, "load_failed")
+		if !errors.Is(err, cause) {
+			t.Fatalf("LoadSession() error = %v, want source cause", err)
+		}
+	})
+
+	t.Run("dependency canceled is still persistence", func(t *testing.T) {
+		store := &sessionStore{loadErr: fmt.Errorf("adapter: %w", context.Canceled)}
+		service := newSessionServiceWithStore(t, store, testkit.NewSequenceIDs())
+		_, err := service.LoadSession(context.Background(), "session-load")
+		assertApplicationError(t, err, application.CategoryPersistence, "load_failed")
+	})
+
+	t.Run("caller canceled at load boundary", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		store := &sessionStore{
+			onLoad: cancel,
+			loadRecords: []domain.RecordedEvent{{
+				SchemaVersion: 1, ID: "event-load-canceled", CommandID: "command-load-canceled", SessionID: "session-load-canceled",
+				Sequence: 1, OccurredAt: validSessionTime(), Event: domain.SessionCreated{WorkspaceRoot: "/workspace"},
+			}},
+		}
+		service := newSessionServiceWithStore(t, store, testkit.NewSequenceIDs())
+		_, err := service.LoadSession(ctx, "session-load-canceled")
+		assertApplicationError(t, err, application.CategoryCanceled, "canceled")
+	})
+}
+
+func TestCloseSessionRejectsMissingAndRunningSession(t *testing.T) {
+	t.Run("missing", func(t *testing.T) {
+		service, _ := newSessionServiceForTest(t, testkit.NewSequenceIDs())
+		_, err := service.CloseSession(context.Background(), application.CloseSessionRequest{SessionID: "session-missing"})
+		assertApplicationError(t, err, application.CategoryValidation, "session_not_found")
+	})
+
+	t.Run("running turn", func(t *testing.T) {
+		ids := &sessionIDs{sessionID: "session-running", commandID: "command-running-create"}
+		service, store := newSessionServiceForTest(t, ids)
+		created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Append(context.Background(), application.AppendRequest{
+			SessionID: created.SessionID, ExpectedVersion: 1, CommandID: "command-running",
+			Events: []domain.Event{domain.TurnStarted{TurnID: "turn-running", Input: "hello"}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		_, err = service.CloseSession(context.Background(), application.CloseSessionRequest{SessionID: created.SessionID})
+		assertApplicationError(t, err, application.CategoryValidation, "domain_rejected")
+		if ids.calls != 2 {
+			t.Fatalf("ID calls = %d, want only CreateSession's two calls", ids.calls)
+		}
+	})
+}
+
+func TestSessionUseCasesMapAppendFailuresAndCancellation(t *testing.T) {
+	t.Run("append failure", func(t *testing.T) {
+		cause := errors.New("append unavailable")
+		store := &sessionStore{appendErr: fmt.Errorf("adapter: %w", cause)}
+		service := newSessionServiceWithStore(t, store, testkit.NewSequenceIDs())
+		_, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+		assertApplicationError(t, err, application.CategoryPersistence, "append_failed")
+		if !errors.Is(err, cause) {
+			t.Fatalf("CreateSession() error = %v, want source cause", err)
+		}
+	})
+
+	t.Run("caller canceled before append", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		ids := &sessionIDs{sessionID: "session-canceled", commandID: "command-canceled", onCommand: cancel}
+		store := &sessionStore{}
+		service := newSessionServiceWithStore(t, store, ids)
+		_, err := service.CreateSession(ctx, application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+		assertApplicationError(t, err, application.CategoryCanceled, "canceled")
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("CreateSession() error = %v, want caller cancellation cause", err)
+		}
+		if store.appendCalls != 0 {
+			t.Fatalf("Append() calls = %d, want 0", store.appendCalls)
+		}
+	})
+
+	t.Run("dependency canceled is still persistence", func(t *testing.T) {
+		store := &sessionStore{appendErr: fmt.Errorf("adapter: %w", context.Canceled)}
+		service := newSessionServiceWithStore(t, store, testkit.NewSequenceIDs())
+		_, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+		assertApplicationError(t, err, application.CategoryPersistence, "append_failed")
+	})
+
+	t.Run("caller cancellation wins ID source race and preserves both causes", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		sourceCause := errors.New("command ID source failed")
+		ids := &sessionIDs{sessionID: "session-id-race", commandErr: sourceCause, onCommand: cancel}
+		service := newSessionServiceWithStore(t, &sessionStore{}, ids)
+		_, err := service.CreateSession(ctx, application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+		assertApplicationError(t, err, application.CategoryCanceled, "canceled")
+		if !errors.Is(err, context.Canceled) || !errors.Is(err, sourceCause) {
+			t.Fatalf("CreateSession() error = %v, want caller and source causes", err)
+		}
+	})
+}
+
+func TestCreateSessionMapsEveryGeneratedIDFailure(t *testing.T) {
+	sourceCause := errors.New("ID source unavailable")
+	tests := []struct {
+		name string
+		ids  *sessionIDs
+		code string
+	}{
+		{name: "session source", ids: &sessionIDs{sessionErr: sourceCause}, code: "id_generation_failed"},
+		{name: "command source", ids: &sessionIDs{sessionID: "session-1", commandErr: sourceCause}, code: "id_generation_failed"},
+		{name: "invalid session", ids: &sessionIDs{sessionID: " session-1", commandID: "command-1"}, code: "id_generator_contract_violation"},
+		{name: "invalid command", ids: &sessionIDs{sessionID: "session-1", commandID: " command-1"}, code: "id_generator_contract_violation"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := &sessionStore{}
+			service := newSessionServiceWithStore(t, store, test.ids)
+			_, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+			assertApplicationError(t, err, application.CategoryInternal, test.code)
+			if test.code == "id_generation_failed" && !errors.Is(err, sourceCause) {
+				t.Fatalf("CreateSession() error = %v, want source cause", err)
+			}
+			if store.appendCalls != 0 {
+				t.Fatalf("Append() calls = %d, want 0", store.appendCalls)
+			}
+		})
+	}
+}
+
+func TestCloseSessionMapsEveryGeneratedCommandIDFailure(t *testing.T) {
+	tests := []struct {
+		name     string
+		ids      *sessionIDs
+		category application.ErrorCategory
+		code     string
+	}{
+		{name: "source", ids: &sessionIDs{commandErr: errors.New("command ID unavailable")}, category: application.CategoryInternal, code: "id_generation_failed"},
+		{name: "invalid", ids: &sessionIDs{commandID: " command-1"}, category: application.CategoryInternal, code: "id_generator_contract_violation"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store, err := memory.NewEventStore(testkit.FixedClock{Time: validSessionTime()}, testkit.NewSequenceIDs())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Append(context.Background(), application.AppendRequest{
+				SessionID: "session-close-id", CommandID: "command-seed",
+				Events: []domain.Event{domain.SessionCreated{WorkspaceRoot: "/workspace"}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			service := newSessionServiceWithStore(t, store, test.ids)
+			_, err = service.CloseSession(context.Background(), application.CloseSessionRequest{SessionID: "session-close-id"})
+			assertApplicationError(t, err, test.category, test.code)
+			records, loadErr := store.Load(context.Background(), "session-close-id")
+			if loadErr != nil || len(records) != 1 {
+				t.Fatalf("stream after rejected close = (%#v, %v), want unchanged version 1", records, loadErr)
+			}
+		})
+	}
+}
+
+func TestSessionUseCasesValidateInputsBeforePorts(t *testing.T) {
+	store := &sessionStore{}
+	ids := &sessionIDs{}
+	service := newSessionServiceWithStore(t, store, ids)
+
+	if _, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "  "}); err == nil {
+		t.Fatal("CreateSession(blank) error = nil")
+	}
+	if _, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: string([]byte{0xff})}); err == nil {
+		t.Fatal("CreateSession(invalid UTF-8) error = nil")
+	}
+	if _, err := service.LoadSession(context.Background(), " session-1"); err == nil {
+		t.Fatal("LoadSession(invalid ID) error = nil")
+	}
+	if _, err := service.CloseSession(context.Background(), application.CloseSessionRequest{SessionID: " session-1"}); err == nil {
+		t.Fatal("CloseSession(invalid ID) error = nil")
+	}
+	if store.loadCalls != 0 || store.appendCalls != 0 || ids.calls != 0 {
+		t.Fatalf("port calls = load %d append %d IDs %d, want zero", store.loadCalls, store.appendCalls, ids.calls)
+	}
+}
+
+func TestCreateSessionRejectsMalformedAppendReturn(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*domain.RecordedEvent)
+	}{
+		{name: "wrong sequence", mutate: func(record *domain.RecordedEvent) { record.Sequence = 2 }},
+		{name: "wrong session", mutate: func(record *domain.RecordedEvent) { record.SessionID = "session-other" }},
+		{name: "wrong command", mutate: func(record *domain.RecordedEvent) { record.CommandID = "command-other" }},
+		{name: "wrong schema", mutate: func(record *domain.RecordedEvent) { record.SchemaVersion = 2 }},
+		{name: "invalid event ID", mutate: func(record *domain.RecordedEvent) { record.ID = " event-1" }},
+		{name: "non UTC time", mutate: func(record *domain.RecordedEvent) {
+			record.OccurredAt = record.OccurredAt.In(time.FixedZone("offset", 3600))
+		}},
+		{name: "changed payload", mutate: func(record *domain.RecordedEvent) { record.Event = domain.SessionCreated{WorkspaceRoot: "/changed"} }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := &sessionStore{appendResult: []domain.RecordedEvent{{
+				SchemaVersion: 1, ID: "event-1", CommandID: "command-1", SessionID: "session-1",
+				Sequence: 1, OccurredAt: validSessionTime(), Event: domain.SessionCreated{WorkspaceRoot: "/workspace"},
+			}}}
+			test.mutate(&store.appendResult[0])
+			service := newSessionServiceWithStore(t, store, &sessionIDs{sessionID: "session-1", commandID: "command-1"})
+			_, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+			assertApplicationError(t, err, application.CategoryInternal, "store_contract_violation")
+		})
+	}
+
+	t.Run("wrong count", func(t *testing.T) {
+		service := newSessionServiceWithStore(t, &sessionStore{appendResult: []domain.RecordedEvent{}}, &sessionIDs{sessionID: "session-1", commandID: "command-1"})
+		_, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+		assertApplicationError(t, err, application.CategoryInternal, "store_contract_violation")
+	})
+}
+
+func TestNewServiceValidatesDependenciesAndConfiguration(t *testing.T) {
+	validStore := &sessionStore{}
+	validIDs := testkit.NewSequenceIDs()
+	validRunner := sessionRunnerForTest(t)
+	var typedNilStore *sessionStore
+	var typedNilIDs *sessionIDs
+	var typedNilRunner *engine.TurnRunner
+
+	tests := []struct {
+		name   string
+		store  application.EventStore
+		ids    application.IDGenerator
+		runner *engine.TurnRunner
+		config application.Config
+	}{
+		{name: "nil store", ids: validIDs, runner: validRunner, config: application.DefaultConfig()},
+		{name: "typed nil store", store: typedNilStore, ids: validIDs, runner: validRunner, config: application.DefaultConfig()},
+		{name: "nil IDs", store: validStore, runner: validRunner, config: application.DefaultConfig()},
+		{name: "typed nil IDs", store: validStore, ids: typedNilIDs, runner: validRunner, config: application.DefaultConfig()},
+		{name: "nil runner", store: validStore, ids: validIDs, config: application.DefaultConfig()},
+		{name: "typed nil runner", store: validStore, ids: validIDs, runner: typedNilRunner, config: application.DefaultConfig()},
+		{name: "output limit", store: validStore, ids: validIDs, runner: validRunner, config: application.Config{TerminalCommitTimeout: time.Second}},
+		{name: "terminal timeout", store: validStore, ids: validIDs, runner: validRunner, config: application.Config{MaxAssistantBytes: 1}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service, err := application.NewService(test.store, test.ids, test.runner, test.config)
+			if service != nil {
+				t.Fatalf("NewService() service = %#v, want nil", service)
+			}
+			assertApplicationError(t, err, application.CategoryValidation, "invalid_configuration")
+		})
+	}
+
+	service, err := application.NewService(validStore, validIDs, validRunner, application.DefaultConfig())
+	if err != nil || service == nil {
+		t.Fatalf("NewService(valid) = (%#v, %v)", service, err)
+	}
+}
+
+func newSessionServiceForTest(t *testing.T, ids application.IDGenerator) (*application.Service, *memory.EventStore) {
+	t.Helper()
+	store, err := memory.NewEventStore(testkit.FixedClock{Time: validSessionTime()}, testkit.NewSequenceIDs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return newSessionServiceWithStore(t, store, ids), store
+}
+
+func newSessionServiceWithStore(t *testing.T, store application.EventStore, ids application.IDGenerator) *application.Service {
+	t.Helper()
+	service, err := application.NewService(store, ids, sessionRunnerForTest(t), application.DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service
+}
+
+func sessionRunnerForTest(t *testing.T) *engine.TurnRunner {
+	t.Helper()
+	model, err := testkit.NewScriptedModel(engine.ModelRequest{}, testkit.ScriptedModelConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := engine.NewTurnRunner(model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runner
+}
+
+func assertApplicationError(t *testing.T, err error, category application.ErrorCategory, code string) {
+	t.Helper()
+	var appErr *application.Error
+	if !errors.As(err, &appErr) || appErr == nil {
+		t.Fatalf("error = %v, want *application.Error", err)
+	}
+	if appErr.Category != category || appErr.Code != code || appErr.TerminalCommitted {
+		t.Fatalf("application error = %#v, want category %q code %q terminal false", appErr, category, code)
+	}
+}
+
+func sessionEventTypes(records []domain.RecordedEvent) []string {
+	types := make([]string, len(records))
+	for index, record := range records {
+		types[index] = record.Event.EventType()
+	}
+	return types
+}
+
+func validSessionTime() time.Time {
+	return time.Date(2026, 8, 12, 3, 4, 5, 6, time.UTC)
+}
+
+type sessionStore struct {
+	loadRecords  []domain.RecordedEvent
+	loadErr      error
+	onLoad       func()
+	appendResult []domain.RecordedEvent
+	appendErr    error
+	loadCalls    int
+	appendCalls  int
+}
+
+func (store *sessionStore) Load(context.Context, domain.SessionID) ([]domain.RecordedEvent, error) {
+	store.loadCalls++
+	if store.onLoad != nil {
+		store.onLoad()
+	}
+	records, _ := domain.CloneRecordedEvents(store.loadRecords)
+	return records, store.loadErr
+}
+
+func (store *sessionStore) Append(_ context.Context, request application.AppendRequest) ([]domain.RecordedEvent, error) {
+	store.appendCalls++
+	if store.appendErr != nil {
+		return nil, store.appendErr
+	}
+	if store.appendResult != nil {
+		return domain.CloneRecordedEvents(store.appendResult)
+	}
+	records := make([]domain.RecordedEvent, len(request.Events))
+	for index, event := range request.Events {
+		records[index] = domain.RecordedEvent{
+			SchemaVersion: 1,
+			ID:            domain.EventID(fmt.Sprintf("event-%d", index+1)),
+			CommandID:     request.CommandID,
+			SessionID:     request.SessionID,
+			Sequence:      request.ExpectedVersion + uint64(index) + 1,
+			OccurredAt:    validSessionTime(),
+			Event:         event,
+		}
+	}
+	return records, nil
+}
+
+type sessionIDs struct {
+	sessionID  domain.SessionID
+	sessionErr error
+	commandID  domain.CommandID
+	commandErr error
+	onCommand  func()
+	calls      int
+}
+
+func (ids *sessionIDs) NewSessionID() (domain.SessionID, error) {
+	ids.calls++
+	return ids.sessionID, ids.sessionErr
+}
+func (ids *sessionIDs) NewTurnID() (domain.TurnID, error) { ids.calls++; return "turn-1", nil }
+func (ids *sessionIDs) NewItemID() (domain.ItemID, error) { ids.calls++; return "item-1", nil }
+func (ids *sessionIDs) NewCommandID() (domain.CommandID, error) {
+	ids.calls++
+	if ids.onCommand != nil {
+		ids.onCommand()
+	}
+	return ids.commandID, ids.commandErr
+}
+func (ids *sessionIDs) NewEventID() (domain.EventID, error) { ids.calls++; return "event-1", nil }

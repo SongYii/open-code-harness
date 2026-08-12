@@ -43,18 +43,33 @@ machine-readable code and an optional safe display message.
 | `turn.complete` | `CompleteTurn` | `turn.completed` |
 | `turn.fail` | `FailTurn` | `turn.failed` |
 | `turn.interrupt` | `InterruptTurn` | `turn.interrupted` |
+| `assistant.turn.start` | `StartAssistantTurn` | `turn.started`, `assistant.message.started` |
 | `assistant.message.start` | `StartAssistantMessage` | `assistant.message.started` |
 | `assistant.turn.complete` | `CompleteAssistantTurn` | `assistant.message.completed`, `turn.completed` |
 | `assistant.turn.fail` | `FailAssistantTurn` | `assistant.message.failed`, `turn.failed` |
 | `assistant.turn.interrupt` | `InterruptAssistantTurn` | `assistant.message.interrupted`, `turn.interrupted` |
 | `session.close` | `CloseSession` | `session.closed` |
 
-The three `*AssistantTurn` commands are composite use-case commands. They
-terminalize the active assistant Item and its owning Turn as one ordered
-decision batch. `InterruptAssistantTurn` copies its stable `Code` into
+The four `*AssistantTurn` commands are composite use-case commands.
+`StartAssistantTurn` admits a Turn and its initial assistant Item as one
+ordered decision batch, eliminating a durable split-start state. It calls the
+same pure `CheckStartAssistantTurnEligibility` predicate used by Application
+preflight before it validates request fields or generated IDs. The predicate
+validates the complete existing Session/Turn/Item structure, requires an
+active Session, and rejects any running Turn or Item; it never inspects input
+or not-yet-generated identities.
+
+The three terminal composite commands terminalize the active assistant Item
+and its owning Turn as one ordered decision batch. `InterruptAssistantTurn`
+copies its stable `Code` into
 `TurnInterrupted.Reason`; the existing Turn event encoding therefore remains
 schema-compatible. The initial interruption codes are `caller_canceled` and
 `runtime_delivery_failed`.
+
+`StartTurn` and `StartAssistantMessage` remain available as lower-level domain
+compatibility commands. Application orchestration must not use them as two
+separate admission branches; its sole assistant execution boundary is the
+atomic `StartAssistantTurn` batch.
 
 ### Events
 
@@ -107,6 +122,10 @@ than matching error-message prose.
   terminal fact first and the Turn terminal fact second. The caller must append
   that whole batch atomically. Partial application is not a valid domain
   history.
+- A successful `StartAssistantTurn` decision returns `turn.started` followed
+  by `assistant.message.started`. Both facts share one append, command ID, and
+  occurrence time; partial durable admission is not a valid Application
+  history.
 - Recorded event sequences start at `1` and must be contiguous for a session:
   each applied record must have `Sequence == state.Version + 1`. Replay does
   not sort input to repair an out-of-order stream.
@@ -131,10 +150,11 @@ The canonical deterministic replay fixtures are:
 
 ## Scope and Compatibility
 
-This milestone is deliberately limited to the internal domain event model,
-Session/Turn/Item state machines, JSON fixture codec, deterministic replay,
-and atomic decision semantics. It does not implement the append-only
-EventStore or executable Engine vertical slice.
+This document covers the internal domain event model, Session/Turn/Item state
+machines, JSON fixture codec, deterministic replay, and atomic decision
+semantics. The append-only EventStore and executable Engine are separate
+internal packages; they consume these facts without changing Domain's
+authority.
 
 ACP v1 remains the planned public client protocol, but these internal events
 are not ACP messages and are not a public compatibility promise before v1.0.

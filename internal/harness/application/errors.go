@@ -1,7 +1,6 @@
 package application
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
@@ -31,35 +30,46 @@ type Error struct {
 }
 
 func (e *Error) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
 	return fmt.Sprintf("%s/%s (terminal_committed=%t)", e.Category, e.Code, e.TerminalCommitted)
 }
 
-func (e *Error) Unwrap() error { return e.Cause }
+func (e *Error) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
 
 // IsCategory reports whether the error tree contains an application Error
 // with the requested stable category.
 func IsCategory(err error, category ErrorCategory) bool {
-	if err == nil {
+	if isNilValue(err) {
 		return false
 	}
 	if applicationError, ok := err.(*Error); ok {
-		if applicationError == nil {
-			return false
-		}
 		if applicationError.Category == category {
 			return true
 		}
 	}
 
 	switch err := err.(type) {
-	case interface{ Unwrap() error }:
-		return IsCategory(err.Unwrap(), category)
 	case interface{ Unwrap() []error }:
+		if isNilValue(err) {
+			return false
+		}
 		for _, child := range err.Unwrap() {
 			if IsCategory(child, category) {
 				return true
 			}
 		}
+	case interface{ Unwrap() error }:
+		if isNilValue(err) {
+			return false
+		}
+		return IsCategory(err.Unwrap(), category)
 	}
 	return false
 }
@@ -72,6 +82,9 @@ type VersionConflictError struct {
 }
 
 func (e *VersionConflictError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
 	return fmt.Sprintf(
 		"version conflict for session %s: expected %d, actual %d",
 		e.SessionID,
@@ -83,6 +96,31 @@ func (e *VersionConflictError) Error() string {
 // IsVersionConflict reports whether the error chain contains a typed version
 // conflict.
 func IsVersionConflict(err error) bool {
-	var conflict *VersionConflictError
-	return errors.As(err, &conflict)
+	if isNilValue(err) {
+		return false
+	}
+	if conflict, ok := err.(*VersionConflictError); ok {
+		return conflict != nil
+	}
+	switch err := err.(type) {
+	case interface{ Unwrap() []error }:
+		if isNilValue(err) {
+			return false
+		}
+		for _, child := range err.Unwrap() {
+			if IsVersionConflict(child) {
+				return true
+			}
+		}
+	case interface{ Unwrap() error }:
+		if isNilValue(err) {
+			return false
+		}
+		return IsVersionConflict(err.Unwrap())
+	}
+	return false
+}
+
+func applicationError(category ErrorCategory, code string, terminalCommitted bool, cause error) *Error {
+	return &Error{Category: category, Code: code, TerminalCommitted: terminalCommitted, Cause: cause}
 }

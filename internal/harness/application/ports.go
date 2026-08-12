@@ -20,6 +20,11 @@ import (
 // Append returns exactly the newly committed batch as a defensive copy. The
 // Store assigns contiguous record sequences and all record metadata. If the
 // context is canceled before commit, no record or version change is visible.
+// A non-nil error means the requested batch did not commit. Once committed,
+// Append returns the exact committed records with a nil error even if caller
+// cancellation races after the commit point. An adapter that can lose a
+// post-commit acknowledgement cannot honestly implement this interface without
+// first adding explicit unknown-commit or exact idempotent-retry semantics.
 //
 // Store atomicity does not make Clock or IDGenerator transactional. A late
 // pre-commit failure can leave generated opaque event IDs unused; committed

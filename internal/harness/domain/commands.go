@@ -13,6 +13,7 @@ const (
 	CommandInterruptTurn = "turn.interrupt"
 	CommandCloseSession  = "session.close"
 
+	CommandStartAssistantTurn     = "assistant.turn.start"
 	CommandStartAssistantMessage  = "assistant.message.start"
 	CommandCompleteAssistantTurn  = "assistant.turn.complete"
 	CommandFailAssistantTurn      = "assistant.turn.fail"
@@ -70,6 +71,16 @@ type StartAssistantMessage struct {
 	TurnID    TurnID
 	ItemID    ItemID
 }
+
+type StartAssistantTurn struct {
+	SessionID SessionID
+	TurnID    TurnID
+	ItemID    ItemID
+	Input     string
+}
+
+func (StartAssistantTurn) CommandType() string          { return CommandStartAssistantTurn }
+func (c StartAssistantTurn) TargetSessionID() SessionID { return c.SessionID }
 
 func (StartAssistantMessage) CommandType() string          { return CommandStartAssistantMessage }
 func (c StartAssistantMessage) TargetSessionID() SessionID { return c.SessionID }
