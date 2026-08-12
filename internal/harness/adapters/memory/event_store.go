@@ -22,6 +22,7 @@ type EventStore struct {
 	ids   application.IDGenerator
 
 	records      map[domain.SessionID][]domain.RecordedEvent
+	committedIDs map[domain.EventID]struct{}
 	loadFaults   map[domain.SessionID]error
 	appendFaults map[domain.SessionID]error
 }
@@ -40,6 +41,7 @@ func NewEventStore(clock application.Clock, ids application.IDGenerator) (*Event
 		clock:        clock,
 		ids:          ids,
 		records:      make(map[domain.SessionID][]domain.RecordedEvent),
+		committedIDs: make(map[domain.EventID]struct{}),
 		loadFaults:   make(map[domain.SessionID]error),
 		appendFaults: make(map[domain.SessionID]error),
 	}, nil
@@ -144,10 +146,7 @@ func (store *EventStore) Append(ctx context.Context, request application.AppendR
 		return nil, persistenceError("event_store_invalid_clock", err)
 	}
 
-	seenIDs := make(map[domain.EventID]struct{}, len(current)+len(events))
-	for _, record := range current {
-		seenIDs[record.ID] = struct{}{}
-	}
+	seenIDs := make(map[domain.EventID]struct{}, len(events))
 	batch := make([]domain.RecordedEvent, len(events))
 	for index, event := range events {
 		eventID, err := store.ids.NewEventID()
@@ -158,6 +157,9 @@ func (store *EventStore) Append(ctx context.Context, request application.AppendR
 			return nil, persistenceError("event_store_invalid_event_id", err)
 		}
 		if _, duplicate := seenIDs[eventID]; duplicate {
+			return nil, persistenceError("event_store_duplicate_event_id", errors.New("event ID must be unique"))
+		}
+		if _, committed := store.committedIDs[eventID]; committed {
 			return nil, persistenceError("event_store_duplicate_event_id", errors.New("event ID must be unique"))
 		}
 		seenIDs[eventID] = struct{}{}
@@ -184,6 +186,9 @@ func (store *EventStore) Append(ctx context.Context, request application.AppendR
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, persistenceError("event_store_append_canceled", err)
+	}
+	for _, record := range batch {
+		store.committedIDs[record.ID] = struct{}{}
 	}
 	store.records[request.SessionID] = candidate
 	return returned, nil

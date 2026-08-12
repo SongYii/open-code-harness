@@ -16,15 +16,19 @@ import (
 
 func TestEventStoreContract(t *testing.T) {
 	eventstoretest.Run(t, func(t *testing.T) eventstoretest.Harness {
+		expectedOccurredAt := time.Date(2026, 8, 12, 1, 2, 3, 123456789, time.FixedZone("contract", 8*60*60))
 		store, err := NewEventStore(
-			testkit.FixedClock{Time: time.Date(2026, 8, 12, 1, 2, 3, 0, time.FixedZone("contract", 8*60*60))},
+			testkit.FixedClock{Time: expectedOccurredAt},
 			testkit.NewSequenceIDs(),
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return eventstoretest.Harness{
-			Store: store, FailNextLoad: store.FailNextLoad, FailNextAppend: store.FailNextAppend,
+			Store:              store,
+			ExpectedOccurredAt: expectedOccurredAt,
+			FailNextLoad:       store.FailNextLoad,
+			FailNextAppend:     store.FailNextAppend,
 		}
 	})
 }
@@ -271,6 +275,72 @@ func TestEventIDsMustBeNonEmptyAndUniqueAcrossStream(t *testing.T) {
 	})
 }
 
+func TestEventIDsAreUniqueAcrossSessions(t *testing.T) {
+	store := mustStore(t, &countingClock{now: validTime()}, &countingIDs{
+		eventIDs: []domain.EventID{"event-global", "event-global"},
+	})
+	if _, err := store.Append(context.Background(), validCreateRequest("session-global-a", "command-global-a")); err != nil {
+		t.Fatalf("Append(Session A) error = %v", err)
+	}
+	_, err := store.Append(context.Background(), validCreateRequest("session-global-b", "command-global-b"))
+	assertDuplicateEventIDError(t, err)
+
+	loadedA, err := store.Load(context.Background(), "session-global-a")
+	if err != nil || len(loadedA) != 1 || loadedA[0].ID != "event-global" {
+		t.Fatalf("Load(Session A) = (%#v, %v), want original committed record", loadedA, err)
+	}
+	loadedB, err := store.Load(context.Background(), "session-global-b")
+	if err != nil || len(loadedB) != 0 {
+		t.Fatalf("Load(Session B) = (%#v, %v), want unchanged empty stream", loadedB, err)
+	}
+}
+
+func TestUncommittedEventIDsCanBeReused(t *testing.T) {
+	t.Run("replay failure", func(t *testing.T) {
+		store := mustStore(t, &countingClock{now: validTime()}, &countingIDs{
+			eventIDs: []domain.EventID{"event-replay-reusable", "event-replay-reusable"},
+		})
+		_, err := store.Append(context.Background(), application.AppendRequest{
+			SessionID: "session-replay-uncommitted", CommandID: "command-replay-uncommitted",
+			Events: []domain.Event{domain.TurnStarted{TurnID: "turn-without-session", Input: "hello"}},
+		})
+		if err == nil {
+			t.Fatal("Append(invalid candidate) error = nil, want replay failure")
+		}
+		recorded, err := store.Append(context.Background(), validCreateRequest("session-replay-reuse", "command-replay-reuse"))
+		if err != nil {
+			t.Fatalf("Append(reused ID) error = %v", err)
+		}
+		if len(recorded) != 1 || recorded[0].ID != "event-replay-reusable" {
+			t.Fatalf("Append(reused ID) = %#v, want reusable uncommitted ID", recorded)
+		}
+	})
+
+	t.Run("late cancellation", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		ids := &cancelFirstEventIDs{
+			IDGenerator: testkit.NewSequenceIDs(),
+			cancel:      cancel,
+			eventID:     "event-canceled-reusable",
+		}
+		store, err := NewEventStore(testkit.FixedClock{Time: validTime()}, ids)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = store.Append(ctx, validCreateRequest("session-canceled-uncommitted", "command-canceled-uncommitted"))
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Append(canceled candidate) error = %v, want context.Canceled", err)
+		}
+		recorded, err := store.Append(context.Background(), validCreateRequest("session-canceled-reuse", "command-canceled-reuse"))
+		if err != nil {
+			t.Fatalf("Append(reused canceled ID) error = %v", err)
+		}
+		if len(recorded) != 1 || recorded[0].ID != "event-canceled-reusable" {
+			t.Fatalf("Append(reused canceled ID) = %#v, want reusable uncommitted ID", recorded)
+		}
+	})
+}
+
 func TestReplayFailureLeavesStreamUnchanged(t *testing.T) {
 	clock := &countingClock{now: validTime()}
 	ids := &countingIDs{}
@@ -489,6 +559,21 @@ type cancelingIDs struct {
 	cancel context.CancelFunc
 }
 
+type cancelFirstEventIDs struct {
+	application.IDGenerator
+	cancel  context.CancelFunc
+	eventID domain.EventID
+	calls   int
+}
+
+func (ids *cancelFirstEventIDs) NewEventID() (domain.EventID, error) {
+	ids.calls++
+	if ids.calls == 1 {
+		ids.cancel()
+	}
+	return ids.eventID, nil
+}
+
 func (ids *cancelingIDs) NewEventID() (domain.EventID, error) {
 	eventID, err := ids.IDGenerator.NewEventID()
 	ids.cancel()
@@ -535,5 +620,19 @@ func assertSourceCause(t *testing.T, err error, want *sourceError) {
 	}
 	if !application.IsCategory(err, application.CategoryPersistence) {
 		t.Fatalf("error category = %v, want persistence", err)
+	}
+}
+
+func assertDuplicateEventIDError(t *testing.T, err error) {
+	t.Helper()
+	var applicationError *application.Error
+	if !errors.As(err, &applicationError) {
+		t.Fatalf("Append() error = %v, want *application.Error", err)
+	}
+	if applicationError.Category != application.CategoryPersistence || applicationError.Code != "event_store_duplicate_event_id" {
+		t.Fatalf("Append() application error = %#v, want persistence/event_store_duplicate_event_id", applicationError)
+	}
+	if got, want := err.Error(), "persistence/event_store_duplicate_event_id (terminal_committed=false)"; got != want {
+		t.Fatalf("Append() error text = %q, want stable %q", got, want)
 	}
 }

@@ -13,9 +13,10 @@ import (
 )
 
 type Harness struct {
-	Store          application.EventStore
-	FailNextLoad   func(domain.SessionID, error)
-	FailNextAppend func(domain.SessionID, error)
+	Store              application.EventStore
+	ExpectedOccurredAt time.Time
+	FailNextLoad       func(domain.SessionID, error)
+	FailNextAppend     func(domain.SessionID, error)
 }
 
 type Factory func(*testing.T) Harness
@@ -48,7 +49,7 @@ func testContiguousMetadataAndLoad(t *testing.T, harness Harness) {
 	if len(first) != 2 {
 		t.Fatalf("first Append() records = %d, want 2", len(first))
 	}
-	assertBatchMetadata(t, first, sessionID, "command-contract-first", 1)
+	assertBatchMetadata(t, first, sessionID, "command-contract-first", 1, harness.ExpectedOccurredAt)
 
 	second, err := harness.Store.Append(ctx, application.AppendRequest{
 		SessionID: sessionID, ExpectedVersion: 2, CommandID: "command-contract-second",
@@ -64,7 +65,7 @@ func testContiguousMetadataAndLoad(t *testing.T, harness Harness) {
 	if len(second) != 3 {
 		t.Fatalf("second Append() records = %d, want only the 3 newly recorded events", len(second))
 	}
-	assertBatchMetadata(t, second, sessionID, "command-contract-second", 3)
+	assertBatchMetadata(t, second, sessionID, "command-contract-second", 3, harness.ExpectedOccurredAt)
 
 	loaded, err := harness.Store.Load(ctx, sessionID)
 	if err != nil {
@@ -76,6 +77,9 @@ func testContiguousMetadataAndLoad(t *testing.T, harness Harness) {
 	for index, record := range loaded {
 		if want := uint64(index + 1); record.Sequence != want {
 			t.Errorf("loaded record %d sequence = %d, want %d", index, record.Sequence, want)
+		}
+		if want := harness.ExpectedOccurredAt.UTC(); record.OccurredAt != want {
+			t.Errorf("loaded record %d timestamp = %v, want exact injected instant %v", index, record.OccurredAt, want)
 		}
 	}
 	absent, err := harness.Store.Load(ctx, "session-contract-absent")
@@ -247,12 +251,12 @@ func testDefensiveCopies(t *testing.T, harness Harness) {
 
 func requireHarness(t *testing.T, harness Harness) {
 	t.Helper()
-	if harness.Store == nil || harness.FailNextLoad == nil || harness.FailNextAppend == nil {
+	if harness.Store == nil || harness.ExpectedOccurredAt.IsZero() || harness.FailNextLoad == nil || harness.FailNextAppend == nil {
 		t.Fatalf("incomplete EventStore harness: %#v", harness)
 	}
 }
 
-func assertBatchMetadata(t *testing.T, records []domain.RecordedEvent, sessionID domain.SessionID, commandID domain.CommandID, firstSequence uint64) {
+func assertBatchMetadata(t *testing.T, records []domain.RecordedEvent, sessionID domain.SessionID, commandID domain.CommandID, firstSequence uint64, expectedOccurredAt time.Time) {
 	t.Helper()
 	ids := make(map[domain.EventID]struct{}, len(records))
 	var occurredAt time.Time
@@ -275,6 +279,9 @@ func assertBatchMetadata(t *testing.T, records []domain.RecordedEvent, sessionID
 		ids[record.ID] = struct{}{}
 		if record.OccurredAt.Location() != time.UTC {
 			t.Errorf("record %d timestamp location = %v, want UTC", index, record.OccurredAt.Location())
+		}
+		if want := expectedOccurredAt.UTC(); record.OccurredAt != want {
+			t.Errorf("record %d timestamp = %v, want exact injected instant %v", index, record.OccurredAt, want)
 		}
 		if index == 0 {
 			occurredAt = record.OccurredAt
