@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
@@ -120,7 +121,10 @@ func (service *Service) RunTurn(ctx context.Context, request RunTurnRequest) (Ru
 		MaxAssistantBytes: service.config.MaxAssistantBytes,
 	}, emitter)
 	if err != nil {
-		return cloneRunTurnResult(runningResult), mapRunError(err)
+		cleanupBase := context.WithoutCancel(ctx)
+		cleanupCtx, cancel := context.WithTimeout(cleanupBase, service.config.TerminalCommitTimeout)
+		defer cancel()
+		return service.terminalizeExecutionFailure(cleanupCtx, ctx, runningState, runningResult, commandID, emitter, err)
 	}
 
 	decided, err = domain.Decide(runningState, domain.CompleteAssistantTurn{
@@ -134,6 +138,13 @@ func (service *Service) RunTurn(ctx context.Context, request RunTurnRequest) (Ru
 	}
 	_, terminalRecords, err := service.appendAndApply(ctx, request.SessionID, runningState, decided, commandID)
 	if err != nil {
+		if ctx.Err() != nil {
+			cleanupBase := context.WithoutCancel(ctx)
+			cleanupCtx, cancel := context.WithTimeout(cleanupBase, service.config.TerminalCommitTimeout)
+			defer cancel()
+			primary := applicationError(CategoryCanceled, "canceled", false, errors.Join(ctx.Err(), err))
+			return service.terminalizeExecutionFailure(cleanupCtx, ctx, runningState, runningResult, commandID, emitter, primary)
+		}
 		return cloneRunTurnResult(runningResult), err
 	}
 	completedResult := RunTurnResult{
@@ -152,6 +163,128 @@ func (service *Service) RunTurn(ctx context.Context, request RunTurnRequest) (Ru
 		return runTurnDeliveryFailure(completedResult, err)
 	}
 	return cloneRunTurnResult(completedResult), nil
+}
+
+func (service *Service) terminalizeExecutionFailure(
+	cleanupCtx context.Context,
+	deliveryCtx context.Context,
+	runningState domain.Session,
+	runningResult RunTurnResult,
+	commandID domain.CommandID,
+	emitter *engine.Emitter,
+	executionCause error,
+) (RunTurnResult, error) {
+	primary := mapExecutionError(executionCause)
+	terminalCommand, status, terminalSignal, stableCode := terminalCommandForExecution(
+		runningResult,
+		primary,
+	)
+	decided, err := domain.Decide(runningState, terminalCommand)
+	if err != nil {
+		return cloneRunTurnResult(runningResult), applicationError(
+			CategoryInternal,
+			"domain_transition_failed",
+			false,
+			errors.Join(executionCause, err),
+		)
+	}
+	_, terminalRecords, err := service.appendAndApply(
+		cleanupCtx,
+		runningResult.SessionID,
+		runningState,
+		decided,
+		commandID,
+	)
+	if err != nil {
+		return cloneRunTurnResult(runningResult), terminalizationError(err, executionCause)
+	}
+
+	terminalResult := runningResult
+	terminalResult.Status = status
+	terminalResult.Text = ""
+	terminalResult.TerminalCommitted = true
+	terminalResult.Records = concatenateRunTurnRecords(runningResult.Records, terminalRecords)
+
+	committedError := applicationError(primary.Category, primary.Code, true, executionCause)
+	if err := emitter.Emit(deliveryCtx, engine.RuntimePayload{Type: engine.RuntimeAppendCompleted}); err != nil {
+		return terminalExecutionDeliveryFailure(terminalResult, committedError, err)
+	}
+	if err := emitter.Emit(deliveryCtx, engine.RuntimePayload{Type: terminalSignal, Code: stableCode}); err != nil {
+		return terminalExecutionDeliveryFailure(terminalResult, committedError, err)
+	}
+	return cloneRunTurnResult(terminalResult), committedError
+}
+
+func mapExecutionError(cause error) *Error {
+	var existing *Error
+	if errors.As(cause, &existing) && existing != nil {
+		return existing
+	}
+	mapped, _ := mapRunError(cause).(*Error)
+	return mapped
+}
+
+func terminalCommandForExecution(result RunTurnResult, primary *Error) (domain.Command, domain.TurnStatus, engine.RuntimeEventType, string) {
+	if primary.Category == CategoryCanceled {
+		return domain.InterruptAssistantTurn{
+			SessionID: result.SessionID,
+			TurnID:    result.TurnID,
+			ItemID:    result.ItemID,
+			Code:      domain.InterruptionCallerCanceled,
+			Message:   "",
+		}, domain.TurnStatusInterrupted, engine.RuntimeModelStreamInterrupted, domain.InterruptionCallerCanceled
+	}
+	if primary.Category == CategoryDelivery {
+		return domain.InterruptAssistantTurn{
+			SessionID: result.SessionID,
+			TurnID:    result.TurnID,
+			ItemID:    result.ItemID,
+			Code:      domain.InterruptionDeliveryFailed,
+			Message:   "",
+		}, domain.TurnStatusInterrupted, engine.RuntimeModelStreamInterrupted, domain.InterruptionDeliveryFailed
+	}
+	code, message := durableFailure(primary)
+	return domain.FailAssistantTurn{
+		SessionID: result.SessionID,
+		TurnID:    result.TurnID,
+		ItemID:    result.ItemID,
+		Code:      code,
+		Message:   message,
+	}, domain.TurnStatusFailed, engine.RuntimeModelStreamFailed, code
+}
+
+func durableFailure(primary *Error) (string, string) {
+	switch primary.Code {
+	case string(engine.CodeModelStartup):
+		return string(engine.CodeModelStartup), "model failed before streaming"
+	case string(engine.CodeModelStream):
+		return string(engine.CodeModelStream), "model stream failed"
+	case string(engine.CodeOutputLimit):
+		return string(engine.CodeOutputLimit), "assistant output exceeded limit"
+	case string(engine.CodeInvalidStream):
+		return string(engine.CodeInvalidStream), "model stream violated contract"
+	default:
+		return "model_failure", "model failed"
+	}
+}
+
+func terminalizationError(terminalCause error, executionCause error) error {
+	var terminal *Error
+	if errors.As(terminalCause, &terminal) && terminal != nil {
+		return applicationError(terminal.Category, terminal.Code, false, errors.Join(executionCause, terminalCause))
+	}
+	return applicationError(CategoryInternal, "terminalization_failed", false, errors.Join(executionCause, terminalCause))
+}
+
+func terminalExecutionDeliveryFailure(result RunTurnResult, primary *Error, cause error) (RunTurnResult, error) {
+	warning := runtimeDeliveryCause(cause)
+	result.DeliveryWarning = warning
+	return cloneRunTurnResult(result), applicationError(
+		primary.Category,
+		primary.Code,
+		true,
+		errors.Join(primary.Cause, warning),
+	)
 }
 
 func validRunTurnRequest(request RunTurnRequest) bool {
@@ -190,12 +323,17 @@ func runErrorCode(cause error) string {
 }
 
 func runTurnDeliveryFailure(result RunTurnResult, cause error) (RunTurnResult, error) {
-	warning := cause
-	if engineError, ok := cause.(*engine.Error); ok && engineError != nil && engineError.Cause != nil {
-		warning = engineError.Cause
-	}
+	warning := runtimeDeliveryCause(cause)
 	result.DeliveryWarning = warning
 	return cloneRunTurnResult(result), applicationError(CategoryDelivery, "runtime_delivery_failed", true, warning)
+}
+
+func runtimeDeliveryCause(cause error) error {
+	var engineError *engine.Error
+	if errors.As(cause, &engineError) && engineError != nil && engineError.Cause != nil {
+		return engineError.Cause
+	}
+	return cause
 }
 
 func concatenateRunTurnRecords(batches ...[]domain.RecordedEvent) []domain.RecordedEvent {
