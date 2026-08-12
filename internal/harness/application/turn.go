@@ -124,7 +124,7 @@ func (service *Service) RunTurn(ctx context.Context, request RunTurnRequest) (Ru
 		cleanupBase := context.WithoutCancel(ctx)
 		cleanupCtx, cancel := context.WithTimeout(cleanupBase, service.config.TerminalCommitTimeout)
 		defer cancel()
-		return service.terminalizeExecutionFailure(cleanupCtx, ctx, runningState, runningResult, commandID, emitter, err)
+		return service.terminalizeExecutionFailure(cleanupCtx, ctx, runningState, runningResult, commandID, emitter, mapRunError(err), err)
 	}
 
 	decided, err = domain.Decide(runningState, domain.CompleteAssistantTurn{
@@ -143,7 +143,7 @@ func (service *Service) RunTurn(ctx context.Context, request RunTurnRequest) (Ru
 			cleanupCtx, cancel := context.WithTimeout(cleanupBase, service.config.TerminalCommitTimeout)
 			defer cancel()
 			primary := applicationError(CategoryCanceled, "canceled", false, errors.Join(ctx.Err(), err))
-			return service.terminalizeExecutionFailure(cleanupCtx, ctx, runningState, runningResult, commandID, emitter, primary)
+			return service.terminalizeExecutionFailure(cleanupCtx, ctx, runningState, runningResult, commandID, emitter, primary, primary)
 		}
 		return cloneRunTurnResult(runningResult), err
 	}
@@ -172,9 +172,9 @@ func (service *Service) terminalizeExecutionFailure(
 	runningResult RunTurnResult,
 	commandID domain.CommandID,
 	emitter *engine.Emitter,
+	primary *Error,
 	executionCause error,
 ) (RunTurnResult, error) {
-	primary := mapExecutionError(executionCause)
 	terminalCommand, status, terminalSignal, stableCode := terminalCommandForExecution(
 		runningResult,
 		primary,
@@ -196,6 +196,7 @@ func (service *Service) terminalizeExecutionFailure(
 		commandID,
 	)
 	if err != nil {
+		err = mapTerminalCleanupAppendError(cleanupCtx, err)
 		return cloneRunTurnResult(runningResult), terminalizationError(err, executionCause)
 	}
 
@@ -213,15 +214,6 @@ func (service *Service) terminalizeExecutionFailure(
 		return terminalExecutionDeliveryFailure(terminalResult, committedError, err)
 	}
 	return cloneRunTurnResult(terminalResult), committedError
-}
-
-func mapExecutionError(cause error) *Error {
-	var existing *Error
-	if errors.As(cause, &existing) && existing != nil {
-		return existing
-	}
-	mapped, _ := mapRunError(cause).(*Error)
-	return mapped
 }
 
 func terminalCommandForExecution(result RunTurnResult, primary *Error) (domain.Command, domain.TurnStatus, engine.RuntimeEventType, string) {
@@ -276,6 +268,14 @@ func terminalizationError(terminalCause error, executionCause error) error {
 	return applicationError(CategoryInternal, "terminalization_failed", false, errors.Join(executionCause, terminalCause))
 }
 
+func mapTerminalCleanupAppendError(cleanupCtx context.Context, cause error) error {
+	applicationCause, ok := cause.(*Error)
+	if cleanupCtx.Err() != nil && ok && applicationCause != nil && applicationCause.Category == CategoryCanceled {
+		return applicationError(CategoryPersistence, "append_failed", false, cause)
+	}
+	return cause
+}
+
 func terminalExecutionDeliveryFailure(result RunTurnResult, primary *Error, cause error) (RunTurnResult, error) {
 	warning := runtimeDeliveryCause(cause)
 	result.DeliveryWarning = warning
@@ -294,32 +294,25 @@ func validRunTurnRequest(request RunTurnRequest) bool {
 	return validRequiredText(request.Input) && !isNilValue(request.Sink)
 }
 
-func mapRunError(cause error) error {
-	switch {
-	case engine.IsCode(cause, engine.CodeCanceled):
-		return applicationError(CategoryCanceled, "canceled", false, cause)
-	case engine.IsCode(cause, engine.CodeOutputLimit):
-		return applicationError(CategoryOutputLimit, string(engine.CodeOutputLimit), false, cause)
-	case engine.IsCode(cause, engine.CodeDelivery):
-		return applicationError(CategoryDelivery, "runtime_delivery_failed", false, cause)
-	case engine.IsCode(cause, engine.CodeInvalidRequest):
+func mapRunError(cause error) *Error {
+	runnerError, ok := cause.(*engine.Error)
+	if !ok || runnerError == nil {
 		return applicationError(CategoryInternal, "engine_contract_violation", false, cause)
+	}
+	switch runnerError.Code {
+	case engine.CodeCanceled:
+		return applicationError(CategoryCanceled, "canceled", false, cause)
+	case engine.CodeOutputLimit:
+		return applicationError(CategoryOutputLimit, string(engine.CodeOutputLimit), false, cause)
+	case engine.CodeDelivery:
+		return applicationError(CategoryDelivery, "runtime_delivery_failed", false, cause)
+	case engine.CodeInvalidRequest:
+		return applicationError(CategoryInternal, "engine_contract_violation", false, cause)
+	case engine.CodeModelStartup, engine.CodeModelStream, engine.CodeInvalidStream:
+		return applicationError(CategoryModel, string(runnerError.Code), false, cause)
 	default:
-		return applicationError(CategoryModel, runErrorCode(cause), false, cause)
+		return applicationError(CategoryInternal, "engine_contract_violation", false, cause)
 	}
-}
-
-func runErrorCode(cause error) string {
-	for _, code := range []engine.ErrorCode{
-		engine.CodeModelStartup,
-		engine.CodeModelStream,
-		engine.CodeInvalidStream,
-	} {
-		if engine.IsCode(cause, code) {
-			return string(code)
-		}
-	}
-	return "model_failure"
 }
 
 func runTurnDeliveryFailure(result RunTurnResult, cause error) (RunTurnResult, error) {

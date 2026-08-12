@@ -91,6 +91,50 @@ func TestRunTurnModelOutputFailureCommitsStableFailedPair(t *testing.T) {
 	}
 }
 
+func TestRunTurnRunnerEngineCodeRemainsAuthorityOverProviderApplicationError(t *testing.T) {
+	injected := &application.Error{Category: application.CategoryCanceled, Code: "provider_injected", TerminalCommitted: true}
+	providerCause := errors.Join(errors.New("provider startup failed"), injected)
+	store := newTurnMemoryStore(t)
+	model, err := testkit.NewScriptedModel(
+		engine.ModelRequest{SessionID: "session-1", TurnID: "turn-1", ItemID: "item-1", Input: "inspect"},
+		testkit.ScriptedModelConfig{StartupError: providerCause},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := newTurnService(t, store, testkit.NewSequenceIDs(), model)
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, Input: "inspect", Sink: &testkit.RecordingSink{}})
+	assertRunTurnError(t, err, application.CategoryModel, string(engine.CodeModelStartup), true)
+	if !errors.Is(err, injected) {
+		t.Fatalf("error = %v, want raw provider cause inspectable", err)
+	}
+	assertFailedPair(t, store, result, string(engine.CodeModelStartup), "model failed before streaming")
+}
+
+func TestRunTurnRunnerDeliveryCodeRemainsAuthorityOverSinkApplicationError(t *testing.T) {
+	injected := &application.Error{Category: application.CategoryModel, Code: "sink_injected", TerminalCommitted: true}
+	store := newTurnMemoryStore(t)
+	service := newTurnService(t, store, testkit.NewSequenceIDs(), &repeatingSuccessModel{text: "delta"})
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+		SessionID: created.SessionID,
+		Input:     "inspect",
+		Sink:      &testkit.RecordingSink{FailOrdinal: 1, Failure: injected},
+	})
+	assertRunTurnError(t, err, application.CategoryDelivery, "runtime_delivery_failed", true)
+	if !errors.Is(err, injected) {
+		t.Fatalf("error = %v, want raw sink cause inspectable", err)
+	}
+	assertInterruptedPair(t, store, result, domain.InterruptionDeliveryFailed)
+}
+
 func TestRunTurnEmptySuccessfulOutputIsCompleted(t *testing.T) {
 	store := newTurnMemoryStore(t)
 	model, err := testkit.NewScriptedModel(engine.ModelRequest{SessionID: "session-1", TurnID: "turn-1", ItemID: "item-1", Input: "inspect"}, testkit.ScriptedModelConfig{Steps: []testkit.ScriptedStep{{Event: engine.StreamEvent{Type: engine.StreamEventCompleted}}}})
@@ -168,7 +212,12 @@ func TestRunTurnDeliveryFailureBeforeTerminalCommitIsDurablyInterrupted(t *testi
 				t.Fatal(err)
 			}
 			cause := errors.New("sink offline")
-			result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, Input: "inspect", Sink: &testkit.RecordingSink{FailOrdinal: ordinal, Failure: cause}})
+			sink := &durableObservingSink{
+				RecordingSink: testkit.RecordingSink{FailOrdinal: ordinal, Failure: cause},
+				store:         store,
+				sessionID:     created.SessionID,
+			}
+			result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, Input: "inspect", Sink: sink})
 			assertRunTurnError(t, err, application.CategoryDelivery, "runtime_delivery_failed", true)
 			if !errors.Is(err, cause) {
 				t.Fatalf("error %v does not preserve sink cause", err)
@@ -177,6 +226,31 @@ func TestRunTurnDeliveryFailureBeforeTerminalCommitIsDurablyInterrupted(t *testi
 				t.Fatalf("error %v does not preserve close cause", err)
 			}
 			assertInterruptedPair(t, store, result, domain.InterruptionDeliveryFailed)
+			attempts, delivered := sink.Attempts(), sink.Delivered()
+			wantAttempts := []engine.RuntimeEventType{engine.RuntimeModelStreamStarted, engine.RuntimeAppendCompleted, engine.RuntimeModelStreamInterrupted}
+			wantDelivered := []engine.RuntimeEventType{engine.RuntimeAppendCompleted, engine.RuntimeModelStreamInterrupted}
+			if ordinal == 2 {
+				wantAttempts = []engine.RuntimeEventType{engine.RuntimeModelStreamStarted, engine.RuntimeModelTextDelta, engine.RuntimeAppendCompleted, engine.RuntimeModelStreamInterrupted}
+				wantDelivered = []engine.RuntimeEventType{engine.RuntimeModelStreamStarted, engine.RuntimeAppendCompleted, engine.RuntimeModelStreamInterrupted}
+			}
+			if got := runtimeEventTypes(attempts); !reflect.DeepEqual(got, wantAttempts) {
+				t.Fatalf("attempt types = %v, want %v", got, wantAttempts)
+			}
+			if got := runtimeEventTypes(delivered); !reflect.DeepEqual(got, wantDelivered) {
+				t.Fatalf("delivered types = %v, want %v", got, wantDelivered)
+			}
+			commandID := result.Records[0].CommandID
+			for index, event := range attempts {
+				if event.Ordinal != uint64(index+1) || event.SessionID != result.SessionID || event.TurnID != result.TurnID || event.ItemID != result.ItemID || event.CommandID != commandID {
+					t.Fatalf("attempt[%d] correlation/ordinal = %#v", index, event)
+				}
+				if event.Type == engine.RuntimeModelStreamInterrupted && event.Code != domain.InterruptionDeliveryFailed {
+					t.Fatalf("interrupted payload = %#v", event)
+				}
+			}
+			if !sink.ObservedDurableTerminalBeforeSignals() {
+				t.Fatal("terminal runtime delivery was not observed after the durable interrupted pair")
+			}
 		})
 	}
 }
@@ -263,6 +337,49 @@ func TestRunTurnTerminalCleanupFailureCategoriesPreserveExecutionCause(t *testin
 			assertRunningBoundary(t, base, result)
 		})
 	}
+}
+
+func TestRunTurnTerminalCleanupTimeoutIsPersistenceNotCallerCancellation(t *testing.T) {
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	model, err := testkit.NewScriptedModel(
+		engine.ModelRequest{SessionID: "session-1", TurnID: "turn-1", ItemID: "item-1", Input: "inspect"},
+		testkit.ScriptedModelConfig{Steps: []testkit.ScriptedStep{{Entered: entered, Release: release, Event: engine.StreamEvent{Type: engine.StreamEventCompleted}}}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := newTurnMemoryStore(t)
+	store := &blockingTerminalCleanupStore{EventStore: base}
+	config := application.DefaultConfig()
+	config.TerminalCommitTimeout = time.Millisecond
+	service := newTurnServiceWithConfig(t, store, testkit.NewSequenceIDs(), model, config)
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	type outcome struct {
+		result application.RunTurnResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, runErr := service.RunTurn(ctx, application.RunTurnRequest{SessionID: created.SessionID, Input: "inspect", Sink: &testkit.RecordingSink{}})
+		done <- outcome{result, runErr}
+	}()
+	<-entered
+	cancel()
+	close(release)
+	got := <-done
+	assertRunTurnError(t, got.err, application.CategoryPersistence, "append_failed", false)
+	if !errors.Is(got.err, context.Canceled) || !errors.Is(got.err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want caller cancellation and cleanup deadline causes", got.err)
+	}
+	if !store.SawLiveBoundedContext() {
+		t.Fatal("terminal cleanup Store did not receive a live bounded context detached from the caller")
+	}
+	assertRunningBoundary(t, base, got.result)
 }
 
 func TestRunTurnCompletedAppendCancellationFallsBackOnceToInterrupted(t *testing.T) {
@@ -526,6 +643,102 @@ func TestRunTurnConcurrentSameSessionHasOneAdmissionWinner(t *testing.T) {
 	}
 }
 
+func TestRunTurnModelCompletionRacingCallerCancelCommitsExactlyOneTerminalPair(t *testing.T) {
+	const iterations = 32
+	for iteration := 0; iteration < iterations; iteration++ {
+		entered := make(chan struct{}, 1)
+		releaseModel := make(chan struct{})
+		model, err := testkit.NewScriptedModel(
+			engine.ModelRequest{SessionID: "session-1", TurnID: "turn-1", ItemID: "item-1", Input: "inspect"},
+			testkit.ScriptedModelConfig{Steps: []testkit.ScriptedStep{{Entered: entered, Release: releaseModel, Event: engine.StreamEvent{Type: engine.StreamEventCompleted}}}},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		base := newTurnMemoryStore(t)
+		store := &turnRecordingStore{EventStore: base}
+		service := newTurnService(t, store, testkit.NewSequenceIDs(), model)
+		created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		sink := &testkit.RecordingSink{}
+		type outcome struct {
+			result application.RunTurnResult
+			err    error
+		}
+		done := make(chan outcome, 1)
+		go func() {
+			result, runErr := service.RunTurn(ctx, application.RunTurnRequest{SessionID: created.SessionID, Input: "inspect", Sink: sink})
+			done <- outcome{result, runErr}
+		}()
+		<-entered
+		raceGate := make(chan struct{})
+		released := make(chan struct{}, 2)
+		go func() { <-raceGate; close(releaseModel); released <- struct{}{} }()
+		go func() { <-raceGate; cancel(); released <- struct{}{} }()
+		close(raceGate)
+		<-released
+		<-released
+		got := <-done
+		durable, loadErr := base.Load(context.Background(), created.SessionID)
+		if loadErr != nil {
+			t.Fatal(loadErr)
+		}
+		if len(durable) != 5 || len(got.result.Records) != 4 || !got.result.TerminalCommitted {
+			t.Fatalf("iteration %d: durable=%#v result=%#v err=%v", iteration, durable, got.result, got.err)
+		}
+		types := turnEventTypes(durable)
+		completed := reflect.DeepEqual(types[3:], []string{domain.EventAssistantMessageCompleted, domain.EventTurnCompleted})
+		interrupted := reflect.DeepEqual(types[3:], []string{domain.EventAssistantMessageInterrupted, domain.EventTurnInterrupted})
+		if completed == interrupted {
+			t.Fatalf("iteration %d: terminal types = %v, want exactly one completed or interrupted pair", iteration, types)
+		}
+		if completed {
+			if got.result.Status != domain.TurnStatusCompleted || (got.err != nil && !application.IsCategory(got.err, application.CategoryDelivery)) {
+				t.Fatalf("iteration %d: completed result=%#v err=%v", iteration, got.result, got.err)
+			}
+		} else {
+			assertRunTurnError(t, got.err, application.CategoryCanceled, "canceled", true)
+			if got.result.Status != domain.TurnStatusInterrupted {
+				t.Fatalf("iteration %d: interrupted result=%#v", iteration, got.result)
+			}
+		}
+		requests := store.AppendRequests()
+		if len(requests) != 3 && len(requests) != 4 {
+			t.Fatalf("iteration %d: append attempts=%d, want create/admission/terminal with at most one authorized fallback", iteration, len(requests))
+		}
+		terminalAttempts := make([]string, 0, 2)
+		for _, request := range requests[2:] {
+			terminalAttempts = append(terminalAttempts, request.Events[0].EventType())
+		}
+		if len(terminalAttempts) == 2 && !reflect.DeepEqual(terminalAttempts, []string{domain.EventAssistantMessageCompleted, domain.EventAssistantMessageInterrupted}) {
+			t.Fatalf("iteration %d: terminal attempts=%v, want only authorized completed-to-interrupted fallback", iteration, terminalAttempts)
+		}
+		if completed && !reflect.DeepEqual(terminalAttempts, []string{domain.EventAssistantMessageCompleted}) {
+			t.Fatalf("iteration %d: completed durable result with terminal attempts=%v", iteration, terminalAttempts)
+		}
+		if interrupted && !reflect.DeepEqual(terminalAttempts, []string{domain.EventAssistantMessageInterrupted}) &&
+			!reflect.DeepEqual(terminalAttempts, []string{domain.EventAssistantMessageCompleted, domain.EventAssistantMessageInterrupted}) {
+			t.Fatalf("iteration %d: interrupted durable result with terminal attempts=%v", iteration, terminalAttempts)
+		}
+		runtimeTypes := runtimeEventTypes(sink.Attempts())
+		completedSignals, interruptedSignals := 0, 0
+		for _, eventType := range runtimeTypes {
+			if eventType == engine.RuntimeModelStreamCompleted {
+				completedSignals++
+			}
+			if eventType == engine.RuntimeModelStreamInterrupted {
+				interruptedSignals++
+			}
+		}
+		if completedSignals > 1 || interruptedSignals > 1 || (completedSignals > 0 && interruptedSignals > 0) {
+			t.Fatalf("iteration %d: runtime terminal signals=%v", iteration, runtimeTypes)
+		}
+	}
+}
+
 func TestRunTurnAndCloseSessionRaceHasOneCASWinner(t *testing.T) {
 	base := newTurnMemoryStore(t)
 	seed := newTurnService(t, base, testkit.NewSequenceIDs(), &repeatingSuccessModel{})
@@ -745,6 +958,62 @@ func (store *invalidTerminalReturnStore) Append(ctx context.Context, request app
 		}
 	}
 	return records, nil
+}
+
+type blockingTerminalCleanupStore struct {
+	application.EventStore
+	mu             sync.Mutex
+	sawLiveBounded bool
+}
+
+func (store *blockingTerminalCleanupStore) Append(ctx context.Context, request application.AppendRequest) ([]domain.RecordedEvent, error) {
+	if len(request.Events) == 0 || (request.Events[0].EventType() != domain.EventAssistantMessageFailed && request.Events[0].EventType() != domain.EventAssistantMessageInterrupted) {
+		return store.EventStore.Append(ctx, request)
+	}
+	_, bounded := ctx.Deadline()
+	store.mu.Lock()
+	store.sawLiveBounded = ctx.Err() == nil && bounded
+	store.mu.Unlock()
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (store *blockingTerminalCleanupStore) SawLiveBoundedContext() bool {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return store.sawLiveBounded
+}
+
+type durableObservingSink struct {
+	testkit.RecordingSink
+	store     application.EventStore
+	sessionID domain.SessionID
+
+	mu       sync.Mutex
+	observed int
+	valid    bool
+}
+
+func (sink *durableObservingSink) Emit(ctx context.Context, event engine.RuntimeEvent) error {
+	if event.Type == engine.RuntimeAppendCompleted || event.Type == engine.RuntimeModelStreamInterrupted {
+		records, err := sink.store.Load(context.Background(), sink.sessionID)
+		types := turnEventTypes(records)
+		valid := err == nil && len(types) == 5 && reflect.DeepEqual(types[3:], []string{domain.EventAssistantMessageInterrupted, domain.EventTurnInterrupted})
+		sink.mu.Lock()
+		if sink.observed == 0 {
+			sink.valid = true
+		}
+		sink.observed++
+		sink.valid = sink.valid && valid
+		sink.mu.Unlock()
+	}
+	return sink.RecordingSink.Emit(ctx, event)
+}
+
+func (sink *durableObservingSink) ObservedDurableTerminalBeforeSignals() bool {
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	return sink.observed == 2 && sink.valid
 }
 
 type cancelCompletedAppendStore struct {
