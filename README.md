@@ -16,7 +16,7 @@ and the [foundational architecture charter](docs/superpowers/specs/2026-08-11-op
 ## Current status
 
 - Domain events and the Session/Turn state machine: implemented and verified.
-- Industrial Engine vertical slice: design under review.
+- Industrial Engine vertical slice: design accepted; implementation plan ready.
 - Provider, Tool/Policy, ACP, TUI, persistence, and recovery milestones: not yet implemented.
 
 ## Development

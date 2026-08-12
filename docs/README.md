@@ -28,15 +28,17 @@ test-only production branches for the capabilities it does deliver.
 | --- | --- | --- | --- |
 | Accepted | Normative charter | [Foundational architecture](superpowers/specs/2026-08-11-open-code-harness-architecture-design.md) | Product positioning, system boundaries, protocol choices, quality attributes, and milestone order |
 | Implemented | Implemented contract | [Domain events and state machine](architecture/domain-events.md) | Current Session/Turn commands, events, errors, invariants, codec, and replay rules |
-| Proposed | Normative after approval | [Industrial Engine vertical slice](superpowers/specs/2026-08-12-engine-vertical-slice-design.md) | Application/Engine boundary, formal ports, deterministic adapters, atomic event flow, failure semantics, and acceptance criteria |
-| Proposed | Reading copy | [工业级 Engine 最小纵切](superpowers/specs/2026-08-12-engine-vertical-slice-design.zh-CN.md) | Chinese synchronized reading copy of the Engine design |
+| Accepted | Normative design | [Industrial Engine vertical slice](superpowers/specs/2026-08-12-engine-vertical-slice-design.md) | Application/Engine boundary, formal ports, deterministic adapters, atomic event flow, failure semantics, and acceptance criteria |
+| Accepted | Reading copy | [工业级 Engine 最小纵切](superpowers/specs/2026-08-12-engine-vertical-slice-design.zh-CN.md) | Chinese synchronized reading copy of the Engine design |
+| Ready | Plan | [Engine vertical slice implementation plan](superpowers/plans/2026-08-12-engine-vertical-slice.md) | Ten independently testable tasks for domain Items, ports, adapters, Engine, application orchestration, concurrency, and evidence |
+| Ready | Reading copy | [Engine 纵切实施计划中文阅读版](superpowers/plans/2026-08-12-engine-vertical-slice.zh-CN.md) | Chinese synchronized execution guide for the Engine plan |
 | Complete | Plan | [Domain implementation plan](superpowers/plans/2026-08-11-domain-events-state-machine.md) | Completed Task 1–8 implementation sequence |
 | Complete | Reading copy | [领域实施计划中文阅读版](superpowers/plans/2026-08-11-domain-events-state-machine.zh-CN.md) | Chinese synchronized reading copy of the completed plan |
 
 ## Milestone status
 
 1. **Harness domain, events, Session/Turn state machine** — implemented.
-2. **Industrial Go Engine executable vertical slice** — specification under review.
+2. **Industrial Go Engine executable vertical slice** — design accepted; implementation plan ready.
 3. **Provider contract and first real provider** — not designed yet.
 4. **Tool Runtime, Policy, and minimal workspace tools** — not designed yet.
 5. **ACP v1 adapter and conformance** — not designed yet.

@@ -1,9 +1,9 @@
 # Industrial Engine Vertical Slice Design
 
-- Status: Proposed for user review
+- Status: Accepted by user
 - Date: 2026-08-12
 - Repository: `open-code-harness`
-- Authority: Normative after approval
+- Authority: Normative
 - Chinese reading copy: `2026-08-12-engine-vertical-slice-design.zh-CN.md`
 - Depends on: `2026-08-11-open-code-harness-architecture-design.md`
 - Builds on: `docs/architecture/domain-events.md`

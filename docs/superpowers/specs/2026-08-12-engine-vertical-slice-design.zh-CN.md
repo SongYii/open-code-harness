@@ -1,9 +1,9 @@
 # 工业级 Engine 最小纵切设计
 
-- 状态：提请用户评审
+- 状态：用户已接受
 - 日期：2026-08-12
 - 仓库：`open-code-harness`
-- 权威性：批准后成为规范性文档
+- 权威性：英文版为规范性文档
 - 英文规范版：`2026-08-12-engine-vertical-slice-design.md`
 - 依赖：`2026-08-11-open-code-harness-architecture-design.md`
 - 基于：`docs/architecture/domain-events.md`
