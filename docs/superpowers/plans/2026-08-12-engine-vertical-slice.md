@@ -73,6 +73,7 @@ This plan implements the approved `2026-08-12-engine-vertical-slice-design.md`: 
 | `internal/harness/application/testdata/run_turn_success.jsonl` | Exact successful execution trace fixture |
 | `docs/architecture/domain-events.md` | Updated domain catalog and invariants |
 | `docs/architecture/engine-vertical-slice.md` | Implemented Engine/application contract and evidence commands |
+| `docs/research/architecture-gates/2026-08-12-task-1-assistant-item-lifecycle.md` | Pre-implementation official-project evidence and Task 1 amendments |
 | `docs/README.md` | Authority and milestone status after implementation |
 
 ---
@@ -116,7 +117,8 @@ func TestApplyAssistantMessageLifecycle(t *testing.T) {
 	if err != nil { t.Fatalf("complete item: %v", err) }
 
 	item := state.Turns["turn-1"].Items["item-1"]
-	if item.Status != ItemStatusCompleted || item.Text != "你好, exact bytes\n" {
+	payload, ok := item.Payload.(AssistantMessagePayload)
+	if !ok || item.Status != ItemStatusCompleted || payload.Text != "你好, exact bytes\n" {
 		t.Fatalf("item = %#v", item)
 	}
 }
@@ -147,20 +149,32 @@ const (
 )
 
 type Item struct {
-	ID           ItemID
-	TurnID       TurnID
-	Kind         ItemKind
-	Status       ItemStatus
-	Text         string
-	StartedAt    time.Time
-	EndedAt      time.Time
-	FailureCode  string
-	FailureText  string
-	InterruptWhy string
+	ID        ItemID
+	TurnID    TurnID
+	Kind      ItemKind
+	Status    ItemStatus
+	Payload   ItemPayload
+	StartedAt time.Time
+	EndedAt   time.Time
+	Terminal  *ItemTerminal
+}
+
+type ItemPayload interface {
+	ItemKind() ItemKind
+	cloneItemPayload() ItemPayload
+}
+
+type AssistantMessagePayload struct { Text string }
+
+type ItemTerminal struct {
+	Code    string
+	Message string
 }
 ```
 
-Extend `Turn` with `ActiveItemID ItemID`, `ItemOrder []ItemID`, and `Items map[ItemID]Item`. Add `Turn.Clone()` and make `Session.Clone()` deep-copy every Turn and its Item containers.
+`ItemPayload` is a closed domain sum because `cloneItemPayload` is unexported; only domain-defined payloads can inhabit state. `AssistantMessagePayload.ItemKind()` returns `ItemKindAssistantMessage`. Running, failed, and interrupted assistant payloads have empty `Text`; only completed payloads contain final exact text. Running/completed Items have `Terminal == nil`; failed/interrupted Items require a stable terminal code and may carry a valid UTF-8 display message.
+
+Extend `Turn` with `ActiveItemID ItemID`, `ItemOrder []ItemID`, and `Items map[ItemID]Item`. Add `Turn.Clone()` and make `Session.Clone()` deep-copy every Turn, Item container, payload, and terminal pointer.
 
 Use these stable event names and value payloads:
 
@@ -175,12 +189,14 @@ const (
 type AssistantMessageStarted struct { TurnID TurnID `json:"turnID"`; ItemID ItemID `json:"itemID"` }
 type AssistantMessageCompleted struct { TurnID TurnID `json:"turnID"`; ItemID ItemID `json:"itemID"`; Text string `json:"text"` }
 type AssistantMessageFailed struct { TurnID TurnID `json:"turnID"`; ItemID ItemID `json:"itemID"`; Code string `json:"code"`; Message string `json:"message"` }
-type AssistantMessageInterrupted struct { TurnID TurnID `json:"turnID"`; ItemID ItemID `json:"itemID"`; Reason string `json:"reason"` }
+type AssistantMessageInterrupted struct { TurnID TurnID `json:"turnID"`; ItemID ItemID `json:"itemID"`; Code string `json:"code"`; Message string `json:"message"` }
 ```
 
 - [ ] **Step 4: Apply and clone the new recorded facts**
 
-`AssistantMessageStarted` requires the matching active running Turn, a new valid Item ID, and no active Item. It creates a running assistant Item and appends its ID to `ItemOrder`. Each terminal Item event requires the matching active Item, writes exactly one terminal status, clears `Turn.ActiveItemID`, preserves completed text byte-for-byte, and stores only stable failure/interruption strings.
+`AssistantMessageStarted` requires the matching active running Turn, a new valid Item ID, and no active Item. It creates a running assistant Item with `AssistantMessagePayload{}` and appends its ID to `ItemOrder`. Each terminal Item event requires the matching active Item, writes exactly one terminal status, clears `Turn.ActiveItemID`, preserves completed text byte-for-byte, and stores only stable terminal data.
+
+Before applying an Item event or Turn terminal event, validate the affected Turn's pre-state: Item order is unique and exactly covers the map; map keys equal `Item.ID`; every Item belongs to the Turn; kind, status, payload kind, timestamps, and terminal metadata are valid; at most one Item is running; and `ActiveItemID` identifies that Item iff one is running. Malformed pre-state returns `CodeInvalidEvent` without mutation.
 
 Implement `CloneEvent` with an exhaustive type switch over every current value event. `CloneRecordedEvents` allocates a new slice and clones each event; unknown event implementations return `CodeInvalidEvent` rather than sharing an opaque mutable value.
 
@@ -192,10 +208,12 @@ Add all four event types to `marshalEvent` and `unmarshalEvent`, using exactly t
 assistant.message.started:     turnID, itemID
 assistant.message.completed:   turnID, itemID, text
 assistant.message.failed:      turnID, itemID, code, message
-assistant.message.interrupted: turnID, itemID, reason
+assistant.message.interrupted: turnID, itemID, code, message
 ```
 
-Reject invalid IDs, invalid UTF-8, blank failure data, blank interruption reason, unknown keys, duplicate keys, missing keys, and wrong JSON types. Empty completed text remains valid; Task 6 fixes the Engine behavior for empty successful output.
+Reject invalid IDs, invalid UTF-8, blank failure/interruption codes, invalid display text, unknown keys, duplicate keys, missing keys, and wrong JSON types. Display `message` is required as a JSON key but may be empty. Empty completed text remains valid.
+
+Treat `schemaVersion: 1` as the envelope and strict payload encoding version, not a frozen event catalog. Add a compatibility test that reads every line of existing `testdata/session_lifecycle.jsonl`, decodes and replays to the prior semantic result, and re-marshals each decoded record to the exact original bytes.
 
 - [ ] **Step 6: Format, verify, and commit**
 
@@ -263,10 +281,10 @@ Expected: FAIL because the commands, codes, and fixture do not exist.
 type StartAssistantMessage struct { SessionID SessionID; TurnID TurnID; ItemID ItemID }
 type CompleteAssistantTurn struct { SessionID SessionID; TurnID TurnID; ItemID ItemID; Text string }
 type FailAssistantTurn struct { SessionID SessionID; TurnID TurnID; ItemID ItemID; Code string; Message string }
-type InterruptAssistantTurn struct { SessionID SessionID; TurnID TurnID; ItemID ItemID; Reason string }
+type InterruptAssistantTurn struct { SessionID SessionID; TurnID TurnID; ItemID ItemID; Code string; Message string }
 ```
 
-Give each command a stable command name and `TargetSessionID`. The three terminal commands return Item terminal first and Turn terminal second. They do not mutate state and they do not manufacture timestamps or IDs.
+Give each command a stable command name and `TargetSessionID`. The three terminal commands return Item terminal first and Turn terminal second. `InterruptAssistantTurn` emits `AssistantMessageInterrupted{Code, Message}` followed by existing `TurnInterrupted{Reason: Code}` so the Turn schema remains compatible. Stable initial interruption codes are `caller_canceled` and `runtime_delivery_failed`. Commands do not mutate state and do not manufacture timestamps or IDs.
 
 - [ ] **Step 4: Enforce running-Item invariants in decide and apply**
 
@@ -287,7 +305,7 @@ turn.interrupted
 session.closed
 ```
 
-Use one command ID for the Item-completed/Turn-completed pair and contiguous sequence values `1..8`. Assert replay produces a closed Session, a completed assistant Item with exact Unicode text, and an interrupted second Turn. Update `docs/architecture/domain-events.md` with the new commands, events, error codes, state machine, atomic batch invariant, and both canonical fixtures.
+Use one command ID and one exact occurrence timestamp for the Item-completed/Turn-completed pair, with contiguous sequence values `1..8`. Assert replay produces a closed Session, a completed assistant Item with exact Unicode text, and an interrupted second Turn. Update `docs/architecture/domain-events.md` with the new commands, events, error codes, state machine, atomic batch invariant, and both canonical fixtures.
 
 - [ ] **Step 6: Format, verify, and commit**
 
@@ -485,14 +503,14 @@ validate context, SessionID, CommandID, non-empty Events
 compare len(current records) with ExpectedVersion
 consume an injected pre-commit fault, if present
 clone and validate every Event
-generate every EventID and UTC timestamp into a local batch
+generate every EventID and one UTC timestamp shared by the local batch
 apply current + local batch through domain.Replay
 check context once more
 append the entire local batch to store state in one assignment
 return a defensive clone
 ```
 
-If ID generation, clock validation, cloning, replay, context, or fault injection fails before the assignment, store state is unchanged. Never retry CAS internally.
+Call `Clock.Now()` exactly once per append request after validation/fault checks and normalize it to UTC. Every batch record receives that same occurrence time, a distinct Event ID, the request Command ID, and a contiguous sequence. If ID generation, clock validation, cloning, replay, context, or fault injection fails before the assignment, store state is unchanged. Never retry CAS internally.
 
 - [ ] **Step 4: Add deterministic same-Session and independent-Session race tests**
 
@@ -1026,7 +1044,7 @@ cleanupBase := context.WithoutCancel(ctx)
 cleanupCtx, cancel := context.WithTimeout(cleanupBase, s.config.TerminalCommitTimeout)
 ```
 
-If the Item was not durable, decide `InterruptTurn` with reason `caller_canceled`; if it was durable, decide `InterruptAssistantTurn` with reason `caller_canceled`. For delivery failure before terminal commit, decide `InterruptAssistantTurn` with reason `runtime_delivery_failed`.
+If the Item was not durable, decide `InterruptTurn{Reason: "caller_canceled"}`; if it was durable, decide `InterruptAssistantTurn{Code: "caller_canceled", Message: ""}`. For delivery failure before terminal commit, decide `InterruptAssistantTurn{Code: "runtime_delivery_failed", Message: ""}`.
 
 Map Engine failure codes to durable values without storing provider prose:
 

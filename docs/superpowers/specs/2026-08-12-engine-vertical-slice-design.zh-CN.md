@@ -205,7 +205,8 @@ type AppendRequest struct {
 ```
 
 实现计划可以调整 Go 命名，但不能改变以下语义：按 `ExpectedVersion` 做 CAS；存储分配
-连续序号；元数据来自注入 ID 与时钟；一次 append 全成或全败；加载与返回记录做防御
+连续序号；元数据来自注入 ID 与时钟；每次 append 只调用一次时钟，同一批记录共享
+归一化后的 UTC 时间；一次 append 全成或全败；加载与返回记录做防御
 复制；提交前取消不写入；冲突命令不自动重试；确定性故障注入可在提交前失败且无部分
 状态。
 
@@ -240,11 +241,21 @@ running --assistant.message.completed--> completed
 
 约束如下：Item 只属于一个 Turn；仅活跃 running Turn 可启动 Item；本阶段最多一个
 assistant-message Item 运行；Item 恰有一个终态事件；Item 仍运行时 Turn 不得终结；
-成功文本逐字节持久保存；失败/中断保存稳定原因而非 provider 原生错误；map/slice
-遵循既有领域不可变规则。
+成功文本逐字节持久保存；通用 Item 只承载 identity/lifecycle，payload 使用 domain 内
+封闭的 kind-specific 类型，不能演化成所有 kind 字段的扁平袋；失败/中断必须保存稳定
+机器 code 和可选安全展示 message，而非 provider 原生错误；running/completed 不携带
+terminal metadata，failed/interrupted 不持久化部分 assistant 文本。
+
+每次 Item 或 Turn 终态转换前后，`ActiveItemID`、ItemOrder、Items map key、ownership、
+payload kind、timestamp 与 status 必须互相一致；损坏前置状态返回 `invalid_event`，不得
+静默修复。`caller_canceled` 和 `runtime_delivery_failed` 是首批稳定中断 code。
 
 `ModelAttempt`、usage、tool/reasoning/image Item 留待后续。这是范围控制，不允许把
 provider 专用数据塞进 assistant-message Item。
+
+记录事件的 `schemaVersion: 1` 版本化 envelope 与严格 payload 编码，并不冻结事件类型
+目录。pre-v0 内部事件可在保持既有事件字节和 replay 语义兼容时继续加入 v1；现有
+Session fixture 必须仍能解码、等价重放并逐记录按原字节重新编码。
 
 ### 4.7 核心同步执行并自然背压
 
@@ -308,7 +319,8 @@ caller
   → RunTurnResult
 ```
 
-终态 Item 与 Turn 事件在同一个原子批次 append。调用方绝不能看到缺少最终 message
+终态 Item 与 Turn 事件在同一个原子批次 append。Item 终态在前、Turn 终态在后，
+二者共享 command ID 和 occurrence timestamp。调用方绝不能看到缺少最终 message
 事实的 `turn.completed`。
 
 ### 6.2 模型启动失败

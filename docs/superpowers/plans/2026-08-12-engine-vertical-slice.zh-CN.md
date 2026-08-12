@@ -46,7 +46,7 @@
 | Adapter | `adapters/memory/event_store.go`：CAS、原子批次、防御复制、故障注入 |
 | Testkit | `clock.go`、`ids.go`、`scripted_model.go`、`recording_sink.go`：确定性正式适配器 |
 | Contract suites | `eventstoretest/suite.go`、`modeltest/suite.go`、`enginescenariotest/suite.go` |
-| Evidence | assistant/domain 与 RunTurn JSONL fixtures、并发/race/依赖边界测试、架构文档 |
+| Evidence | Task 1 顶级项目架构门、assistant/domain 与 RunTurn JSONL fixtures、并发/race/依赖边界测试、架构文档 |
 
 ---
 
@@ -70,9 +70,18 @@ const (
 	ItemStatusFailed ItemStatus = "failed"
 	ItemStatusInterrupted ItemStatus = "interrupted"
 )
+
+type ItemPayload interface {
+	ItemKind() ItemKind
+	cloneItemPayload() ItemPayload
+}
+type AssistantMessagePayload struct { Text string }
+type ItemTerminal struct { Code string; Message string }
 ```
 
-`Turn` 增加 `ActiveItemID`、`ItemOrder`、`Items`；`Turn.Clone` 与 `Session.Clone` 深复制嵌套容器。新增四个稳定事件：
+`Item` 只保存通用 identity/lifecycle、封闭 `ItemPayload` 和可选 `ItemTerminal`，不把
+Text/tool/reasoning 等未来字段扁平放在一起。`Turn` 增加 `ActiveItemID`、`ItemOrder`、
+`Items`；`Turn.Clone` 与 `Session.Clone` 深复制嵌套容器、payload 和 terminal。新增四个稳定事件：
 
 ```text
 assistant.message.started
@@ -84,8 +93,10 @@ assistant.message.interrupted
 - [ ] 先写 Item ID、apply、不可变性和严格 JSON 的失败测试。
 - [ ] 验证测试因缺少 Item 类型失败。
 - [ ] 实现状态、事件及唯一 running Item 约束。
+- [ ] apply 在转换前校验 ItemOrder/map/ownership/payload/status/timestamp/active ID 的前置一致性，损坏状态返回 `invalid_event`。
 - [ ] 实现 `CloneEvent` 与 `CloneRecordedEvents`；未知事件拒绝共享。
-- [ ] schema v1 严格支持新 payload；拒绝非法 UTF-8、ID、字段和类型。
+- [ ] completed 保存准确文本；failed/interrupted 保存稳定 code 与可选安全 message，不保存部分文本。
+- [ ] schema v1 严格支持新 payload；现有 Session fixture 解码、语义和逐记录字节重编码保持兼容。
 - [ ] 运行 `gofmt -w internal/harness/domain`、聚焦测试及 `go test ./... -count=1`。
 - [ ] 提交：`feat(domain): add assistant item lifecycle`。
 
@@ -99,15 +110,17 @@ assistant.message.interrupted
 type StartAssistantMessage struct { SessionID SessionID; TurnID TurnID; ItemID ItemID }
 type CompleteAssistantTurn struct { SessionID SessionID; TurnID TurnID; ItemID ItemID; Text string }
 type FailAssistantTurn struct { SessionID SessionID; TurnID TurnID; ItemID ItemID; Code string; Message string }
-type InterruptAssistantTurn struct { SessionID SessionID; TurnID TurnID; ItemID ItemID; Reason string }
+type InterruptAssistantTurn struct { SessionID SessionID; TurnID TurnID; ItemID ItemID; Code string; Message string }
 ```
 
-后三个命令分别返回“Item 终态在前、Turn 终态在后”的两个事件。新增稳定错误码 `item_already_running`、`item_not_running`、`item_mismatch`、`item_already_exists`。
+后三个命令分别返回“Item 终态在前、Turn 终态在后”的两个事件；中断 Item 使用
+`Code/Message`，既有 TurnInterrupted 的 `Reason` 使用同一稳定 Code。新增稳定错误码
+`item_already_running`、`item_not_running`、`item_mismatch`、`item_already_exists`。
 
 - [ ] 先测试完成/失败/中断均返回两个事件的原子决策批次。
 - [ ] 测试错误 Item、重复 Item、第二个 Item、跨 Turn Item 和二次终态。
 - [ ] existing Turn terminal command/apply 在 Item running 时必须失败。
-- [ ] 建立 8 条事件的 assistant fixture，序号严格 `1..8`，完成 pair 共用 command ID。
+- [ ] 建立 8 条事件的 assistant fixture，序号严格 `1..8`，完成 pair 共用 command ID 与 occurrence timestamp。
 - [ ] 重放必须得到关闭 Session、准确 Unicode 文本及第二个 interrupted Turn。
 - [ ] 更新领域契约后运行 domain/full tests。
 - [ ] 提交：`feat(domain): decide atomic assistant turns`。
@@ -161,7 +174,7 @@ func eventstoretest.Run(*testing.T, eventstoretest.Factory)
 ```
 
 - [ ] 契约套件先覆盖连续 metadata、CAS、注入失败原子性、取消和防御复制。
-- [ ] store 在 mutex 内依次验证 context/ID/非空事件、CAS、故障、克隆、ID/时间、Replay，再一次性赋值提交。
+- [ ] store 在 mutex 内依次验证 context/ID/非空事件、CAS、故障、克隆、ID/时间、Replay，再一次性赋值提交；一次 append 只取一次时钟，同一批记录共享 UTC 时间。
 - [ ] 任一步骤失败时，持久切片与版本均不变化。
 - [ ] 同 Session 两个 append 一胜一冲突；32 个独立 Session 并发成功，无 sleep。
 - [ ] 运行 memory 聚焦 race 和全仓 race。
@@ -286,7 +299,7 @@ sink failure   → interrupted / "runtime_delivery_failed"
 - [ ] 测试取消发生在任何 append 前、turn.start 后、stream 中、completion 竞争中和终态后。
 - [ ] 测试 sink started/delta 失败，initial/item/terminal append 失败，cleanup append 失败。
 - [ ] partial delta 永不持久化；raw provider error 永不进入领域。
-- [ ] 取消清理使用 `context.WithoutCancel` + 5 秒 timeout，同步尝试 Turn 或 Item/Turn interrupt。
+- [ ] 取消清理使用 `context.WithoutCancel` + 5 秒 timeout，同步尝试 `InterruptTurn{Reason: "caller_canceled"}` 或 `InterruptAssistantTurn{Code: "caller_canceled", Message: ""}`；delivery 使用 `runtime_delivery_failed` code。
 - [ ] terminal append 失败返回 persistence 且 terminal=false；终态提交后的 delivery 失败 terminal=true。
 - [ ] 原 primary model/canceled category 不被后续 terminal runtime delivery warning 替换。
 - [ ] 运行 application/testkit race 与全仓 race。

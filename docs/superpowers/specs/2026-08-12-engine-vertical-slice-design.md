@@ -275,6 +275,8 @@ The final implementation plan may refine Go names, but not these semantics:
 - compare-and-swap on `ExpectedVersion`;
 - contiguous sequences assigned by the store;
 - metadata generated from injected ID and clock sources;
+- one `Clock.Now()` value normalized to UTC and shared by every record in one
+  append request;
 - one append request is all-or-nothing;
 - returned and loaded records are defensive copies;
 - cancellation before commit writes nothing;
@@ -324,13 +326,31 @@ Rules:
 - an Item has exactly one terminal event;
 - a Turn cannot become terminal while its Item remains running;
 - successful final text is durable and preserved byte-for-byte;
-- failed/interrupted Items store stable reason data, not provider-native error
-  objects; and
-- maps/slices retain the existing domain immutability rules.
+- Item identity and lifecycle are generic, but payload is a closed,
+  kind-specific domain type rather than a flattened bag of fields;
+- failed/interrupted Items store a required stable machine code and an optional
+  safe display message, never a provider-native error object;
+- running and completed Items have no terminal metadata; failed/interrupted
+  Items have terminal metadata and do not persist partial assistant text;
+- `ActiveItemID`, Item order, Item map keys, ownership, payload kind, timestamps,
+  and status must be mutually consistent before and after every transition; and
+- maps, slices, payloads, and terminal metadata retain the existing domain
+  immutability rules.
+
+The domain represents payloads as a closed `ItemPayload` sum. The only payload
+in this milestone is `AssistantMessagePayload`; future kinds add their own
+payload type instead of adding sparse fields to every Item. `caller_canceled`
+and `runtime_delivery_failed` are the initial stable interruption codes.
 
 `ModelAttempt`, usage accounting, tool Items, reasoning Items, and images remain
 future domain extensions. Deferring them is a scope choice, not permission to
 store provider-specific data in the assistant-message Item.
+
+The recorded-event `schemaVersion: 1` versions the envelope and strict payload
+encoding; it is not a frozen event-type catalog. New internal pre-v0 event
+types may be recognized under schema version 1 only when existing event bytes
+and replay meaning remain compatible. The existing Session fixture must still
+decode, replay equivalently, and re-marshal each record byte-for-byte.
 
 ### 4.7 The core is synchronous and naturally backpressured
 
@@ -405,7 +425,9 @@ caller
 ```
 
 The terminal Item and Turn events are appended in one atomic batch. A caller
-must never observe `turn.completed` without the final message fact.
+must never observe `turn.completed` without the final message fact. The Item
+terminal fact precedes the Turn terminal fact, and both records share one
+command ID and one occurrence timestamp.
 
 ### 6.2 Model startup failure
 
