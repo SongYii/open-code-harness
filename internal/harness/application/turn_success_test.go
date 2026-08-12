@@ -332,6 +332,9 @@ func TestRunTurnAtomicAdmissionFailureNeverCallsModel(t *testing.T) {
 			if !reflect.DeepEqual(result, application.RunTurnResult{}) || len(model.Calls()) != 0 {
 				t.Fatalf("admission failure = result %#v model %#v", result, model.Calls())
 			}
+			if got := store.AppendCalls(); got != 1 {
+				t.Fatalf("admission Append() calls = %d, want exactly one without retry", got)
+			}
 			records, loadErr := base.Load(context.Background(), "session-preflight")
 			if loadErr != nil || len(records) != 1 {
 				t.Fatalf("records after admission failure = (%#v, %v), want only session.created", records, loadErr)
@@ -351,6 +354,75 @@ func TestRunTurnCancellationBeforeAdmissionWritesNothing(t *testing.T) {
 	assertRunTurnError(t, err, application.CategoryCanceled, "canceled", false)
 	if !reflect.DeepEqual(result, application.RunTurnResult{}) || len(store.AppendRequests()) != 0 || len(model.Calls()) != 0 {
 		t.Fatalf("pre-admission cancel side effects: result %#v appends %#v model %#v", result, store.AppendRequests(), model.Calls())
+	}
+}
+
+func TestRunTurnModelStartupFailureReturnsReplayableRunningBoundary(t *testing.T) {
+	store := newTurnMemoryStore(t)
+	expectedRequest := engine.ModelRequest{
+		SessionID: "session-1",
+		TurnID:    "turn-1",
+		ItemID:    "item-1",
+		Input:     "inspect",
+	}
+	cause := errors.New("provider startup failed")
+	model, err := testkit.NewScriptedModel(expectedRequest, testkit.ScriptedModelConfig{StartupError: cause})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := newTurnService(t, store, testkit.NewSequenceIDs(), model)
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &testkit.RecordingSink{}
+
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, Input: expectedRequest.Input, Sink: sink})
+	assertRunTurnError(t, err, application.CategoryModel, string(engine.CodeModelStartup), false)
+	if !errors.Is(err, cause) {
+		t.Fatalf("RunTurn() error = %v, want provider cause", err)
+	}
+	if result.SessionID != expectedRequest.SessionID || result.TurnID != expectedRequest.TurnID || result.ItemID != expectedRequest.ItemID ||
+		result.Status != domain.TurnStatusRunning || result.Text != "" || result.TerminalCommitted || result.DeliveryWarning != nil {
+		t.Fatalf("RunTurn() result = %#v, want exact running boundary", result)
+	}
+	if got := model.Calls(); !reflect.DeepEqual(got, []engine.ModelRequest{expectedRequest}) {
+		t.Fatalf("model calls = %#v, want exactly %#v", got, []engine.ModelRequest{expectedRequest})
+	}
+	wantAdmissionEvents := []domain.Event{
+		domain.TurnStarted{TurnID: result.TurnID, Input: expectedRequest.Input},
+		domain.AssistantMessageStarted{TurnID: result.TurnID, ItemID: result.ItemID},
+	}
+	if len(result.Records) != len(wantAdmissionEvents) || result.Records[0].CommandID == "" || result.Records[0].CommandID != result.Records[1].CommandID {
+		t.Fatalf("admission records = %#v", result.Records)
+	}
+	for index, want := range wantAdmissionEvents {
+		if result.Records[index].Sequence != uint64(index+2) || !reflect.DeepEqual(result.Records[index].Event, want) {
+			t.Fatalf("admission record[%d] = %#v, want event %#v", index, result.Records[index], want)
+		}
+	}
+	if attempts := sink.Attempts(); len(attempts) != 0 {
+		t.Fatalf("runtime attempts = %#v, want no started or terminal signals", attempts)
+	}
+
+	durable, loadErr := store.Load(context.Background(), created.SessionID)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if got, want := turnEventTypes(durable), []string{domain.EventSessionCreated, domain.EventTurnStarted, domain.EventAssistantMessageStarted}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("durable types = %v, want %v", got, want)
+	}
+	if !reflect.DeepEqual(result.Records, durable[1:]) {
+		t.Fatalf("result admission records = %#v, want exact committed records %#v", result.Records, durable[1:])
+	}
+	state, replayErr := domain.Replay(durable)
+	if replayErr != nil {
+		t.Fatal(replayErr)
+	}
+	turn := state.Turns[result.TurnID]
+	if state.Version != 3 || state.ActiveTurnID != result.TurnID || turn.Status != domain.TurnStatusRunning ||
+		turn.ActiveItemID != result.ItemID || turn.Items[result.ItemID].Status != domain.ItemStatusRunning {
+		t.Fatalf("replayed running state = %#v", state)
 	}
 }
 
@@ -391,6 +463,7 @@ func TestRunTurnPostCommitSinkFailuresPreserveDurableCompletion(t *testing.T) {
 			if attempts[len(attempts)-1].Type != wantFailedType || attempts[len(attempts)-1].Ordinal != failOrdinal {
 				t.Fatalf("failed terminal attempt = %#v, want %s ordinal %d", attempts[len(attempts)-1], wantFailedType, failOrdinal)
 			}
+			assertCommittedErrorResultIsDefensive(t, store, created.SessionID, result, "inspect")
 		})
 	}
 }
@@ -430,9 +503,62 @@ func TestRunTurnCancellationAfterTerminalCommitBecomesDeliveryWarning(t *testing
 	if attempts := sink.Attempts(); len(attempts) != 1 || attempts[0].Type != engine.RuntimeModelStreamStarted || attempts[0].Ordinal != 1 {
 		t.Fatalf("sink attempts = %#v, want only ordinal-1 started", attempts)
 	}
+	assertCommittedErrorResultIsDefensive(t, base, created.SessionID, got.result, "inspect")
 	state, err := service.LoadSession(context.Background(), created.SessionID)
 	if err != nil || state.Version != 5 || state.Turns[got.result.TurnID].Status != domain.TurnStatusCompleted {
 		t.Fatalf("durable state = (%#v, %v)", state, err)
+	}
+}
+
+func assertCommittedErrorResultIsDefensive(t *testing.T, store application.EventStore, sessionID domain.SessionID, result application.RunTurnResult, input string) {
+	t.Helper()
+	wantEvents := []domain.Event{
+		domain.TurnStarted{TurnID: result.TurnID, Input: input},
+		domain.AssistantMessageStarted{TurnID: result.TurnID, ItemID: result.ItemID},
+		domain.AssistantMessageCompleted{TurnID: result.TurnID, ItemID: result.ItemID, Text: result.Text},
+		domain.TurnCompleted{TurnID: result.TurnID},
+	}
+	if len(result.Records) != len(wantEvents) {
+		t.Fatalf("error result records = %d, want %d: %#v", len(result.Records), len(wantEvents), result.Records)
+	}
+	commandID := result.Records[0].CommandID
+	for index, want := range wantEvents {
+		record := result.Records[index]
+		if commandID == "" || record.Sequence != uint64(index+2) || record.SessionID != sessionID || record.CommandID != commandID || !reflect.DeepEqual(record.Event, want) {
+			t.Fatalf("error result record[%d] = %#v, want event %#v with shared lineage", index, record, want)
+		}
+	}
+	committed, err := store.Load(context.Background(), sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(committed) != 5 || !reflect.DeepEqual(result.Records, committed[1:]) {
+		t.Fatalf("error result records = %#v, want exact committed records %#v", result.Records, committed)
+	}
+
+	result.Records[0].Event = domain.TurnStarted{TurnID: "turn-mutated", Input: "mutated"}
+	result.Records[2].Event = domain.AssistantMessageCompleted{TurnID: result.TurnID, ItemID: result.ItemID, Text: "mutated"}
+	fresh, err := store.Load(context.Background(), sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fresh) != 5 {
+		t.Fatalf("fresh durable records = %d, want 5", len(fresh))
+	}
+	for index, want := range wantEvents {
+		if !reflect.DeepEqual(fresh[index+1].Event, want) {
+			t.Fatalf("fresh durable event[%d] = %#v, want %#v", index+1, fresh[index+1].Event, want)
+		}
+	}
+	state, err := domain.Replay(fresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn := state.Turns[result.TurnID]
+	item := turn.Items[result.ItemID]
+	payload, ok := item.Payload.(domain.AssistantMessagePayload)
+	if !ok || state.Version != 5 || turn.Status != domain.TurnStatusCompleted || item.Status != domain.ItemStatusCompleted || payload.Text != result.Text {
+		t.Fatalf("fresh replay after result mutation = state %#v item %#v", state, item)
 	}
 }
 
@@ -683,11 +809,22 @@ func (ids *turnIDs) Calls() []string {
 
 type turnFailingAppendStore struct {
 	application.EventStore
-	failure error
+	mu          sync.Mutex
+	failure     error
+	appendCalls int
 }
 
 func (store *turnFailingAppendStore) Append(context.Context, application.AppendRequest) ([]domain.RecordedEvent, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.appendCalls++
 	return nil, store.failure
+}
+
+func (store *turnFailingAppendStore) AppendCalls() int {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return store.appendCalls
 }
 
 type terminalBarrierStore struct {
