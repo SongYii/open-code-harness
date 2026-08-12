@@ -204,11 +204,20 @@ type AppendRequest struct {
 }
 ```
 
-实现计划可以调整 Go 命名，但不能改变以下语义：按 `ExpectedVersion` 做 CAS；存储分配
-连续序号；元数据来自注入 ID 与时钟；每次 append 只调用一次时钟，同一批记录共享
+实现计划可以调整 Go 命名，但不能改变以下语义：按 `ExpectedVersion` 做 CAS，其中 version
+精确定义为该 Session 权威、连续 recorded-event stream 的长度；存储分配连续序号；元数据来自注入 ID 与时钟；每次 append 只调用一次时钟，同一批记录共享
 归一化后的 UTC 时间；一次 append 全成或全败；加载与返回记录做防御
 复制；提交前取消不写入；冲突命令不自动重试；确定性故障注入可在提交前失败且无部分
 状态。
+
+本里程碑 `Load` 返回完整权威 stream；缺失 stream 返回空结果，由 Application 用例决定
+是否映射为 `session_not_found`。`Append` 成功只返回本次新提交批次；成功追加 N 条会把
+version 从 `ExpectedVersion` 推进到 `ExpectedVersion + N`。
+
+snapshot、index、transcript model 和 UI state 都是未来可丢弃 projection，不能决定 CAS
+是否接受、recorded sequence 或权威 version。Event ID 是不透明唯一标识：后期提交前失败
+可消耗最终未入库的 ID，这不违反原子性；持久状态不变且已提交 record sequence 无空洞。
+端口不承诺 ID/Clock 的事务性或无空洞。
 
 ### 4.5 持久事实与运行时信号分离
 
@@ -360,6 +369,8 @@ caller
 - 不同 Session 可以并发执行；
 - CAS 冲突后不自动重试，避免未来重复模型成本或外部工作；
 - append 批次要么按序全部提交，要么一个也不提交；
+- 冲突、已取消、非法请求或预提交注入故障不读取 Clock、不申请 Event ID；候选 append
+  精确读取一次 Clock；后期校验失败可消耗未使用的不透明 Event ID，但不得推进 stream version；
 - MemoryEventStore 必须在同 Session 冲突和独立 Session 并行下通过 `go test -race`；
 - 并发测试使用 barrier/channel 建立顺序，不使用时间 sleep。
 
@@ -390,8 +401,10 @@ Application/Engine 错误必须结构化并保留 cause，至少区分：
 
 ### 9.2 MemoryEventStore
 
-存储支持确定性元数据、CAS 冲突、原子批次、load/append 故障注入、防御复制断言和
-并发访问。
+存储支持确定性元数据、CAS 冲突、原子批次、按 Session 一次性 load/append 故障注入、
+防御复制断言和并发访问。契约测试覆盖缺失 stream、append 返回形状、load 故障的消费与
+隔离、防御复制；adapter 专属测试使用计数/失败源证明 nil 依赖拒绝、成功一次 Clock
+读取、候选构造前失败零 source 调用，以及 Event ID 或 Clock 生成失败时记录/version 不变。
 
 ### 9.3 共享契约套件
 

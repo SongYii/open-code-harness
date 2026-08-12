@@ -25,7 +25,10 @@
 - 一个 assistant Item 只属于一个 Turn；当前一个 Session 最多一个 running Turn、一个 running Item。
 - Item/Turn 终态事件在同一 EventStore append 批次中原子提交。
 - EventStore CAS 是并发权威；冲突返回调用方，永不自动重试。
+- Session version 等于其权威、连续 recorded-event stream 的长度；`ExpectedVersion` 必须精确匹配，成功追加 N 条后版本为 `ExpectedVersion + N`。
+- 本里程碑 `Load` 返回完整权威 stream；snapshot、index 与 transcript projection 只允许作为未来可丢弃缓存，不能取代日志成为 CAS 权威。
 - append 批次全成或全败；提交前取消和故障注入不写入任何部分状态。
+- Event ID 是不透明唯一标识，不是有序序列；后期提交前失败可以消耗未使用 ID，只有已提交 record sequence 保证无空洞，不承诺 IDGenerator 事务性或无空洞。
 - `ScriptedModel` 与 `MemoryEventStore` 实现正式端口；生产代码不存在 scripted/test-mode 分支。
 - 并发测试只使用 barrier/channel，不使用时间 sleep。
 - 测试断言稳定类型化 code/category，不依赖错误文案。
@@ -155,7 +158,9 @@ type IDGenerator interface {
 错误 category 固定为 `validation`、`conflict`、`model`、`canceled`、`output_limit`、`delivery`、`persistence`、`internal`；`application.Error` 携带 `Code`、`TerminalCommitted` 和 `Cause`。`Error()` 只呈现稳定 category/code/commit 状态，不拼接原始 cause 文本；`Unwrap()` 只供显式程序化检查。`VersionConflictError` 携带 session/expected/actual version。
 
 - [ ] 测试固定时钟、各类型序列 ID、32 goroutine 唯一性与错误链。
-- [ ] 实现正式端口和 CAS/原子/防御复制文档契约。
+- [ ] 实现正式端口和 CAS/原子/防御复制文档契约：version 是权威 stream 长度，Append 成功只返回新批次；Load 返回完整 stream，缺失 stream 返回空切片且无错误，由 Application 映射 `session_not_found`。
+- [ ] 记录 replay/snapshot 边界：Application 只从 Load 全量结果重放；本阶段无 snapshot port，未来 snapshot 不能决定 append 接受、sequence 或权威 version。
+- [ ] 明确 ID/Clock 非事务源：后期失败可留下未使用 Event ID，但已提交 sequence 始终连续。
 - [ ] 实现 UTC `FixedClock` 和互斥保护的五组独立 ID counter。
 - [ ] 运行 application/testkit race tests 和全量测试。
 - [ ] 提交：`feat(application): define runtime ports`。
@@ -173,9 +178,12 @@ func (*EventStore) FailNextAppend(domain.SessionID, error)
 func eventstoretest.Run(*testing.T, eventstoretest.Factory)
 ```
 
-- [ ] 契约套件先覆盖连续 metadata、CAS、注入失败原子性、取消和防御复制。
-- [ ] store 在 mutex 内依次验证 context/ID/非空事件、CAS、故障、克隆、ID/时间、Replay，再一次性赋值提交；一次 append 只取一次时钟，同一批记录共享 UTC 时间。
-- [ ] 任一步骤失败时，持久切片与版本均不变化。
+- [ ] 契约套件先覆盖连续 metadata、CAS、注入失败原子性、按 Session 一次性 Load 故障、取消和防御复制；Harness 同时暴露 `FailNextLoad` 与 `FailNextAppend`。
+- [ ] `Append` 成功仅返回新批次；缺失 Session 的 Load 返回空结果；一次性 Load 故障只影响目标 Session、消费后恢复正常且不改变任何状态。
+- [ ] store 在 mutex 内依次验证 context/ID/非空事件、CAS、故障、克隆、ID/时间、Replay，再一次性赋值提交；候选 append 在前置检查后只取一次时钟，同一成功批次共享 UTC 时间。
+- [ ] 已取消、请求非法、CAS 冲突或预提交注入故障必须 0 次读取 Clock、0 次申请 Event ID；成功 append 精确读取一次 Clock。
+- [ ] 任一步骤失败时，持久切片与版本均不变化；第 N 个 Event ID 失败或 zero/超 RFC3339 范围时钟必须有确定性测试。后期失败允许消耗不入库 ID，但不得造成已提交 sequence 空洞。
+- [ ] 构造器拒绝 nil Clock/IDGenerator 且不 panic；底层 cause 保持 `errors.Is/As` 可发现，后续应用层映射 persistence，VersionConflict 单独映射 conflict。
 - [ ] 同 Session 两个 append 一胜一冲突；32 个独立 Session 并发成功，无 sleep。
 - [ ] 运行 memory 聚焦 race 和全仓 race。
 - [ ] 提交：`feat(memory): add atomic event store`。

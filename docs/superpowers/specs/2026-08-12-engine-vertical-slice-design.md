@@ -272,7 +272,8 @@ type AppendRequest struct {
 
 The final implementation plan may refine Go names, but not these semantics:
 
-- compare-and-swap on `ExpectedVersion`;
+- compare-and-swap on `ExpectedVersion`, defined as the exact length of the
+  authoritative contiguous recorded-event stream for that Session;
 - contiguous sequences assigned by the store;
 - metadata generated from injected ID and clock sources;
 - one `Clock.Now()` value normalized to UTC and shared by every record in one
@@ -282,6 +283,19 @@ The final implementation plan may refine Go names, but not these semantics:
 - cancellation before commit writes nothing;
 - no automatic retry of a conflicting command; and
 - deterministic fault injection can fail before commit without partial state.
+
+`Load` returns the complete authoritative stream in this milestone. An absent
+stream is an empty result, and the Application use case decides whether that
+means `session_not_found`. `Append` success returns exactly the newly committed
+batch. A successful batch of `N` events advances the stream from
+`ExpectedVersion` to `ExpectedVersion + N`.
+
+Snapshots, indexes, transcript models, and UI state are future discardable
+projections. They must never determine CAS acceptance, recorded sequence, or
+authoritative version. Event IDs are opaque uniqueness tokens: a late
+pre-commit failure may consume IDs that never become records. This does not
+violate atomicity; committed record sequences remain gapless and Store state is
+unchanged. The port does not promise transactional or gap-free ID/clock sources.
 
 ### 4.5 Durable facts and runtime signals are separate
 
@@ -486,6 +500,10 @@ failure from rewriting an already committed terminal fact.
 - No automatic command retry follows a CAS conflict, because repeating a user
   command may duplicate model cost or external work in later milestones.
 - An append batch either commits every event in order or commits none.
+- A conflict, already-canceled request, malformed request, or injected
+  pre-commit fault performs no clock read and allocates no Event ID. A candidate
+  append reads the clock exactly once; later validation failure may consume
+  otherwise-unused opaque Event IDs but never advances the stream version.
 - The MemoryEventStore must pass `go test -race` under same-Session conflicts
   and independent-Session parallelism.
 - Tests use barriers/channels, never timing sleeps, to establish concurrency.
@@ -520,7 +538,13 @@ blocking/cancellation, and returns defensive copies of scripted data.
 ### 9.2 MemoryEventStore
 
 The store supports deterministic metadata, CAS conflicts, atomic batches,
-load/append fault injection, defensive-copy assertions, and concurrent access.
+per-Session one-shot load/append fault injection, defensive-copy assertions,
+and concurrent access. Contract tests cover an absent stream, append return
+shape, load-fault consumption/isolation, and defensive copies. Adapter-specific
+tests use counting/failing sources to prove nil-dependency rejection, one clock
+read on success, zero source calls for failures rejected before candidate
+construction, and unchanged records/version when Event ID or clock generation
+fails.
 
 ### 9.3 Shared contract suites
 

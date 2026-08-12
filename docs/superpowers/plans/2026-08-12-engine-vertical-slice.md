@@ -24,7 +24,10 @@
 - An assistant Item belongs to one Turn; this milestone permits at most one running Item and one running Turn per Session.
 - Item and Turn terminal events commit in one atomic EventStore append batch.
 - EventStore compare-and-swap is authoritative. A conflict is returned to the caller and is never retried automatically.
+- A Session version is the length of its authoritative contiguous recorded-event stream. `ExpectedVersion` must equal that length; a successful batch of `N` events advances it to `ExpectedVersion + N`.
+- `Load` returns the complete authoritative stream in this milestone. Snapshots, indexes, and transcript projections are deferred caches and may never replace the stream as CAS authority.
 - Every append batch is all-or-nothing; cancellation before commit and injected pre-commit failure write nothing.
+- Event IDs are opaque uniqueness tokens, not an ordered sequence. A failed pre-commit attempt may consume generated IDs; only committed record sequence values are gapless. No transactional or gap-free ID-generator guarantee is implied.
 - `ScriptedModel` and `MemoryEventStore` implement formal production ports. Production code contains no scripted/test-mode branch.
 - Concurrency tests use barriers or channels, never timing sleeps.
 - Tests assert stable typed codes/categories, not incidental error prose.
@@ -388,7 +391,11 @@ type IDGenerator interface {
 }
 ```
 
-Document on `Append` that `ExpectedVersion` is CAS, one request is atomic, the store assigns contiguous sequences and metadata, cancellation before commit writes nothing, and implementations return defensive copies.
+Document on `Append` that `ExpectedVersion` is exact per-Session CAS against the authoritative stream length; one request is atomic; success returns exactly the newly recorded batch; the store assigns contiguous sequences and metadata; cancellation before commit writes nothing; and implementations return defensive copies. `Load` returns the complete authoritative stream and an absent stream as an empty slice with no error. Application use cases, not the Store, map that absence to `session_not_found`.
+
+Document the replay and snapshot boundary: Application reconstructs state only by replaying `Load` results. This milestone has no snapshot port. A future snapshot is a discardable projection/cache and cannot determine append acceptance, recorded sequence, or authoritative version.
+
+Document generator side effects honestly: event IDs are opaque and need only be unique. If a late pre-commit step fails after allocation, generated IDs may be unused; sequence values in committed streams remain contiguous. `EventStore` does not promise transactional clocks or ID generators.
 
 - [ ] **Step 4: Implement stable conflict and service error types**
 
@@ -456,6 +463,7 @@ Define this harness:
 ```go
 type Harness struct {
 	Store          application.EventStore
+	FailNextLoad   func(domain.SessionID, error)
 	FailNextAppend func(domain.SessionID, error)
 }
 
@@ -466,12 +474,13 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("contiguous metadata and load", func(t *testing.T) { testContiguousMetadataAndLoad(t, factory(t)) })
 	t.Run("compare and swap conflict", func(t *testing.T) { testCompareAndSwapConflict(t, factory(t)) })
 	t.Run("atomic injected failure", func(t *testing.T) { testAtomicInjectedFailure(t, factory(t)) })
+	t.Run("one-shot load failure", func(t *testing.T) { testOneShotLoadFailure(t, factory(t)) })
 	t.Run("canceled append", func(t *testing.T) { testCanceledAppend(t, factory(t)) })
 	t.Run("defensive copies", func(t *testing.T) { testDefensiveCopies(t, factory(t)) })
 }
 ```
 
-Implement the five named helpers in the same file. Each helper appends concrete domain events: `testContiguousMetadataAndLoad` asserts sequences `1,2`, UTC clock values, distinct non-empty event IDs, and the request command ID; `testCompareAndSwapConflict` submits two version-zero creates and asserts one success plus one `VersionConflictError`; `testAtomicInjectedFailure` injects failure before a two-event append and asserts unchanged length/version; `testCanceledAppend` uses an already-canceled context and asserts zero records; `testDefensiveCopies` mutates source, returned, and loaded values and asserts a fresh load is unchanged.
+Implement the six named helpers in the same file. Each helper appends concrete domain events: `testContiguousMetadataAndLoad` asserts sequences `1,2`, UTC clock values, distinct non-empty event IDs, the request command ID, and that `Append` returns only the new batch; `testCompareAndSwapConflict` submits two version-zero creates and asserts one success plus one `VersionConflictError`; `testAtomicInjectedFailure` injects failure before a two-event append and asserts unchanged length/version; `testOneShotLoadFailure` proves a per-Session load fault is consumed once, changes no state, does not affect another Session, and is followed by a normal defensive-copy load; `testCanceledAppend` uses an already-canceled context and asserts zero records; `testDefensiveCopies` mutates source, returned, and loaded values and asserts a fresh load is unchanged.
 
 - [ ] **Step 2: Add the memory adapter test invocation and verify failure**
 
@@ -483,7 +492,9 @@ func TestEventStoreContract(t *testing.T) {
 		testkit.NewSequenceIDs(),
 		)
 		if err != nil { t.Fatal(err) }
-		return eventstoretest.Harness{Store: store, FailNextAppend: store.FailNextAppend}
+		return eventstoretest.Harness{
+			Store: store, FailNextLoad: store.FailNextLoad, FailNextAppend: store.FailNextAppend,
+		}
 	})
 }
 ```
@@ -510,7 +521,9 @@ append the entire local batch to store state in one assignment
 return a defensive clone
 ```
 
-Call `Clock.Now()` exactly once per append request after validation/fault checks and normalize it to UTC. Every batch record receives that same occurrence time, a distinct Event ID, the request Command ID, and a contiguous sequence. If ID generation, clock validation, cloning, replay, context, or fault injection fails before the assignment, store state is unchanged. Never retry CAS internally.
+Call `Clock.Now()` exactly once for a candidate append after context/request/CAS/fault checks and normalize it to UTC. Every successful batch record receives that same occurrence time, a distinct Event ID, the request Command ID, and a contiguous sequence. Already-canceled, malformed, conflicting, or injected-pre-commit requests must read the clock zero times and allocate zero Event IDs. If ID generation, clock validation, cloning, replay, context, or fault injection fails before the assignment, store state is unchanged. A late failure may leave unused generated Event IDs; it must never leave a sequence gap because sequences derive only from committed stream length. Never retry CAS internally.
+
+Add adapter-specific deterministic tests with counting/failing sources: constructors reject nil `Clock` and `IDGenerator` without panic; successful append reads the clock exactly once; failure of the Nth `NewEventID` and a zero/out-of-RFC3339-range clock leave records/version unchanged; wrapped causes remain available through `errors.Is`/`errors.As`. Stable application-facing mapping remains `CategoryPersistence`, while `VersionConflictError` remains separately discoverable and maps to `CategoryConflict` in Task 7.
 
 - [ ] **Step 4: Add deterministic same-Session and independent-Session race tests**
 
