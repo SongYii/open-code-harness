@@ -4,7 +4,8 @@
 - Maturity: pre-v0; not a general availability release
 - Scope: one synchronous, provider-neutral, model-only Turn
 - Normative design: [Industrial Engine vertical slice design](../superpowers/specs/2026-08-12-engine-vertical-slice-design.md)
-- Completed plan: [Industrial Engine vertical slice implementation plan](../superpowers/plans/2026-08-12-engine-vertical-slice.md)
+- Implemented plan: [Industrial Engine vertical slice implementation plan](../superpowers/plans/2026-08-12-engine-vertical-slice.md)
+- Completion evidence: [Engine vertical slice evidence ledger](engine-vertical-slice-evidence.md)
 - Chinese reading copy: [已实现 Engine 纵切](engine-vertical-slice.zh-CN.md)
 
 This document records behavior enforced by the current code and tests. It is an
@@ -375,6 +376,13 @@ or sink prose.
   only after success. Its snapshots are defensive.
 - Reusable suites are `eventstoretest.Run`, `modeltest.Run`, and
   `enginescenariotest.Run`.
+- `enginescenariotest` owns its adapter-neutral `Step`, `ModelBehavior`, exact
+  Application-error, durable-terminal, and runtime-event expectations. Its
+  Factory translates those behaviors to a concrete model fixture. A returned
+  Harness exposes `RuntimeAttempts` (every sink call, including a rejected
+  call) separately from `RuntimeDelivered` (only accepted calls); the suite
+  checks exact ordinal, correlation, Type, Text, Code, outer Application
+  Category/Code/TerminalCommitted, and replayed terminal Code/Message.
 - The generated [successful JSONL trace](../../internal/harness/application/testdata/run_turn_success.jsonl)
   is produced through the real service and `domain.MarshalRecordedEvent`, then
   decoded, compared record-for-record with a live run, and replayed.

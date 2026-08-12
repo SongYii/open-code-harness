@@ -11,29 +11,71 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/application"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
-	"github.com/SongYii/open-code-harness/internal/harness/testkit"
 )
+
+// Step describes one adapter-neutral model-stream action. A Factory translates
+// it into the concrete model adapter used by its harness.
+type Step struct {
+	Event         engine.StreamEvent
+	Err           error
+	WaitForCancel bool
+	Entered       chan<- struct{}
+	Release       <-chan struct{}
+}
+
+// ModelBehavior describes the deterministic model behavior for one Scenario.
+type ModelBehavior struct {
+	Steps        []Step
+	StartupError error
+}
+
+// ErrorExpectation is the exact outer Application error contract.
+type ErrorExpectation struct {
+	Category          application.ErrorCategory
+	Code              string
+	TerminalCommitted bool
+}
+
+// DurableTerminalExpectation is the exact terminal data replayed for both the
+// assistant Item and its owning Turn.
+type DurableTerminalExpectation struct {
+	Code    string
+	Message string
+}
+
+// RuntimeExpectation is the exact payload attempted or delivered to a sink.
+type RuntimeExpectation struct {
+	Ordinal uint64
+	Type    engine.RuntimeEventType
+	Text    string
+	Code    string
+}
 
 // Scenario configures one deterministic executable-path case.
 type Scenario struct {
-	Name               string
-	Input              string
-	Steps              []testkit.ScriptedStep
-	StartupError       error
-	MaxBytes           int
-	CancelDuringStream bool
-	SinkFailOrdinal    uint64
-	WantStatus         domain.TurnStatus
-	WantCategory       application.ErrorCategory
-	WantText           string
+	Name                 string
+	Input                string
+	Model                ModelBehavior
+	MaxBytes             int
+	CancelDuringStream   bool
+	SinkFailOrdinal      uint64
+	WantStatus           domain.TurnStatus
+	WantError            *ErrorExpectation
+	WantText             string
+	WantDurableTerminal  *DurableTerminalExpectation
+	WantRuntimeAttempts  []RuntimeExpectation
+	WantRuntimeDelivered []RuntimeExpectation
 }
 
 // Harness is one composition of the real application and Engine ports.
+// RuntimeAttempts includes every sink call, including a failed delivery;
+// RuntimeDelivered includes only calls accepted by the sink.
 type Harness struct {
-	Service       *application.Service
-	Store         application.EventStore
-	Sink          engine.RuntimeSink
-	RuntimeEvents func() []engine.RuntimeEvent
+	Service          *application.Service
+	Store            application.EventStore
+	Sink             engine.RuntimeSink
+	RuntimeAttempts  func() []engine.RuntimeEvent
+	RuntimeDelivered func() []engine.RuntimeEvent
 }
 
 // Factory constructs a fresh harness for one Scenario.
@@ -47,132 +89,135 @@ func Run(t *testing.T, factory Factory) {
 		t.Fatal("enginescenariotest: factory is required")
 	}
 	providerFailure := errors.New("scenario provider failure")
-	tests := []struct {
-		scenario    Scenario
-		wantRuntime []engine.RuntimeEventType
-	}{
+	tests := []Scenario{
 		{
-			scenario: Scenario{
-				Name:       "success",
-				Input:      "inspect repository",
-				Steps:      successSteps("你", "好\n"),
-				WantStatus: domain.TurnStatusCompleted,
-				WantText:   "你好\n",
-			},
-			wantRuntime: []engine.RuntimeEventType{
-				engine.RuntimeModelStreamStarted,
-				engine.RuntimeModelTextDelta,
-				engine.RuntimeModelTextDelta,
-				engine.RuntimeAppendCompleted,
-				engine.RuntimeModelStreamCompleted,
-			},
+			Name:       "success",
+			Input:      "inspect repository",
+			Model:      ModelBehavior{Steps: successSteps("你", "好\n")},
+			WantStatus: domain.TurnStatusCompleted,
+			WantText:   "你好\n",
+			WantRuntimeAttempts: runtimeExpectations(
+				runtime(engine.RuntimeModelStreamStarted, "", ""),
+				runtime(engine.RuntimeModelTextDelta, "你", ""),
+				runtime(engine.RuntimeModelTextDelta, "好\n", ""),
+				runtime(engine.RuntimeAppendCompleted, "", ""),
+				runtime(engine.RuntimeModelStreamCompleted, "", ""),
+			),
 		},
 		{
-			scenario: Scenario{
-				Name:         "startup failure",
-				Input:        "inspect repository",
-				StartupError: providerFailure,
-				WantStatus:   domain.TurnStatusFailed,
-				WantCategory: application.CategoryModel,
+			Name:       "startup failure",
+			Input:      "inspect repository",
+			Model:      ModelBehavior{StartupError: providerFailure},
+			WantStatus: domain.TurnStatusFailed,
+			WantError: &ErrorExpectation{
+				Category: application.CategoryModel, Code: "model_startup", TerminalCommitted: true,
 			},
-			wantRuntime: []engine.RuntimeEventType{
-				engine.RuntimeAppendCompleted,
-				engine.RuntimeModelStreamFailed,
-			},
+			WantDurableTerminal: &DurableTerminalExpectation{Code: "model_startup", Message: "model failed before streaming"},
+			WantRuntimeAttempts: runtimeExpectations(
+				runtime(engine.RuntimeAppendCompleted, "", ""),
+				runtime(engine.RuntimeModelStreamFailed, "", "model_startup"),
+			),
 		},
 		{
-			scenario: Scenario{
-				Name:  "mid-stream failure",
-				Input: "inspect repository",
-				Steps: []testkit.ScriptedStep{
-					{Event: engine.StreamEvent{Type: engine.StreamEventTextDelta, Text: "partial"}},
-					{Err: providerFailure},
-				},
-				WantStatus:   domain.TurnStatusFailed,
-				WantCategory: application.CategoryModel,
+			Name:  "mid-stream failure",
+			Input: "inspect repository",
+			Model: ModelBehavior{Steps: []Step{
+				{Event: engine.StreamEvent{Type: engine.StreamEventTextDelta, Text: "partial"}},
+				{Err: providerFailure},
+			}},
+			WantStatus: domain.TurnStatusFailed,
+			WantError: &ErrorExpectation{
+				Category: application.CategoryModel, Code: "model_stream", TerminalCommitted: true,
 			},
-			wantRuntime: []engine.RuntimeEventType{
-				engine.RuntimeModelStreamStarted,
-				engine.RuntimeModelTextDelta,
-				engine.RuntimeAppendCompleted,
-				engine.RuntimeModelStreamFailed,
-			},
+			WantDurableTerminal: &DurableTerminalExpectation{Code: "model_stream", Message: "model stream failed"},
+			WantRuntimeAttempts: runtimeExpectations(
+				runtime(engine.RuntimeModelStreamStarted, "", ""),
+				runtime(engine.RuntimeModelTextDelta, "partial", ""),
+				runtime(engine.RuntimeAppendCompleted, "", ""),
+				runtime(engine.RuntimeModelStreamFailed, "", "model_stream"),
+			),
 		},
 		{
-			scenario: Scenario{
-				Name:               "cancellation",
-				Input:              "inspect repository",
-				Steps:              []testkit.ScriptedStep{{WaitForCancel: true}},
-				CancelDuringStream: true,
-				WantStatus:         domain.TurnStatusInterrupted,
-				WantCategory:       application.CategoryCanceled,
+			Name:               "cancellation",
+			Input:              "inspect repository",
+			Model:              ModelBehavior{Steps: []Step{{WaitForCancel: true}}},
+			CancelDuringStream: true,
+			WantStatus:         domain.TurnStatusInterrupted,
+			WantError: &ErrorExpectation{
+				Category: application.CategoryCanceled, Code: "canceled", TerminalCommitted: true,
 			},
-			wantRuntime: []engine.RuntimeEventType{engine.RuntimeModelStreamStarted},
+			WantDurableTerminal: &DurableTerminalExpectation{Code: domain.InterruptionCallerCanceled},
+			WantRuntimeAttempts: runtimeExpectations(runtime(engine.RuntimeModelStreamStarted, "", "")),
 		},
 		{
-			scenario: Scenario{
-				Name:       "output exactly at limit",
-				Input:      "inspect repository",
-				Steps:      successSteps("你好"),
-				MaxBytes:   len([]byte("你好")),
-				WantStatus: domain.TurnStatusCompleted,
-				WantText:   "你好",
-			},
-			wantRuntime: []engine.RuntimeEventType{
-				engine.RuntimeModelStreamStarted,
-				engine.RuntimeModelTextDelta,
-				engine.RuntimeAppendCompleted,
-				engine.RuntimeModelStreamCompleted,
-			},
+			Name:       "output exactly at limit",
+			Input:      "inspect repository",
+			Model:      ModelBehavior{Steps: successSteps("你好")},
+			MaxBytes:   len([]byte("你好")),
+			WantStatus: domain.TurnStatusCompleted,
+			WantText:   "你好",
+			WantRuntimeAttempts: runtimeExpectations(
+				runtime(engine.RuntimeModelStreamStarted, "", ""),
+				runtime(engine.RuntimeModelTextDelta, "你好", ""),
+				runtime(engine.RuntimeAppendCompleted, "", ""),
+				runtime(engine.RuntimeModelStreamCompleted, "", ""),
+			),
 		},
 		{
-			scenario: Scenario{
-				Name:         "output one byte over",
-				Input:        "inspect repository",
-				Steps:        successSteps("abc"),
-				MaxBytes:     2,
-				WantStatus:   domain.TurnStatusFailed,
-				WantCategory: application.CategoryOutputLimit,
+			Name:       "output one byte over",
+			Input:      "inspect repository",
+			Model:      ModelBehavior{Steps: successSteps("abc")},
+			MaxBytes:   2,
+			WantStatus: domain.TurnStatusFailed,
+			WantError: &ErrorExpectation{
+				Category: application.CategoryOutputLimit, Code: "output_limit", TerminalCommitted: true,
 			},
-			wantRuntime: []engine.RuntimeEventType{
-				engine.RuntimeModelStreamStarted,
-				engine.RuntimeAppendCompleted,
-				engine.RuntimeModelStreamFailed,
-			},
+			WantDurableTerminal: &DurableTerminalExpectation{Code: "output_limit", Message: "assistant output exceeded limit"},
+			WantRuntimeAttempts: runtimeExpectations(
+				runtime(engine.RuntimeModelStreamStarted, "", ""),
+				runtime(engine.RuntimeAppendCompleted, "", ""),
+				runtime(engine.RuntimeModelStreamFailed, "", "output_limit"),
+			),
 		},
 		{
-			scenario: Scenario{
-				Name:            "sink delivery failure",
-				Input:           "inspect repository",
-				Steps:           successSteps("unaccepted"),
-				SinkFailOrdinal: 1,
-				WantStatus:      domain.TurnStatusInterrupted,
-				WantCategory:    application.CategoryDelivery,
+			Name:            "sink delivery failure",
+			Input:           "inspect repository",
+			Model:           ModelBehavior{Steps: successSteps("unaccepted")},
+			SinkFailOrdinal: 1,
+			WantStatus:      domain.TurnStatusInterrupted,
+			WantError: &ErrorExpectation{
+				Category: application.CategoryDelivery, Code: "runtime_delivery_failed", TerminalCommitted: true,
 			},
-			wantRuntime: []engine.RuntimeEventType{
-				engine.RuntimeModelStreamStarted,
-				engine.RuntimeAppendCompleted,
-				engine.RuntimeModelStreamInterrupted,
-			},
+			WantDurableTerminal: &DurableTerminalExpectation{Code: domain.InterruptionDeliveryFailed},
+			WantRuntimeAttempts: runtimeExpectations(
+				runtime(engine.RuntimeModelStreamStarted, "", ""),
+				runtime(engine.RuntimeAppendCompleted, "", ""),
+				runtime(engine.RuntimeModelStreamInterrupted, "", domain.InterruptionDeliveryFailed),
+			),
+			WantRuntimeDelivered: runtimeExpectations(
+				runtimeAt(2, engine.RuntimeAppendCompleted, "", ""),
+				runtimeAt(3, engine.RuntimeModelStreamInterrupted, "", domain.InterruptionDeliveryFailed),
+			),
 		},
 	}
 
-	for _, test := range tests {
-		t.Run(test.scenario.Name, func(t *testing.T) {
-			runScenario(t, factory, test.scenario, test.wantRuntime)
-		})
+	for _, scenario := range tests {
+		if scenario.WantRuntimeDelivered == nil {
+			scenario.WantRuntimeDelivered = append([]RuntimeExpectation(nil), scenario.WantRuntimeAttempts...)
+		}
+		t.Run(scenario.Name, func(t *testing.T) { runScenario(t, factory, scenario) })
 	}
 }
 
-func runScenario(t *testing.T, factory Factory, scenario Scenario, wantRuntime []engine.RuntimeEventType) {
+func runScenario(t *testing.T, factory Factory, scenario Scenario) {
 	t.Helper()
-	scenario.Steps = append([]testkit.ScriptedStep(nil), scenario.Steps...)
+	scenario.Model.Steps = append([]Step(nil), scenario.Model.Steps...)
 	var entered chan struct{}
 	if scenario.CancelDuringStream {
 		entered = make(chan struct{}, 1)
 		blockingStep := -1
-		for index := range scenario.Steps {
-			if scenario.Steps[index].WaitForCancel || scenario.Steps[index].Release != nil {
+		for index := range scenario.Model.Steps {
+			if scenario.Model.Steps[index].WaitForCancel || scenario.Model.Steps[index].Release != nil {
 				blockingStep = index
 				break
 			}
@@ -180,10 +225,11 @@ func runScenario(t *testing.T, factory Factory, scenario Scenario, wantRuntime [
 		if blockingStep < 0 {
 			t.Fatal("cancellation scenario requires a blocking scripted step")
 		}
-		scenario.Steps[blockingStep].Entered = entered
+		scenario.Model.Steps[blockingStep].Entered = entered
 	}
 	harness := factory(t, scenario)
-	if harness.Service == nil || isNil(harness.Store) || isNil(harness.Sink) || harness.RuntimeEvents == nil {
+	if harness.Service == nil || isNil(harness.Store) || isNil(harness.Sink) ||
+		harness.RuntimeAttempts == nil || harness.RuntimeDelivered == nil {
 		t.Fatal("enginescenariotest: factory returned an incomplete harness")
 	}
 	created, err := harness.Service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
@@ -206,9 +252,7 @@ func runScenario(t *testing.T, factory Factory, scenario Scenario, wantRuntime [
 		done := make(chan outcome, 1)
 		go func() {
 			result, runErr := harness.Service.RunTurn(ctx, application.RunTurnRequest{
-				SessionID: created.SessionID,
-				Input:     scenario.Input,
-				Sink:      harness.Sink,
+				SessionID: created.SessionID, Input: scenario.Input, Sink: harness.Sink,
 			})
 			done <- outcome{result: result, err: runErr}
 		}()
@@ -217,25 +261,11 @@ func runScenario(t *testing.T, factory Factory, scenario Scenario, wantRuntime [
 		got = <-done
 	} else {
 		got.result, got.err = harness.Service.RunTurn(ctx, application.RunTurnRequest{
-			SessionID: created.SessionID,
-			Input:     scenario.Input,
-			Sink:      harness.Sink,
+			SessionID: created.SessionID, Input: scenario.Input, Sink: harness.Sink,
 		})
 	}
 
-	if scenario.WantCategory == "" {
-		if got.err != nil {
-			t.Fatalf("RunTurn() error = %v", got.err)
-		}
-	} else {
-		if !application.IsCategory(got.err, scenario.WantCategory) {
-			t.Fatalf("RunTurn() error = %v, want category %s", got.err, scenario.WantCategory)
-		}
-		var applicationError *application.Error
-		if !errors.As(got.err, &applicationError) || applicationError == nil || !applicationError.TerminalCommitted {
-			t.Fatalf("RunTurn() error = %#v, want committed terminal error", got.err)
-		}
-	}
+	assertApplicationError(t, got.err, scenario.WantError)
 	if got.result.Status != scenario.WantStatus || got.result.Text != scenario.WantText || !got.result.TerminalCommitted || len(got.result.Records) != 4 {
 		t.Fatalf("RunTurn() result = %#v, want status=%s text=%q terminal=true", got.result, scenario.WantStatus, scenario.WantText)
 	}
@@ -263,34 +293,95 @@ func runScenario(t *testing.T, factory Factory, scenario Scenario, wantRuntime [
 	if !ok || payload.Text != scenario.WantText {
 		t.Fatalf("replayed assistant payload = %#v, want text %q", item.Payload, scenario.WantText)
 	}
+	assertDurableTerminal(t, turn, item, scenario.WantDurableTerminal)
 
-	runtimeEvents := harness.RuntimeEvents()
-	if gotTypes := runtimeTypes(runtimeEvents); !reflect.DeepEqual(gotTypes, wantRuntime) {
-		t.Fatalf("runtime types = %v, want %v", gotTypes, wantRuntime)
+	attempts := harness.RuntimeAttempts()
+	delivered := harness.RuntimeDelivered()
+	assertRuntimeEvents(t, "attempts", attempts, scenario.WantRuntimeAttempts, got.result)
+	assertRuntimeEvents(t, "delivered", delivered, scenario.WantRuntimeDelivered, got.result)
+}
+
+func assertApplicationError(t *testing.T, got error, want *ErrorExpectation) {
+	t.Helper()
+	if want == nil {
+		if got != nil {
+			t.Fatalf("RunTurn() error = %v, want nil", got)
+		}
+		return
 	}
-	commandID := got.result.Records[0].CommandID
-	for index, event := range runtimeEvents {
-		if event.Ordinal != uint64(index+1) || event.SessionID != got.result.SessionID ||
-			event.TurnID != got.result.TurnID || event.ItemID != got.result.ItemID || event.CommandID != commandID {
-			t.Fatalf("runtime event[%d] correlation/ordinal = %#v", index, event)
+	applicationError, ok := got.(*application.Error)
+	if !ok || applicationError == nil {
+		t.Fatalf("RunTurn() outer error = %#v, want *application.Error", got)
+	}
+	if applicationError.Category != want.Category || applicationError.Code != want.Code ||
+		applicationError.TerminalCommitted != want.TerminalCommitted {
+		t.Fatalf("RunTurn() outer error = %#v, want category=%s code=%q terminal=%t", applicationError, want.Category, want.Code, want.TerminalCommitted)
+	}
+}
+
+func assertDurableTerminal(t *testing.T, turn domain.Turn, item domain.Item, want *DurableTerminalExpectation) {
+	t.Helper()
+	if want == nil {
+		if item.Terminal != nil || turn.FailureCode != "" || turn.FailureText != "" || turn.InterruptWhy != "" {
+			t.Fatalf("durable terminal = item:%#v turn:%#v, want no terminal detail", item.Terminal, turn)
+		}
+		return
+	}
+	if item.Terminal == nil || item.Terminal.Code != want.Code || item.Terminal.Message != want.Message {
+		t.Fatalf("item terminal = %#v, want code=%q message=%q", item.Terminal, want.Code, want.Message)
+	}
+	if turn.Status == domain.TurnStatusFailed {
+		if turn.FailureCode != want.Code || turn.FailureText != want.Message || turn.InterruptWhy != "" {
+			t.Fatalf("failed turn terminal = %#v, want code=%q message=%q", turn, want.Code, want.Message)
+		}
+	} else if turn.Status == domain.TurnStatusInterrupted {
+		if turn.InterruptWhy != want.Code || turn.FailureCode != "" || turn.FailureText != "" {
+			t.Fatalf("interrupted turn terminal = %#v, want reason=%q", turn, want.Code)
 		}
 	}
 }
 
-func successSteps(deltas ...string) []testkit.ScriptedStep {
-	steps := make([]testkit.ScriptedStep, 0, len(deltas)+1)
-	for _, delta := range deltas {
-		steps = append(steps, testkit.ScriptedStep{Event: engine.StreamEvent{Type: engine.StreamEventTextDelta, Text: delta}})
+func assertRuntimeEvents(t *testing.T, label string, got []engine.RuntimeEvent, want []RuntimeExpectation, result application.RunTurnResult) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("runtime %s count = %d, want %d\ngot: %#v\nwant: %#v", label, len(got), len(want), got, want)
 	}
-	return append(steps, testkit.ScriptedStep{Event: engine.StreamEvent{Type: engine.StreamEventCompleted}})
+	commandID := result.Records[0].CommandID
+	for index, event := range got {
+		expected := want[index]
+		if event.Type != expected.Type || event.Text != expected.Text || event.Code != expected.Code {
+			t.Fatalf("runtime %s[%d] payload = %#v, want %#v", label, index, event, expected)
+		}
+		if event.Ordinal != expected.Ordinal || event.SessionID != result.SessionID || event.TurnID != result.TurnID ||
+			event.ItemID != result.ItemID || event.CommandID != commandID {
+			t.Fatalf("runtime %s[%d] correlation/ordinal = %#v", label, index, event)
+		}
+	}
 }
 
-func runtimeTypes(events []engine.RuntimeEvent) []engine.RuntimeEventType {
-	types := make([]engine.RuntimeEventType, len(events))
-	for index, event := range events {
-		types[index] = event.Type
+func successSteps(deltas ...string) []Step {
+	steps := make([]Step, 0, len(deltas)+1)
+	for _, delta := range deltas {
+		steps = append(steps, Step{Event: engine.StreamEvent{Type: engine.StreamEventTextDelta, Text: delta}})
 	}
-	return types
+	return append(steps, Step{Event: engine.StreamEvent{Type: engine.StreamEventCompleted}})
+}
+
+func runtime(eventType engine.RuntimeEventType, text, code string) RuntimeExpectation {
+	return RuntimeExpectation{Type: eventType, Text: text, Code: code}
+}
+
+func runtimeAt(ordinal uint64, eventType engine.RuntimeEventType, text, code string) RuntimeExpectation {
+	return RuntimeExpectation{Ordinal: ordinal, Type: eventType, Text: text, Code: code}
+}
+
+func runtimeExpectations(events ...RuntimeExpectation) []RuntimeExpectation {
+	for index := range events {
+		if events[index].Ordinal == 0 {
+			events[index].Ordinal = uint64(index + 1)
+		}
+	}
+	return events
 }
 
 func itemStatusForTurn(status domain.TurnStatus) domain.ItemStatus {

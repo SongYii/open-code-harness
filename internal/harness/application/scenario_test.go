@@ -1,6 +1,7 @@
 package application_test
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"reflect"
@@ -27,7 +28,10 @@ func TestEngineScenarioContract(t *testing.T) {
 		}
 		model, err := testkit.NewScriptedModel(
 			engine.ModelRequest{SessionID: "session-1", TurnID: "turn-1", ItemID: "item-1", Input: scenario.Input},
-			testkit.ScriptedModelConfig{Steps: scenario.Steps, StartupError: scenario.StartupError},
+			testkit.ScriptedModelConfig{
+				Steps:        scriptedSteps(scenario.Model.Steps),
+				StartupError: scenario.Model.StartupError,
+			},
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -46,24 +50,25 @@ func TestEngineScenarioContract(t *testing.T) {
 		}
 		sink := &testkit.RecordingSink{FailOrdinal: scenario.SinkFailOrdinal}
 		return enginescenariotest.Harness{
-			Service:       service,
-			Store:         store,
-			Sink:          sink,
-			RuntimeEvents: sink.Attempts,
+			Service:          service,
+			Store:            store,
+			Sink:             sink,
+			RuntimeAttempts:  sink.Attempts,
+			RuntimeDelivered: sink.Delivered,
 		}
 	})
 }
 
 func TestRunTurnSuccessFixtureMatchesLiveTrace(t *testing.T) {
-	fixtureFile, err := os.Open("testdata/run_turn_success.jsonl")
+	rawFixture, err := os.ReadFile("testdata/run_turn_success.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer fixtureFile.Close()
-	fixture, err := domain.DecodeJSONL(fixtureFile)
+	fixture, err := domain.DecodeJSONL(bytes.NewReader(rawFixture))
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertCanonicalJSONLLines(t, rawFixture, fixture)
 
 	live, result := runExactSuccessTrace(t)
 	if !reflect.DeepEqual(live, fixture) {
@@ -86,6 +91,41 @@ func TestRunTurnSuccessFixtureMatchesLiveTrace(t *testing.T) {
 		fixtureState.Turns[result.TurnID].Status != domain.TurnStatusCompleted ||
 		item.Status != domain.ItemStatusCompleted || payload.Text != "你好\n" || result.Text != payload.Text {
 		t.Fatalf("fixture replay = %#v, result = %#v", fixtureState, result)
+	}
+}
+
+func scriptedSteps(steps []enginescenariotest.Step) []testkit.ScriptedStep {
+	translated := make([]testkit.ScriptedStep, len(steps))
+	for index, step := range steps {
+		translated[index] = testkit.ScriptedStep{
+			Event:         step.Event,
+			Err:           step.Err,
+			WaitForCancel: step.WaitForCancel,
+			Entered:       step.Entered,
+			Release:       step.Release,
+		}
+	}
+	return translated
+}
+
+func assertCanonicalJSONLLines(t *testing.T, raw []byte, records []domain.RecordedEvent) {
+	t.Helper()
+	lines := bytes.SplitAfter(raw, []byte{'\n'})
+	if len(lines) > 0 && len(lines[len(lines)-1]) == 0 {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) != len(records) {
+		t.Fatalf("fixture JSONL lines = %d, decoded records = %d", len(lines), len(records))
+	}
+	for index, record := range records {
+		canonical, err := domain.MarshalRecordedEvent(record)
+		if err != nil {
+			t.Fatalf("MarshalRecordedEvent(record %d) error = %v", index, err)
+		}
+		canonical = append(canonical, '\n')
+		if !bytes.Equal(lines[index], canonical) {
+			t.Fatalf("fixture line %d is not canonical JSONL\ngot:  %q\nwant: %q", index+1, lines[index], canonical)
+		}
 	}
 }
 

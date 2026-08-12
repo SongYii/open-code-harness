@@ -4,7 +4,8 @@
 - 成熟度：pre-v0，尚非通用可用（GA）发布
 - 范围：一次同步、供应商中立、仅模型 Turn
 - 英文规范设计：[工业级 Engine 最小纵切设计](../superpowers/specs/2026-08-12-engine-vertical-slice-design.md)
-- 已完成计划：[Engine 纵切实施计划](../superpowers/plans/2026-08-12-engine-vertical-slice.md)
+- 已实施计划：[Engine 纵切实施计划](../superpowers/plans/2026-08-12-engine-vertical-slice.md)
+- 完成证据：[Engine 纵切完成证据台账](engine-vertical-slice-evidence.md#中文证据台账)
 - 英文已实现合同：[Implemented Engine Vertical Slice](engine-vertical-slice.md)
 
 本文是英文已实现合同的中文语义阅读版，记录当前代码和测试已经强制执行的行为。它是
@@ -349,6 +350,12 @@ wrap/join error tree，并安全处理 typed nil。稳定错误字符串不拼�
 - `RecordingSink` 在一次性 ordinal 故障前记录 Attempts，成功后才记录 Delivered，快照均
   为防御副本；
 - 可复用套件是 `eventstoretest.Run`、`modeltest.Run`、`enginescenariotest.Run`；
+- `enginescenariotest` 自己定义与 adapter 无关的 `Step`、`ModelBehavior`，以及准确的
+  Application error、durable terminal、runtime event 期望；Factory 负责把这些行为翻译为
+  具体模型 fixture。Harness 分开暴露 `RuntimeAttempts`（包含 sink 拒绝的每一次调用）和
+  `RuntimeDelivered`（仅 sink 接受的调用）；套件精确检查 ordinal、correlation、Type、
+  Text、Code、外层 Application Category/Code/TerminalCommitted，以及 Replay 后的终态
+  Code/Message；
 - [成功 JSONL trace](../../internal/harness/application/testdata/run_turn_success.jsonl)
   通过真实 Service 和 `domain.MarshalRecordedEvent` 生成；测试逐记录与 live run 精确比较并
   Replay；

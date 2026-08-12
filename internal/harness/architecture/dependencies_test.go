@@ -16,6 +16,64 @@ func TestProductionDependencyBoundaries(t *testing.T) {
 	assertProductionDependencyBoundaries(t)
 }
 
+func TestClassifyProductionPackage(t *testing.T) {
+	tests := []struct {
+		name      string
+		directory string
+		want      packageOwner
+		included  bool
+	}{
+		{name: "domain root", directory: "internal/harness/domain", want: ownerDomain, included: true},
+		{name: "domain production subpackage", directory: "internal/harness/domain/codec/v2", want: ownerDomain, included: true},
+		{name: "engine root", directory: "internal/harness/engine", want: ownerEngine, included: true},
+		{name: "engine production subpackage", directory: "internal/harness/engine/streaming", want: ownerEngine, included: true},
+		{name: "application root", directory: "internal/harness/application", want: ownerApplication, included: true},
+		{name: "application production subpackage", directory: "internal/harness/application/orchestration", want: ownerApplication, included: true},
+		{name: "memory root", directory: "internal/harness/adapters/memory", want: ownerMemory, included: true},
+		{name: "memory production subpackage", directory: "internal/harness/adapters/memory/index", want: ownerMemory, included: true},
+		{name: "scenario test support", directory: "internal/harness/application/enginescenariotest", included: false},
+		{name: "scenario nested test support", directory: "internal/harness/application/enginescenariotest/internal", included: false},
+		{name: "event store test support", directory: "internal/harness/application/eventstoretest", included: false},
+		{name: "model test support", directory: "internal/harness/engine/modeltest", included: false},
+		{name: "unowned adapter", directory: "internal/harness/adapters/other", included: false},
+		{name: "harness root", directory: "internal/harness", included: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, included := classifyProductionPackage(test.directory)
+			if got != test.want || included != test.included {
+				t.Fatalf("classifyProductionPackage(%q) = (%q, %t), want (%q, %t)", test.directory, got, included, test.want, test.included)
+			}
+		})
+	}
+}
+
+func TestForbiddenImport(t *testing.T) {
+	tests := []struct {
+		name       string
+		owner      packageOwner
+		importPath string
+		forbidden  bool
+	}{
+		{name: "domain subpackage cannot import application", owner: ownerDomain, importPath: modulePath + "/internal/harness/application", forbidden: true},
+		{name: "domain cannot import engine subpackage", owner: ownerDomain, importPath: modulePath + "/internal/harness/engine/streaming", forbidden: true},
+		{name: "engine cannot import application subpackage", owner: ownerEngine, importPath: modulePath + "/internal/harness/application/orchestration", forbidden: true},
+		{name: "application cannot import memory subpackage", owner: ownerApplication, importPath: modulePath + "/internal/harness/adapters/memory/index", forbidden: true},
+		{name: "memory cannot import network", owner: ownerMemory, importPath: "net/http", forbidden: true},
+		{name: "application may import engine", owner: ownerApplication, importPath: modulePath + "/internal/harness/engine", forbidden: false},
+		{name: "engine may import domain", owner: ownerEngine, importPath: modulePath + "/internal/harness/domain", forbidden: false},
+		{name: "domain may import standard library", owner: ownerDomain, importPath: "time", forbidden: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := forbiddenImport(test.owner, test.importPath)
+			if (got != "") != test.forbidden {
+				t.Fatalf("forbiddenImport(%q, %q) = %q, forbidden=%t", test.owner, test.importPath, got, test.forbidden)
+			}
+		})
+	}
+}
+
 func assertProductionDependencyBoundaries(t *testing.T) {
 	t.Helper()
 	_, sourceFile, _, ok := runtime.Caller(0)
@@ -34,21 +92,25 @@ func assertProductionDependencyBoundaries(t *testing.T) {
 		if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		parsed, err := parser.ParseFile(fileSet, path, nil, 0)
-		if err != nil {
-			return err
-		}
 		relative, err := filepath.Rel(repositoryRoot, path)
 		if err != nil {
 			return err
 		}
 		directory := filepath.ToSlash(filepath.Dir(relative))
+		owner, included := classifyProductionPackage(directory)
+		if !included {
+			return nil
+		}
+		parsed, err := parser.ParseFile(fileSet, path, nil, 0)
+		if err != nil {
+			return err
+		}
 		for _, spec := range parsed.Imports {
 			importPath, err := strconv.Unquote(spec.Path.Value)
 			if err != nil {
 				return err
 			}
-			if reason := forbiddenImport(directory, importPath); reason != "" {
+			if reason := forbiddenImport(owner, importPath); reason != "" {
 				position := fileSet.Position(spec.Pos())
 				violations = append(violations, position.String()+": "+reason+" "+strconv.Quote(importPath))
 			}
@@ -82,28 +144,66 @@ func assertProductionDependencyBoundaries(t *testing.T) {
 
 const modulePath = "github.com/SongYii/open-code-harness"
 
-func forbiddenImport(directory, importPath string) string {
-	domainDir := "internal/harness/domain"
-	engineDir := "internal/harness/engine"
-	applicationDir := "internal/harness/application"
-	memoryDir := "internal/harness/adapters/memory"
+type packageOwner string
+
+const (
+	ownerDomain      packageOwner = "domain"
+	ownerEngine      packageOwner = "engine"
+	ownerApplication packageOwner = "application"
+	ownerMemory      packageOwner = "memory"
+)
+
+var excludedTestSupportDirectories = []string{
+	"internal/harness/application/enginescenariotest",
+	"internal/harness/application/eventstoretest",
+	"internal/harness/engine/modeltest",
+}
+
+func classifyProductionPackage(directory string) (packageOwner, bool) {
+	directory = filepath.ToSlash(filepath.Clean(directory))
+	for _, excluded := range excludedTestSupportDirectories {
+		if directoryWithin(directory, excluded) {
+			return "", false
+		}
+	}
+	for _, candidate := range []struct {
+		root  string
+		owner packageOwner
+	}{
+		{root: "internal/harness/domain", owner: ownerDomain},
+		{root: "internal/harness/engine", owner: ownerEngine},
+		{root: "internal/harness/application", owner: ownerApplication},
+		{root: "internal/harness/adapters/memory", owner: ownerMemory},
+	} {
+		if directoryWithin(directory, candidate.root) {
+			return candidate.owner, true
+		}
+	}
+	return "", false
+}
+
+func directoryWithin(directory, root string) bool {
+	return directory == root || strings.HasPrefix(directory, root+"/")
+}
+
+func forbiddenImport(owner packageOwner, importPath string) string {
 
 	forbidden := make([]string, 0, 8)
-	switch directory {
-	case domainDir:
+	switch owner {
+	case ownerDomain:
 		forbidden = append(forbidden,
 			modulePath+"/internal/harness/application",
 			modulePath+"/internal/harness/engine",
 			modulePath+"/internal/harness/adapters",
 			modulePath+"/internal/harness/testkit",
 		)
-	case engineDir:
+	case ownerEngine:
 		forbidden = append(forbidden,
 			modulePath+"/internal/harness/application",
 			modulePath+"/internal/harness/adapters",
 			modulePath+"/internal/harness/testkit",
 		)
-	case applicationDir:
+	case ownerApplication:
 		forbidden = append(forbidden,
 			modulePath+"/internal/harness/adapters",
 			modulePath+"/internal/harness/testkit",
@@ -114,14 +214,14 @@ func forbiddenImport(directory, importPath string) string {
 			return "forbidden package dependency"
 		}
 	}
-	if directory == domainDir || directory == engineDir {
+	if owner == ownerDomain || owner == ownerEngine {
 		for _, segment := range []string{"acp", "mcp", "tui", "provider", "providers"} {
 			if hasPathSegment(importPath, segment) {
 				return "forbidden protocol/provider dependency"
 			}
 		}
 	}
-	if directory == applicationDir || directory == engineDir || directory == memoryDir {
+	if owner == ownerApplication || owner == ownerEngine || owner == ownerMemory {
 		switch importPath {
 		case "os", "os/exec", "net", "net/http":
 			return "forbidden host/network dependency"

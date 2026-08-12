@@ -28,8 +28,10 @@ The implemented internal Session and Turn contract is documented in
 executable Application/Engine contract is documented in
 [Implemented Engine Vertical Slice](docs/architecture/engine-vertical-slice.md)
 and its [Chinese reading copy](docs/architecture/engine-vertical-slice.zh-CN.md).
-The ten-task evidence sequence is retained in the
-[completed implementation plan](docs/superpowers/plans/2026-08-12-engine-vertical-slice.md).
+The ten-task sequence is retained in the
+[implemented plan](docs/superpowers/plans/2026-08-12-engine-vertical-slice.md),
+with auditable results in the bilingual
+[completion evidence ledger](docs/architecture/engine-vertical-slice-evidence.md).
 
 ```bash
 gofmt -w .
