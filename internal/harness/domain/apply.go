@@ -145,7 +145,7 @@ func applyTurnCompleted(state Session, record RecordedEvent, event TurnCompleted
 	if turn.ActiveItemID != "" {
 		return Session{}, domainError(CodeInvalidEvent, "turn cannot complete while an item is running")
 	}
-	return applyTerminalTurn(state, record, turn, TurnStatusCompleted, "", "", ""), nil
+	return applyTerminalTurn(state, record, turn, TurnStatusCompleted, "", "", "")
 }
 
 func applyTurnFailed(state Session, record RecordedEvent, event TurnFailed) (Session, error) {
@@ -162,7 +162,7 @@ func applyTurnFailed(state Session, record RecordedEvent, event TurnFailed) (Ses
 	if turn.ActiveItemID != "" {
 		return Session{}, domainError(CodeInvalidEvent, "turn cannot fail while an item is running")
 	}
-	return applyTerminalTurn(state, record, turn, TurnStatusFailed, event.Code, event.Message, ""), nil
+	return applyTerminalTurn(state, record, turn, TurnStatusFailed, event.Code, event.Message, "")
 }
 
 func applyTurnInterrupted(state Session, record RecordedEvent, event TurnInterrupted) (Session, error) {
@@ -176,7 +176,7 @@ func applyTurnInterrupted(state Session, record RecordedEvent, event TurnInterru
 	if turn.ActiveItemID != "" {
 		return Session{}, domainError(CodeInvalidEvent, "turn cannot be interrupted while an item is running")
 	}
-	return applyTerminalTurn(state, record, turn, TurnStatusInterrupted, "", "", event.Reason), nil
+	return applyTerminalTurn(state, record, turn, TurnStatusInterrupted, "", "", event.Reason)
 }
 
 func requireRunningTurnForEvent(state Session, sessionID SessionID, turnID TurnID) (Turn, error) {
@@ -214,7 +214,16 @@ func requireRunningTurnForEvent(state Session, sessionID SessionID, turnID TurnI
 	return turn, nil
 }
 
-func applyTerminalTurn(state Session, record RecordedEvent, turn Turn, status TurnStatus, failureCode, failureText, interruptWhy string) Session {
+func applyTerminalTurn(state Session, record RecordedEvent, turn Turn, status TurnStatus, failureCode, failureText, interruptWhy string) (Session, error) {
+	if record.OccurredAt.Before(turn.StartedAt) {
+		return Session{}, domainError(CodeInvalidEvent, "turn terminal timestamp precedes turn start")
+	}
+	for _, item := range turn.Items {
+		if !item.EndedAt.IsZero() && record.OccurredAt.Before(item.EndedAt) {
+			return Session{}, domainError(CodeInvalidEvent, "turn terminal timestamp precedes an item end")
+		}
+	}
+
 	next := state.Clone()
 	turn.Status = status
 	turn.EndedAt = record.OccurredAt
@@ -224,7 +233,7 @@ func applyTerminalTurn(state Session, record RecordedEvent, turn Turn, status Tu
 	next.Turns[turn.ID] = turn
 	next.ActiveTurnID = ""
 	next.Version = record.Sequence
-	return next
+	return next, nil
 }
 
 func applyAssistantMessageStarted(state Session, record RecordedEvent, event AssistantMessageStarted) (Session, error) {
@@ -240,6 +249,14 @@ func applyAssistantMessageStarted(state Session, record RecordedEvent, event Ass
 	}
 	if _, exists := turn.Items[event.ItemID]; exists {
 		return Session{}, domainError(CodeInvalidEvent, "item already exists")
+	}
+	if record.OccurredAt.Before(turn.StartedAt) {
+		return Session{}, domainError(CodeInvalidEvent, "item start timestamp precedes turn start")
+	}
+	for _, item := range turn.Items {
+		if !item.EndedAt.IsZero() && record.OccurredAt.Before(item.EndedAt) {
+			return Session{}, domainError(CodeInvalidEvent, "item start timestamp precedes an item end")
+		}
 	}
 
 	next := state.Clone()
@@ -299,6 +316,9 @@ func applyTerminalAssistantMessage(state Session, record RecordedEvent, turnID T
 	item, exists := turn.Items[itemID]
 	if !exists || item.Status != ItemStatusRunning {
 		return Session{}, domainError(CodeInvalidEvent, "active item is not running")
+	}
+	if record.OccurredAt.Before(item.StartedAt) {
+		return Session{}, domainError(CodeInvalidEvent, "item terminal timestamp precedes item start")
 	}
 
 	next := state.Clone()

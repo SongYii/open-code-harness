@@ -433,6 +433,88 @@ func TestApplyAssistantMessageLifecycle(t *testing.T) {
 	}
 }
 
+func TestApplyAssistantMessageStartedRejectsTimestampBeforeTurnStart(t *testing.T) {
+	t.Parallel()
+
+	state := runningTurnForTest(t)
+	before := state.Clone()
+	record := recordedForTest(state, AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"})
+	record.OccurredAt = time.Date(2026, 8, 11, 0, 0, 1, 0, time.UTC)
+
+	_, err := Apply(state, record)
+	if !IsCode(err, CodeInvalidEvent) {
+		t.Fatalf("Apply() error = %v, want code %q", err, CodeInvalidEvent)
+	}
+	if !reflect.DeepEqual(state, before) {
+		t.Fatalf("Apply() mutated input: got %#v want %#v", state, before)
+	}
+}
+
+func TestApplyAssistantMessageTerminalRejectsTimestampBeforeItemStart(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		event Event
+	}{
+		{name: "completed", event: AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "done"}},
+		{name: "failed", event: AssistantMessageFailed{TurnID: "turn-1", ItemID: "item-1", Code: "provider_error", Message: "safe"}},
+		{name: "interrupted", event: AssistantMessageInterrupted{TurnID: "turn-1", ItemID: "item-1", Code: "caller_canceled", Message: ""}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := runningTurnForTest(t)
+			started := recordedForTest(state, AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"})
+			started.OccurredAt = time.Date(2026, 8, 11, 0, 0, 4, 0, time.UTC)
+			state, err := Apply(state, started)
+			if err != nil {
+				t.Fatalf("start item: %v", err)
+			}
+			before := state.Clone()
+			terminal := recordedForTest(state, test.event)
+			terminal.OccurredAt = time.Date(2026, 8, 11, 0, 0, 3, 0, time.UTC)
+
+			_, err = Apply(state, terminal)
+			if !IsCode(err, CodeInvalidEvent) {
+				t.Fatalf("Apply() error = %v, want code %q", err, CodeInvalidEvent)
+			}
+			if !reflect.DeepEqual(state, before) {
+				t.Fatalf("Apply() mutated input: got %#v want %#v", state, before)
+			}
+		})
+	}
+}
+
+func TestApplyTurnTerminalRejectsTimestampBeforeLatestItemEnd(t *testing.T) {
+	t.Parallel()
+
+	state := runningTurnForTest(t)
+	started := recordedForTest(state, AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"})
+	started.OccurredAt = time.Date(2026, 8, 11, 0, 0, 3, 0, time.UTC)
+	state, err := Apply(state, started)
+	if err != nil {
+		t.Fatalf("start item: %v", err)
+	}
+	completed := recordedForTest(state, AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "done"})
+	completed.OccurredAt = time.Date(2026, 8, 11, 0, 0, 5, 0, time.UTC)
+	state, err = Apply(state, completed)
+	if err != nil {
+		t.Fatalf("complete item: %v", err)
+	}
+	before := state.Clone()
+	terminal := recordedForTest(state, TurnCompleted{TurnID: "turn-1"})
+	terminal.OccurredAt = time.Date(2026, 8, 11, 0, 0, 4, 0, time.UTC)
+
+	_, err = Apply(state, terminal)
+	if !IsCode(err, CodeInvalidEvent) {
+		t.Fatalf("Apply() error = %v, want code %q", err, CodeInvalidEvent)
+	}
+	if !reflect.DeepEqual(state, before) {
+		t.Fatalf("Apply() mutated input: got %#v want %#v", state, before)
+	}
+}
+
 func TestApplyAssistantMessageTerminalEvents(t *testing.T) {
 	t.Parallel()
 
