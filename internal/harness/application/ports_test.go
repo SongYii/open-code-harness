@@ -126,6 +126,28 @@ func TestIsCategoryTraversesEveryErrorsJoinBranch(t *testing.T) {
 	}
 }
 
+func TestIsCategoryRejectsTypedNilApplicationError(t *testing.T) {
+	var typedNil *Error
+	if IsCategory(typedNil, CategoryInternal) {
+		t.Fatal("IsCategory accepted a typed nil application error")
+	}
+}
+
+func TestIsCategoryTypedNilJoinBranchDoesNotHideValidSibling(t *testing.T) {
+	var typedNil *Error
+	joined := errors.Join(
+		typedNil,
+		&Error{Category: CategoryModel, Code: "model_stream_failed"},
+	)
+
+	if !IsCategory(joined, CategoryModel) {
+		t.Fatal("typed nil branch hid a valid sibling category")
+	}
+	if IsCategory(joined, CategoryPersistence) {
+		t.Fatal("IsCategory reported a category absent from the joined tree")
+	}
+}
+
 func TestErrorCategoriesAreStable(t *testing.T) {
 	tests := map[ErrorCategory]string{
 		CategoryValidation:  "validation",

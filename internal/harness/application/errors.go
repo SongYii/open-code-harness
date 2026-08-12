@@ -42,8 +42,13 @@ func IsCategory(err error, category ErrorCategory) bool {
 	if err == nil {
 		return false
 	}
-	if applicationError, ok := err.(*Error); ok && applicationError != nil && applicationError.Category == category {
-		return true
+	if applicationError, ok := err.(*Error); ok {
+		if applicationError == nil {
+			return false
+		}
+		if applicationError.Category == category {
+			return true
+		}
 	}
 
 	switch err := err.(type) {
