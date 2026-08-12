@@ -47,3 +47,26 @@ func TestIDParsersRejectInvalidUTF8(t *testing.T) {
 		})
 	}
 }
+
+func TestParseItemID(t *testing.T) {
+	t.Parallel()
+
+	got, err := ParseItemID("item-1")
+	if err != nil {
+		t.Fatalf("ParseItemID() error = %v", err)
+	}
+	if got != ItemID("item-1") {
+		t.Fatalf("ParseItemID() = %q, want %q", got, ItemID("item-1"))
+	}
+}
+
+func TestParseItemIDRejectsBlankPaddedAndInvalidUTF8(t *testing.T) {
+	t.Parallel()
+
+	for _, input := range []string{"", "   ", " item-1", "item-1 ", "item-\xff"} {
+		_, err := ParseItemID(input)
+		if !IsCode(err, CodeInvalidID) {
+			t.Fatalf("ParseItemID(%q) error = %v, want code %q", input, err, CodeInvalidID)
+		}
+	}
+}

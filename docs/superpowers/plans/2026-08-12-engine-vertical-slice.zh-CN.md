@@ -15,6 +15,8 @@
 - 模块路径保持 `github.com/SongYii/open-code-harness`，最低 Go 版本保持 `1.26`。
 - 本里程碑不增加第三方依赖。
 - 当前是 pre-v0 工业级质量纵切，不是教程、原型，也不宣称已经 GA。
+- 架构证据只采用官方一手来源；包括 DeepSeek-Reasonix 在内的明确标注社区项目仅是
+  非权威上下文，不能独立建立合同。
 - 依赖方向固定为 `adapters/testkit → application → engine + domain`；domain 不导入 application/engine，engine 不导入具体 adapter、provider SDK、ACP、TUI 或 testkit。
 - Application Service 是唯一命令权威，adapter 不得调用模型后自行制造持久生命周期事件。
 - `RunTurn` 同步执行；核心不创建无界 channel 或 detached goroutine。
@@ -24,8 +26,18 @@
 - runtime delta 是瞬时信号；只持久化最终成功文本、稳定失败/中断数据和 Turn/Item 生命周期事实。
 - 一个 assistant Item 只属于一个 Turn；当前一个 Session 最多一个 running Turn、一个 running Item。
 - Item/Turn 终态事件在同一 EventStore append 批次中原子提交。
+- `StartAssistantTurn` 依次决定 `turn.started` 与 `assistant.message.started`，并在任何模型
+  调用前以一个 atomic admission batch 提交。
 - EventStore CAS 是并发权威；冲突返回调用方，永不自动重试。
+- Session version 等于其权威、连续 recorded-event stream 的长度；`ExpectedVersion` 必须精确匹配，成功追加 N 条后版本为 `ExpectedVersion + N`。
+- 本里程碑 `Load` 返回完整权威 stream；snapshot、index 与 transcript projection 只允许作为未来可丢弃缓存，不能取代日志成为 CAS 权威。
 - append 批次全成或全败；提交前取消和故障注入不写入任何部分状态。
+- 本里程碑中 `Append` 返回非 nil error 表示批次未提交；提交后即使 caller 并发取消，
+  adapter 仍返回 committed records。存在模糊 acknowledgement 的 remote adapter 必须扩展
+  exact-retry identity 或 unknown-commit outcome。
+- RunTurn 的一个 `CommandID` 关联两个 append batch 与 runtime events，不是 idempotency 或
+  Store deduplication key；Service 不自动 reload、re-decide、append retry 或 model retry。
+- Event ID 是不透明唯一标识，不是有序序列；后期提交前失败可以消耗未使用 ID，只有已提交 record sequence 保证无空洞，不承诺 IDGenerator 事务性或无空洞。
 - `ScriptedModel` 与 `MemoryEventStore` 实现正式端口；生产代码不存在 scripted/test-mode 分支。
 - 并发测试只使用 barrier/channel，不使用时间 sleep。
 - 测试断言稳定类型化 code/category，不依赖错误文案。
@@ -35,6 +47,35 @@
 ## 里程碑边界
 
 本计划只实施已批准 Engine 规格：assistant-message Item 生命周期、EventStore/Model/RuntimeSink 正式端口、确定性适配器、Application Service、有界模型 Turn、失败/取消语义、重放与验证证据。不实施真实 provider、自动重试、生产持久化、崩溃恢复、tool、Policy、approval、ACP、TUI、MCP、Context Engine、OpenTelemetry 或 subagent。
+
+`RunTurn` 的实现和测试遵循四阶段矩阵：
+
+| 阶段 | 持久边界 | Context | 结果 |
+| --- | --- | --- | --- |
+| Preflight | 无 | caller | 失败无 records、无模型调用 |
+| Admission | 原子 started Turn + Item | caller | 唯一合法模型调用边界 |
+| Execution | runtime started/deltas | caller | Engine 拥有 cancel 与 Close |
+| Terminalization | 原子 terminal Item + Turn | success 用 caller；仅 failure/interruption persistence 用 bounded detached | 一个 terminal batch 或显式 running failure |
+
+value/error 返回形状在实现前固定：
+
+| 结果 | Status / Text | Terminal | Error |
+| --- | --- | --- | --- |
+| completed 且 delivered | completed / exact output | true | nil |
+| completed，terminal delivery warning | completed / exact output | true | delivery |
+| model/close failure | failed / empty | terminal commit 后 true | model |
+| invalid stream | failed / empty | terminal commit 后 true | model (`invalid_stream`) |
+| output limit | failed / empty | terminal commit 后 true | output_limit |
+| caller cancellation | interrupted / empty | terminal commit 后 true | canceled |
+| pre-terminal sink failure | interrupted / empty | terminal commit 后 true | delivery |
+| load/admission/terminal Store failure | zero 或 running / empty | false | persistence、conflict 或 internal |
+| request rejection | zero / empty | false | validation |
+
+accepted admission 前所有 failure 返回 zero `RunTurnResult`（IDs/status 零值、
+Text/Records 空、terminal=false、warning=nil）。accepted admission 后的非终态返回携带
+generated IDs、running status、两条 admission records、empty Text、terminal=false、
+warning=nil。accepted terminalization 再追加两条 records 并设置终态 status/text/flag；只有
+post-terminal delivery 失败或被抑制时设置 `DeliveryWarning`。
 
 ## 文件布局
 
@@ -46,7 +87,7 @@
 | Adapter | `adapters/memory/event_store.go`：CAS、原子批次、防御复制、故障注入 |
 | Testkit | `clock.go`、`ids.go`、`scripted_model.go`、`recording_sink.go`：确定性正式适配器 |
 | Contract suites | `eventstoretest/suite.go`、`modeltest/suite.go`、`enginescenariotest/suite.go` |
-| Evidence | assistant/domain 与 RunTurn JSONL fixtures、并发/race/依赖边界测试、架构文档 |
+| Evidence | Task 1 顶级项目架构门、assistant/domain 与 RunTurn JSONL fixtures、并发/race/依赖边界测试、架构文档 |
 
 ---
 
@@ -70,9 +111,18 @@ const (
 	ItemStatusFailed ItemStatus = "failed"
 	ItemStatusInterrupted ItemStatus = "interrupted"
 )
+
+type ItemPayload interface {
+	ItemKind() ItemKind
+	cloneItemPayload() ItemPayload
+}
+type AssistantMessagePayload struct { Text string }
+type ItemTerminal struct { Code string; Message string }
 ```
 
-`Turn` 增加 `ActiveItemID`、`ItemOrder`、`Items`；`Turn.Clone` 与 `Session.Clone` 深复制嵌套容器。新增四个稳定事件：
+`Item` 只保存通用 identity/lifecycle、封闭 `ItemPayload` 和可选 `ItemTerminal`，不把
+Text/tool/reasoning 等未来字段扁平放在一起。`Turn` 增加 `ActiveItemID`、`ItemOrder`、
+`Items`；`Turn.Clone` 与 `Session.Clone` 深复制嵌套容器、payload 和 terminal。新增四个稳定事件：
 
 ```text
 assistant.message.started
@@ -84,8 +134,10 @@ assistant.message.interrupted
 - [ ] 先写 Item ID、apply、不可变性和严格 JSON 的失败测试。
 - [ ] 验证测试因缺少 Item 类型失败。
 - [ ] 实现状态、事件及唯一 running Item 约束。
+- [ ] apply 在转换前校验 ItemOrder/map/ownership/payload/status/timestamp/active ID 的前置一致性，损坏状态返回 `invalid_event`。
 - [ ] 实现 `CloneEvent` 与 `CloneRecordedEvents`；未知事件拒绝共享。
-- [ ] schema v1 严格支持新 payload；拒绝非法 UTF-8、ID、字段和类型。
+- [ ] completed 保存准确文本；failed/interrupted 保存稳定 code 与可选安全 message，不保存部分文本。
+- [ ] schema v1 严格支持新 payload；现有 Session fixture 解码、语义和逐记录字节重编码保持兼容。
 - [ ] 运行 `gofmt -w internal/harness/domain`、聚焦测试及 `go test ./... -count=1`。
 - [ ] 提交：`feat(domain): add assistant item lifecycle`。
 
@@ -99,15 +151,17 @@ assistant.message.interrupted
 type StartAssistantMessage struct { SessionID SessionID; TurnID TurnID; ItemID ItemID }
 type CompleteAssistantTurn struct { SessionID SessionID; TurnID TurnID; ItemID ItemID; Text string }
 type FailAssistantTurn struct { SessionID SessionID; TurnID TurnID; ItemID ItemID; Code string; Message string }
-type InterruptAssistantTurn struct { SessionID SessionID; TurnID TurnID; ItemID ItemID; Reason string }
+type InterruptAssistantTurn struct { SessionID SessionID; TurnID TurnID; ItemID ItemID; Code string; Message string }
 ```
 
-后三个命令分别返回“Item 终态在前、Turn 终态在后”的两个事件。新增稳定错误码 `item_already_running`、`item_not_running`、`item_mismatch`、`item_already_exists`。
+后三个命令分别返回“Item 终态在前、Turn 终态在后”的两个事件；中断 Item 使用
+`Code/Message`，既有 TurnInterrupted 的 `Reason` 使用同一稳定 Code。新增稳定错误码
+`item_already_running`、`item_not_running`、`item_mismatch`、`item_already_exists`。
 
 - [ ] 先测试完成/失败/中断均返回两个事件的原子决策批次。
 - [ ] 测试错误 Item、重复 Item、第二个 Item、跨 Turn Item 和二次终态。
 - [ ] existing Turn terminal command/apply 在 Item running 时必须失败。
-- [ ] 建立 8 条事件的 assistant fixture，序号严格 `1..8`，完成 pair 共用 command ID。
+- [ ] 建立 8 条事件的 assistant fixture，序号严格 `1..8`，完成 pair 共用 command ID 与 occurrence timestamp。
 - [ ] 重放必须得到关闭 Session、准确 Unicode 文本及第二个 interrupted Turn。
 - [ ] 更新领域契约后运行 domain/full tests。
 - [ ] 提交：`feat(domain): decide atomic assistant turns`。
@@ -142,7 +196,12 @@ type IDGenerator interface {
 错误 category 固定为 `validation`、`conflict`、`model`、`canceled`、`output_limit`、`delivery`、`persistence`、`internal`；`application.Error` 携带 `Code`、`TerminalCommitted` 和 `Cause`。`Error()` 只呈现稳定 category/code/commit 状态，不拼接原始 cause 文本；`Unwrap()` 只供显式程序化检查。`VersionConflictError` 携带 session/expected/actual version。
 
 - [ ] 测试固定时钟、各类型序列 ID、32 goroutine 唯一性与错误链。
-- [ ] 实现正式端口和 CAS/原子/防御复制文档契约。
+- [ ] 实现正式端口和 CAS/原子/防御复制文档契约：version 是权威 stream 长度，Append 成功只返回新批次；Load 返回完整 stream，缺失 stream 返回空切片且无错误，由 Application 映射 `session_not_found`。
+- [ ] 端口明确本里程碑 no-ambiguous-error 规则：Append non-nil error 表示未提交；提交后
+  即使 caller 并发取消也返回 records。未来 remote store 若可能丢失 acknowledgement，必须
+  扩展 exact idempotent retry identity 或 unknown-commit outcome，不能静默弱化端口。
+- [ ] 记录 replay/snapshot 边界：Application 只从 Load 全量结果重放；本阶段无 snapshot port，未来 snapshot 不能决定 append 接受、sequence 或权威 version。
+- [ ] 明确 ID/Clock 非事务源：后期失败可留下未使用 Event ID，但已提交 sequence 始终连续。
 - [ ] 实现 UTC `FixedClock` 和互斥保护的五组独立 ID counter。
 - [ ] 运行 application/testkit race tests 和全量测试。
 - [ ] 提交：`feat(application): define runtime ports`。
@@ -160,9 +219,12 @@ func (*EventStore) FailNextAppend(domain.SessionID, error)
 func eventstoretest.Run(*testing.T, eventstoretest.Factory)
 ```
 
-- [ ] 契约套件先覆盖连续 metadata、CAS、注入失败原子性、取消和防御复制。
-- [ ] store 在 mutex 内依次验证 context/ID/非空事件、CAS、故障、克隆、ID/时间、Replay，再一次性赋值提交。
-- [ ] 任一步骤失败时，持久切片与版本均不变化。
+- [ ] 契约套件先覆盖连续 metadata、CAS、注入失败原子性、按 Session 一次性 Load 故障、取消和防御复制；Harness 同时暴露 `FailNextLoad` 与 `FailNextAppend`。
+- [ ] `Append` 成功仅返回新批次；缺失 Session 的 Load 返回空结果；一次性 Load 故障只影响目标 Session、消费后恢复正常且不改变任何状态。
+- [ ] store 在 mutex 内依次验证 context/ID/非空事件、CAS、故障、克隆、ID/时间、Replay，再一次性赋值提交；候选 append 在前置检查后只取一次时钟，同一成功批次共享 UTC 时间。
+- [ ] 已取消、请求非法、CAS 冲突或预提交注入故障必须 0 次读取 Clock、0 次申请 Event ID；成功 append 精确读取一次 Clock。
+- [ ] 任一步骤失败时，持久切片与版本均不变化；第 N 个 Event ID 失败或 zero/超 RFC3339 范围时钟必须有确定性测试。后期失败允许消耗不入库 ID，但不得造成已提交 sequence 空洞。
+- [ ] 构造器拒绝 nil Clock/IDGenerator 且不 panic；底层 cause 保持 `errors.Is/As` 可发现，后续应用层映射 persistence，VersionConflict 单独映射 conflict。
 - [ ] 同 Session 两个 append 一胜一冲突；32 个独立 Session 并发成功，无 sleep。
 - [ ] 运行 memory 聚焦 race 和全仓 race。
 - [ ] 提交：`feat(memory): add atomic event store`。
@@ -181,14 +243,41 @@ type ModelStream interface {
 }
 ```
 
-Stream 只允许 `text_delta* → completed`；completed 带文本、completed 前 EOF、未知事件均非法。Runtime envelope 必须携带 Session/Turn/Item/Command ID、单调 `Ordinal`、Type、Text、Code。`RuntimeSink.Emit` 同步内联。
+Stream 只允许 `text_delta* → completed`；空 delta、completed 带文本、completed 前 EOF、
+未知事件均非法。`Model.Stream` 可跨 Turn 并发调用，但每个返回 stream 只允许单 consumer，
+不得并发 `Next/Close` 或复用。
 
-稳定 Engine code：`invalid_request`、`model_startup`、`model_stream`、`canceled`、`output_limit`、`delivery`、`invalid_stream`。Engine `Error()` 同样不得自动拼接 provider cause 文本。
+Runtime envelope 必须携带 Session/Turn/Item/Command ID、单调 `Ordinal`、Type、Text、Code。
+调用方只传 `RuntimePayload{Type, Text, Code}`；run-scoped Emitter 独占 correlation 和 ordinal，
+校验成功后、sink 尝试前分配 ordinal。sink 失败消耗序号，校验失败不消耗；下一次尝试用
+`N+1`。Emitter 不可复制、不可并发调用；`RuntimeSink.Emit` 同步内联且 sink 可由多个
+Emitter 并发共享。started/completed/append.completed 必须无 Text/Code；delta 必须是非空
+有效 UTF-8 且无 Code；failed/interrupted 必须无 Text，Code 必须是 1–64 ASCII byte、
+首字符 `[a-z]`、其余仅 `[a-z0-9_]`；未知 type 为
+`invalid_request`。diagnostic 在明确消费方与脱敏合同前延后。
+
+`Emit` 先校验 payload，再在分配 ordinal 前检查 `ctx.Err()`；已取消 context 返回
+`canceled` 且不分配序号、不调用 sink。sink 返回时若 context 已取消，主 code 为
+`canceled`，否则为 `delivery`；两种情况下 sink attempt 都已消耗 ordinal。
+
+稳定 Engine code：`invalid_request`、`model_startup`、`model_stream`、`canceled`、
+`output_limit`、`delivery`、`invalid_stream`。Engine `Error()` 不得自动拼接 provider cause
+文本；`IsCode` 必须遍历完整 wrap/join tree，并对直接或 joined typed nil 安全。
 
 `ScriptedStep` 从一开始包含 `Event`、`Err`、`WaitForCancel`、`Entered`、`Release`，以支持无 sleep 的取消/竞态测试。
 
+`ScriptedModelConfig` 精确包含 `Steps`、`StartupError`、
+`ReturnStreamOnStartupError`、`ReturnNilStream`、`CloseError`；fixture 暴露防御复制的
+`Calls()` 和总 `NextCalls()/CloseCalls()`。默认无 startup error 时返回 stream；
+`ReturnNilStream` 强制 nil；有 startup error 时仅在 `ReturnStreamOnStartupError` 为真且
+未强制 nil 时同时返回 stream。RecordingSink 只有 `FailOrdinal == 0` 时允许多个 Emitter
+共享；非零 ordinal 故障注入限定单 Emitter。
+
 - [ ] 先写 Model contract、请求精确匹配、流顺序、取消与并发调用记录测试。
-- [ ] 写 RecordingSink 顺序、防御复制和指定 ordinal 失败测试。
+- [ ] 写 Emitter payload 形状、stable code 语法、correlation/ordinal 所有权、校验/取消
+  不消耗序号、sink 失败消耗序号，以及 invalid_request/canceled/delivery 精确映射测试。
+- [ ] 写 RecordingSink 的 Attempts/Delivered、防御复制和一次性 ordinal 失败测试；失败调用
+  先进入 Attempts，不进入 Delivered，成功调用进入两者。
 - [ ] 实现 Engine 接口、单调 Emitter 和稳定错误。
 - [ ] 实现并发安全 ScriptedModel/RecordingSink，不读取环境测试开关。
 - [ ] 运行 engine/testkit race 与全量测试。
@@ -209,16 +298,25 @@ func (*TurnRunner) Run(context.Context, RunRequest, *Emitter) (RunResult, error)
 ```
 
 - [ ] 成功测试证明多 delta Unicode 逐字节保持，runtime 为 started、delta...，runner 不提前发 terminal runtime event。
-- [ ] 完整失败矩阵：nil/非法请求、limit、startup/midstream、EOF、未知事件、completed 文本、UTF-8、恰好上限/超一字节、空成功、取消、sink、Close。
-- [ ] 执行顺序固定为 validate → Model.Stream → emit started → pull/validate/bound/emit/accumulate → explicit completed → Close → return。
-- [ ] 边界检查使用 `len(delta) > limit-builder.Len()`，越界 delta 不发送、不累计。
+- [ ] 完整失败矩阵：nil/typed-nil、非法请求、limit、`(nil,nil)`、`(nil,error)`、
+  `(stream,error)`、startup/midstream、`Next(event,error)`、EOF、未知事件、空 delta、
+  completed 文本、UTF-8、恰好上限/超一字节、空成功、取消、sink、Close 及主错误+Close。
+- [ ] Engine 接管每个非 nil stream 并在所有路径恰好 Close 一次；nil stream 不 Close；
+  completed 后不再 Next。非成功先取消派生 context 再 Close，成功 completed→Close→cancel。
+- [ ] 错误优先级固定：取消优先并发 provider error；仅 Close 为 model_stream；已有主错误时
+  保持主 code，只在单个外层 Engine error 的 cause 中 `errors.Join(primary, close)`。
+- [ ] delta 顺序固定为 nonempty → UTF-8 → byte bound → sink → builder；边界检查使用
+  `len(delta) > limit-builder.Len()`，非法/越界/未送达 delta 不累计，不 trim/normalize/rechunk。
 - [ ] 取消测试使用 Entered/Release barrier，不 sleep、不产生泄漏。
 - [ ] 运行 runner 聚焦 race 与全仓 race。
 - [ ] 提交：`feat(engine): run bounded model streams`。
 
-### 任务 7：构建 Application Service 与 Session 用例
+### 任务 7：增加 Atomic Admission，并构建 Application Session Service
 
-**创建文件：** `application/service.go`、`append.go`、`session.go` 及测试。
+**修改/创建文件：** `domain/commands.go`、`decide.go`、`decide_test.go`、
+`docs/architecture/domain-events.md`；`application/ports.go`、`ports_test.go`、
+`eventstoretest/suite.go`、`service.go`、`append.go`、`session.go`、`errors.go` 及对应测试；
+`adapters/memory/event_store_test.go`。
 
 ```go
 const DefaultMaxAssistantBytes = 1 << 20
@@ -226,14 +324,46 @@ const DefaultTerminalCommitTimeout = 5 * time.Second
 func NewService(EventStore, IDGenerator, *engine.TurnRunner, Config) (*Service, error)
 ```
 
-- [ ] 先测试 create/load/close、domain 拒绝、load/append/ID 错误和取消。
-- [ ] 构造器拒绝 nil 依赖和非正配置。
-- [ ] 唯一 decide/append/apply helper 负责 `Decide → Append(expectedVersion) → Apply returned records`，不 reload、不 retry。
-- [ ] 错误映射固定：domain→validation，VersionConflict→conflict，context→canceled，其余存储→persistence，坏 store 返回→internal。
-- [ ] `CreateSession` 在 version 0 append；`LoadSession` 对空流返回 session_not_found；`CloseSession` 通过同一 helper。
+- [ ] 先增加 `CommandStartAssistantTurn = "assistant.turn.start"` 与
+  `StartAssistantTurn{SessionID, TurnID, ItemID, Input}`，以及纯领域
+  `CheckStartAssistantTurnEligibility(Session) error` 的失败测试与实现。predicate 的有限范围
+  是 Session 存在且 active、完整 Session/Turn/Item 结构合法、没有 running Turn 或 Item；
+  不检查 request input 或尚未生成的 ID。`Decide(StartAssistantTurn)` 与 Application Replay
+  后 preflight 必须调用同一个 predicate，绝不在 Application 复制 invariant；两个入口复用
+  同一 eligibility table。一次
+  Decide 准确返回 `turn.started`、`assistant.message.started`，应用后 version `+2`。测试
+  invalid ID/input、closed/already-running Session、existing Item 和 malformed state；更新
+  domain-events 文档。保留低层旧命令兼容性，但 Application 不再使用 split-start 分支。
+- [ ] 修改 `application/ports.go` 的 EventStore interface 文档、`ports_test.go`、
+  `eventstoretest/suite.go` 与 `adapters/memory/event_store_test.go`，交付 no-ambiguous-error
+  合同。用 MemoryEventStore contract harness 外层的确定性 post-commit/pre-return barrier：
+  underlying Append 已返回 committed records 后暂停 outer adapter response，取消 caller，
+  release 后断言仍以 nil error 返回准确 records 且 Load 可见。无 sleep、无生产 test hook，
+  并与 canceled-before-commit case 区分。
+- [ ] 测试 create/load/close、domain 拒绝、corrupt replay、load/append/每类 ID source error、
+  nil-error invalid generated ID 和取消。
+- [ ] 构造器拒绝 nil/typed-nil 依赖和非正配置。
+- [ ] 每个用例在其规定 preflight 点调用 `Decide`；唯一 append/apply helper 接收已决定 events，
+  负责 `Append(expectedVersion) → exact acceptance → Apply`：
+  验收 count、无溢出连续 sequence、Session/Command ID、schema/Event ID/timestamp/event shape、
+  exact type/payload/order、整批同一个非零 UTC time；ordered Apply 必须成功且 final Version
+  等于 `ExpectedVersion + N`。metadata/event mismatch、Apply failure 或 final-version mismatch
+  映射 `internal/store_contract_violation`，保留 apply cause；不存在 independent expected-state
+  oracle，不 reload、不 retry。
+- [ ] 错误映射固定：caller/Decide→validation；VersionConflict→conflict；仅 supplied
+  `ctx.Err()`→canceled；普通 load/append→persistence；Store records 的 Replay/Apply 与坏
+  append return→internal/store_contract_violation；ID source error→internal/id_generation_failed；
+  nil-error invalid ID→internal/id_generator_contract_violation。仅包裹 `context.Canceled` 的
+  dependency error 不能冒充 caller cancellation。
+- [ ] Application Error/IsCategory/VersionConflict matcher 必须 nil-safe、遍历完整 join tree；
+  测试 nested join、matching later sibling、direct typed nil 与 joined typed nil。
+- [ ] `CreateSession` 先校验 WorkspaceRoot，再生成/校验 Session/Command ID 后在 version 0
+  append；`LoadSession` 先校验 ID，空流为 session_not_found、corrupt replay 为 store contract
+  violation 并返回深复制；`CloseSession` 先 load/replay/decide，合法后才生成/校验 Command ID。
 - [ ] 返回状态和记录均防御复制。
-- [ ] 运行 session 聚焦 race 与全仓 race。
-- [ ] 提交：`feat(application): add session service`。
+- [ ] 运行 domain/session、Memory EventStore contract 聚焦 race 与全仓 race。
+- [ ] 提交 domain、application、memory adapter contract test 与 domain-events 文档：
+  `feat(application): add session service`。
 
 ### 任务 8：编排成功 RunTurn 持久路径
 
@@ -257,17 +387,29 @@ type RunTurnResult struct {
 }
 ```
 
-成功顺序必须是：Load/Replay；生成 Turn/Item/Command ID；append turn.started；append assistant.started；创建一个 Emitter；Runner.Run；原子 append assistant.completed + turn.completed；emit append.completed；emit stream.completed。
+成功顺序必须是：校验 request 与 typed-nil dependency；Load 完整 stream；Replay/校验权威
+状态；调用 `domain.CheckStartAssistantTurnEligibility`；生成并校验 Turn/Item/Command ID；
+构造一个 Emitter；Decide
+`StartAssistantTurn`；原子 append turn.started + assistant.started；Runner.Run；原子 append
+assistant.completed + turn.completed；emit append.completed；emit stream.completed。
+
+用 counting Store/ID source 证明：request rejection 先于 Load/ID；Replay 与共享纯领域
+eligibility predicate 先于 IDs；missing、closed、corrupt、already-running state 不消耗 run
+ID；所有 generated-ID validation 与 Emitter 构造均先于 Decide/admission。
 
 - [ ] 端到端测试使用真实 Service、MemoryEventStore、ScriptedModel 和 RecordingSink。
 - [ ] 断言持久事件顺序、终态 pair 共用 command ID、runtime ordinal/correlation 和 exact text。
 - [ ] 同 Session 顺序执行两个 Turn，重放状态与返回结果一致。
-- [ ] 同一 RunTurn 的所有 append 使用同一 command ID；冲突方不调用模型。
-- [ ] 终态提交后 sink 失败不改写成功：返回 completed result 与 terminal=true 的 delivery error/warning。
+- [ ] admission pair 共用 command/time、一次 append、version `+2`；同一 RunTurn 的所有
+  append/runtime event 使用同一 command ID 作为 correlation 而非 idempotency；admission
+  failure/cancel/conflict 两条 start 都不可见且模型调用为零。
+- [ ] 终态提交后 sink 失败或 caller cancellation 不改写成功：返回 completed result 与
+  terminal=true 的 delivery error/warning；用 store barrier 在 terminal append 后取消，
+  断言没有 post-commit sink attempt/ordinal。
 - [ ] 运行 RunTurn 聚焦 race 与全仓 race。
 - [ ] 提交：`feat(application): persist successful turns`。
 
-### 任务 9：补齐失败、取消、Delivery 与 Persistence 语义
+### 任务 9：补齐四阶段 Result、失败、取消与并发语义
 
 **修改/创建文件：** `application/turn.go`、`turn_failure_test.go`、ScriptedModel barrier 测试。
 
@@ -282,13 +424,35 @@ caller cancel  → interrupted / "caller_canceled"
 sink failure   → interrupted / "runtime_delivery_failed"
 ```
 
-- [ ] 测试 startup、首 delta 前/后、invalid stream/UTF-8、limit、空成功和 Close failure。
-- [ ] 测试取消发生在任何 append 前、turn.start 后、stream 中、completion 竞争中和终态后。
-- [ ] 测试 sink started/delta 失败，initial/item/terminal append 失败，cleanup append 失败。
+- [ ] 测试 startup（含返回 stream）、首 delta 前/后、event+error、EOF、未知/空 delta、
+  invalid UTF-8、limit、空成功、仅 Close failure 与主错误+Close failure。
+- [ ] 以 barrier 测试取消发生在 atomic admission 前、admission 后、stream 中、completed
+  terminal entry/return、completion 竞争中和终态后；不存在 turn-only split-start 分支。
+- [ ] 测试 sink started/delta 失败、atomic admission failure（两条 start 都不可见且无模型
+  调用）、terminal append failure、cleanup append failure，以及 exact returned-event
+  contract 的 count/overflow/metadata/type/payload/order/time、Apply failure 与 final-version
+  违约。
 - [ ] partial delta 永不持久化；raw provider error 永不进入领域。
-- [ ] 取消清理使用 `context.WithoutCancel` + 5 秒 timeout，同步尝试 Turn 或 Item/Turn interrupt。
-- [ ] terminal append 失败返回 persistence 且 terminal=false；终态提交后的 delivery 失败 terminal=true。
-- [ ] 原 primary model/canceled category 不被后续 terminal runtime delivery warning 替换。
+- [ ] 每个 admission 后 Engine failure 的清理仅对 failure/interruption terminal append 使用
+  `context.WithoutCancel` + 5 秒 timeout；RuntimeSink、模型和 success append 始终使用 caller
+  context。atomic admission 后只需 `InterruptAssistantTurn{Code: "caller_canceled"}`；delivery
+  使用 `runtime_delivery_failed`。
+- [ ] 模型成功先检查 caller cancel 并用 caller context append；completed append 返回 records
+  后 completion 胜出；若 append error 且 `ctx.Err()!=nil`，按 no-commit 规则尝试 interrupted；
+  其他 persistence/conflict 不制造第二终态。
+- [ ] 完整 result/error matrix：Records 为所有已知 committed batch 的防御复制有序拼接；
+  completed 精确 Text，failed/interrupted Text 为空；terminal failure 返回 running/false，已提交
+  terminal 后 delivery failure 返回 terminal/true + warning。
+- [ ] 错误优先级：terminalization store-contract/conflict/persistence；原 model/output/canceled/
+  delivery；post-terminal warning。terminalization failure 用 `errors.Join` 保留 execution 与
+  append cause，但 outer category 反映 running 边界。
+- [ ] 只有 terminal batch 验收后才发送 append.completed 与准确一个 completed/failed/
+  interrupted signal；缺少 post-cancel signal 不代表缺少 durable terminal fact。
+- [ ] 用 Load/admission commit/terminal entry/terminal return barrier 证明：同 Session admission
+  一胜一 conflict 且 loser 无模型调用；already-running 在 append 前拒绝；CloseSession race
+  只有一个 CAS winner；不同 Session 并发；terminal conflict 不 retry，返回 running/false。
+- [ ] 模拟 admission 后进程退出与 terminal persistence/conflict/contract failure，证明 running
+  boundary 可 Replay、无 success signal、无隐藏 model retry；reconciliation 明确为 GA blocker。
 - [ ] 运行 application/testkit race 与全仓 race。
 - [ ] 提交：`feat(application): make turn failures durable`。
 
@@ -297,7 +461,8 @@ sink failure   → interrupted / "runtime_delivery_failed"
 **创建/修改文件：** `enginescenariotest/suite.go`、`scenario_test.go`、`concurrency_test.go`、`testdata/run_turn_success.jsonl`、`architecture/dependencies_test.go`、`docs/architecture/engine-vertical-slice.md`、README 和 docs index。
 
 - [ ] `enginescenariotest.Run` 的 Scenario 显式携带 `CancelDuringStream` 与 `SinkFailOrdinal`，统一覆盖 success、startup/midstream、cancel、limit 边界和 delivery failure，并通过真实 Service、正式 Sink 与 barrier 重放结果。
-- [ ] 同 Session 用 Load barrier 让两次调用读取同一 version，断言一胜一 conflict 且模型总调用一次。
+- [ ] 同 Session 用 Load barrier 让两次调用读取同一 version，断言 atomic admission 一胜一
+  conflict、无 partial admission，且模型总调用一次。
 - [ ] 32 个独立 Session 并发完成并通过 race detector。
 - [ ] 成功 JSONL fixture 必须由 `domain.MarshalRecordedEvent` 生成；live trace 与 fixture 只归一化注入的 ID/时钟。
 - [ ] 使用 `go/parser`、`go/token`、`filepath.WalkDir` 自动检查 domain/engine/application 依赖方向、无 ScriptedModel 生产分支，并禁止 application/engine/memory 生产代码导入 `os`、`os/exec`、`net` 或 `net/http`。

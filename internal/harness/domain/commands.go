@@ -12,6 +12,14 @@ const (
 	CommandFailTurn      = "turn.fail"
 	CommandInterruptTurn = "turn.interrupt"
 	CommandCloseSession  = "session.close"
+
+	CommandStartAssistantTurn     = "assistant.turn.start"
+	CommandStartAssistantMessage  = "assistant.message.start"
+	CommandCompleteAssistantTurn  = "assistant.turn.complete"
+	CommandFailAssistantTurn      = "assistant.turn.fail"
+	CommandInterruptAssistantTurn = "assistant.turn.interrupt"
+	InterruptionCallerCanceled    = "caller_canceled"
+	InterruptionDeliveryFailed    = "runtime_delivery_failed"
 )
 
 type CreateSession struct {
@@ -57,6 +65,57 @@ type InterruptTurn struct {
 
 func (InterruptTurn) CommandType() string          { return CommandInterruptTurn }
 func (c InterruptTurn) TargetSessionID() SessionID { return c.SessionID }
+
+type StartAssistantMessage struct {
+	SessionID SessionID
+	TurnID    TurnID
+	ItemID    ItemID
+}
+
+type StartAssistantTurn struct {
+	SessionID SessionID
+	TurnID    TurnID
+	ItemID    ItemID
+	Input     string
+}
+
+func (StartAssistantTurn) CommandType() string          { return CommandStartAssistantTurn }
+func (c StartAssistantTurn) TargetSessionID() SessionID { return c.SessionID }
+
+func (StartAssistantMessage) CommandType() string          { return CommandStartAssistantMessage }
+func (c StartAssistantMessage) TargetSessionID() SessionID { return c.SessionID }
+
+type CompleteAssistantTurn struct {
+	SessionID SessionID
+	TurnID    TurnID
+	ItemID    ItemID
+	Text      string
+}
+
+func (CompleteAssistantTurn) CommandType() string          { return CommandCompleteAssistantTurn }
+func (c CompleteAssistantTurn) TargetSessionID() SessionID { return c.SessionID }
+
+type FailAssistantTurn struct {
+	SessionID SessionID
+	TurnID    TurnID
+	ItemID    ItemID
+	Code      string
+	Message   string
+}
+
+func (FailAssistantTurn) CommandType() string          { return CommandFailAssistantTurn }
+func (c FailAssistantTurn) TargetSessionID() SessionID { return c.SessionID }
+
+type InterruptAssistantTurn struct {
+	SessionID SessionID
+	TurnID    TurnID
+	ItemID    ItemID
+	Code      string
+	Message   string
+}
+
+func (InterruptAssistantTurn) CommandType() string          { return CommandInterruptAssistantTurn }
+func (c InterruptAssistantTurn) TargetSessionID() SessionID { return c.SessionID }
 
 type CloseSession struct {
 	SessionID SessionID

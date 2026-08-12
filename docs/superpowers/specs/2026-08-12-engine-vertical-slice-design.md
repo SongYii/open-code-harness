@@ -48,8 +48,10 @@ iteration exists.
 
 ## 3. Evidence review
 
-The design compares implementation evidence from official repositories and
-primary technical documents. A useful idea is adopted only when it supports the
+The design treats official repositories, official documentation, and
+language/runtime documentation as primary evidence. A community project may be
+included only as explicitly labeled, non-authoritative context and cannot by
+itself establish a contract. A useful idea is adopted only when it supports the
 Open Code Harness charter; reference projects are not dependency or API sources.
 
 ### 3.1 Pi agent core
@@ -170,9 +172,11 @@ Do not copy now:
 
 Evidence: <https://github.com/maka-agent/maka-agent/blob/main/ARCHITECTURE.md>
 
-### 3.6 DeepSeek-Reasonix
+### 3.6 DeepSeek-Reasonix (community, non-authoritative context)
 
-Reasonix deliberately optimizes for DeepSeek: stable prompt prefixes for cache
+DeepSeek-Reasonix is a community project, not an official DeepSeek repository,
+and is non-authoritative context here. It deliberately optimizes for DeepSeek:
+stable prompt prefixes for cache
 hits, model-specific tool-call repair, flash/pro cost routing, result pruning,
 and parallel-safety annotations.
 
@@ -272,14 +276,49 @@ type AppendRequest struct {
 
 The final implementation plan may refine Go names, but not these semantics:
 
-- compare-and-swap on `ExpectedVersion`;
+- compare-and-swap on `ExpectedVersion`, defined as the exact length of the
+  authoritative contiguous recorded-event stream for that Session;
 - contiguous sequences assigned by the store;
 - metadata generated from injected ID and clock sources;
+- one `Clock.Now()` value normalized to UTC and shared by every record in one
+  append request;
 - one append request is all-or-nothing;
 - returned and loaded records are defensive copies;
 - cancellation before commit writes nothing;
 - no automatic retry of a conflicting command; and
 - deterministic fault injection can fail before commit without partial state.
+
+For this milestone, the port additionally guarantees that a non-nil `Append`
+error means the requested batch did not commit. Once a batch commits, the
+adapter returns the committed records even if caller cancellation races after
+the commit point. `Application` accepts a returned batch only when its count,
+overflow-safe contiguous sequences, Session/Command IDs, record validity,
+event IDs, one shared non-zero UTC occurrence time, exact event types,
+payloads and order all match the request. Ordered Apply must succeed and the
+final Version must equal `ExpectedVersion + N`. Any metadata/event mismatch,
+Apply failure, or final-version mismatch is
+`internal/store_contract_violation`; an apply cause remains unwrap-able. This
+check fails closed but cannot undo a Store that committed and then lied about
+its result.
+
+An in-process `MemoryEventStore` can implement this no-ambiguous-error rule. A
+future remote Store that can commit while losing its acknowledgement cannot
+honestly implement the current port: it must add stable exact-retry batch
+identity or an explicit unknown-commit outcome before it is admitted as a
+production adapter.
+
+`Load` returns the complete authoritative stream in this milestone. An absent
+stream is an empty result, and the Application use case decides whether that
+means `session_not_found`. `Append` success returns exactly the newly committed
+batch. A successful batch of `N` events advances the stream from
+`ExpectedVersion` to `ExpectedVersion + N`.
+
+Snapshots, indexes, transcript models, and UI state are future discardable
+projections. They must never determine CAS acceptance, recorded sequence, or
+authoritative version. Event IDs are opaque uniqueness tokens: a late
+pre-commit failure may consume IDs that never become records. This does not
+violate atomicity; committed record sequences remain gapless and Store state is
+unchanged. The port does not promise transactional or gap-free ID/clock sources.
 
 ### 4.5 Durable facts and runtime signals are separate
 
@@ -296,7 +335,7 @@ assistant.message.completed         model.stream.completed
 assistant.message.failed            model.stream.failed
 assistant.message.interrupted       model.stream.interrupted
 turn.completed                      append.completed
-turn.failed                         diagnostic
+turn.failed
 turn.interrupted
 ```
 
@@ -324,13 +363,38 @@ Rules:
 - an Item has exactly one terminal event;
 - a Turn cannot become terminal while its Item remains running;
 - successful final text is durable and preserved byte-for-byte;
-- failed/interrupted Items store stable reason data, not provider-native error
-  objects; and
-- maps/slices retain the existing domain immutability rules.
+- Item identity and lifecycle are generic, but payload is a closed,
+  kind-specific domain type rather than a flattened bag of fields;
+- failed/interrupted Items store a required stable machine code and an optional
+  safe display message, never a provider-native error object;
+- running and completed Items have no terminal metadata; failed/interrupted
+  Items have terminal metadata and do not persist partial assistant text;
+- `ActiveItemID`, Item order, Item map keys, ownership, payload kind, timestamps,
+  and status must be mutually consistent before and after every transition; and
+- maps, slices, payloads, and terminal metadata retain the existing domain
+  immutability rules.
+
+The domain represents payloads as a closed `ItemPayload` sum. The only payload
+in this milestone is `AssistantMessagePayload`; future kinds add their own
+payload type instead of adding sparse fields to every Item. `caller_canceled`
+and `runtime_delivery_failed` are the initial stable interruption codes.
+
+Application admission uses one composite domain command,
+`StartAssistantTurn{SessionID, TurnID, ItemID, Input}`. It validates the complete
+known pre-effect transition and returns exactly `TurnStarted` followed by
+`AssistantMessageStarted` as one decision batch. The lower-level commands may
+remain domain building blocks for compatibility, but Application never exposes
+a split Turn-start/Item-start durable branch.
 
 `ModelAttempt`, usage accounting, tool Items, reasoning Items, and images remain
 future domain extensions. Deferring them is a scope choice, not permission to
 store provider-specific data in the assistant-message Item.
+
+The recorded-event `schemaVersion: 1` versions the envelope and strict payload
+encoding; it is not a frozen event-type catalog. New internal pre-v0 event
+types may be recognized under schema version 1 only when existing event bytes
+and replay meaning remain compatible. The existing Session fixture must still
+decode, replay equivalently, and re-marshal each record byte-for-byte.
 
 ### 4.7 The core is synchronous and naturally backpressured
 
@@ -352,6 +416,52 @@ plan and tests; no path may accumulate unlimited model output.
 
 The byte limit is evaluated before appending a delta to the accumulator. Valid
 UTF-8 is required at the model boundary, and no accepted text is normalized.
+
+### 4.9 Runtime event ownership and validation
+
+Callers emit a payload, not an envelope. A run-scoped `Emitter` exclusively
+owns correlation and ordering: it stamps the complete correlation tuple and a
+strictly increasing ordinal before each sink attempt. A failed attempt consumes
+its ordinal; ordinals never roll back or get reused. An Emitter is single-run,
+non-copyable, and not safe for concurrent use. Separate Emitters may call a
+thread-safe sink concurrently.
+
+Runtime payload validation is centralized before ordinal allocation. Started,
+completed, and `append.completed` carry neither text nor code. A text delta is
+non-empty valid UTF-8 and carries no code. Failed and interrupted payloads carry
+a required stable code and no text. A stable runtime code is 1–64 ASCII bytes,
+begins with `a`–`z`, and thereafter contains only `a`–`z`, `0`–`9`, or `_`.
+Unknown event types are caller contract errors. `diagnostic` is deferred until
+a consumer and redaction contract exist.
+
+Emitter validates the payload, checks `ctx.Err()`, allocates the ordinal, then
+attempts the sink in that exact order. Validation failure or pre-attempt
+cancellation consumes no ordinal; cancellation returns `canceled`. A sink
+attempt always consumes its ordinal. If the context is canceled when the sink
+returns an error, `canceled` is primary; otherwise the result is `delivery`.
+
+### 4.10 Model stream ownership and cleanup
+
+The Engine becomes cleanup owner of every non-nil stream returned by
+`Model.Stream`, including the `(stream, error)` case, and calls `Close` exactly
+once on every exit. `(nil, nil)` is an invalid stream; `(nil, error)` is startup
+failure; `(stream, error)` is startup failure plus owned cleanup. If `Next`
+returns both an event and an error, the event is ignored. Context cancellation
+wins over a concurrent provider error; premature `io.EOF` is invalid; other
+`Next` failures are model-stream failures. Explicit completion is terminal and
+the runner performs no extra `Next` call.
+
+On non-success, the Engine cancels its derived stream context before closing;
+on success it observes completion, closes, then cancels. Close is synchronous
+and must promptly join provider-owned background work. A close-only failure is
+`model_stream`. When cleanup also fails after a primary error, the primary
+stable code is preserved and the causes are joined inside one Engine error.
+
+For each delta the exact order is: reject empty text, validate UTF-8, enforce
+the byte limit, emit to the sink, then append to the result builder. An invalid,
+undelivered, or over-limit delta is never accumulated. Exact-limit output is
+valid, and the Engine does not trim, normalize, or re-chunk text. Provider
+adapters must not split a UTF-8 code point across stream events.
 
 ## 5. Component layout
 
@@ -385,6 +495,29 @@ or testkit.
 
 ## 6. Turn execution flow
 
+`RunTurn` has four irreversible phases:
+
+| Phase | Durable boundary | Context | Required outcome |
+| --- | --- | --- | --- |
+| Preflight | none | caller context | failure returns no records and invokes no model |
+| Admission | atomic started Turn + Item | caller context | success establishes the only legal model-call boundary |
+| Execution | runtime started/deltas only | caller context | Engine owns stream cancellation and `Close` |
+| Terminalization | atomic terminal Item + Turn | caller context for success; bounded detached context for failure/interruption | exactly one terminal batch, or an explicit running persistence/conflict result |
+
+The exact pre-admission order is: validate request and typed-nil dependencies;
+Load the complete stream; Replay and validate authoritative state; call the
+pure domain `CheckStartAssistantTurnEligibility`; generate Turn, Item, and
+Command IDs; validate every generated ID; construct the one run-scoped Emitter;
+Decide `StartAssistantTurn`; append its atomic admission batch; then invoke
+`TurnRunner`. The eligibility predicate has a finite scope: Session existence,
+active status, full structural validity, and absence of a running Turn or Item.
+It does not validate the not-yet-generated IDs or request input. Domain
+`Decide(StartAssistantTurn)` calls the same predicate before its command-field
+checks; Application never duplicates those invariants. Missing, closed,
+corrupt, or already-running Sessions therefore consume no run IDs. Invalid IDs
+returned with nil source errors and Emitter construction failures cannot strand
+a running Turn.
+
 ### 6.1 Successful Turn
 
 ```text
@@ -392,24 +525,37 @@ caller
   → application.RunTurn
   → EventStore.Load
   → domain.Replay
-  → domain.Decide(StartTurn)
-  → EventStore.Append(expectedVersion)          [turn.started]
-  → EventStore.Append(expectedVersion + 1)      [assistant.message.started]
+  → domain.CheckStartAssistantTurnEligibility
+  → validate generated Turn/Item/Command IDs
+  → construct one engine.Emitter
+  → domain.Decide(StartAssistantTurn)
+  → EventStore.Append(expectedVersion)          [turn.started,
+                                                 assistant.message.started]
   → Model.Stream
   → RuntimeSink(model.stream.started)
   → RuntimeSink(model.text.delta)*
   → EventStore.Append atomically                [assistant.message.completed,
                                                  turn.completed]
+  → RuntimeSink(append.completed)
   → RuntimeSink(model.stream.completed)
   → RunTurnResult
 ```
 
-The terminal Item and Turn events are appended in one atomic batch. A caller
-must never observe `turn.completed` without the final message fact.
+Admission is one atomic batch: `StartAssistantTurn` decides, in order,
+`turn.started` and `assistant.message.started`; both records share one command
+ID and occurrence timestamp and advance the loaded version by two. If admission
+fails or cancellation wins before commit, neither event is visible and the
+model is not called.
+
+The terminal Item and Turn events are also appended in one atomic batch. A caller
+must never observe `turn.completed` without the final message fact. The Item
+terminal fact precedes the Turn terminal fact, and both records share one
+command ID and one occurrence timestamp.
 
 ### 6.2 Model startup failure
 
-If the model fails before yielding a stream, the Engine atomically appends:
+If the model fails before yielding a stream, the Engine returns a stable error
+to Application. Application then atomically appends:
 
 ```text
 assistant.message.failed
@@ -421,52 +567,132 @@ not enter domain state.
 
 ### 6.3 Mid-stream failure
 
-Previously emitted deltas remain runtime observations only. The Engine appends
-the failed Item and Turn terminal events atomically. No partial assistant text
-is represented as a completed message.
+Previously emitted deltas remain runtime observations only. Application maps
+the Engine result and atomically appends the failed Item and Turn terminal
+events. No partial assistant text is represented as a completed message.
 
 ### 6.4 Cancellation
 
-Cancellation is checked before each irreversible boundary and passed to the
-model stream and sink. Once the Turn and Item have started, a cancellation
-attempts an atomic interrupted Item/Turn append. A successful interrupt commit
-produces an interrupted result even if the provider reports an ordinary abort
-error afterward.
+Cancellation is checked at every boundary and the original caller context is
+passed to the model and RuntimeSink. Once admission commits, an Engine failure,
+caller cancellation, or pre-terminal delivery failure terminalizes with a
+bounded cleanup context created in the same stack frame:
 
-Cancellation before the initial Turn append writes nothing. Cancellation after
-a terminal commit cannot replace the terminal state.
+```go
+cleanupBase := context.WithoutCancel(ctx)
+cleanupCtx, cancel := context.WithTimeout(cleanupBase, s.config.TerminalCommitTimeout)
+defer cancel()
+```
+
+This detached context is used only for the failure/interruption append. It is
+never used for model work, retries, ordinary success, or RuntimeSink delivery.
+Cancellation before admission writes nothing. A successful terminal commit
+wins over cancellation observed afterward.
 
 ### 6.5 Append failure
 
-If the initial Turn append fails, the model is never called. If a terminal batch
-append fails, the Engine returns a persistence failure and must not report model
-success as Turn success. The event stream may remain at a running boundary;
-production reconciliation is owned by the future persistence/recovery milestone.
-The failure is explicit and testable rather than silently repaired.
+If admission fails, the model is never called. Model success is checked against
+caller cancellation before the completed batch and uses the caller context.
+If that append returns records, durable completion wins. If it fails while the
+caller context is canceled, the no-ambiguous-error rule authorizes one bounded
+attempt to append the interrupted pair. A different persistence failure or any
+conflict does not invent a second terminal outcome. Any terminal append failure
+returns the known admission records and a running result with
+`TerminalCommitted == false`; production reconciliation is a blocking
+capability before general availability.
 
 ### 6.6 Runtime sink failure
 
 The sink is part of the required execution path in this milestone. If it fails
-before terminal commit, the model stream is canceled and the Engine attempts to
-append interrupted Item/Turn facts with a stable runtime-delivery reason. If it
-fails after terminal commit, durable success remains authoritative and the
-returned result carries a delivery warning/error distinct from execution state.
+before terminal commit, Engine cancels and closes the model stream, then returns
+the stable error to Application. Application attempts to append interrupted
+Item/Turn facts with a stable runtime-delivery reason. If delivery fails or the
+caller cancels after terminal commit, durable success remains authoritative and
+the returned result carries a delivery warning/error distinct from execution
+state.
 
 The implementation plan must make this distinction explicit and prevent a sink
 failure from rewriting an already committed terminal fact.
 
+### 6.7 Result and error algebra
+
+`RunTurn` deliberately returns a value together with an error. `Records` is a
+defensive, ordered concatenation of every batch this call knows committed: two
+admission records after admission and two more after terminalization. `Text` is
+exactly the completed output, including a valid empty output; failed and
+interrupted results have empty text and never expose partial deltas as final
+text.
+
+| Outcome | Result status/text | `TerminalCommitted` | Error category |
+| --- | --- | --- | --- |
+| completed and delivered | completed / exact text | true | nil |
+| completed, terminal delivery failed or suppressed | completed / exact text, warning | true | delivery |
+| model startup/stream/close failure, terminal committed | failed / empty | true | model |
+| invalid provider stream, terminal committed | failed / empty | true | model (`invalid_stream`) |
+| output limit, terminal committed | failed / empty | true | output_limit |
+| caller cancellation, terminal committed | interrupted / empty | true | canceled |
+| pre-terminal sink failure, interruption committed | interrupted / empty | true | delivery |
+| admission/load/terminal persistence or conflict failure | absent or running / empty | false | persistence, conflict, or internal |
+| request validation failure | zero result | false | validation |
+
+Before accepted admission, every failure returns the zero `RunTurnResult`:
+zero IDs/status, empty text/records, false terminal flag, and nil warning. After
+accepted admission, every return carries Session/Turn/Item IDs, running status,
+the two accepted admission records, empty text, false terminal flag, and nil
+warning until a terminal batch is accepted. Accepted terminalization adds its
+two records and sets failed/interrupted or completed plus the table's text and
+terminal flag. `DeliveryWarning` is non-nil only for a failed or suppressed
+post-terminal runtime delivery and preserves that cause; the returned
+application error preserves the primary execution and terminalization causes
+according to precedence.
+
+Durable terminal facts authorize runtime terminal signals. Only after accepting
+and applying the terminal batch may Application emit `append.completed` and
+then exactly one of `model.stream.completed`, `model.stream.failed`, or
+`model.stream.interrupted`. No terminal commit means no such signal. A later
+delivery failure becomes `DeliveryWarning`; it is the returned category only
+when no earlier execution error exists, otherwise the earlier category remains
+primary and the delivery cause is joined. Absence of a post-cancel signal never
+implies absence of a durable terminal fact.
+
+```text
+success:     model.stream.started, delta*, append.completed, model.stream.completed
+failure:     model.stream.started?, delta*, append.completed, model.stream.failed
+interrupted: model.stream.started?, delta*, append.completed, model.stream.interrupted
+```
+
+Error precedence is: a Store contract violation/conflict/persistence error that
+prevents terminalization; then the original model/output/canceled/delivery
+execution error; then a post-terminal delivery warning. When terminalization
+fails, `errors.Join` preserves both execution and append causes while the outer
+category describes the running durable boundary.
+
 ## 7. Concurrency and transaction semantics
 
 - EventStore CAS is the authoritative same-Session concurrency control.
-- Two callers may load the same version, but only one initial Turn append can
+- Atomic admission CAS is the same-Session `RunTurn` linearization point. Two
+  callers may load the same version and complete preflight, but only one admission can
   commit; the losing caller does not invoke the model.
-- Different Sessions may execute concurrently.
+- A call that loads an already-running Turn is rejected by `domain.Decide`
+  before append and invokes the model zero times.
+- `CloseSession` racing admission is resolved solely by CAS; only one valid
+  append wins and neither path retries.
+- Different Sessions may execute concurrently through one Service/TurnRunner;
+  shared Model and RuntimeSink implementations obey the Tasks 5–6 concurrency
+  contracts.
 - No automatic command retry follows a CAS conflict, because repeating a user
   command may duplicate model cost or external work in later milestones.
 - An append batch either commits every event in order or commits none.
+- A conflict, already-canceled request, malformed request, or injected
+  pre-commit fault performs no clock read and allocates no Event ID. A candidate
+  append reads the clock exactly once; later validation failure may consume
+  otherwise-unused opaque Event IDs but never advances the stream version.
 - The MemoryEventStore must pass `go test -race` under same-Session conflicts
   and independent-Session parallelism.
 - Tests use barriers/channels, never timing sleeps, to establish concurrency.
+- A terminal conflict is not retried or rewritten as a model failure: the
+  result is running/unknown from this call's local authority,
+  `TerminalCommitted == false`, and the caller must reload.
 
 ## 8. Error model
 
@@ -487,6 +713,29 @@ distinguish:
 Every error states whether a durable terminal event was committed. Error-message
 prose is not a compatibility contract; stable category/code and typed fields are.
 
+Caller input and `domain.Decide` rejection are validation errors; an empty load
+is `validation/session_not_found`; ID source failure is
+`internal/id_generation_failed`; a syntactically invalid ID returned with nil
+error is `internal/id_generator_contract_violation`. Replay or Apply failure on
+Store-supplied records and any append-return mismatch are
+`internal/store_contract_violation`, never caller validation. Ordinary
+Load/Append dependency errors are persistence, and every
+`VersionConflictError`, including cleanup, is conflict. A dependency error that
+wraps `context.Canceled` remains a dependency error unless the supplied context
+is actually canceled.
+
+Application `Error`, `IsCategory`, and `VersionConflictError` are nil-safe and
+traverse all branches of wrapped/joined errors, including later siblings and
+direct or joined typed-nil values.
+
+One generated `CommandID` correlates both RunTurn batches and every runtime
+event in the invocation. It is not an idempotency or Store-deduplication key;
+because it spans two appends, `(SessionID, CommandID)` cannot identify one
+append request. Service never automatically reloads, re-decides, retries an
+append, or invokes the model again. A caller must not blindly retry an uncertain
+response. Future public idempotency requires a separate caller-stable operation
+identity, exact batch identity, and explicit return/resume/new-Turn semantics.
+
 ## 9. Deterministic adapters and contract suites
 
 ### 9.1 ScriptedModel
@@ -495,10 +744,23 @@ The model test adapter is reusable by Engine and future adapter contract tests.
 It performs exact request assertions, records calls, supports deterministic
 blocking/cancellation, and returns defensive copies of scripted data.
 
+The recording sink stores every attempted event before applying its injected
+one-shot ordinal failure. Failed calls appear in `Attempts` but not in
+`Delivered`; successful calls appear in both. Both snapshots are defensive.
+One recording sink may be shared by separate Emitters concurrently only when
+ordinal failure injection is disabled; a nonzero run-local failure ordinal is a
+single-Emitter fixture. A test must not drive one Emitter concurrently.
+
 ### 9.2 MemoryEventStore
 
 The store supports deterministic metadata, CAS conflicts, atomic batches,
-load/append fault injection, defensive-copy assertions, and concurrent access.
+per-Session one-shot load/append fault injection, defensive-copy assertions,
+and concurrent access. Contract tests cover an absent stream, append return
+shape, load-fault consumption/isolation, and defensive copies. Adapter-specific
+tests use counting/failing sources to prove nil-dependency rejection, one clock
+read on success, zero source calls for failures rejected before candidate
+construction, and unchanged records/version when Event ID or clock generation
+fails.
 
 ### 9.3 Shared contract suites
 
@@ -534,14 +796,18 @@ The implementation plan must include at least these cases:
 - failure before the first delta;
 - failure after one or more deltas;
 - invalid UTF-8 model output;
+- empty text delta is invalid and is neither emitted nor accumulated;
 - empty successful output, with an explicit chosen contract;
 - output exactly at the byte limit and one byte over it;
-- invalid model stream event order.
+- invalid model stream event order;
+- `(nil, nil)`, `(stream, error)`, and `Next(event, error)` combinations;
+- exactly one stream close on every non-nil-stream exit, including sink failure;
+- close-only failure and primary-plus-close error precedence.
 
 ### Cancellation and delivery
 
 - cancellation before any append;
-- cancellation after Turn start and before model start;
+- cancellation before atomic admission and immediately after admission;
 - cancellation during streaming;
 - cancellation racing with model completion;
 - sink failure before and after terminal commit;
@@ -550,13 +816,23 @@ The implementation plan must include at least these cases:
 ### Storage and concurrency
 
 - load failure;
-- initial append failure prevents model invocation;
+- atomic admission failure prevents model invocation and exposes no partial start;
 - terminal batch failure never reports Turn success;
 - fault injection proves no partial batch append;
 - same-Session concurrent RunTurn has one winner and one conflict;
 - 32 independent Sessions complete without races;
 - loaded and returned records cannot mutate store state;
 - `go test -race ./... -count=1` passes.
+- stable Engine-code matching traverses complete joined error trees and remains
+  safe for direct or joined typed-nil errors.
+- generated-ID source errors and nil-error invalid IDs occur before admission;
+- exact append-return rejection covers count, overflow, metadata, event
+  type/payload/order, shared UTC time, ordered Apply success, and final Version;
+- Application category/conflict matching traverses nested joins, a later
+  matching sibling, and direct/joined typed nils;
+- barrier races cover Load, admission commit, terminal entry, and terminal
+  return; a running boundary remains replayable after terminal persistence,
+  conflict, or Store-contract failure, with no hidden retry.
 
 ### Repository boundaries
 
@@ -617,10 +893,17 @@ The following are separate future specifications:
 - Context Engine, prompt construction, compaction, and cache policy;
 - MCP, Skills, memory, subagents, and multi-agent graphs;
 - OpenTelemetry and full scenario-evaluation infrastructure.
+- diagnostic runtime events before a consumer and redaction contract exist.
 
 These exclusions keep dependency order correct. They do not lower the quality
 requirements of the Engine, event-store contract, Item lifecycle, or
 deterministic adapters delivered here.
+
+Process death after admission and terminal persistence/conflict/contract
+failures can leave a durable running boundary. This milestone performs no
+startup repair, continuation, or blind retry. The boundary must remain
+inspectable through returned records and Replay, and production reconciliation
+is explicitly a GA-blocking capability rather than a silently repaired state.
 
 ## 14. Rejected alternatives
 

@@ -133,6 +133,35 @@ func marshalEvent(event Event) (json.RawMessage, string, error) {
 		return marshalEventData(event, EventTurnInterrupted)
 	case SessionClosed:
 		return marshalEventData(event, EventSessionClosed)
+	case AssistantMessageStarted:
+		if err := validateAssistantMessageIDs(event.TurnID, event.ItemID); err != nil {
+			return nil, "", err
+		}
+		return marshalEventData(event, EventAssistantMessageStarted)
+	case AssistantMessageCompleted:
+		if err := validateAssistantMessageIDs(event.TurnID, event.ItemID); err != nil {
+			return nil, "", err
+		}
+		if !utf8.ValidString(event.Text) {
+			return nil, "", invalidEventError("assistant message text must be valid UTF-8")
+		}
+		return marshalEventData(event, EventAssistantMessageCompleted)
+	case AssistantMessageFailed:
+		if err := validateAssistantMessageIDs(event.TurnID, event.ItemID); err != nil {
+			return nil, "", err
+		}
+		if _, err := validateItemTerminal(event.Code, event.Message); err != nil {
+			return nil, "", err
+		}
+		return marshalEventData(event, EventAssistantMessageFailed)
+	case AssistantMessageInterrupted:
+		if err := validateAssistantMessageIDs(event.TurnID, event.ItemID); err != nil {
+			return nil, "", err
+		}
+		if _, err := validateItemTerminal(event.Code, event.Message); err != nil {
+			return nil, "", err
+		}
+		return marshalEventData(event, EventAssistantMessageInterrupted)
 	default:
 		return nil, "", invalidEventError("unsupported event type")
 	}
@@ -168,6 +197,18 @@ func unmarshalEvent(eventType string, data json.RawMessage) (Event, error) {
 	case EventSessionClosed:
 		event = SessionClosed{}
 		keys = []string{}
+	case EventAssistantMessageStarted:
+		event = AssistantMessageStarted{}
+		keys = []string{"turnID", "itemID"}
+	case EventAssistantMessageCompleted:
+		event = AssistantMessageCompleted{}
+		keys = []string{"turnID", "itemID", "text"}
+	case EventAssistantMessageFailed:
+		event = AssistantMessageFailed{}
+		keys = []string{"turnID", "itemID", "code", "message"}
+	case EventAssistantMessageInterrupted:
+		event = AssistantMessageInterrupted{}
+		keys = []string{"turnID", "itemID", "code", "message"}
 	default:
 		return nil, invalidEventError("unsupported event type")
 	}
@@ -204,6 +245,26 @@ func unmarshalEvent(eventType string, data json.RawMessage) (Event, error) {
 		}
 		event = target
 	case SessionClosed:
+		if err := decoder.Decode(&target); err != nil {
+			return nil, invalidEventError("invalid event data")
+		}
+		event = target
+	case AssistantMessageStarted:
+		if err := decoder.Decode(&target); err != nil {
+			return nil, invalidEventError("invalid event data")
+		}
+		event = target
+	case AssistantMessageCompleted:
+		if err := decoder.Decode(&target); err != nil {
+			return nil, invalidEventError("invalid event data")
+		}
+		event = target
+	case AssistantMessageFailed:
+		if err := decoder.Decode(&target); err != nil {
+			return nil, invalidEventError("invalid event data")
+		}
+		event = target
+	case AssistantMessageInterrupted:
 		if err := decoder.Decode(&target); err != nil {
 			return nil, invalidEventError("invalid event data")
 		}
@@ -448,6 +509,16 @@ func isASCIIDigit(value byte) bool {
 func validateTurnID(turnID TurnID) error {
 	if _, err := ParseTurnID(string(turnID)); err != nil {
 		return invalidEventError("turn ID is invalid")
+	}
+	return nil
+}
+
+func validateAssistantMessageIDs(turnID TurnID, itemID ItemID) error {
+	if err := validateTurnID(turnID); err != nil {
+		return err
+	}
+	if _, err := ParseItemID(string(itemID)); err != nil {
+		return invalidEventError("item ID is invalid")
 	}
 	return nil
 }

@@ -16,13 +16,22 @@ and the [foundational architecture charter](docs/superpowers/specs/2026-08-11-op
 ## Current status
 
 - Domain events and the Session/Turn state machine: implemented and verified.
-- Industrial Engine vertical slice: design accepted; implementation plan ready.
-- Provider, Tool/Policy, ACP, TUI, persistence, and recovery milestones: not yet implemented.
+- Industrial Engine vertical slice: implemented and verified through reusable
+  scenario, replay, concurrency, race, and dependency-boundary gates.
+- Provider, Tool/Policy, ACP, TUI, production persistence, and recovery
+  milestones: not yet implemented.
 
 ## Development
 
 The implemented internal Session and Turn contract is documented in
-[Domain Events and State Machine](docs/architecture/domain-events.md).
+[Domain Events and State Machine](docs/architecture/domain-events.md). The
+executable Application/Engine contract is documented in
+[Implemented Engine Vertical Slice](docs/architecture/engine-vertical-slice.md)
+and its [Chinese reading copy](docs/architecture/engine-vertical-slice.zh-CN.md).
+The ten-task sequence is retained in the
+[implemented plan](docs/superpowers/plans/2026-08-12-engine-vertical-slice.md),
+with auditable results in the bilingual
+[completion evidence ledger](docs/architecture/engine-vertical-slice-evidence.md).
 
 ```bash
 gofmt -w .

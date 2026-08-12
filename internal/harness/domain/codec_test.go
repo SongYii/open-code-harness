@@ -266,6 +266,21 @@ func TestSessionLifecycleFixtureUsesCanonicalCodecRecords(t *testing.T) {
 		if !reflect.DeepEqual(record, want[index]) {
 			t.Fatalf("fixture line %d record = %#v, want %#v", index+1, record, want[index])
 		}
+		encoded, err := MarshalRecordedEvent(record)
+		if err != nil {
+			t.Fatalf("fixture line %d re-marshal error = %v", index+1, err)
+		}
+		if string(encoded) != line {
+			t.Fatalf("fixture line %d re-marshal = %s, want exact %s", index+1, encoded, line)
+		}
+	}
+
+	state, err := Replay(want)
+	if err != nil {
+		t.Fatalf("Replay() fixture error = %v", err)
+	}
+	if state.Status != SessionStatusClosed || state.Version != 6 || state.ActiveTurnID != "" || len(state.Turns) != 2 {
+		t.Fatalf("Replay() fixture state = %#v", state)
 	}
 }
 
@@ -423,6 +438,100 @@ func TestRecordedEventRejectsWhitespaceOnlyTurnInput(t *testing.T) {
 	input := `{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-11T01:02:03Z","type":"turn.started","data":{"turnID":"turn-1","input":" \t "}}`
 	if _, err := UnmarshalRecordedEvent([]byte(input)); !IsCode(err, CodeInvalidEvent) {
 		t.Fatalf("UnmarshalRecordedEvent() error = %v, want code %q", err, CodeInvalidEvent)
+	}
+}
+
+func TestAssistantMessageEventJSONRoundTripsCanonically(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		event Event
+		want  string
+	}{
+		{name: "started", event: AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"}, want: `{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-11T01:02:03Z","type":"assistant.message.started","data":{"turnID":"turn-1","itemID":"item-1"}}`},
+		{name: "completed empty text", event: AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: ""}, want: `{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-11T01:02:03Z","type":"assistant.message.completed","data":{"turnID":"turn-1","itemID":"item-1","text":""}}`},
+		{name: "failed", event: AssistantMessageFailed{TurnID: "turn-1", ItemID: "item-1", Code: "provider_error", Message: "safe"}, want: `{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-11T01:02:03Z","type":"assistant.message.failed","data":{"turnID":"turn-1","itemID":"item-1","code":"provider_error","message":"safe"}}`},
+		{name: "interrupted empty display", event: AssistantMessageInterrupted{TurnID: "turn-1", ItemID: "item-1", Code: "caller_canceled", Message: ""}, want: `{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-11T01:02:03Z","type":"assistant.message.interrupted","data":{"turnID":"turn-1","itemID":"item-1","code":"caller_canceled","message":""}}`},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			record := codecTestRecord(test.event)
+			encoded, err := MarshalRecordedEvent(record)
+			if err != nil {
+				t.Fatalf("MarshalRecordedEvent() error = %v", err)
+			}
+			if string(encoded) != test.want {
+				t.Fatalf("encoded = %s\nwant = %s", encoded, test.want)
+			}
+			decoded, err := UnmarshalRecordedEvent(encoded)
+			if err != nil {
+				t.Fatalf("UnmarshalRecordedEvent() error = %v", err)
+			}
+			if !reflect.DeepEqual(decoded, record) {
+				t.Fatalf("decoded = %#v, want %#v", decoded, record)
+			}
+		})
+	}
+}
+
+func TestAssistantMessageEventJSONRejectsNonStrictPayloads(t *testing.T) {
+	t.Parallel()
+
+	prefix := `{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-11T01:02:03Z","type":"`
+	tests := []struct {
+		name      string
+		eventType string
+		data      string
+	}{
+		{name: "started unknown", eventType: EventAssistantMessageStarted, data: `{"turnID":"turn-1","itemID":"item-1","extra":true}`},
+		{name: "started missing", eventType: EventAssistantMessageStarted, data: `{"turnID":"turn-1"}`},
+		{name: "started duplicate", eventType: EventAssistantMessageStarted, data: `{"turnID":"turn-1","itemID":"item-1","itemID":"item-2"}`},
+		{name: "started wrong type", eventType: EventAssistantMessageStarted, data: `{"turnID":"turn-1","itemID":1}`},
+		{name: "completed unknown", eventType: EventAssistantMessageCompleted, data: `{"turnID":"turn-1","itemID":"item-1","text":"","extra":true}`},
+		{name: "completed missing", eventType: EventAssistantMessageCompleted, data: `{"turnID":"turn-1","itemID":"item-1"}`},
+		{name: "completed duplicate", eventType: EventAssistantMessageCompleted, data: `{"turnID":"turn-1","itemID":"item-1","text":"a","text":"b"}`},
+		{name: "completed wrong type", eventType: EventAssistantMessageCompleted, data: `{"turnID":"turn-1","itemID":"item-1","text":1}`},
+		{name: "failed unknown", eventType: EventAssistantMessageFailed, data: `{"turnID":"turn-1","itemID":"item-1","code":"provider_error","message":"","extra":true}`},
+		{name: "failed missing", eventType: EventAssistantMessageFailed, data: `{"turnID":"turn-1","itemID":"item-1","code":"provider_error"}`},
+		{name: "failed duplicate", eventType: EventAssistantMessageFailed, data: `{"turnID":"turn-1","itemID":"item-1","code":"provider_error","code":"other","message":""}`},
+		{name: "failed wrong type", eventType: EventAssistantMessageFailed, data: `{"turnID":"turn-1","itemID":"item-1","code":"provider_error","message":1}`},
+		{name: "interrupted unknown", eventType: EventAssistantMessageInterrupted, data: `{"turnID":"turn-1","itemID":"item-1","code":"caller_canceled","message":"","extra":true}`},
+		{name: "interrupted missing", eventType: EventAssistantMessageInterrupted, data: `{"turnID":"turn-1","itemID":"item-1","code":"caller_canceled"}`},
+		{name: "interrupted duplicate", eventType: EventAssistantMessageInterrupted, data: `{"turnID":"turn-1","itemID":"item-1","code":"caller_canceled","message":"","message":"other"}`},
+		{name: "interrupted wrong type", eventType: EventAssistantMessageInterrupted, data: `{"turnID":"turn-1","itemID":"item-1","code":1,"message":""}`},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			input := prefix + test.eventType + `","data":` + test.data + `}`
+			_, err := UnmarshalRecordedEvent([]byte(input))
+			if !IsCode(err, CodeInvalidEvent) {
+				t.Fatalf("UnmarshalRecordedEvent() error = %v, want code %q", err, CodeInvalidEvent)
+			}
+		})
+	}
+}
+
+func TestAssistantMessageEventJSONRejectsInvalidValues(t *testing.T) {
+	t.Parallel()
+
+	invalid := "value-\xff"
+	tests := []Event{
+		AssistantMessageStarted{TurnID: "turn-1", ItemID: ItemID(invalid)},
+		AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: invalid},
+		AssistantMessageFailed{TurnID: "turn-1", ItemID: "item-1", Code: " ", Message: ""},
+		AssistantMessageFailed{TurnID: "turn-1", ItemID: "item-1", Code: "provider_error", Message: invalid},
+		AssistantMessageInterrupted{TurnID: "turn-1", ItemID: " item-1", Code: "caller_canceled", Message: ""},
+		AssistantMessageInterrupted{TurnID: "turn-1", ItemID: "item-1", Code: invalid, Message: ""},
+	}
+
+	for _, event := range tests {
+		_, err := MarshalRecordedEvent(codecTestRecord(event))
+		if !IsCode(err, CodeInvalidEvent) {
+			t.Fatalf("MarshalRecordedEvent(%T) error = %v, want code %q", event, err, CodeInvalidEvent)
+		}
 	}
 }
 

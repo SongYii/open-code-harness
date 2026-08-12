@@ -15,6 +15,10 @@ const (
 	CodeTurnNotRunning       ErrorCode = "turn_not_running"
 	CodeTurnMismatch         ErrorCode = "turn_mismatch"
 	CodeTurnAlreadyExists    ErrorCode = "turn_already_exists"
+	CodeItemAlreadyRunning   ErrorCode = "item_already_running"
+	CodeItemNotRunning       ErrorCode = "item_not_running"
+	CodeItemMismatch         ErrorCode = "item_mismatch"
+	CodeItemAlreadyExists    ErrorCode = "item_already_exists"
 	CodeSequenceMismatch     ErrorCode = "sequence_mismatch"
 )
 
