@@ -357,6 +357,46 @@ func TestTurnRunnerNormalizesTypedNilUnwrappersSafely(t *testing.T) {
 	}
 }
 
+func TestTurnRunnerNormalizesJoinedTypedNilUnwrappersSafely(t *testing.T) {
+	var typedNilSingle error = (*panicSingleUnwrapper)(nil)
+	var typedNilMulti error = (*panicMultiUnwrapper)(nil)
+	rawCause := errors.New("raw cause after typed nil")
+	closeCause := errors.New("close cause")
+	cases := []struct {
+		name      string
+		nextErr   error
+		closeErr  error
+		wantCode  ErrorCode
+		wantCause error
+	}{
+		{"typed nil before eof", errors.Join(typedNilMulti, io.EOF), nil, CodeInvalidStream, nil},
+		{"typed nil before ordinary cause", errors.Join(typedNilSingle, rawCause), nil, CodeModelStream, rawCause},
+		{"typed nil before engine cause with cleanup", errors.Join(typedNilMulti, &Error{Code: CodeDelivery, Cause: rawCause}), closeCause, CodeModelStream, rawCause},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			model, _ := testkit.NewScriptedModel(runnerRequest().ModelRequest, testkit.ScriptedModelConfig{
+				Steps:      []testkit.ScriptedStep{{Err: tc.nextErr}},
+				CloseError: tc.closeErr,
+			})
+			emitter, _ := NewEmitter(&testkit.RecordingSink{}, validRunnerCorrelation())
+			runner, _ := NewTurnRunner(model)
+			got, err := runner.Run(context.Background(), runnerRequest(), emitter)
+			assertRunFailure(t, got, err, tc.wantCode)
+			if tc.wantCause != nil && !errors.Is(err, tc.wantCause) {
+				t.Fatalf("Run() error = %v, does not retain raw cause", err)
+			}
+			if tc.closeErr != nil && !errors.Is(err, tc.closeErr) {
+				t.Fatalf("Run() error = %v, does not retain close cause", err)
+			}
+			if IsCode(err, CodeDelivery) {
+				t.Fatalf("Run() error = %v, retains nested delivery Engine code", err)
+			}
+			assertRunnerCounts(t, model, 1, 1)
+		})
+	}
+}
+
 func TestTurnRunnerCancellationWinsAtDependencyReturnBoundaries(t *testing.T) {
 	t.Run("stream nil and error", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())

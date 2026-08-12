@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"reflect"
 	"strings"
 	"unicode/utf8"
 
@@ -81,7 +82,7 @@ func (runner *TurnRunner) Run(ctx context.Context, request RunRequest, emitter *
 			if cause := ctx.Err(); cause != nil {
 				return runner.fail(cancel, stream, engineError(CodeCanceled, cause))
 			}
-			if !isNil(err) && errors.Is(err, io.EOF) {
+			if isEOF(err) {
 				return runner.fail(cancel, stream, engineError(CodeInvalidStream, nil))
 			}
 			return runner.fail(cancel, stream, engineError(CodeModelStream, errorCause(err, CodeModelStream)))
@@ -169,7 +170,7 @@ func nonEngineCause(err error) error {
 	if isNil(err) {
 		return nil
 	}
-	if !containsEngineError(err) {
+	if !requiresNormalization(err) {
 		return err
 	}
 	if engineErr, ok := err.(*Error); ok {
@@ -196,9 +197,9 @@ func nonEngineCause(err error) error {
 	return err
 }
 
-func containsEngineError(err error) bool {
+func requiresNormalization(err error) bool {
 	if isNil(err) {
-		return false
+		return true
 	}
 	if engineErr, ok := err.(*Error); ok {
 		return engineErr != nil
@@ -208,7 +209,7 @@ func containsEngineError(err error) bool {
 			return false
 		}
 		for _, cause := range joined.Unwrap() {
-			if containsEngineError(cause) {
+			if requiresNormalization(cause) {
 				return true
 			}
 		}
@@ -218,9 +219,49 @@ func containsEngineError(err error) bool {
 		if isNil(wrapped) {
 			return false
 		}
-		return containsEngineError(wrapped.Unwrap())
+		return requiresNormalization(wrapped.Unwrap())
 	}
 	return false
+}
+
+func isEOF(err error) bool {
+	if isNil(err) {
+		return false
+	}
+	if errorEquals(err, io.EOF) {
+		return true
+	}
+	if matcher, ok := err.(interface{ Is(error) bool }); ok {
+		if isNil(matcher) {
+			return false
+		}
+		if matcher.Is(io.EOF) {
+			return true
+		}
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		if isNil(joined) {
+			return false
+		}
+		for _, cause := range joined.Unwrap() {
+			if isEOF(cause) {
+				return true
+			}
+		}
+		return false
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		if isNil(wrapped) {
+			return false
+		}
+		return isEOF(wrapped.Unwrap())
+	}
+	return false
+}
+
+func errorEquals(err, target error) bool {
+	typeOfErr := reflect.TypeOf(err)
+	return typeOfErr != nil && typeOfErr.Comparable() && err == target
 }
 
 func sentinelForCode(code ErrorCode) error {
