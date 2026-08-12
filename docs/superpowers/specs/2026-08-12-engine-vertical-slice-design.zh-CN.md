@@ -232,7 +232,7 @@ assistant.message.completed         model.stream.completed
 assistant.message.failed            model.stream.failed
 assistant.message.interrupted       model.stream.interrupted
 turn.completed                      append.completed
-turn.failed                         diagnostic
+turn.failed
 turn.interrupted
 ```
 
@@ -281,6 +281,39 @@ Runner 必须显式配置 `MaxAssistantBytes`。累计输出即将越界时拒�
 
 字节限制在 delta 加入累加器前判断；模型边界要求有效 UTF-8；已接收文本不做归一化。
 
+### 4.9 Runtime event 的所有权与校验
+
+调用方只提交 payload，不提交 envelope。run-scoped `Emitter` 独占 correlation 和顺序：
+每次 sink 尝试前填入完整关联字段与严格递增 ordinal。失败尝试也消耗 ordinal，不回滚、
+不复用。Emitter 仅供单次运行、不可复制、不可并发调用；不同 Emitter 可以并发调用线程
+安全的 sink。
+
+Runtime payload 在分配 ordinal 前集中校验。started、completed、`append.completed` 不携带
+Text/Code；text delta 必须是非空有效 UTF-8 且不携带 Code；failed/interrupted 必须携带
+稳定非空 Code 且不携带 Text。稳定 runtime code 长度为 1–64 ASCII byte，首字符只能是
+`a`–`z`，其余字符只能是 `a`–`z`、`0`–`9` 或 `_`。未知 type 属于调用方合同错误。
+`diagnostic` 延后到有明确消费方与脱敏合同时再定义。
+
+Emitter 的精确顺序是：校验 payload、检查 `ctx.Err()`、分配 ordinal、尝试 sink。校验失败
+或 attempt 前取消不消耗 ordinal，取消返回 `canceled`；sink attempt 一旦发生就消耗序号。
+sink 返回错误时若 context 已取消，主 code 为 `canceled`，否则为 `delivery`。
+
+### 4.10 Model stream 所有权与清理
+
+`Model.Stream` 返回的每个非 nil stream（包括 `(stream, error)`）都由 Engine 接管清理，
+所有退出路径恰好调用一次 `Close`。`(nil, nil)` 是非法流，`(nil, error)` 是启动失败，
+`(stream, error)` 是启动失败并附带受管清理。`Next` 同时返回 event/error 时忽略 event；
+context 取消优先于并发 provider error；completed 前 `io.EOF` 非法；其他 Next error 为
+model-stream failure；显式 completed 即终点，Runner 不再多调用一次 Next。
+
+非成功路径先取消派生 stream context，再 Close；成功路径先观察 completed、Close，再取消。
+Close 同步执行并必须及时汇合 provider 自有后台工作。仅 Close 失败映射 `model_stream`；
+已有主错误时保持其稳定 code，并在一个 Engine error 内用 `errors.Join` 合并 cause。
+
+每个 delta 的精确顺序为：拒绝空文本、校验 UTF-8、检查字节上限、发送 sink、追加 builder。
+非法、未送达或越界 delta 不得累计；恰好达到上限有效；Engine 不 trim、normalize 或 rechunk。
+provider adapter 不得跨事件拆分 UTF-8 code point。
+
 ## 5. 组件布局
 
 ```text
@@ -324,6 +357,7 @@ caller
   → RuntimeSink(model.text.delta)*
   → EventStore.Append atomically                [assistant.message.completed,
                                                  turn.completed]
+  → RuntimeSink(append.completed)
   → RuntimeSink(model.stream.completed)
   → RunTurnResult
 ```
@@ -334,13 +368,13 @@ caller
 
 ### 6.2 模型启动失败
 
-模型在产生 stream 前失败时，Engine 原子追加 `assistant.message.failed` 与
-`turn.failed`。错误被归一为稳定 Engine 类别，原始 provider payload 不进入领域状态。
+模型在产生 stream 前失败时，Engine 向 Application 返回稳定错误；Application 再原子
+追加 `assistant.message.failed` 与 `turn.failed`。原始 provider payload 不进入领域状态。
 
 ### 6.3 流中失败
 
-此前发出的 delta 仍只是运行时观察。Engine 原子追加失败 Item 与 Turn 终态，不把
-部分 assistant 文本表示成 completed message。
+此前发出的 delta 仍只是运行时观察。Application 映射 Engine 结果并原子追加失败 Item
+与 Turn 终态，不把部分 assistant 文本表示成 completed message。
 
 ### 6.4 取消
 
@@ -352,15 +386,17 @@ caller
 
 ### 6.5 Append 失败
 
-初始 Turn append 失败时绝不调用模型。终态批量 append 失败时返回 persistence failure，
+初始 Turn append 失败时绝不调用模型。终态批量 append 失败时由 Application 返回
+persistence failure，
 不得把模型成功报告为 Turn 成功。事件流可能停留在 running 边界，生产级 reconciliation
 由未来持久化/恢复里程碑承担；当前失败必须显式且可测试，不能静默修复。
 
 ### 6.6 Runtime sink 失败
 
-本阶段 sink 属于必需执行路径。终态提交前失败时，取消模型流并尝试以稳定 delivery
-原因原子中断 Item/Turn。终态提交后失败时，持久成功仍是权威，返回结果携带与执行
-状态分离的 delivery warning/error。任何 sink 失败都不能改写已提交终态。
+本阶段 sink 属于必需执行路径。终态提交前失败时，Engine 取消并关闭模型流，把稳定错误
+返回 Application；Application 再尝试以稳定 delivery 原因原子中断 Item/Turn。终态提交
+后的 delivery 失败或 caller cancellation 不能改写持久成功，返回结果只携带与执行状态
+分离的 delivery warning/error。
 
 ## 7. 并发与事务语义
 
@@ -399,6 +435,11 @@ Application/Engine 错误必须结构化并保留 cause，至少区分：
 模型测试适配器由 Engine 与未来适配器契约测试复用，支持精确请求断言、调用记录、
 确定性阻塞/取消，并对脚本数据做防御复制。
 
+RecordingSink 在应用一次性 ordinal 故障前先记录每次尝试。失败调用进入 `Attempts` 而不
+进入 `Delivered`，成功调用同时进入二者；两种快照均为防御复制。只有禁用 ordinal
+故障注入时，一个 sink 才可由不同 Emitter 并发共享；非零 run-local failure ordinal
+限定单 Emitter。测试不得并发驱动同一个 Emitter。
+
 ### 9.2 MemoryEventStore
 
 存储支持确定性元数据、CAS 冲突、原子批次、按 Session 一次性 load/append 故障注入、
@@ -433,8 +474,11 @@ enginescenariotest.Run(harness)
 ### 校验与模型失败
 
 - 空或非法请求；模型启动失败；首个 delta 前失败；多个 delta 后失败；
-- 非法 UTF-8；空成功输出的明确契约；恰好达到字节上限及超出一个字节；
-- 非法模型 stream 事件顺序。
+- 非法 UTF-8；空 delta 非法且不发送、不累计；空成功输出有效；
+- 恰好达到字节上限及超出一个字节；非法模型 stream 事件顺序；
+- `(nil, nil)`、`(stream, error)`、`Next(event, error)` 组合；
+- 所有非 nil stream 退出路径恰好 Close 一次，包括 sink failure；
+- 仅 Close 失败和主错误叠加 Close 失败的优先级。
 
 ### 取消与 delivery
 
@@ -447,6 +491,7 @@ enginescenariotest.Run(harness)
 - 故障注入证明无部分批次；同 Session 并发一胜一冲突；
 - 32 个独立 Session 无数据竞争地完成；加载/返回记录不能改变存储状态；
 - `go test -race ./... -count=1` 通过。
+- 稳定 Engine code 匹配遍历完整 joined error tree，并安全处理直接或 joined typed nil。
 
 ### 仓库边界
 
@@ -491,7 +536,8 @@ telemetry 必须 opt-in 且默认脱敏。
 usage 与成本策略；生产 JSONL/file/SQLite/remote EventStore；崩溃 reconciliation、
 checkpoint、迁移、备份与恢复；工具调用、Tool Runtime、Policy、审批和工作区沙箱；
 ACP、JSON-RPC server、TUI、IDE 和公共 SDK；Context Engine、提示构造、压缩和缓存；
-MCP、Skills、memory、subagent 与多 Agent graph；OpenTelemetry 和完整场景评测平台。
+MCP、Skills、memory、subagent 与多 Agent graph；OpenTelemetry 和完整场景评测平台；
+在明确消费方和脱敏合同出现前的 diagnostic runtime event。
 
 排除这些能力是为了保持依赖顺序正确，不会降低当前 Engine、EventStore 契约、Item
 生命周期或确定性适配器的质量要求。

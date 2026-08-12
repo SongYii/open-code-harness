@@ -561,17 +561,33 @@ git commit -m "feat(memory): add atomic event store"
 
 **Interfaces:**
 - Produces: `engine.Model`, `ModelStream`, `ModelRequest`, `StreamEvent`, `StreamEventType`
-- Produces: `RuntimeSink`, `RuntimeEvent`, `RuntimeEventType`, `Correlation`, `Emitter`
+- Produces: `RuntimeSink`, `RuntimePayload`, `RuntimeEvent`, `RuntimeEventType`, `Correlation`, `Emitter`
 - Produces: `engine.ErrorCode`, `engine.Error`, `engine.IsCode`
 - Produces: `testkit.ScriptedModel` and `testkit.RecordingSink` as exact port implementations
 - Produces: reusable `modeltest.Run(t, factory)`
 
 - [ ] **Step 1: Write the Model contract suite and adapter tests**
 
-The suite factory returns a model scripted for the supplied request and contract steps:
+The suite factory returns a probe implementing the model plus observable
+cleanup counters:
 
 ```go
-type Factory func(expected engine.ModelRequest, steps []ContractStep, startupError error) engine.Model
+type Factory func(expected engine.ModelRequest, config Config) Probe
+
+type Probe interface {
+	engine.Model
+	Calls() []engine.ModelRequest
+	NextCalls() int
+	CloseCalls() int
+}
+
+type Config struct {
+	Steps                     []ContractStep
+	StartupError              error
+	ReturnStreamOnStartupError bool
+	ReturnNilStream           bool
+	CloseError                error
+}
 
 type ContractStep struct {
 	Event         engine.StreamEvent
@@ -580,7 +596,21 @@ type ContractStep struct {
 }
 ```
 
-Test exact request delivery, ordered Unicode deltas, explicit completion, startup failure, mid-stream failure, blocking until context cancellation, and concurrent call recording. Test `RecordingSink` for ordered defensive copies and deterministic failure at an exact ordinal.
+Test exact request delivery, ordered Unicode deltas, explicit completion,
+startup failure, mid-stream failure, blocking until context cancellation, and
+concurrent `Model.Stream` call recording. A returned stream is single-consumer:
+`Next` and `Close` are never called concurrently and the stream is never reused.
+The shared sink, not an individual Emitter, is the concurrency boundary.
+
+Test the runtime path independently: every legal payload shape; every illegal
+text/code/type combination; nil and typed-nil sinks; invalid correlation; exact
+correlation stamping; ordinals `1,2,3`; no ordinal consumption on validation
+failure or pre-attempt cancellation; exact `invalid_request`, `canceled`, and
+`delivery` mapping; ordinal consumption on sink failure; and the next successful
+attempt using the following ordinal. Stable-code tests cover empty, over 64
+bytes, non-ASCII, uppercase, leading digit, whitespace, punctuation, and valid
+lower-snake tokens. Prove the caller cannot supply correlation or an
+ordinal because `Emitter.Emit` accepts only `RuntimePayload`.
 
 - [ ] **Step 2: Run focused tests and verify the Engine contracts are missing**
 
@@ -616,7 +646,11 @@ type ModelStream interface {
 }
 ```
 
-`Stream` returning an error is startup failure. After a stream is returned, it must emit zero or more text deltas followed by exactly one completed event. `io.EOF` before completed is invalid. Text on completed is invalid. No provider-native object enters these types.
+After a stream is returned, it must emit zero or more non-empty valid-UTF-8 text
+deltas followed by exactly one completed event. `io.EOF` before completed,
+empty deltas, and text on completed are invalid. No provider-native object
+enters these types. `Model.Stream` may be called concurrently across turns;
+each returned stream has exactly one consumer.
 
 - [ ] **Step 4: Define correlated runtime delivery**
 
@@ -629,7 +663,6 @@ const (
 	RuntimeModelStreamFailed      RuntimeEventType = "model.stream.failed"
 	RuntimeModelStreamInterrupted RuntimeEventType = "model.stream.interrupted"
 	RuntimeAppendCompleted        RuntimeEventType = "append.completed"
-	RuntimeDiagnostic             RuntimeEventType = "diagnostic"
 )
 
 type Correlation struct {
@@ -647,18 +680,57 @@ type RuntimeEvent struct {
 	Code    string
 }
 
+type RuntimePayload struct {
+	Type RuntimeEventType
+	Text string
+	Code string
+}
+
 type RuntimeSink interface { Emit(context.Context, RuntimeEvent) error }
 ```
 
-`NewEmitter(sink, correlation)` rejects a nil sink or invalid IDs. `Emitter.Emit` assigns ordinals `1..N` synchronously and invokes the sink inline. It never creates a channel or goroutine.
+`NewEmitter(sink, correlation)` rejects a nil or typed-nil sink and invalid IDs.
+`Emitter.Emit(ctx, RuntimePayload)` centrally validates the payload, stamps the
+complete correlation tuple, allocates the next ordinal, and invokes the sink
+inline. Started/completed/append-completed payloads require empty text/code;
+text-delta requires non-empty valid UTF-8 text and empty code;
+failed/interrupted require empty text and a stable code of 1–64 ASCII bytes:
+first `[a-z]`, then only `[a-z0-9_]`. Unknown
+types are `invalid_request`. Validation happens before ordinal allocation. The
+ordinal is allocated before the sink attempt and remains consumed on failure,
+so the next attempt uses `N+1`. Emitter is run-scoped, non-copyable, and not
+safe for concurrent use. It never creates a channel or goroutine. Diagnostic
+events are deferred until a consumer and redaction contract exist.
+
+`Emit` validates the payload first, then checks `ctx.Err()` immediately before
+ordinal allocation. An already-canceled context returns `CodeCanceled` with the
+context cause and consumes no ordinal or sink attempt. If the sink returns an
+error while the context has become canceled, cancellation is primary;
+otherwise the result is `CodeDelivery`. Either sink call consumed its ordinal.
 
 - [ ] **Step 5: Add stable Engine error codes and deterministic adapters**
 
-Use exact codes `invalid_request`, `model_startup`, `model_stream`, `canceled`, `output_limit`, `delivery`, and `invalid_stream`. `engine.Error` contains `Code` and `Cause`, implements `Error`/`Unwrap`, and is checked through `engine.IsCode`. Its `Error()` string contains the stable code but never interpolates `Cause.Error()`; callers must deliberately unwrap a raw cause.
+Use exact codes `invalid_request`, `model_startup`, `model_stream`, `canceled`,
+`output_limit`, `delivery`, and `invalid_stream`. `engine.Error` contains `Code`
+and `Cause`, implements nil-safe `Error`/`Unwrap`/`Is`, and is checked through
+`engine.IsCode`. `IsCode` must traverse complete wrapped/joined error trees and
+must not panic for a direct or joined typed-nil `*engine.Error`; tests include a
+mismatching first branch followed by a matching branch, nested joins, and
+typed-nil branches. `Error()` contains the stable code but never interpolates
+`Cause.Error()`; callers must deliberately unwrap a raw cause.
 
-`ScriptedModel` stores defensive copies, checks the complete `ModelRequest`, supports startup error and this exact adapter step, and records calls under a mutex:
+`ScriptedModel` stores defensive copies, checks the complete `ModelRequest`,
+and records calls under a mutex. Its constructor contract is exact:
 
 ```go
+type ScriptedModelConfig struct {
+	Steps                      []ScriptedStep
+	StartupError               error
+	ReturnStreamOnStartupError bool
+	ReturnNilStream            bool
+	CloseError                 error
+}
+
 type ScriptedStep struct {
 	Event         engine.StreamEvent
 	Err           error
@@ -666,9 +738,31 @@ type ScriptedStep struct {
 	Entered       chan<- struct{}
 	Release       <-chan struct{}
 }
+
+func NewScriptedModel(engine.ModelRequest, ScriptedModelConfig) (*ScriptedModel, error)
+func (*ScriptedModel) Calls() []engine.ModelRequest
+func (*ScriptedModel) NextCalls() int
+func (*ScriptedModel) CloseCalls() int
 ```
 
-`WaitForCancel` blocks only on `ctx.Done()`. Before executing a step, the adapter sends once to `Entered` when non-nil, then waits on `Release` or `ctx.Done()` when `Release` is non-nil. `RecordingSink` records under a mutex and may fail exactly when `event.Ordinal == FailOrdinal`; it never changes behavior based on production environment variables.
+`WaitForCancel` blocks only on `ctx.Done()`. Before executing a step, the adapter
+sends once to `Entered` when non-nil, then waits on `Release` or `ctx.Done()`
+when `Release` is non-nil. The adapter can deterministically return a non-nil
+stream together with `StartupError`, inject `CloseError`, and report defensive
+call snapshots plus exact `Next` and `Close` counts.
+
+With no startup error the adapter returns a stream unless `ReturnNilStream` is
+true. With `StartupError`, it returns a stream only when
+`ReturnStreamOnStartupError` is true; `ReturnNilStream` takes precedence. This
+expresses every Stream value/error pair without test-only production branches.
+
+`RecordingSink` records an event in `Attempts` under a mutex before checking a
+one-shot `FailOrdinal`. A failed call is absent from `Delivered`; a successful
+call appears in both. `Attempts()` and `Delivered()` return defensive snapshots.
+The exact ordinal fails only on its first matching attempt. The sink is safe for
+multiple Emitters only when `FailOrdinal == 0`; nonzero ordinal injection is a
+single-Emitter fixture because ordinals are run-local. Tests use each Emitter
+from one goroutine. It never reads production environment variables.
 
 - [ ] **Step 6: Format, run the shared contract, and commit**
 
@@ -718,9 +812,25 @@ func TestTurnRunnerPreservesBoundedUTF8Output(t *testing.T) {
 
 Assert runtime order is `model.stream.started`, delta 1, delta 2. The runner deliberately does not emit a terminal runtime event; application code does that only after durable terminal append.
 
-- [ ] **Step 2: Write the complete failure matrix before implementation**
+- [ ] **Step 2: Write the complete failure and ownership matrix before implementation**
 
-Add table/subtests for: nil dependencies; invalid request IDs/input; zero/negative limit; startup error; error before first delta; error after deltas; `io.EOF` before completed; unknown stream event; text attached to completed; invalid UTF-8 delta; output exactly at limit; one byte over limit; empty successful output; caller cancellation before Stream; cancellation in `Next`; sink failure on started; sink failure on a delta; and stream `Close` failure. Empty successful output is valid and returns `Text == ""`. Assert exact Engine codes and that an over-limit delta is neither delivered nor accumulated.
+Add table/subtests for: nil and typed-nil dependencies; invalid request
+IDs/input; zero/negative limit; `Stream` returning `(nil, nil)`, `(nil, error)`,
+and `(stream, error)`; error before the first delta and after deltas;
+`Next(event, error)`; `io.EOF` before completed; unknown event; empty delta;
+text attached to completed; invalid UTF-8 delta; exact byte limit and one byte
+over; empty successful output; cancellation before `Stream` and in `Next`; sink
+failure on started and delta; and Close failure alone or beside each primary
+failure. Empty successful output is valid and returns `Text == ""`.
+
+For every case assert the exact Engine code, exact `Next`/`Close` counts, event
+attempts/deliveries, and accumulated text. Every non-nil stream is closed
+exactly once, including `(stream, error)` and started-sink failure; a nil stream
+is never closed. `Next(event, error)` ignores the event. Empty, invalid UTF-8,
+undelivered, and over-limit deltas are neither emitted (except the sink-failed
+attempt) nor accumulated. After explicit completed, `Next` is not called again.
+For every primary-plus-Close failure, assert both causes remain discoverable
+with `errors.Is`, in addition to asserting the one preserved primary code.
 
 - [ ] **Step 3: Run the focused tests and verify `TurnRunner` is absent**
 
@@ -739,7 +849,20 @@ type RunRequest struct {
 type RunResult struct { Text string }
 ```
 
-Execution order is: validate request and context; call `Model.Stream`; emit `model.stream.started`; pull events synchronously; validate UTF-8 and size before emitting/accumulating each delta; require explicit completed; close the stream; return exact accumulated text. Map a canceled context to `canceled`, sink failure to `delivery`, startup/Next/Close errors to their model codes, and protocol violations to `invalid_stream`. Preserve causes with `errors.Join` when cleanup also fails.
+Execution order is: validate request/context; derive a cancelable stream context;
+call `Model.Stream`; take cleanup ownership of any non-nil stream; emit
+`model.stream.started`; pull synchronously; validate each delta; require explicit
+completed; close; cancel; return exact text. On non-success cancel the derived
+context before Close. Close is synchronous and the stream contract requires it
+to promptly join provider-owned background work.
+
+Error precedence is exact: `(nil, nil)` is `invalid_stream`; Stream error is
+`model_startup` even when a stream is also returned; context cancellation is
+`canceled`; premature EOF and protocol violations are `invalid_stream`; other
+Next errors and close-only failure are `model_stream`; sink failure is
+`delivery`. If cleanup fails beside a primary error, retain the primary code and
+use `errors.Join(primaryCause, closeCause)` as the one outer Engine error's
+cause. Do not wrap an Engine error inside another Engine error.
 
 Use the overflow-safe bound check:
 
@@ -748,6 +871,11 @@ if len(delta) > request.MaxAssistantBytes-builder.Len() {
 	return RunResult{}, engineError(CodeOutputLimit, ErrAssistantOutputLimit)
 }
 ```
+
+For a text delta, use the exact order: require non-empty text, require
+`utf8.ValidString`, apply the overflow-safe byte check, emit the payload, append
+to the builder. Do not trim, normalize, or re-chunk. Provider adapters own
+filtering keepalives and ensuring a UTF-8 code point is not split across events.
 
 - [ ] **Step 5: Prove there is no goroutine leak or timing dependency**
 
@@ -944,7 +1072,8 @@ type RunTurnResult struct {
 }
 ```
 
-Reject invalid Session ID, blank/invalid UTF-8 input, and nil sink before generating IDs or loading state.
+Reject invalid Session ID, blank/invalid UTF-8 input, and nil or typed-nil sink
+before generating IDs or loading state.
 
 - [ ] **Step 5: Implement the successful orchestration in one authority**
 
@@ -968,7 +1097,16 @@ Every append in one `RunTurn` uses the same command ID. If the initial append co
 
 - [ ] **Step 6: Handle post-commit delivery failure without rewriting success**
 
-If `append.completed` or `model.stream.completed` delivery fails after the terminal append, return the completed result plus `CategoryDelivery/runtime_delivery_failed` with `TerminalCommitted == true`; also set `result.DeliveryWarning` to the sink cause. Do not append failure/interruption events after durable completion.
+If `append.completed` or `model.stream.completed` delivery fails after the
+terminal append, return the completed result plus
+`CategoryDelivery/runtime_delivery_failed` with `TerminalCommitted == true`;
+also set `result.DeliveryWarning` to the sink cause. This includes Emitter
+`CodeCanceled` caused by caller cancellation after the durable terminal batch:
+post-commit cancellation suppresses delivery attempts but cannot rewrite
+completed execution as canceled. Do not append failure/interruption events
+after durable completion. Tests cancel immediately after the terminal append
+using a store barrier and assert completed durable state, no post-commit sink
+attempt/ordinal, and a delivery warning.
 
 - [ ] **Step 7: Format, verify, and commit**
 
@@ -1018,7 +1156,11 @@ Add an application-level test that observes `Entered`, cancels or closes `Releas
 
 - [ ] **Step 2: Write the model/output failure table before orchestration changes**
 
-Cover startup failure, failure before delta, failure after deltas, invalid stream, invalid UTF-8, output limit, empty successful output, and stream close failure. Required durable terminal pairs are:
+Cover startup failure (including a returned stream), failure before delta,
+failure after deltas, `Next(event, error)`, premature EOF, unknown event, empty
+delta, invalid UTF-8, output limit, empty successful output, close-only failure,
+and every primary failure combined with Close failure. Required durable terminal
+pairs are:
 
 ```text
 model/startup/stream/invalid/output failure:

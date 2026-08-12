@@ -312,7 +312,7 @@ assistant.message.completed         model.stream.completed
 assistant.message.failed            model.stream.failed
 assistant.message.interrupted       model.stream.interrupted
 turn.completed                      append.completed
-turn.failed                         diagnostic
+turn.failed
 turn.interrupted
 ```
 
@@ -387,6 +387,52 @@ plan and tests; no path may accumulate unlimited model output.
 The byte limit is evaluated before appending a delta to the accumulator. Valid
 UTF-8 is required at the model boundary, and no accepted text is normalized.
 
+### 4.9 Runtime event ownership and validation
+
+Callers emit a payload, not an envelope. A run-scoped `Emitter` exclusively
+owns correlation and ordering: it stamps the complete correlation tuple and a
+strictly increasing ordinal before each sink attempt. A failed attempt consumes
+its ordinal; ordinals never roll back or get reused. An Emitter is single-run,
+non-copyable, and not safe for concurrent use. Separate Emitters may call a
+thread-safe sink concurrently.
+
+Runtime payload validation is centralized before ordinal allocation. Started,
+completed, and `append.completed` carry neither text nor code. A text delta is
+non-empty valid UTF-8 and carries no code. Failed and interrupted payloads carry
+a required stable code and no text. A stable runtime code is 1–64 ASCII bytes,
+begins with `a`–`z`, and thereafter contains only `a`–`z`, `0`–`9`, or `_`.
+Unknown event types are caller contract errors. `diagnostic` is deferred until
+a consumer and redaction contract exist.
+
+Emitter validates the payload, checks `ctx.Err()`, allocates the ordinal, then
+attempts the sink in that exact order. Validation failure or pre-attempt
+cancellation consumes no ordinal; cancellation returns `canceled`. A sink
+attempt always consumes its ordinal. If the context is canceled when the sink
+returns an error, `canceled` is primary; otherwise the result is `delivery`.
+
+### 4.10 Model stream ownership and cleanup
+
+The Engine becomes cleanup owner of every non-nil stream returned by
+`Model.Stream`, including the `(stream, error)` case, and calls `Close` exactly
+once on every exit. `(nil, nil)` is an invalid stream; `(nil, error)` is startup
+failure; `(stream, error)` is startup failure plus owned cleanup. If `Next`
+returns both an event and an error, the event is ignored. Context cancellation
+wins over a concurrent provider error; premature `io.EOF` is invalid; other
+`Next` failures are model-stream failures. Explicit completion is terminal and
+the runner performs no extra `Next` call.
+
+On non-success, the Engine cancels its derived stream context before closing;
+on success it observes completion, closes, then cancels. Close is synchronous
+and must promptly join provider-owned background work. A close-only failure is
+`model_stream`. When cleanup also fails after a primary error, the primary
+stable code is preserved and the causes are joined inside one Engine error.
+
+For each delta the exact order is: reject empty text, validate UTF-8, enforce
+the byte limit, emit to the sink, then append to the result builder. An invalid,
+undelivered, or over-limit delta is never accumulated. Exact-limit output is
+valid, and the Engine does not trim, normalize, or re-chunk text. Provider
+adapters must not split a UTF-8 code point across stream events.
+
 ## 5. Component layout
 
 The expected dependency shape is:
@@ -434,6 +480,7 @@ caller
   → RuntimeSink(model.text.delta)*
   → EventStore.Append atomically                [assistant.message.completed,
                                                  turn.completed]
+  → RuntimeSink(append.completed)
   → RuntimeSink(model.stream.completed)
   → RunTurnResult
 ```
@@ -445,7 +492,8 @@ command ID and one occurrence timestamp.
 
 ### 6.2 Model startup failure
 
-If the model fails before yielding a stream, the Engine atomically appends:
+If the model fails before yielding a stream, the Engine returns a stable error
+to Application. Application then atomically appends:
 
 ```text
 assistant.message.failed
@@ -457,9 +505,9 @@ not enter domain state.
 
 ### 6.3 Mid-stream failure
 
-Previously emitted deltas remain runtime observations only. The Engine appends
-the failed Item and Turn terminal events atomically. No partial assistant text
-is represented as a completed message.
+Previously emitted deltas remain runtime observations only. Application maps
+the Engine result and atomically appends the failed Item and Turn terminal
+events. No partial assistant text is represented as a completed message.
 
 ### 6.4 Cancellation
 
@@ -475,18 +523,20 @@ a terminal commit cannot replace the terminal state.
 ### 6.5 Append failure
 
 If the initial Turn append fails, the model is never called. If a terminal batch
-append fails, the Engine returns a persistence failure and must not report model
-success as Turn success. The event stream may remain at a running boundary;
+append fails, Application returns a persistence failure and must not report
+model success as Turn success. The event stream may remain at a running boundary;
 production reconciliation is owned by the future persistence/recovery milestone.
 The failure is explicit and testable rather than silently repaired.
 
 ### 6.6 Runtime sink failure
 
 The sink is part of the required execution path in this milestone. If it fails
-before terminal commit, the model stream is canceled and the Engine attempts to
-append interrupted Item/Turn facts with a stable runtime-delivery reason. If it
-fails after terminal commit, durable success remains authoritative and the
-returned result carries a delivery warning/error distinct from execution state.
+before terminal commit, Engine cancels and closes the model stream, then returns
+the stable error to Application. Application attempts to append interrupted
+Item/Turn facts with a stable runtime-delivery reason. If delivery fails or the
+caller cancels after terminal commit, durable success remains authoritative and
+the returned result carries a delivery warning/error distinct from execution
+state.
 
 The implementation plan must make this distinction explicit and prevent a sink
 failure from rewriting an already committed terminal fact.
@@ -535,6 +585,13 @@ The model test adapter is reusable by Engine and future adapter contract tests.
 It performs exact request assertions, records calls, supports deterministic
 blocking/cancellation, and returns defensive copies of scripted data.
 
+The recording sink stores every attempted event before applying its injected
+one-shot ordinal failure. Failed calls appear in `Attempts` but not in
+`Delivered`; successful calls appear in both. Both snapshots are defensive.
+One recording sink may be shared by separate Emitters concurrently only when
+ordinal failure injection is disabled; a nonzero run-local failure ordinal is a
+single-Emitter fixture. A test must not drive one Emitter concurrently.
+
 ### 9.2 MemoryEventStore
 
 The store supports deterministic metadata, CAS conflicts, atomic batches,
@@ -580,9 +637,13 @@ The implementation plan must include at least these cases:
 - failure before the first delta;
 - failure after one or more deltas;
 - invalid UTF-8 model output;
+- empty text delta is invalid and is neither emitted nor accumulated;
 - empty successful output, with an explicit chosen contract;
 - output exactly at the byte limit and one byte over it;
-- invalid model stream event order.
+- invalid model stream event order;
+- `(nil, nil)`, `(stream, error)`, and `Next(event, error)` combinations;
+- exactly one stream close on every non-nil-stream exit, including sink failure;
+- close-only failure and primary-plus-close error precedence.
 
 ### Cancellation and delivery
 
@@ -603,6 +664,8 @@ The implementation plan must include at least these cases:
 - 32 independent Sessions complete without races;
 - loaded and returned records cannot mutate store state;
 - `go test -race ./... -count=1` passes.
+- stable Engine-code matching traverses complete joined error trees and remains
+  safe for direct or joined typed-nil errors.
 
 ### Repository boundaries
 
@@ -663,6 +726,7 @@ The following are separate future specifications:
 - Context Engine, prompt construction, compaction, and cache policy;
 - MCP, Skills, memory, subagents, and multi-agent graphs;
 - OpenTelemetry and full scenario-evaluation infrastructure.
+- diagnostic runtime events before a consumer and redaction contract exist.
 
 These exclusions keep dependency order correct. They do not lower the quality
 requirements of the Engine, event-store contract, Item lifecycle, or

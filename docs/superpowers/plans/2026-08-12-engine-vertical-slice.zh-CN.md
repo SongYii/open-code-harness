@@ -202,14 +202,41 @@ type ModelStream interface {
 }
 ```
 
-Stream 只允许 `text_delta* → completed`；completed 带文本、completed 前 EOF、未知事件均非法。Runtime envelope 必须携带 Session/Turn/Item/Command ID、单调 `Ordinal`、Type、Text、Code。`RuntimeSink.Emit` 同步内联。
+Stream 只允许 `text_delta* → completed`；空 delta、completed 带文本、completed 前 EOF、
+未知事件均非法。`Model.Stream` 可跨 Turn 并发调用，但每个返回 stream 只允许单 consumer，
+不得并发 `Next/Close` 或复用。
 
-稳定 Engine code：`invalid_request`、`model_startup`、`model_stream`、`canceled`、`output_limit`、`delivery`、`invalid_stream`。Engine `Error()` 同样不得自动拼接 provider cause 文本。
+Runtime envelope 必须携带 Session/Turn/Item/Command ID、单调 `Ordinal`、Type、Text、Code。
+调用方只传 `RuntimePayload{Type, Text, Code}`；run-scoped Emitter 独占 correlation 和 ordinal，
+校验成功后、sink 尝试前分配 ordinal。sink 失败消耗序号，校验失败不消耗；下一次尝试用
+`N+1`。Emitter 不可复制、不可并发调用；`RuntimeSink.Emit` 同步内联且 sink 可由多个
+Emitter 并发共享。started/completed/append.completed 必须无 Text/Code；delta 必须是非空
+有效 UTF-8 且无 Code；failed/interrupted 必须无 Text，Code 必须是 1–64 ASCII byte、
+首字符 `[a-z]`、其余仅 `[a-z0-9_]`；未知 type 为
+`invalid_request`。diagnostic 在明确消费方与脱敏合同前延后。
+
+`Emit` 先校验 payload，再在分配 ordinal 前检查 `ctx.Err()`；已取消 context 返回
+`canceled` 且不分配序号、不调用 sink。sink 返回时若 context 已取消，主 code 为
+`canceled`，否则为 `delivery`；两种情况下 sink attempt 都已消耗 ordinal。
+
+稳定 Engine code：`invalid_request`、`model_startup`、`model_stream`、`canceled`、
+`output_limit`、`delivery`、`invalid_stream`。Engine `Error()` 不得自动拼接 provider cause
+文本；`IsCode` 必须遍历完整 wrap/join tree，并对直接或 joined typed nil 安全。
 
 `ScriptedStep` 从一开始包含 `Event`、`Err`、`WaitForCancel`、`Entered`、`Release`，以支持无 sleep 的取消/竞态测试。
 
+`ScriptedModelConfig` 精确包含 `Steps`、`StartupError`、
+`ReturnStreamOnStartupError`、`ReturnNilStream`、`CloseError`；fixture 暴露防御复制的
+`Calls()` 和总 `NextCalls()/CloseCalls()`。默认无 startup error 时返回 stream；
+`ReturnNilStream` 强制 nil；有 startup error 时仅在 `ReturnStreamOnStartupError` 为真且
+未强制 nil 时同时返回 stream。RecordingSink 只有 `FailOrdinal == 0` 时允许多个 Emitter
+共享；非零 ordinal 故障注入限定单 Emitter。
+
 - [ ] 先写 Model contract、请求精确匹配、流顺序、取消与并发调用记录测试。
-- [ ] 写 RecordingSink 顺序、防御复制和指定 ordinal 失败测试。
+- [ ] 写 Emitter payload 形状、stable code 语法、correlation/ordinal 所有权、校验/取消
+  不消耗序号、sink 失败消耗序号，以及 invalid_request/canceled/delivery 精确映射测试。
+- [ ] 写 RecordingSink 的 Attempts/Delivered、防御复制和一次性 ordinal 失败测试；失败调用
+  先进入 Attempts，不进入 Delivered，成功调用进入两者。
 - [ ] 实现 Engine 接口、单调 Emitter 和稳定错误。
 - [ ] 实现并发安全 ScriptedModel/RecordingSink，不读取环境测试开关。
 - [ ] 运行 engine/testkit race 与全量测试。
@@ -230,9 +257,15 @@ func (*TurnRunner) Run(context.Context, RunRequest, *Emitter) (RunResult, error)
 ```
 
 - [ ] 成功测试证明多 delta Unicode 逐字节保持，runtime 为 started、delta...，runner 不提前发 terminal runtime event。
-- [ ] 完整失败矩阵：nil/非法请求、limit、startup/midstream、EOF、未知事件、completed 文本、UTF-8、恰好上限/超一字节、空成功、取消、sink、Close。
-- [ ] 执行顺序固定为 validate → Model.Stream → emit started → pull/validate/bound/emit/accumulate → explicit completed → Close → return。
-- [ ] 边界检查使用 `len(delta) > limit-builder.Len()`，越界 delta 不发送、不累计。
+- [ ] 完整失败矩阵：nil/typed-nil、非法请求、limit、`(nil,nil)`、`(nil,error)`、
+  `(stream,error)`、startup/midstream、`Next(event,error)`、EOF、未知事件、空 delta、
+  completed 文本、UTF-8、恰好上限/超一字节、空成功、取消、sink、Close 及主错误+Close。
+- [ ] Engine 接管每个非 nil stream 并在所有路径恰好 Close 一次；nil stream 不 Close；
+  completed 后不再 Next。非成功先取消派生 context 再 Close，成功 completed→Close→cancel。
+- [ ] 错误优先级固定：取消优先并发 provider error；仅 Close 为 model_stream；已有主错误时
+  保持主 code，只在单个外层 Engine error 的 cause 中 `errors.Join(primary, close)`。
+- [ ] delta 顺序固定为 nonempty → UTF-8 → byte bound → sink → builder；边界检查使用
+  `len(delta) > limit-builder.Len()`，非法/越界/未送达 delta 不累计，不 trim/normalize/rechunk。
 - [ ] 取消测试使用 Entered/Release barrier，不 sleep、不产生泄漏。
 - [ ] 运行 runner 聚焦 race 与全仓 race。
 - [ ] 提交：`feat(engine): run bounded model streams`。
@@ -284,7 +317,9 @@ type RunTurnResult struct {
 - [ ] 断言持久事件顺序、终态 pair 共用 command ID、runtime ordinal/correlation 和 exact text。
 - [ ] 同 Session 顺序执行两个 Turn，重放状态与返回结果一致。
 - [ ] 同一 RunTurn 的所有 append 使用同一 command ID；冲突方不调用模型。
-- [ ] 终态提交后 sink 失败不改写成功：返回 completed result 与 terminal=true 的 delivery error/warning。
+- [ ] 终态提交后 sink 失败或 caller cancellation 不改写成功：返回 completed result 与
+  terminal=true 的 delivery error/warning；用 store barrier 在 terminal append 后取消，
+  断言没有 post-commit sink attempt/ordinal。
 - [ ] 运行 RunTurn 聚焦 race 与全仓 race。
 - [ ] 提交：`feat(application): persist successful turns`。
 
@@ -303,7 +338,8 @@ caller cancel  → interrupted / "caller_canceled"
 sink failure   → interrupted / "runtime_delivery_failed"
 ```
 
-- [ ] 测试 startup、首 delta 前/后、invalid stream/UTF-8、limit、空成功和 Close failure。
+- [ ] 测试 startup（含返回 stream）、首 delta 前/后、event+error、EOF、未知/空 delta、
+  invalid UTF-8、limit、空成功、仅 Close failure 与主错误+Close failure。
 - [ ] 测试取消发生在任何 append 前、turn.start 后、stream 中、completion 竞争中和终态后。
 - [ ] 测试 sink started/delta 失败，initial/item/terminal append 失败，cleanup append 失败。
 - [ ] partial delta 永不持久化；raw provider error 永不进入领域。
