@@ -44,6 +44,65 @@ func TestReplayFixtureIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestReplayAssistantLifecycleFixture(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.Open("testdata/assistant_lifecycle.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer data.Close()
+
+	records, err := DecodeJSONL(data)
+	if err != nil {
+		t.Fatalf("DecodeJSONL() error = %v", err)
+	}
+	wantTypes := []string{
+		EventSessionCreated,
+		EventTurnStarted,
+		EventAssistantMessageStarted,
+		EventAssistantMessageCompleted,
+		EventTurnCompleted,
+		EventTurnStarted,
+		EventTurnInterrupted,
+		EventSessionClosed,
+	}
+	if len(records) != len(wantTypes) {
+		t.Fatalf("record count = %d, want %d", len(records), len(wantTypes))
+	}
+	for index, wantType := range wantTypes {
+		if got := records[index].Event.EventType(); got != wantType {
+			t.Fatalf("record %d type = %q, want %q", index+1, got, wantType)
+		}
+		if records[index].Sequence != uint64(index+1) {
+			t.Fatalf("record %d sequence = %d, want %d", index+1, records[index].Sequence, index+1)
+		}
+	}
+	if records[3].CommandID != "command-complete-assistant-turn" || records[4].CommandID != records[3].CommandID {
+		t.Fatalf("terminal command IDs = %q, %q, want one literal command ID", records[3].CommandID, records[4].CommandID)
+	}
+	if !records[3].OccurredAt.Equal(records[4].OccurredAt) {
+		t.Fatalf("terminal occurrence times = %s, %s, want equal", records[3].OccurredAt, records[4].OccurredAt)
+	}
+
+	state, err := Replay(records)
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+	if state.Status != SessionStatusClosed || state.Version != 8 {
+		t.Fatalf("Replay() session status/version = %q/%d, want %q/8", state.Status, state.Version, SessionStatusClosed)
+	}
+	firstTurn := state.Turns["turn-1"]
+	item := firstTurn.Items["item-1"]
+	payload, ok := item.Payload.(AssistantMessagePayload)
+	if firstTurn.Status != TurnStatusCompleted || item.Status != ItemStatusCompleted || !ok || payload.Text != "你好，工业级 harness 🌏" {
+		t.Fatalf("Replay() first turn/item = %#v/%#v, payload = %#v", firstTurn, item, item.Payload)
+	}
+	if state.Turns["turn-2"].Status != TurnStatusInterrupted || state.Turns["turn-2"].InterruptWhy != "caller_canceled" {
+		t.Fatalf("Replay() second turn = %#v", state.Turns["turn-2"])
+	}
+}
+
 func TestDecodeJSONLRejectsEmptyAndBlankRecords(t *testing.T) {
 	tests := []struct {
 		name     string

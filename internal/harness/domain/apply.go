@@ -142,8 +142,8 @@ func applyTurnCompleted(state Session, record RecordedEvent, event TurnCompleted
 	if err != nil {
 		return Session{}, err
 	}
-	if turn.ActiveItemID != "" {
-		return Session{}, domainError(CodeInvalidEvent, "turn cannot complete while an item is running")
+	if err := rejectRunningItemForEvent(turn, "turn cannot complete while an item is running"); err != nil {
+		return Session{}, err
 	}
 	return applyTerminalTurn(state, record, turn, TurnStatusCompleted, "", "", "")
 }
@@ -159,8 +159,8 @@ func applyTurnFailed(state Session, record RecordedEvent, event TurnFailed) (Ses
 	if err != nil {
 		return Session{}, err
 	}
-	if turn.ActiveItemID != "" {
-		return Session{}, domainError(CodeInvalidEvent, "turn cannot fail while an item is running")
+	if err := rejectRunningItemForEvent(turn, "turn cannot fail while an item is running"); err != nil {
+		return Session{}, err
 	}
 	return applyTerminalTurn(state, record, turn, TurnStatusFailed, event.Code, event.Message, "")
 }
@@ -173,8 +173,8 @@ func applyTurnInterrupted(state Session, record RecordedEvent, event TurnInterru
 	if err != nil {
 		return Session{}, err
 	}
-	if turn.ActiveItemID != "" {
-		return Session{}, domainError(CodeInvalidEvent, "turn cannot be interrupted while an item is running")
+	if err := rejectRunningItemForEvent(turn, "turn cannot be interrupted while an item is running"); err != nil {
+		return Session{}, err
 	}
 	return applyTerminalTurn(state, record, turn, TurnStatusInterrupted, "", "", event.Reason)
 }
@@ -303,19 +303,9 @@ func applyAssistantMessageInterrupted(state Session, record RecordedEvent, event
 }
 
 func applyTerminalAssistantMessage(state Session, record RecordedEvent, turnID TurnID, itemID ItemID, status ItemStatus, payload ItemPayload, terminal *ItemTerminal) (Session, error) {
-	turn, err := requireRunningTurnForEvent(state, record.SessionID, turnID)
+	turn, item, err := requireRunningItemForEvent(state, record.SessionID, turnID, itemID)
 	if err != nil {
 		return Session{}, err
-	}
-	if _, err := ParseItemID(string(itemID)); err != nil {
-		return Session{}, domainError(CodeInvalidEvent, "item ID is invalid")
-	}
-	if turn.ActiveItemID == "" || turn.ActiveItemID != itemID {
-		return Session{}, domainError(CodeInvalidEvent, "event item ID does not match active item")
-	}
-	item, exists := turn.Items[itemID]
-	if !exists || item.Status != ItemStatusRunning {
-		return Session{}, domainError(CodeInvalidEvent, "active item is not running")
 	}
 	if record.OccurredAt.Before(item.StartedAt) {
 		return Session{}, domainError(CodeInvalidEvent, "item terminal timestamp precedes item start")
@@ -333,6 +323,31 @@ func applyTerminalAssistantMessage(state Session, record RecordedEvent, turnID T
 	next.Turns[turnID] = turn
 	next.Version = record.Sequence
 	return next, nil
+}
+
+func rejectRunningItemForEvent(turn Turn, message string) error {
+	if turn.ActiveItemID != "" {
+		return domainError(CodeInvalidEvent, message)
+	}
+	return nil
+}
+
+func requireRunningItemForEvent(state Session, sessionID SessionID, turnID TurnID, itemID ItemID) (Turn, Item, error) {
+	turn, err := requireRunningTurnForEvent(state, sessionID, turnID)
+	if err != nil {
+		return Turn{}, Item{}, err
+	}
+	if _, err := ParseItemID(string(itemID)); err != nil {
+		return Turn{}, Item{}, domainError(CodeInvalidEvent, "item ID is invalid")
+	}
+	if turn.ActiveItemID == "" || turn.ActiveItemID != itemID {
+		return Turn{}, Item{}, domainError(CodeInvalidEvent, "event item ID does not match active item")
+	}
+	item, exists := turn.Items[itemID]
+	if !exists || item.Status != ItemStatusRunning {
+		return Turn{}, Item{}, domainError(CodeInvalidEvent, "active item is not running")
+	}
+	return turn, item, nil
 }
 
 func validateItemTerminal(code, message string) (*ItemTerminal, error) {

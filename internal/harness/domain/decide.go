@@ -1,5 +1,7 @@
 package domain
 
+import "unicode/utf8"
+
 func Decide(state Session, command Command) ([]UncommittedEvent, error) {
 	switch command := command.(type) {
 	case CreateSession:
@@ -12,6 +14,14 @@ func Decide(state Session, command Command) ([]UncommittedEvent, error) {
 		return decideFailTurn(state, command)
 	case InterruptTurn:
 		return decideInterruptTurn(state, command)
+	case StartAssistantMessage:
+		return decideStartAssistantMessage(state, command)
+	case CompleteAssistantTurn:
+		return decideCompleteAssistantTurn(state, command)
+	case FailAssistantTurn:
+		return decideFailAssistantTurn(state, command)
+	case InterruptAssistantTurn:
+		return decideInterruptAssistantTurn(state, command)
 	case CloseSession:
 		return decideCloseSession(state, command)
 	default:
@@ -89,14 +99,22 @@ func decideStartTurn(state Session, command StartTurn) ([]UncommittedEvent, erro
 }
 
 func decideCompleteTurn(state Session, command CompleteTurn) ([]UncommittedEvent, error) {
-	if _, err := requireRunningTurn(state, command.SessionID, command.TurnID); err != nil {
+	turn, err := requireRunningTurn(state, command.SessionID, command.TurnID)
+	if err != nil {
+		return nil, err
+	}
+	if err := rejectRunningItem(turn); err != nil {
 		return nil, err
 	}
 	return []UncommittedEvent{{Event: TurnCompleted{TurnID: command.TurnID}}}, nil
 }
 
 func decideFailTurn(state Session, command FailTurn) ([]UncommittedEvent, error) {
-	if _, err := requireRunningTurn(state, command.SessionID, command.TurnID); err != nil {
+	turn, err := requireRunningTurn(state, command.SessionID, command.TurnID)
+	if err != nil {
+		return nil, err
+	}
+	if err := rejectRunningItem(turn); err != nil {
 		return nil, err
 	}
 	if !hasRequiredText(command.Code) {
@@ -113,7 +131,11 @@ func decideFailTurn(state Session, command FailTurn) ([]UncommittedEvent, error)
 }
 
 func decideInterruptTurn(state Session, command InterruptTurn) ([]UncommittedEvent, error) {
-	if _, err := requireRunningTurn(state, command.SessionID, command.TurnID); err != nil {
+	turn, err := requireRunningTurn(state, command.SessionID, command.TurnID)
+	if err != nil {
+		return nil, err
+	}
+	if err := rejectRunningItem(turn); err != nil {
 		return nil, err
 	}
 	if !hasRequiredText(command.Reason) {
@@ -123,6 +145,99 @@ func decideInterruptTurn(state Session, command InterruptTurn) ([]UncommittedEve
 		TurnID: command.TurnID,
 		Reason: command.Reason,
 	}}}, nil
+}
+
+func decideStartAssistantMessage(state Session, command StartAssistantMessage) ([]UncommittedEvent, error) {
+	turn, err := requireRunningTurn(state, command.SessionID, command.TurnID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := ParseItemID(string(command.ItemID)); err != nil {
+		return nil, err
+	}
+	if _, exists := turn.Items[command.ItemID]; exists {
+		return nil, domainError(CodeItemAlreadyExists, "item already exists")
+	}
+	if err := rejectRunningItem(turn); err != nil {
+		return nil, err
+	}
+	return []UncommittedEvent{{Event: AssistantMessageStarted{
+		TurnID: command.TurnID,
+		ItemID: command.ItemID,
+	}}}, nil
+}
+
+func decideCompleteAssistantTurn(state Session, command CompleteAssistantTurn) ([]UncommittedEvent, error) {
+	if _, err := requireRunningItem(state, command.SessionID, command.TurnID, command.ItemID); err != nil {
+		return nil, err
+	}
+	if !utf8.ValidString(command.Text) {
+		return nil, domainError(CodeInvalidCommand, "assistant message text must be valid UTF-8")
+	}
+	return []UncommittedEvent{
+		{Event: AssistantMessageCompleted{TurnID: command.TurnID, ItemID: command.ItemID, Text: command.Text}},
+		{Event: TurnCompleted{TurnID: command.TurnID}},
+	}, nil
+}
+
+func decideFailAssistantTurn(state Session, command FailAssistantTurn) ([]UncommittedEvent, error) {
+	if _, err := requireRunningItem(state, command.SessionID, command.TurnID, command.ItemID); err != nil {
+		return nil, err
+	}
+	if !hasRequiredText(command.Code) {
+		return nil, domainError(CodeInvalidCommand, "failure code is required")
+	}
+	if !hasRequiredText(command.Message) {
+		return nil, domainError(CodeInvalidCommand, "failure message is required")
+	}
+	return []UncommittedEvent{
+		{Event: AssistantMessageFailed{TurnID: command.TurnID, ItemID: command.ItemID, Code: command.Code, Message: command.Message}},
+		{Event: TurnFailed{TurnID: command.TurnID, Code: command.Code, Message: command.Message}},
+	}, nil
+}
+
+func decideInterruptAssistantTurn(state Session, command InterruptAssistantTurn) ([]UncommittedEvent, error) {
+	if _, err := requireRunningItem(state, command.SessionID, command.TurnID, command.ItemID); err != nil {
+		return nil, err
+	}
+	if !hasRequiredText(command.Code) {
+		return nil, domainError(CodeInvalidCommand, "interruption code is required")
+	}
+	if !utf8.ValidString(command.Message) {
+		return nil, domainError(CodeInvalidCommand, "interruption message must be valid UTF-8")
+	}
+	return []UncommittedEvent{
+		{Event: AssistantMessageInterrupted{TurnID: command.TurnID, ItemID: command.ItemID, Code: command.Code, Message: command.Message}},
+		{Event: TurnInterrupted{TurnID: command.TurnID, Reason: command.Code}},
+	}, nil
+}
+
+func rejectRunningItem(turn Turn) error {
+	if turn.ActiveItemID != "" {
+		return domainError(CodeItemAlreadyRunning, "an item is already running")
+	}
+	return nil
+}
+
+func requireRunningItem(state Session, sessionID SessionID, turnID TurnID, itemID ItemID) (Item, error) {
+	turn, err := requireRunningTurn(state, sessionID, turnID)
+	if err != nil {
+		return Item{}, err
+	}
+	if _, err := ParseItemID(string(itemID)); err != nil {
+		return Item{}, err
+	}
+	if turn.ActiveItemID == "" {
+		return Item{}, domainError(CodeItemNotRunning, "no item is running")
+	}
+	if turn.ActiveItemID != itemID {
+		return Item{}, domainError(CodeItemMismatch, "command item ID does not match active item")
+	}
+	item, exists := turn.Items[itemID]
+	if !exists || item.Status != ItemStatusRunning {
+		return Item{}, domainError(CodeItemNotRunning, "active item is not running")
+	}
+	return item, nil
 }
 
 func requireRunningTurn(state Session, sessionID SessionID, turnID TurnID) (Turn, error) {
