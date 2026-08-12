@@ -231,3 +231,58 @@ passed. Files changed in this fix round: `runtime.go`, `runtime_test.go`,
 this report. Self-review: exhaustion is checked only after payload validation
 and pre-attempt cancellation, takes no ordinal and makes no sink call; requested
 codes are whitelisted; the contract suite has no timing-based blocking inference.
+
+## Fix round 2
+
+Covering files: `internal/harness/testkit/scripted_model_test.go` and
+`internal/harness/engine/modeltest/suite.go`.
+
+New direct ScriptedStep tests use `Entered`/`Release` barriers, never a short
+timing inference: they observe Entered, assert the buffered result is still
+absent, then release or cancel. The runtime malformed-payload table now covers
+the full Text/Code presence matrix for every event type and verifies one
+subsequent valid event remains ordinal 1.
+
+Mutation RED 1 command:
+
+```sh
+GOCACHE=/private/tmp/open-code-harness-gocache go test ./internal/harness/testkit -run TestScriptedModelStepSignalsBeforeReleaseAndCancellation -count=1
+```
+
+Relevant output after temporarily skipping `Entered`:
+
+```text
+Next() did not signal Entered
+FAIL github.com/SongYii/open-code-harness/internal/harness/testkit
+```
+
+Mutation RED 2 command:
+
+```sh
+GOCACHE=/private/tmp/open-code-harness-gocache go test ./internal/harness/testkit -run 'TestScriptedModel$' -count=1
+```
+
+Relevant output after temporarily accepting terminal Text:
+
+```text
+Emit(engine.RuntimePayload{Type:"model.stream.started", Text:"text", Code:""}) error = <nil>, want invalid_request
+delivered = []engine.RuntimeEvent{...}, want none
+FAIL github.com/SongYii/open-code-harness/internal/harness/testkit
+```
+
+Both mutations were restored with `apply_patch`; GREEN/final commands:
+
+```sh
+gofmt -w internal/harness/engine internal/harness/testkit
+GOCACHE=/private/tmp/open-code-harness-gocache go test ./internal/harness/engine/... ./internal/harness/testkit -count=1
+GOCACHE=/private/tmp/open-code-harness-gocache go test -race ./internal/harness/engine/... ./internal/harness/testkit -count=1
+GOCACHE=/private/tmp/open-code-harness-gocache go test ./... -count=1
+GOCACHE=/private/tmp/open-code-harness-gocache go vet ./...
+git diff --check
+```
+
+Results: focused passed (engine 0.624s, testkit 1.200s), race passed (engine
+1.804s, testkit 1.543s), full suite, vet, gofmt, and diff check passed. No
+mutation remains. Self-review: Entered is ordered before Release waiting,
+cancellation returns `context.Canceled` with exact counters, and every
+forbidden field-presence shape is rejected before attempt/ordinal allocation.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
 	"github.com/SongYii/open-code-harness/internal/harness/engine/modeltest"
@@ -65,4 +66,81 @@ func TestScriptedModelSupportsEveryStartupPairAndDefensiveSnapshots(t *testing.T
 	if got := model.Calls(); !reflect.DeepEqual(got, []engine.ModelRequest{expected}) {
 		t.Fatalf("Calls() defensive snapshot = %#v, want %#v", got, []engine.ModelRequest{expected})
 	}
+}
+
+func TestScriptedModelStepSignalsBeforeReleaseAndCancellation(t *testing.T) {
+	expected := engine.ModelRequest{SessionID: "session", TurnID: "turn", ItemID: "item", Input: "input"}
+	t.Run("release returns configured result after entered", func(t *testing.T) {
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		wantEvent := engine.StreamEvent{Type: engine.StreamEventTextDelta, Text: "ready"}
+		wantErr := errors.New("configured")
+		model, err := testkit.NewScriptedModel(expected, testkit.ScriptedModelConfig{Steps: []testkit.ScriptedStep{{Event: wantEvent, Err: wantErr, Entered: entered, Release: release}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		stream, err := model.Stream(context.Background(), expected)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := make(chan struct {
+			event engine.StreamEvent
+			err   error
+		}, 1)
+		go func() {
+			event, err := stream.Next(context.Background())
+			result <- struct {
+				event engine.StreamEvent
+				err   error
+			}{event, err}
+		}()
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("Next() did not signal Entered")
+		}
+		select {
+		case got := <-result:
+			t.Fatalf("Next() completed before Release: %#v", got)
+		default:
+		}
+		close(release)
+		select {
+		case got := <-result:
+			if got.event != wantEvent || !errors.Is(got.err, wantErr) {
+				t.Fatalf("Next() = (%#v, %v), want (%#v, %v)", got.event, got.err, wantEvent, wantErr)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Next() did not return after Release")
+		}
+		if model.NextCalls() != 1 || model.CloseCalls() != 0 {
+			t.Fatalf("counts = (%d, %d), want (1, 0)", model.NextCalls(), model.CloseCalls())
+		}
+	})
+	t.Run("cancellation wins while release remains blocked", func(t *testing.T) {
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		model, _ := testkit.NewScriptedModel(expected, testkit.ScriptedModelConfig{Steps: []testkit.ScriptedStep{{Entered: entered, Release: release}}})
+		stream, _ := model.Stream(context.Background(), expected)
+		ctx, cancel := context.WithCancel(context.Background())
+		result := make(chan error, 1)
+		go func() { _, err := stream.Next(ctx); result <- err }()
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("Next() did not signal Entered")
+		}
+		cancel()
+		select {
+		case err := <-result:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("Next() = %v, want context.Canceled", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Next() did not return after cancellation")
+		}
+		if model.NextCalls() != 1 || model.CloseCalls() != 0 {
+			t.Fatalf("counts = (%d, %d), want (1, 0)", model.NextCalls(), model.CloseCalls())
+		}
+	})
 }
