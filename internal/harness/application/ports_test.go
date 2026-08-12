@@ -84,6 +84,48 @@ func TestApplicationErrorHasStableTextAndPreservesCause(t *testing.T) {
 	}
 }
 
+func TestIsCategoryFindsEveryNestedApplicationError(t *testing.T) {
+	inner := &Error{
+		Category: CategoryModel,
+		Code:     "model_stream_failed",
+		Cause:    errors.New("provider detail"),
+	}
+	outer := &Error{
+		Category: CategoryPersistence,
+		Code:     "append_failed",
+		Cause:    fmt.Errorf("persist model failure: %w", inner),
+	}
+
+	if !IsCategory(outer, CategoryPersistence) {
+		t.Fatal("IsCategory did not find the outer application error")
+	}
+	if !IsCategory(outer, CategoryModel) {
+		t.Fatal("IsCategory did not find the nested application error")
+	}
+	if IsCategory(outer, CategoryConflict) {
+		t.Fatal("IsCategory reported an absent nested category")
+	}
+}
+
+func TestIsCategoryTraversesEveryErrorsJoinBranch(t *testing.T) {
+	validation := &Error{Category: CategoryValidation, Code: "invalid_request"}
+	model := &Error{Category: CategoryModel, Code: "model_stream_failed"}
+	joined := errors.Join(
+		fmt.Errorf("validate: %w", validation),
+		fmt.Errorf("execute: %w", model),
+	)
+	outer := &Error{Category: CategoryInternal, Code: "operation_failed", Cause: joined}
+
+	for _, category := range []ErrorCategory{CategoryInternal, CategoryValidation, CategoryModel} {
+		if !IsCategory(outer, category) {
+			t.Errorf("IsCategory did not find %q in the joined error tree", category)
+		}
+	}
+	if IsCategory(outer, CategoryDelivery) {
+		t.Fatal("IsCategory reported a category absent from the joined error tree")
+	}
+}
+
 func TestErrorCategoriesAreStable(t *testing.T) {
 	tests := map[ErrorCategory]string{
 		CategoryValidation:  "validation",

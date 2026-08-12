@@ -36,11 +36,27 @@ func (e *Error) Error() string {
 
 func (e *Error) Unwrap() error { return e.Cause }
 
-// IsCategory reports whether the error chain contains an application Error
+// IsCategory reports whether the error tree contains an application Error
 // with the requested stable category.
 func IsCategory(err error, category ErrorCategory) bool {
-	var applicationError *Error
-	return errors.As(err, &applicationError) && applicationError.Category == category
+	if err == nil {
+		return false
+	}
+	if applicationError, ok := err.(*Error); ok && applicationError != nil && applicationError.Category == category {
+		return true
+	}
+
+	switch err := err.(type) {
+	case interface{ Unwrap() error }:
+		return IsCategory(err.Unwrap(), category)
+	case interface{ Unwrap() []error }:
+		for _, child := range err.Unwrap() {
+			if IsCategory(child, category) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // VersionConflictError reports an exact per-Session stream-version mismatch.
