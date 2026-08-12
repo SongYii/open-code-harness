@@ -81,7 +81,7 @@ func (runner *TurnRunner) Run(ctx context.Context, request RunRequest, emitter *
 			if cause := ctx.Err(); cause != nil {
 				return runner.fail(cancel, stream, engineError(CodeCanceled, cause))
 			}
-			if errors.Is(err, io.EOF) {
+			if !isNil(err) && errors.Is(err, io.EOF) {
 				return runner.fail(cancel, stream, engineError(CodeInvalidStream, nil))
 			}
 			return runner.fail(cancel, stream, engineError(CodeModelStream, errorCause(err, CodeModelStream)))
@@ -109,7 +109,7 @@ func (runner *TurnRunner) Run(ctx context.Context, request RunRequest, emitter *
 			if event.Text != "" {
 				return runner.fail(cancel, stream, engineError(CodeInvalidStream, nil))
 			}
-			return runner.succeed(cancel, stream, RunResult{Text: builder.String()})
+			return runner.succeed(ctx, cancel, stream, RunResult{Text: builder.String()})
 		default:
 			return runner.fail(cancel, stream, engineError(CodeInvalidStream, nil))
 		}
@@ -124,12 +124,20 @@ func (runner *TurnRunner) fail(cancel context.CancelFunc, stream ModelStream, pr
 	return RunResult{}, primary
 }
 
-func (runner *TurnRunner) succeed(cancel context.CancelFunc, stream ModelStream, result RunResult) (RunResult, error) {
-	if closeErr := stream.Close(); closeErr != nil {
+func (runner *TurnRunner) succeed(ctx context.Context, cancel context.CancelFunc, stream ModelStream, result RunResult) (RunResult, error) {
+	closeErr := stream.Close()
+	if cause := ctx.Err(); cause != nil {
 		cancel()
-		return RunResult{}, engineError(CodeModelStream, errorCause(closeErr, CodeModelStream))
+		primary := engineError(CodeCanceled, cause)
+		if closeErr != nil {
+			return RunResult{}, &Error{Code: primary.Code, Cause: errors.Join(primary.Cause, errorCause(closeErr, CodeModelStream))}
+		}
+		return RunResult{}, primary
 	}
 	cancel()
+	if closeErr != nil {
+		return RunResult{}, engineError(CodeModelStream, errorCause(closeErr, CodeModelStream))
+	}
 	return result, nil
 }
 
@@ -158,16 +166,19 @@ func errorCause(err error, code ErrorCode) error {
 }
 
 func nonEngineCause(err error) error {
-	if err == nil {
+	if isNil(err) {
 		return nil
 	}
+	if !containsEngineError(err) {
+		return err
+	}
 	if engineErr, ok := err.(*Error); ok {
-		if engineErr == nil {
-			return nil
-		}
 		return nonEngineCause(engineErr.Cause)
 	}
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		if isNil(joined) {
+			return nil
+		}
 		causes := make([]error, 0, len(joined.Unwrap()))
 		for _, cause := range joined.Unwrap() {
 			if cause := nonEngineCause(cause); cause != nil {
@@ -177,9 +188,39 @@ func nonEngineCause(err error) error {
 		return errors.Join(causes...)
 	}
 	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		if isNil(wrapped) {
+			return nil
+		}
 		return nonEngineCause(wrapped.Unwrap())
 	}
 	return err
+}
+
+func containsEngineError(err error) bool {
+	if isNil(err) {
+		return false
+	}
+	if engineErr, ok := err.(*Error); ok {
+		return engineErr != nil
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		if isNil(joined) {
+			return false
+		}
+		for _, cause := range joined.Unwrap() {
+			if containsEngineError(cause) {
+				return true
+			}
+		}
+		return false
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		if isNil(wrapped) {
+			return false
+		}
+		return containsEngineError(wrapped.Unwrap())
+	}
+	return false
 }
 
 func sentinelForCode(code ErrorCode) error {

@@ -3,9 +3,11 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	. "github.com/SongYii/open-code-harness/internal/harness/engine"
@@ -190,6 +192,248 @@ func TestTurnRunnerNormalizesJoinedEngineErrorsAlongsideClose(t *testing.T) {
 	}
 	assertRunnerCounts(t, model, 1, 1)
 	assertAttemptCounts(t, sink, 1, 1)
+}
+
+func TestTurnRunnerCleanupCancellationOrdering(t *testing.T) {
+	t.Run("failure cancels derived context before close", func(t *testing.T) {
+		var streamCtx context.Context
+		closeObserved := make(chan bool, 1)
+		streamFailure := errors.New("stream failure")
+		stream := &controlledStream{
+			next: func(ctx context.Context) (StreamEvent, error) {
+				streamCtx = ctx
+				return StreamEvent{}, streamFailure
+			},
+			close: func() error {
+				closeObserved <- streamCtx.Err() != nil
+				return nil
+			},
+		}
+		runner, _ := NewTurnRunner(&controlledModel{stream: func(context.Context, ModelRequest) (ModelStream, error) { return stream, nil }})
+		emitter, _ := NewEmitter(&controlledSink{}, validRunnerCorrelation())
+		got, err := runner.Run(context.Background(), runnerRequest(), emitter)
+		assertRunFailure(t, got, err, CodeModelStream)
+		if !<-closeObserved {
+			t.Fatal("Close() observed a live derived context on failure")
+		}
+		if stream.nextCalls != 1 || stream.closeCalls != 1 {
+			t.Fatalf("counts = (%d, %d), want (1, 1)", stream.nextCalls, stream.closeCalls)
+		}
+	})
+
+	t.Run("success closes while derived context is live then cancels", func(t *testing.T) {
+		var streamCtx context.Context
+		closeObserved := make(chan bool, 1)
+		stream := &controlledStream{
+			next: func(ctx context.Context) (StreamEvent, error) {
+				streamCtx = ctx
+				return StreamEvent{Type: StreamEventCompleted}, nil
+			},
+			close: func() error {
+				closeObserved <- streamCtx.Err() == nil
+				return nil
+			},
+		}
+		runner, _ := NewTurnRunner(&controlledModel{stream: func(context.Context, ModelRequest) (ModelStream, error) { return stream, nil }})
+		emitter, _ := NewEmitter(&controlledSink{}, validRunnerCorrelation())
+		got, err := runner.Run(context.Background(), runnerRequest(), emitter)
+		if err != nil || got.Text != "" {
+			t.Fatalf("Run() = (%#v, %v), want empty success", got, err)
+		}
+		if !<-closeObserved {
+			t.Fatal("Close() did not observe a live derived context on success")
+		}
+		select {
+		case <-streamCtx.Done():
+		default:
+			t.Fatal("derived context was not canceled before Run returned")
+		}
+		if stream.nextCalls != 1 || stream.closeCalls != 1 {
+			t.Fatalf("counts = (%d, %d), want (1, 1)", stream.nextCalls, stream.closeCalls)
+		}
+	})
+
+	for _, closeErr := range []error{nil, errors.New("close failure")} {
+		name := "parent cancellation during successful close"
+		if closeErr != nil {
+			name += " with close error"
+		}
+		t.Run(name, func(t *testing.T) {
+			closeEntered := make(chan struct{})
+			releaseClose := make(chan struct{})
+			stream := &controlledStream{
+				next: func(context.Context) (StreamEvent, error) { return StreamEvent{Type: StreamEventCompleted}, nil },
+				close: func() error {
+					close(closeEntered)
+					<-releaseClose
+					return closeErr
+				},
+			}
+			runner, _ := NewTurnRunner(&controlledModel{stream: func(context.Context, ModelRequest) (ModelStream, error) { return stream, nil }})
+			emitter, _ := NewEmitter(&controlledSink{}, validRunnerCorrelation())
+			ctx, cancel := context.WithCancel(context.Background())
+			result := make(chan runOutcome, 1)
+			go func() { result <- runRunner(runner, ctx, emitter) }()
+			awaitSignal(t, closeEntered, "Close() entry")
+			cancel()
+			close(releaseClose)
+			outcome := awaitOutcome(t, result)
+			assertRunFailure(t, outcome.result, outcome.err, CodeCanceled)
+			if !errors.Is(outcome.err, context.Canceled) {
+				t.Fatalf("Run() error = %v, does not retain cancellation cause", outcome.err)
+			}
+			if closeErr != nil && !errors.Is(outcome.err, closeErr) {
+				t.Fatalf("Run() error = %v, does not retain close cause", outcome.err)
+			}
+			if stream.nextCalls != 1 || stream.closeCalls != 1 {
+				t.Fatalf("counts = (%d, %d), want (1, 1)", stream.nextCalls, stream.closeCalls)
+			}
+		})
+	}
+}
+
+func TestTurnRunnerPreservesOrdinaryWrappedDependencyErrors(t *testing.T) {
+	leaf := errors.New("leaf")
+	closeLeaf := errors.New("close leaf")
+	wrapped := fmt.Errorf("dependency wrapper: %w", leaf)
+	wrappedClose := fmt.Errorf("close wrapper: %w", closeLeaf)
+	cases := []struct {
+		name      string
+		config    testkit.ScriptedModelConfig
+		wantCode  ErrorCode
+		wantNext  int
+		wantClose int
+		causes    []error
+	}{
+		{"startup without cleanup", testkit.ScriptedModelConfig{StartupError: wrapped}, CodeModelStartup, 0, 0, []error{wrapped, leaf}},
+		{"startup with cleanup", testkit.ScriptedModelConfig{StartupError: wrapped, ReturnStreamOnStartupError: true, CloseError: wrappedClose}, CodeModelStartup, 0, 1, []error{wrapped, leaf, wrappedClose, closeLeaf}},
+		{"next without cleanup", testkit.ScriptedModelConfig{Steps: []testkit.ScriptedStep{{Err: wrapped}}}, CodeModelStream, 1, 1, []error{wrapped, leaf}},
+		{"next with cleanup", testkit.ScriptedModelConfig{Steps: []testkit.ScriptedStep{{Err: wrapped}}, CloseError: wrappedClose}, CodeModelStream, 1, 1, []error{wrapped, leaf, wrappedClose, closeLeaf}},
+		{"close only", testkit.ScriptedModelConfig{Steps: []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventCompleted}}}, CloseError: wrappedClose}, CodeModelStream, 1, 1, []error{wrappedClose, closeLeaf}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			model, _ := testkit.NewScriptedModel(runnerRequest().ModelRequest, tc.config)
+			emitter, _ := NewEmitter(&testkit.RecordingSink{}, validRunnerCorrelation())
+			runner, _ := NewTurnRunner(model)
+			got, err := runner.Run(context.Background(), runnerRequest(), emitter)
+			assertRunFailure(t, got, err, tc.wantCode)
+			for _, cause := range tc.causes {
+				if !errors.Is(err, cause) {
+					t.Fatalf("Run() error = %v, does not retain exact cause %v", err, cause)
+				}
+			}
+			assertRunnerCounts(t, model, tc.wantNext, tc.wantClose)
+		})
+	}
+}
+
+func TestTurnRunnerNormalizesTypedNilUnwrappersSafely(t *testing.T) {
+	var typedNilSingle error = (*panicSingleUnwrapper)(nil)
+	var typedNilMulti error = (*panicMultiUnwrapper)(nil)
+	cases := []struct {
+		name      string
+		config    testkit.ScriptedModelConfig
+		wantCode  ErrorCode
+		wantNext  int
+		wantClose int
+	}{
+		{"startup single unwrap", testkit.ScriptedModelConfig{StartupError: typedNilSingle}, CodeModelStartup, 0, 0},
+		{"next multi unwrap", testkit.ScriptedModelConfig{Steps: []testkit.ScriptedStep{{Err: typedNilMulti}}}, CodeModelStream, 1, 1},
+		{"close single unwrap", testkit.ScriptedModelConfig{Steps: []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventCompleted}}}, CloseError: typedNilSingle}, CodeModelStream, 1, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			model, _ := testkit.NewScriptedModel(runnerRequest().ModelRequest, tc.config)
+			emitter, _ := NewEmitter(&testkit.RecordingSink{}, validRunnerCorrelation())
+			runner, _ := NewTurnRunner(model)
+			got, err := runner.Run(context.Background(), runnerRequest(), emitter)
+			assertRunFailure(t, got, err, tc.wantCode)
+			if errors.Unwrap(err) == nil {
+				t.Fatal("Run() error lost its fallback cause")
+			}
+			assertRunnerCounts(t, model, tc.wantNext, tc.wantClose)
+		})
+	}
+}
+
+func TestTurnRunnerCancellationWinsAtDependencyReturnBoundaries(t *testing.T) {
+	t.Run("stream nil and error", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		model := &controlledModel{stream: func(context.Context, ModelRequest) (ModelStream, error) {
+			cancel()
+			return nil, errors.New("startup")
+		}}
+		runner, _ := NewTurnRunner(model)
+		sink := &controlledSink{}
+		emitter, _ := NewEmitter(sink, validRunnerCorrelation())
+		got, err := runner.Run(ctx, runnerRequest(), emitter)
+		assertRunFailure(t, got, err, CodeCanceled)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run() error = %v, want context.Canceled", err)
+		}
+	})
+
+	t.Run("stream nonnil and error", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		stream := &controlledStream{next: func(context.Context) (StreamEvent, error) { return StreamEvent{}, nil }, close: func() error { return nil }}
+		model := &controlledModel{stream: func(context.Context, ModelRequest) (ModelStream, error) {
+			cancel()
+			return stream, errors.New("startup")
+		}}
+		runner, _ := NewTurnRunner(model)
+		emitter, _ := NewEmitter(&controlledSink{}, validRunnerCorrelation())
+		got, err := runner.Run(ctx, runnerRequest(), emitter)
+		assertRunFailure(t, got, err, CodeCanceled)
+		if stream.nextCalls != 0 || stream.closeCalls != 1 {
+			t.Fatalf("counts = (%d, %d), want (0, 1)", stream.nextCalls, stream.closeCalls)
+		}
+	})
+
+	t.Run("event return before processing", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		stream := &controlledStream{
+			next: func(context.Context) (StreamEvent, error) {
+				cancel()
+				return StreamEvent{Type: StreamEventTextDelta, Text: "not accumulated"}, nil
+			},
+			close: func() error { return nil },
+		}
+		sinkCalls := 0
+		runner, _ := NewTurnRunner(&controlledModel{stream: func(context.Context, ModelRequest) (ModelStream, error) { return stream, nil }})
+		emitter, _ := NewEmitter(&controlledSink{emit: func(context.Context, RuntimeEvent) error { sinkCalls++; return nil }}, validRunnerCorrelation())
+		got, err := runner.Run(ctx, runnerRequest(), emitter)
+		assertRunFailure(t, got, err, CodeCanceled)
+		if sinkCalls != 1 || stream.nextCalls != 1 || stream.closeCalls != 1 {
+			t.Fatalf("counts = sink=%d next=%d close=%d, want (1, 1, 1)", sinkCalls, stream.nextCalls, stream.closeCalls)
+		}
+	})
+
+	t.Run("sink return after delta delivery", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		stream := &controlledStream{
+			next: func(context.Context) (StreamEvent, error) {
+				return StreamEvent{Type: StreamEventTextDelta, Text: "not accumulated"}, nil
+			},
+			close: func() error { return nil },
+		}
+		sinkCalls := 0
+		sink := &controlledSink{emit: func(_ context.Context, event RuntimeEvent) error {
+			sinkCalls++
+			if event.Type == RuntimeModelTextDelta {
+				cancel()
+				return errors.New("sink canceled parent")
+			}
+			return nil
+		}}
+		runner, _ := NewTurnRunner(&controlledModel{stream: func(context.Context, ModelRequest) (ModelStream, error) { return stream, nil }})
+		emitter, _ := NewEmitter(sink, validRunnerCorrelation())
+		got, err := runner.Run(ctx, runnerRequest(), emitter)
+		assertRunFailure(t, got, err, CodeCanceled)
+		if sinkCalls != 2 || stream.nextCalls != 1 || stream.closeCalls != 1 {
+			t.Fatalf("counts = sink=%d next=%d close=%d, want (2, 1, 1)", sinkCalls, stream.nextCalls, stream.closeCalls)
+		}
+	})
 }
 
 func TestTurnRunnerRejectsInvalidEventsAndBoundsBeforeDelivery(t *testing.T) {
@@ -464,3 +708,79 @@ func assertRuntimeEvents(t *testing.T, got, want []RuntimeEvent) {
 type nilRunnerModel struct{}
 
 func (*nilRunnerModel) Stream(context.Context, ModelRequest) (ModelStream, error) { return nil, nil }
+
+type controlledModel struct {
+	stream func(context.Context, ModelRequest) (ModelStream, error)
+}
+
+func (model *controlledModel) Stream(ctx context.Context, request ModelRequest) (ModelStream, error) {
+	return model.stream(ctx, request)
+}
+
+type controlledStream struct {
+	next       func(context.Context) (StreamEvent, error)
+	close      func() error
+	nextCalls  int
+	closeCalls int
+}
+
+func (stream *controlledStream) Next(ctx context.Context) (StreamEvent, error) {
+	stream.nextCalls++
+	return stream.next(ctx)
+}
+
+func (stream *controlledStream) Close() error {
+	stream.closeCalls++
+	return stream.close()
+}
+
+type controlledSink struct {
+	emit func(context.Context, RuntimeEvent) error
+}
+
+func (sink *controlledSink) Emit(ctx context.Context, event RuntimeEvent) error {
+	if sink.emit != nil {
+		return sink.emit(ctx, event)
+	}
+	return nil
+}
+
+type panicSingleUnwrapper struct{}
+
+func (*panicSingleUnwrapper) Error() string { return "panic single unwrap" }
+func (*panicSingleUnwrapper) Unwrap() error { panic("typed-nil single Unwrap called") }
+
+type panicMultiUnwrapper struct{}
+
+func (*panicMultiUnwrapper) Error() string   { return "panic multi unwrap" }
+func (*panicMultiUnwrapper) Unwrap() []error { panic("typed-nil multi Unwrap called") }
+
+type runOutcome struct {
+	result RunResult
+	err    error
+}
+
+func runRunner(runner *TurnRunner, ctx context.Context, emitter *Emitter) runOutcome {
+	result, err := runner.Run(ctx, runnerRequest(), emitter)
+	return runOutcome{result: result, err: err}
+}
+
+func awaitSignal(t *testing.T, signal <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+func awaitOutcome(t *testing.T, outcome <-chan runOutcome) runOutcome {
+	t.Helper()
+	select {
+	case got := <-outcome:
+		return got
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for Run()")
+		return runOutcome{}
+	}
+}
