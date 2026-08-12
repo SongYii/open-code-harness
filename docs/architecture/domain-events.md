@@ -57,7 +57,11 @@ same pure `CheckStartAssistantTurnEligibility` predicate used by Application
 preflight before it validates request fields or generated IDs. The predicate
 validates the complete existing Session/Turn/Item structure, requires an
 active Session, and rejects any running Turn or Item; it never inspects input
-or not-yet-generated identities.
+or not-yet-generated identities. Complete structure includes RFC3339-
+representable lifecycle timestamps and an exact replay-possible Version:
+`session.created`, every Turn/Item start and terminal fact represented by the
+state, plus `session.closed` when closed. A structurally impossible in-memory
+state is rejected before Application allocates run IDs.
 
 The three terminal composite commands terminalize the active assistant Item
 and its owning Turn as one ordered decision batch. `InterruptAssistantTurn`

@@ -105,6 +105,25 @@ func TestAppendAndApplyRequiresOneExactBatchTimestamp(t *testing.T) {
 	}
 }
 
+func TestAppendAndApplyRejectsStoreMutationOfRequestEvents(t *testing.T) {
+	requested := domain.SessionCreated{WorkspaceRoot: "/expected"}
+	store := &mutatingRequestStore{}
+	service := &Service{store: store}
+	_, _, err := service.appendAndApply(
+		context.Background(),
+		"session-alias",
+		domain.Session{},
+		[]domain.UncommittedEvent{{Event: requested}},
+		"command-alias",
+	)
+	if !IsCategory(err, CategoryInternal) {
+		t.Fatalf("appendAndApply() error = %v, want store_contract_violation", err)
+	}
+	if requested.WorkspaceRoot != "/expected" {
+		t.Fatalf("caller's event = %#v, want unchanged", requested)
+	}
+}
+
 func applyForAppendTest(t *testing.T, state domain.Session, sequence uint64, occurredAt time.Time, event domain.Event) domain.Session {
 	t.Helper()
 	next, err := domain.Apply(state, domain.RecordedEvent{
@@ -120,6 +139,25 @@ func applyForAppendTest(t *testing.T, state domain.Session, sequence uint64, occ
 type appendResultStore struct {
 	records []domain.RecordedEvent
 	calls   int
+}
+
+type mutatingRequestStore struct{}
+
+func (*mutatingRequestStore) Load(context.Context, domain.SessionID) ([]domain.RecordedEvent, error) {
+	return nil, nil
+}
+
+func (*mutatingRequestStore) Append(_ context.Context, request AppendRequest) ([]domain.RecordedEvent, error) {
+	request.Events[0] = domain.SessionCreated{WorkspaceRoot: "/tampered"}
+	return []domain.RecordedEvent{{
+		SchemaVersion: 1,
+		ID:            "event-alias",
+		CommandID:     request.CommandID,
+		SessionID:     request.SessionID,
+		Sequence:      1,
+		OccurredAt:    time.Date(2026, 8, 12, 5, 0, 0, 0, time.UTC),
+		Event:         request.Events[0],
+	}}, nil
 }
 
 func (*appendResultStore) Load(context.Context, domain.SessionID) ([]domain.RecordedEvent, error) {

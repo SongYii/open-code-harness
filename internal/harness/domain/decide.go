@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"math"
 	"time"
 	"unicode/utf8"
 )
@@ -105,6 +106,14 @@ func validateSessionStructure(state Session) error {
 	}
 	seen := make(map[TurnID]struct{}, len(state.TurnOrder))
 	runningTurnID := TurnID("")
+	expectedVersion := uint64(1) // session.created
+	advanceVersion := func() bool {
+		if expectedVersion == math.MaxUint64 {
+			return false
+		}
+		expectedVersion++
+		return true
+	}
 	for _, turnID := range state.TurnOrder {
 		if _, duplicate := seen[turnID]; duplicate {
 			return domainError(CodeInvalidCommand, "turn order contains a duplicate")
@@ -121,8 +130,14 @@ func validateSessionStructure(state Session) error {
 		if key != turn.ID {
 			return domainError(CodeInvalidCommand, "turn identity is invalid")
 		}
-		if _, err := ParseTurnID(string(turn.ID)); err != nil || !hasRequiredText(turn.Input) || turn.StartedAt.IsZero() {
+		if _, err := ParseTurnID(string(turn.ID)); err != nil || !hasRequiredText(turn.Input) || !validStateTimestamp(turn.StartedAt) {
 			return domainError(CodeInvalidCommand, "turn structure is invalid")
+		}
+		if !turn.EndedAt.IsZero() && !validStateTimestamp(turn.EndedAt) {
+			return domainError(CodeInvalidCommand, "turn terminal timestamp is invalid")
+		}
+		if !advanceVersion() { // turn.started
+			return domainError(CodeInvalidCommand, "session version shape overflows")
 		}
 		if turn.ItemOrder == nil || turn.Items == nil {
 			return domainError(CodeInvalidCommand, "turn item containers are invalid")
@@ -133,6 +148,9 @@ func validateSessionStructure(state Session) error {
 		var lastItemEnd time.Time
 		for index, itemID := range turn.ItemOrder {
 			item := turn.Items[itemID]
+			if !validStateTimestamp(item.StartedAt) || (!item.EndedAt.IsZero() && !validStateTimestamp(item.EndedAt)) {
+				return domainError(CodeInvalidCommand, "item timestamp is invalid")
+			}
 			if item.StartedAt.Before(turn.StartedAt) || (!lastItemEnd.IsZero() && item.StartedAt.Before(lastItemEnd)) {
 				return domainError(CodeInvalidCommand, "turn item timeline is invalid")
 			}
@@ -141,6 +159,12 @@ func validateSessionStructure(state Session) error {
 			}
 			if !item.EndedAt.IsZero() {
 				lastItemEnd = item.EndedAt
+			}
+			if !advanceVersion() { // assistant.message.started
+				return domainError(CodeInvalidCommand, "session version shape overflows")
+			}
+			if item.Status != ItemStatusRunning && !advanceVersion() { // one Item terminal event
+				return domainError(CodeInvalidCommand, "session version shape overflows")
 			}
 		}
 		switch turn.Status {
@@ -167,6 +191,9 @@ func validateSessionStructure(state Session) error {
 		if turn.Status != TurnStatusRunning && !lastItemEnd.IsZero() && turn.EndedAt.Before(lastItemEnd) {
 			return domainError(CodeInvalidCommand, "turn ended before its final item")
 		}
+		if turn.Status != TurnStatusRunning && !advanceVersion() { // one Turn terminal event
+			return domainError(CodeInvalidCommand, "session version shape overflows")
+		}
 	}
 	if runningTurnID == "" {
 		if state.ActiveTurnID != "" {
@@ -178,7 +205,23 @@ func validateSessionStructure(state Session) error {
 	if state.Status == SessionStatusClosed && runningTurnID != "" {
 		return domainError(CodeInvalidCommand, "closed session contains a running turn")
 	}
+	if state.Status == SessionStatusClosed && !advanceVersion() { // session.closed
+		return domainError(CodeInvalidCommand, "session version shape overflows")
+	}
+	if state.Version != expectedVersion {
+		return domainError(CodeInvalidCommand, "session version does not match lifecycle structure")
+	}
 	return nil
+}
+
+func validStateTimestamp(timestamp time.Time) bool {
+	return validateRecordedEventIdentityAndTimestamp(RecordedEvent{
+		SchemaVersion: schemaVersion,
+		ID:            "event-state-validation",
+		CommandID:     "command-state-validation",
+		SessionID:     "session-state-validation",
+		OccurredAt:    timestamp,
+	}) == nil
 }
 
 func decideCloseSession(state Session, command CloseSession) ([]UncommittedEvent, error) {

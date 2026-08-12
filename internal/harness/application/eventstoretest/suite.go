@@ -32,6 +32,9 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("post-commit cancellation returns committed batch", func(t *testing.T) {
 		testPostCommitCancellation(t, factory(t))
 	})
+	t.Run("post-commit barrier reports append rejection", func(t *testing.T) {
+		testPostCommitBarrierReportsRejection(t)
+	})
 	t.Run("defensive copies", func(t *testing.T) { testDefensiveCopies(t, factory(t)) })
 }
 
@@ -39,11 +42,11 @@ func testPostCommitCancellation(t *testing.T, harness Harness) {
 	t.Helper()
 	requireHarness(t, harness)
 	ctx, cancel := context.WithCancel(context.Background())
-	committed := make(chan []domain.RecordedEvent, 1)
+	arrived := make(chan appendArrival, 1)
 	release := make(chan struct{})
 	store := &postCommitBarrierStore{
 		EventStore: harness.Store,
-		committed:  committed,
+		arrived:    arrived,
 		release:    release,
 	}
 	request := application.AppendRequest{
@@ -61,31 +64,85 @@ func testPostCommitCancellation(t *testing.T, harness Harness) {
 		resultCh <- result{records: records, err: err}
 	}()
 
-	committedRecords := <-committed
+	arrival := <-arrived
+	if arrival.err != nil {
+		t.Fatalf("underlying Append() error = %v", arrival.err)
+	}
 	cancel()
 	close(release)
 	got := <-resultCh
-	if got.err != nil || !equalRecords(got.records, committedRecords) {
+	if got.err != nil || !equalRecords(got.records, arrival.records) {
 		t.Fatalf("Append() after post-commit cancellation = (%#v, %v), want exact committed records", got.records, got.err)
 	}
 	loaded, err := harness.Store.Load(context.Background(), request.SessionID)
-	if err != nil || !equalRecords(loaded, committedRecords) {
-		t.Fatalf("Load() after post-commit cancellation = (%#v, %v), want committed batch %#v", loaded, err, committedRecords)
+	if err != nil || !equalRecords(loaded, arrival.records) {
+		t.Fatalf("Load() after post-commit cancellation = (%#v, %v), want committed batch %#v", loaded, err, arrival.records)
 	}
+}
+
+func testPostCommitBarrierReportsRejection(t *testing.T) {
+	t.Helper()
+	cause := errors.New("append rejected before commit")
+	arrived := make(chan appendArrival, 1)
+	release := make(chan struct{})
+	store := &postCommitBarrierStore{
+		EventStore: rejectingStore{err: cause},
+		arrived:    arrived,
+		release:    release,
+	}
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := store.Append(context.Background(), application.AppendRequest{})
+		resultCh <- err
+	}()
+
+	select {
+	case arrival := <-arrived:
+		if !errors.Is(arrival.err, cause) || len(arrival.records) != 0 {
+			t.Fatalf("arrival = %#v, want rejecting cause and no records", arrival)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("barrier did not report the rejecting Append return")
+	}
+	select {
+	case err := <-resultCh:
+		if !errors.Is(err, cause) {
+			t.Fatalf("wrapper Append() error = %v, want rejecting cause", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("rejecting Append waited for the success-only release barrier")
+	}
+}
+
+type rejectingStore struct {
+	err error
+}
+
+func (store rejectingStore) Load(context.Context, domain.SessionID) ([]domain.RecordedEvent, error) {
+	return nil, store.err
+}
+
+func (store rejectingStore) Append(context.Context, application.AppendRequest) ([]domain.RecordedEvent, error) {
+	return nil, store.err
 }
 
 type postCommitBarrierStore struct {
 	application.EventStore
-	committed chan<- []domain.RecordedEvent
-	release   <-chan struct{}
+	arrived chan<- appendArrival
+	release <-chan struct{}
+}
+
+type appendArrival struct {
+	records []domain.RecordedEvent
+	err     error
 }
 
 func (store *postCommitBarrierStore) Append(ctx context.Context, request application.AppendRequest) ([]domain.RecordedEvent, error) {
 	records, err := store.EventStore.Append(ctx, request)
+	store.arrived <- appendArrival{records: records, err: err}
 	if err != nil {
 		return nil, err
 	}
-	store.committed <- records
 	<-store.release
 	return records, nil
 }

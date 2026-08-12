@@ -14,13 +14,21 @@ func (service *Service) appendAndApply(ctx context.Context, sessionID domain.Ses
 	if len(decided) == 0 || uint64(len(decided)) > math.MaxUint64-state.Version {
 		return domain.Session{}, nil, applicationError(CategoryInternal, "store_contract_violation", false, nil)
 	}
-	events := make([]domain.Event, len(decided))
+	expectedEvents := make([]domain.Event, len(decided))
 	for index, uncommitted := range decided {
 		cloned, err := domain.CloneEvent(uncommitted.Event)
 		if err != nil {
 			return domain.Session{}, nil, applicationError(CategoryInternal, "store_contract_violation", false, err)
 		}
-		events[index] = cloned
+		expectedEvents[index] = cloned
+	}
+	requestEvents := make([]domain.Event, len(expectedEvents))
+	for index, expected := range expectedEvents {
+		cloned, err := domain.CloneEvent(expected)
+		if err != nil {
+			return domain.Session{}, nil, applicationError(CategoryInternal, "store_contract_violation", false, err)
+		}
+		requestEvents[index] = cloned
 	}
 	if err := contextError(ctx); err != nil {
 		return domain.Session{}, nil, err
@@ -29,24 +37,24 @@ func (service *Service) appendAndApply(ctx context.Context, sessionID domain.Ses
 		SessionID:       sessionID,
 		ExpectedVersion: state.Version,
 		CommandID:       commandID,
-		Events:          events,
+		Events:          requestEvents,
 	})
 	if !isNilValue(err) {
 		return domain.Session{}, nil, mapAppendError(ctx, err)
 	}
-	if len(records) != len(events) {
+	if len(records) != len(expectedEvents) {
 		return domain.Session{}, nil, applicationError(CategoryInternal, "store_contract_violation", false, nil)
 	}
 
 	next := state.Clone()
-	expectedFinalVersion := state.Version + uint64(len(events))
+	expectedFinalVersion := state.Version + uint64(len(expectedEvents))
 	seenEventIDs := make(map[domain.EventID]struct{}, len(records))
 	var occurredAt time.Time
 	for index, record := range records {
 		expectedSequence := state.Version + uint64(index) + 1
 		if record.Sequence != expectedSequence || record.SessionID != sessionID || record.CommandID != commandID ||
 			record.SchemaVersion != 1 || record.OccurredAt.IsZero() || record.OccurredAt.Location() != time.UTC ||
-			!reflect.DeepEqual(record.Event, events[index]) {
+			!reflect.DeepEqual(record.Event, expectedEvents[index]) {
 			return domain.Session{}, nil, applicationError(CategoryInternal, "store_contract_violation", false, nil)
 		}
 		if _, err := domain.ParseEventID(string(record.ID)); err != nil {

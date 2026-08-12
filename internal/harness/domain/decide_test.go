@@ -10,7 +10,11 @@ func TestStartAssistantTurnEligibilityIsSharedWithDecide(t *testing.T) {
 	t.Parallel()
 
 	closed := activeSessionForTest(t)
-	closed.Status = SessionStatusClosed
+	var err error
+	closed, err = Apply(closed, recordedForTest(closed, SessionClosed{}))
+	if err != nil {
+		t.Fatalf("close fixture session: %v", err)
+	}
 	malformed := activeSessionForTest(t)
 	malformed.TurnOrder = []TurnID{"turn-missing"}
 	malformedContainers := activeSessionForTest(t)
@@ -18,7 +22,6 @@ func TestStartAssistantTurnEligibilityIsSharedWithDecide(t *testing.T) {
 	malformedContainers.Turns = nil
 	running := runningTurnForTest(t)
 	withCompletedItem := terminalAssistantItemForTest(t)
-	var err error
 	withCompletedItem, err = Apply(withCompletedItem, recordedForTest(withCompletedItem, TurnCompleted{TurnID: "turn-1"}))
 	if err != nil {
 		t.Fatalf("complete fixture turn: %v", err)
@@ -29,6 +32,12 @@ func TestStartAssistantTurnEligibilityIsSharedWithDecide(t *testing.T) {
 	item.StartedAt = turn.StartedAt.Add(-time.Second)
 	turn.Items["item-1"] = item
 	malformedItemTimeline.Turns["turn-1"] = turn
+	invalidTimestamp := withCompletedItem.Clone()
+	turn = invalidTimestamp.Turns["turn-1"]
+	turn.EndedAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
+	invalidTimestamp.Turns["turn-1"] = turn
+	impossibleVersion := activeSessionForTest(t)
+	impossibleVersion.Version = 2
 
 	tests := []struct {
 		name  string
@@ -42,6 +51,8 @@ func TestStartAssistantTurnEligibilityIsSharedWithDecide(t *testing.T) {
 		{name: "malformed", state: malformed, code: CodeInvalidCommand},
 		{name: "malformed containers", state: malformedContainers, code: CodeInvalidCommand},
 		{name: "malformed item timeline", state: malformedItemTimeline, code: CodeInvalidCommand},
+		{name: "timestamp outside RFC3339", state: invalidTimestamp, code: CodeInvalidCommand},
+		{name: "impossible version", state: impossibleVersion, code: CodeInvalidCommand},
 		{name: "missing", state: Session{}, code: CodeSessionNotFound},
 	}
 
