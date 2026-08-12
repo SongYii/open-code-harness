@@ -1,13 +1,15 @@
-# Open Code Harness 基础架构设计
+# Open Code Harness 基础架构设计（工业级产品章程）
 
-- 状态：已接受，待书面复核
+- 状态：已接受，持续以子规格落实
 - 日期：2026-08-11
 - 仓库：`open-code-harness`
 - 文档范围：项目章程、系统边界、协议选择、质量属性和后续规格拆分
 
 ## 1. 决策摘要
 
-Open Code Harness 是一个从零设计、面向开源生态的 Code Agent Harness。项目不基于 `personal-harness` 改造，也不是 Obsidian 相关项目。旧项目只作为经验、失败模式和评测基线的来源，不继承其架构约束。
+Open Code Harness 是一个从零设计、面向真实工业应用和开源生态的 Code Agent Harness。它不是教学 Demo、概念验证或模型厂商的薄封装。项目不基于 `personal-harness` 改造，也不是 Obsidian 相关项目。旧项目只作为经验、失败模式和评测基线的来源，不继承其架构约束。
+
+项目采用小步纵切交付，但“小”只限制单个里程碑的功能范围，不降低工程质量。每个已完成纵切都必须具备明确契约、稳定失败语义、确定性替身、故障注入、并发验证、可审计证据和向生产适配器演进的接口；禁止以“先做 Demo”为理由建立需要整体推翻的临时架构。
 
 项目采用以下基础决策：
 
@@ -20,6 +22,7 @@ Open Code Harness 是一个从零设计、面向开源生态的 Code Agent Harne
 7. 每个核心子系统必须可独立测试、评测、回放和观测。
 8. 项目从第一天区分 `stable`、`experimental` 和 `internal` API，为开源社区保留清晰、可演进的扩展边界。
 9. A2A、远程 Agent daemon 和分布式多 Agent 协作不进入 v0，但架构不得阻止后续以 adapter 形式加入。
+10. 工业级是项目定位而不是最终阶段标签：安全、数据一致性、资源边界、故障恢复和可运维性从首个纵切开始进入设计与验收。
 
 ## 2. 背景与问题
 
@@ -47,6 +50,7 @@ Open Code Harness 的目标是先建立合理边界和证据体系，再逐层�
 - 为 Engine、ACP、MCP、Provider、Policy、Context 和 Eval 建立独立验证入口。
 - 通过标准协议进入现有 TUI、IDE、工具和模型生态。
 - 建立适合外部贡献者理解、扩展和验证的公共架构。
+- 形成可在真实代码库、团队流程和受控执行环境中长期运行的工业级基础设施，而不是一次性演示流程。
 
 ### 3.2 “强大 Harness”的可验证定义
 
@@ -62,6 +66,18 @@ Open Code Harness 的目标是先建立合理边界和证据体系，再逐层�
 - **Replaceable**：TUI、Provider、工具后端、存储和传输可通过接口替换。
 - **Debuggable**：失败能追溯到具体 command、event、attempt 和 policy decision。
 - **Benchmarkable**：质量、成本、延迟、稳定性和安全性都有基线。
+- **Consistent**：状态提交使用显式并发控制和原子边界，失败不得产生伪成功或静默部分写入。
+- **Bounded**：队列、输出、重试、并发和上下文均有可配置上限，不以无限内存或无限等待换取表面成功。
+- **Operable**：关键生命周期、资源消耗、降级和恢复路径可被自动化运行手册与健康检查验证。
+
+### 3.3 工业级交付原则
+
+- 规格先定义失败、取消、并发、资源上限和恢复语义，再定义 happy path。
+- 测试替身必须实现正式端口；测试代码不得依赖生产代码中的特殊分支。
+- 内存适配器与真实适配器共享 contract suite，不能把内存实现当成无约束的玩具版本。
+- 运行时实时信号与持久化事实分离；压缩、裁剪和 UI 投影不得改写历史事实。
+- 每个外部副作用必须有唯一执行权威、关联 ID、审计事件和明确终态。
+- 每个里程碑必须提供正常、故障、取消、并发、竞态和重放证据，以及明确的未实现生产承诺。
 
 ## 4. 非目标
 
@@ -75,6 +91,7 @@ Open Code Harness 的目标是先建立合理边界和证据体系，再逐层�
 - 不在 v0 实现 A2A 或远程多 Agent 网络；
 - 不为了抽象完整而预先实现尚无真实消费者的扩展点；
 - 不把 TUI 行为当作 Engine 正确性的唯一验证方式。
+- 不以教学 Demo、一次性脚本或“先跑起来再重写”为交付策略；阶段性缺失必须通过明确边界隔离，而不是通过降低实现标准隐藏。
 
 ## 5. 总体架构
 
@@ -295,8 +312,11 @@ Session、Turn、Item、ModelAttempt、ToolExecution 和 Approval 都必须有�
 - OpenTelemetry Semantic Conventions: <https://opentelemetry.io/docs/specs/semconv/>
 - OpenTelemetry GenAI Attributes: <https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/>
 - OpenAI Codex app-server: <https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md>
+- Pi agent core: <https://github.com/badlogic/pi-mono/tree/main/packages/agent>
+- MiniMax Mini-Agent: <https://github.com/MiniMax-AI/Mini-Agent>
 - DeepSeek-Reasonix: <https://github.com/esengine/DeepSeek-Reasonix>
-- Kimi Code ACP integration: <https://www.kimi.com/help/kimi-code/cli-ides>
+- Kimi Code: <https://github.com/MoonshotAI/kimi-code>
+- Maka: <https://github.com/maka-agent/maka-agent>
 - A2A Specification: <https://github.com/a2aproject/A2A/blob/main/docs/specification.md>
 
 参考项目用于比较设计和形成评测，不构成本项目的代码继承关系。
@@ -306,7 +326,7 @@ Session、Turn、Item、ModelAttempt、ToolExecution 和 Approval 都必须有�
 本文件是项目章程和基础架构共识，不是一次性实现全部系统的计划。后续按以下顺序分别完成设计、书面复核和实施计划：
 
 1. Harness domain、事件模型与 session/turn 状态机；
-2. Go Engine 最小可执行纵切与确定性 replay；
+2. Go Engine 工业级最小可执行纵切与确定性 replay；
 3. Provider contract 与首个模型适配；
 4. Tool Runtime、Policy 与最小 workspace tools；
 5. ACP v1 adapter 与 conformance；
@@ -316,7 +336,7 @@ Session、Turn、Item、ModelAttempt、ToolExecution 和 Approval 都必须有�
 9. Scenario eval、基准与 OpenTelemetry；
 10. 开源发布、治理与生态文档。
 
-每个子项目都必须形成独立 spec 和实施计划。基础架构不以一次“大爆炸”实现交付。
+每个子项目都必须形成独立 spec 和实施计划。基础架构不以一次“大爆炸”实现交付，也不把任何子项目降格为 Demo。里程碑可以暂不提供某项生产能力，但已经提供的能力必须遵守其书面契约和工业级质量门。
 
 ## 14. 接受标准
 
@@ -328,4 +348,6 @@ Session、Turn、Item、ModelAttempt、ToolExecution 和 Approval 都必须有�
 - Engine 的核心测试不依赖 TUI；
 - 领域状态、协议兼容、恢复和安全策略均有独立验证入口；
 - 新增公共扩展点时同时提供版本、schema、fixture 和兼容性测试；
+- 每个里程碑明确资源上限、并发控制、原子提交、取消、故障注入、race test 和恢复责任；
+- 所有确定性替身实现与未来生产适配器相同的端口，不存在仅供 Demo 使用的旁路；
 - 对上述基础决策的修改通过 ADR 或后续设计文档明确记录。
