@@ -219,7 +219,11 @@ func requiresNormalization(err error) bool {
 		if isNil(wrapped) {
 			return false
 		}
-		return requiresNormalization(wrapped.Unwrap())
+		cause := wrapped.Unwrap()
+		if cause == nil {
+			return false
+		}
+		return requiresNormalization(cause)
 	}
 	return false
 }

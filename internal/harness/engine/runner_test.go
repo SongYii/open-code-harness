@@ -397,6 +397,34 @@ func TestTurnRunnerNormalizesJoinedTypedNilUnwrappersSafely(t *testing.T) {
 	}
 }
 
+func TestTurnRunnerPreservesTerminalOrdinaryUnwrappers(t *testing.T) {
+	terminal := &terminalUnwrapper{}
+	cases := []struct {
+		name      string
+		config    testkit.ScriptedModelConfig
+		wantCode  ErrorCode
+		wantNext  int
+		wantClose int
+	}{
+		{"startup", testkit.ScriptedModelConfig{StartupError: terminal}, CodeModelStartup, 0, 0},
+		{"next", testkit.ScriptedModelConfig{Steps: []testkit.ScriptedStep{{Err: terminal}}}, CodeModelStream, 1, 1},
+		{"close", testkit.ScriptedModelConfig{Steps: []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventCompleted}}}, CloseError: terminal}, CodeModelStream, 1, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			model, _ := testkit.NewScriptedModel(runnerRequest().ModelRequest, tc.config)
+			emitter, _ := NewEmitter(&testkit.RecordingSink{}, validRunnerCorrelation())
+			runner, _ := NewTurnRunner(model)
+			got, err := runner.Run(context.Background(), runnerRequest(), emitter)
+			assertRunFailure(t, got, err, tc.wantCode)
+			if !errors.Is(err, terminal) {
+				t.Fatalf("Run() error = %v, does not retain exact terminal wrapper", err)
+			}
+			assertRunnerCounts(t, model, tc.wantNext, tc.wantClose)
+		})
+	}
+}
+
 func TestTurnRunnerCancellationWinsAtDependencyReturnBoundaries(t *testing.T) {
 	t.Run("stream nil and error", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -794,6 +822,11 @@ type panicMultiUnwrapper struct{}
 
 func (*panicMultiUnwrapper) Error() string   { return "panic multi unwrap" }
 func (*panicMultiUnwrapper) Unwrap() []error { panic("typed-nil multi Unwrap called") }
+
+type terminalUnwrapper struct{}
+
+func (*terminalUnwrapper) Error() string { return "terminal ordinary wrapper" }
+func (*terminalUnwrapper) Unwrap() error { return nil }
 
 type runOutcome struct {
 	result RunResult
