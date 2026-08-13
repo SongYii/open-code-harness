@@ -288,6 +288,7 @@ git commit -m "feat(storage): add canonical request digests"
 - 创建：`internal/harness/domain/compact_state.go`
 - 创建：`internal/harness/domain/compact_apply.go`
 - 创建：`internal/harness/domain/compact_decide.go`
+- 修改：`internal/harness/domain/decide.go`
 - 创建：`internal/harness/domain/compact_test.go`
 - 创建：`internal/harness/domain/compact_equivalence_test.go`
 
@@ -331,6 +332,7 @@ type CompactTurn struct {
     ID TurnID
     Input string
     StartedAt time.Time
+    LastTransitionAt time.Time
     ActiveItem *CompactItem
 }
 
@@ -343,7 +345,7 @@ type CompactSession struct {
 }
 ```
 
-Terminal Event 校验 Active Identity，然后把 `ActiveItem`/`ActiveTurn` 设为 nil；绝不保留 Terminal Text。
+`LastTransitionAt` 是有界时间水位，不是 Transcript History。初始化为 `StartedAt`；Item Terminal Event 后更新为该 Terminal Timestamp。后续 Item Start 与 Turn Terminal 均不得早于它。Terminal Event 在把 `ActiveItem`/`ActiveTurn` 设为 nil 前，必须校验 Active Identity、Sequence 与相关时间水位；绝不保留 Terminal Text。重复 `SessionCreated` 的 Preflight 顺序必须与 v1 一致：非 Pristine State 在校验 Sequence 前返回 `session_already_exists`。
 
 - [ ] **步骤 4：编写失败的 Decision Equivalence 测试**
 
@@ -379,7 +381,9 @@ func FuzzReplayCompact(f *testing.F) {
 
 - [ ] **步骤 5：实现 Compact Decision 并通过 Equivalence**
 
-Production Compact Code 不得调用 v1 `Decide`。仅当小型 Validation Helper 不依赖无界 State Shape 时才共享。v1 Oracle 只存在于 `_test.go`。
+Production Compact Code 不得调用 v1 `Decide`。把纯 Command Field Validation 与 Ordered Event Construction Helper 抽取到 `decide.go`，并由 v1 与 Compact Decision 共用；Full-History 与 Bounded-State Predicate 仍保持独立。不得在两个 Production Decision Path 之间复制大型 Validation/Event-Construction Block。v1 Oracle 只存在于 `_test.go`。
+
+增加聚焦 Error Equivalence Test：重复 `SessionCreated` 且 Next Sequence 不匹配时仍返回相同稳定 Code；增加 Chronology Equivalence Test，证明两种实现都会拒绝：（1）后续 Item Start 早于上一 Completed Item 的 Terminal Time；（2）Turn Terminal 早于上一 Completed Item 的 Terminal Time。
 
 - [ ] **步骤 6：验证并提交任务 3**
 
@@ -394,7 +398,7 @@ git diff --check
 预期：PASS；Production Compact File 不调用 `Decide` 或 `Replay`。提交：
 
 ```bash
-git add internal/harness/domain/compact_state.go internal/harness/domain/compact_apply.go internal/harness/domain/compact_decide.go internal/harness/domain/compact_test.go internal/harness/domain/compact_equivalence_test.go
+git add internal/harness/domain/decide.go internal/harness/domain/compact_state.go internal/harness/domain/compact_apply.go internal/harness/domain/compact_decide.go internal/harness/domain/compact_test.go internal/harness/domain/compact_equivalence_test.go
 git commit -m "feat(domain): add compact command aggregate"
 ```
 

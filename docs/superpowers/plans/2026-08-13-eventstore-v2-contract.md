@@ -312,6 +312,7 @@ git commit -m "feat(storage): add canonical request digests"
 - Create: `internal/harness/domain/compact_state.go`
 - Create: `internal/harness/domain/compact_apply.go`
 - Create: `internal/harness/domain/compact_decide.go`
+- Modify: `internal/harness/domain/decide.go`
 - Create: `internal/harness/domain/compact_test.go`
 - Create: `internal/harness/domain/compact_equivalence_test.go`
 
@@ -361,6 +362,7 @@ type CompactTurn struct {
     ID TurnID
     Input string
     StartedAt time.Time
+    LastTransitionAt time.Time
     ActiveItem *CompactItem
 }
 
@@ -373,7 +375,7 @@ type CompactSession struct {
 }
 ```
 
-Terminal events validate active identities and then set `ActiveItem`/`ActiveTurn` to nil; they never retain terminal text.
+`LastTransitionAt` is a bounded chronology watermark, not transcript history. Initialize it to `StartedAt`; after an Item terminal event set it to that terminal timestamp. A later Item start and the Turn terminal must not precede it. Terminal events validate active identities, sequence, and the relevant chronology watermark before setting `ActiveItem`/`ActiveTurn` to nil; they never retain terminal text. Match v1 preflight order for duplicate `SessionCreated`: a non-pristine state returns `session_already_exists` before sequence validation.
 
 - [ ] **Step 4: Write failing decision-equivalence tests**
 
@@ -411,7 +413,9 @@ func FuzzReplayCompact(f *testing.F) {
 
 - [ ] **Step 5: Implement compact decisions and pass equivalence**
 
-Do not call v1 `Decide` from production compact code. Share small validation helpers only when they do not require the unbounded shape. Keep the v1 oracle exclusively in `_test.go`.
+Do not call v1 `Decide` from production compact code. Extract pure command-field validation and ordered Event-construction helpers into `decide.go`, and call those helpers from both v1 and compact decisions. Full-history and bounded-state predicates remain separate; do not duplicate large validation/event-construction blocks between the two production decision paths. Keep the v1 oracle exclusively in `_test.go`.
+
+Add focused error-equivalence tests for duplicate `SessionCreated` with a mismatched next sequence and chronology-equivalence tests proving both implementations reject: (1) a later Item starting before the prior completed Item's terminal time; and (2) a Turn terminal before the prior completed Item's terminal time.
 
 - [ ] **Step 6: Verify and commit Task 3**
 
@@ -428,7 +432,7 @@ git diff --check
 Expected: PASS; production compact files contain no call to `Decide` or `Replay`. Commit:
 
 ```bash
-git add internal/harness/domain/compact_state.go internal/harness/domain/compact_apply.go internal/harness/domain/compact_decide.go internal/harness/domain/compact_test.go internal/harness/domain/compact_equivalence_test.go
+git add internal/harness/domain/decide.go internal/harness/domain/compact_state.go internal/harness/domain/compact_apply.go internal/harness/domain/compact_decide.go internal/harness/domain/compact_test.go internal/harness/domain/compact_equivalence_test.go
 git commit -m "feat(domain): add compact command aggregate"
 ```
 
