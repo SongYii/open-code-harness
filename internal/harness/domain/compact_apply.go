@@ -11,7 +11,13 @@ func ApplyCompact(state CompactSession, record RecordedEvent) (CompactSession, e
 	if err := validateCompactRecord(record); err != nil {
 		return CompactSession{}, err
 	}
-	if state.Version == math.MaxUint64 || record.Sequence != state.Version+1 {
+	if state.Version == math.MaxUint64 {
+		return CompactSession{}, domainError(CodeSequenceMismatch, "event sequence does not follow session version")
+	}
+	if _, ok := record.Event.(SessionCreated); ok && !state.isPristine() {
+		return CompactSession{}, domainError(CodeSessionAlreadyExists, "session already exists")
+	}
+	if record.Sequence != state.Version+1 {
 		return CompactSession{}, domainError(CodeSequenceMismatch, "event sequence does not follow session version")
 	}
 	record.OccurredAt = record.OccurredAt.UTC()
@@ -135,7 +141,7 @@ func applyCompactTurnStarted(state CompactSession, record RecordedEvent, event T
 		return CompactSession{}, domainError(CodeTurnAlreadyRunning, "a turn is already running")
 	}
 	next := state.Clone()
-	next.ActiveTurn = &CompactTurn{ID: event.TurnID, Input: event.Input, StartedAt: record.OccurredAt}
+	next.ActiveTurn = &CompactTurn{ID: event.TurnID, Input: event.Input, StartedAt: record.OccurredAt, LastTransitionAt: record.OccurredAt}
 	next.Version = record.Sequence
 	return next, nil
 }
@@ -148,7 +154,7 @@ func applyCompactTerminalTurn(state CompactSession, record RecordedEvent, turnID
 	if turn.ActiveItem != nil {
 		return CompactSession{}, domainError(CodeInvalidEvent, "turn cannot complete while an item is running")
 	}
-	if record.OccurredAt.Before(turn.StartedAt) {
+	if record.OccurredAt.Before(turn.LastTransitionAt) {
 		return CompactSession{}, domainError(CodeInvalidEvent, "turn terminal timestamp precedes turn start")
 	}
 	next := state.Clone()
@@ -168,7 +174,7 @@ func applyCompactAssistantMessageStarted(state CompactSession, record RecordedEv
 	if turn.ActiveItem != nil {
 		return CompactSession{}, domainError(CodeInvalidEvent, "an item is already running")
 	}
-	if record.OccurredAt.Before(turn.StartedAt) {
+	if record.OccurredAt.Before(turn.LastTransitionAt) {
 		return CompactSession{}, domainError(CodeInvalidEvent, "item start timestamp precedes turn start")
 	}
 	next := state.Clone()
@@ -187,6 +193,7 @@ func applyCompactTerminalItem(state CompactSession, record RecordedEvent, turnID
 	}
 	next := state.Clone()
 	next.ActiveTurn.ActiveItem = nil
+	next.ActiveTurn.LastTransitionAt = record.OccurredAt
 	next.Version = record.Sequence
 	return next, nil
 }

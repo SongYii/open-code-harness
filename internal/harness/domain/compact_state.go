@@ -12,10 +12,11 @@ type CompactItem struct {
 
 // CompactTurn retains only the information needed while a turn is active.
 type CompactTurn struct {
-	ID         TurnID
-	Input      string
-	StartedAt  time.Time
-	ActiveItem *CompactItem
+	ID               TurnID
+	Input            string
+	StartedAt        time.Time
+	LastTransitionAt time.Time
+	ActiveItem       *CompactItem
 }
 
 // CompactSession discards completed turns and items. Persistent identity

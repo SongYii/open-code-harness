@@ -1,7 +1,5 @@
 package domain
 
-import "unicode/utf8"
-
 // DecideCompact independently decides commands from the bounded aggregate.
 func DecideCompact(state CompactSession, command Command) ([]UncommittedEvent, error) {
 	switch command := command.(type) {
@@ -60,54 +58,51 @@ func decideCompactCreateSession(state CompactSession, command CreateSession) ([]
 	if !state.isPristine() {
 		return nil, domainError(CodeSessionAlreadyExists, "session already exists")
 	}
-	if _, err := ParseSessionID(string(command.SessionID)); err != nil {
+	if err := validateCommandSessionID(command.SessionID); err != nil {
 		return nil, err
 	}
-	if !hasRequiredText(command.WorkspaceRoot) {
-		return nil, domainError(CodeInvalidCommand, "workspace root is required")
+	if err := validateCommandText(command.WorkspaceRoot, "workspace root is required"); err != nil {
+		return nil, err
 	}
-	return []UncommittedEvent{{Event: SessionCreated{WorkspaceRoot: command.WorkspaceRoot}}}, nil
+	return createSessionEvents(command.WorkspaceRoot), nil
 }
 
 func decideCompactStartTurn(state CompactSession, command StartTurn) ([]UncommittedEvent, error) {
 	if err := requireCompactSessionForCommand(state, command.SessionID); err != nil {
 		return nil, err
 	}
-	if _, err := ParseTurnID(string(command.TurnID)); err != nil {
+	if err := validateCommandTurnID(command.TurnID); err != nil {
 		return nil, err
 	}
-	if !hasRequiredText(command.Input) {
-		return nil, domainError(CodeInvalidCommand, "turn input is required")
+	if err := validateCommandText(command.Input, "turn input is required"); err != nil {
+		return nil, err
 	}
 	if state.ActiveTurn != nil {
 		return nil, domainError(CodeTurnAlreadyRunning, "a turn is already running")
 	}
-	return []UncommittedEvent{{Event: TurnStarted{TurnID: command.TurnID, Input: command.Input}}}, nil
+	return startTurnEvents(command.TurnID, command.Input), nil
 }
 
 func decideCompactStartAssistantTurn(state CompactSession, command StartAssistantTurn) ([]UncommittedEvent, error) {
 	if err := CheckStartAssistantTurnEligibilityCompact(state); err != nil {
 		return nil, err
 	}
-	if _, err := ParseSessionID(string(command.SessionID)); err != nil {
+	if err := validateCommandSessionID(command.SessionID); err != nil {
 		return nil, err
 	}
 	if command.SessionID != state.ID {
 		return nil, domainError(CodeInvalidCommand, "command session ID does not match state")
 	}
-	if _, err := ParseTurnID(string(command.TurnID)); err != nil {
+	if err := validateCommandTurnID(command.TurnID); err != nil {
 		return nil, err
 	}
-	if _, err := ParseItemID(string(command.ItemID)); err != nil {
+	if err := validateCommandItemID(command.ItemID); err != nil {
 		return nil, err
 	}
-	if !hasRequiredText(command.Input) {
-		return nil, domainError(CodeInvalidCommand, "turn input is required")
+	if err := validateCommandText(command.Input, "turn input is required"); err != nil {
+		return nil, err
 	}
-	return []UncommittedEvent{
-		{Event: TurnStarted{TurnID: command.TurnID, Input: command.Input}},
-		{Event: AssistantMessageStarted{TurnID: command.TurnID, ItemID: command.ItemID}},
-	}, nil
+	return startAssistantTurnEvents(command.TurnID, command.ItemID, command.Input), nil
 }
 
 func decideCompactCompleteTurn(state CompactSession, command CompleteTurn) ([]UncommittedEvent, error) {
@@ -118,7 +113,7 @@ func decideCompactCompleteTurn(state CompactSession, command CompleteTurn) ([]Un
 	if turn.ActiveItem != nil {
 		return nil, domainError(CodeItemAlreadyRunning, "an item is already running")
 	}
-	return []UncommittedEvent{{Event: TurnCompleted{TurnID: command.TurnID}}}, nil
+	return completeTurnEvents(command.TurnID), nil
 }
 
 func decideCompactFailTurn(state CompactSession, command FailTurn) ([]UncommittedEvent, error) {
@@ -129,13 +124,13 @@ func decideCompactFailTurn(state CompactSession, command FailTurn) ([]Uncommitte
 	if turn.ActiveItem != nil {
 		return nil, domainError(CodeItemAlreadyRunning, "an item is already running")
 	}
-	if !hasRequiredText(command.Code) {
-		return nil, domainError(CodeInvalidCommand, "failure code is required")
+	if err := validateCommandText(command.Code, "failure code is required"); err != nil {
+		return nil, err
 	}
-	if !hasRequiredText(command.Message) {
-		return nil, domainError(CodeInvalidCommand, "failure message is required")
+	if err := validateCommandText(command.Message, "failure message is required"); err != nil {
+		return nil, err
 	}
-	return []UncommittedEvent{{Event: TurnFailed{TurnID: command.TurnID, Code: command.Code, Message: command.Message}}}, nil
+	return failTurnEvents(command.TurnID, command.Code, command.Message), nil
 }
 
 func decideCompactInterruptTurn(state CompactSession, command InterruptTurn) ([]UncommittedEvent, error) {
@@ -146,10 +141,10 @@ func decideCompactInterruptTurn(state CompactSession, command InterruptTurn) ([]
 	if turn.ActiveItem != nil {
 		return nil, domainError(CodeItemAlreadyRunning, "an item is already running")
 	}
-	if !hasRequiredText(command.Reason) {
-		return nil, domainError(CodeInvalidCommand, "interruption reason is required")
+	if err := validateCommandText(command.Reason, "interruption reason is required"); err != nil {
+		return nil, err
 	}
-	return []UncommittedEvent{{Event: TurnInterrupted{TurnID: command.TurnID, Reason: command.Reason}}}, nil
+	return interruptTurnEvents(command.TurnID, command.Reason), nil
 }
 
 func decideCompactStartAssistantMessage(state CompactSession, command StartAssistantMessage) ([]UncommittedEvent, error) {
@@ -157,58 +152,49 @@ func decideCompactStartAssistantMessage(state CompactSession, command StartAssis
 	if err != nil {
 		return nil, err
 	}
-	if _, err := ParseItemID(string(command.ItemID)); err != nil {
+	if err := validateCommandItemID(command.ItemID); err != nil {
 		return nil, err
 	}
 	if turn.ActiveItem != nil {
 		return nil, domainError(CodeItemAlreadyRunning, "an item is already running")
 	}
-	return []UncommittedEvent{{Event: AssistantMessageStarted{TurnID: command.TurnID, ItemID: command.ItemID}}}, nil
+	return startAssistantMessageEvents(command.TurnID, command.ItemID), nil
 }
 
 func decideCompactCompleteAssistantTurn(state CompactSession, command CompleteAssistantTurn) ([]UncommittedEvent, error) {
 	if _, err := requireCompactRunningItemForCommand(state, command.SessionID, command.TurnID, command.ItemID); err != nil {
 		return nil, err
 	}
-	if !utf8.ValidString(command.Text) {
-		return nil, domainError(CodeInvalidCommand, "assistant message text must be valid UTF-8")
+	if err := validateCommandUTF8(command.Text, "assistant message text must be valid UTF-8"); err != nil {
+		return nil, err
 	}
-	return []UncommittedEvent{
-		{Event: AssistantMessageCompleted{TurnID: command.TurnID, ItemID: command.ItemID, Text: command.Text}},
-		{Event: TurnCompleted{TurnID: command.TurnID}},
-	}, nil
+	return completeAssistantTurnEvents(command.TurnID, command.ItemID, command.Text), nil
 }
 
 func decideCompactFailAssistantTurn(state CompactSession, command FailAssistantTurn) ([]UncommittedEvent, error) {
 	if _, err := requireCompactRunningItemForCommand(state, command.SessionID, command.TurnID, command.ItemID); err != nil {
 		return nil, err
 	}
-	if !hasRequiredText(command.Code) {
-		return nil, domainError(CodeInvalidCommand, "failure code is required")
+	if err := validateCommandText(command.Code, "failure code is required"); err != nil {
+		return nil, err
 	}
-	if !hasRequiredText(command.Message) {
-		return nil, domainError(CodeInvalidCommand, "failure message is required")
+	if err := validateCommandText(command.Message, "failure message is required"); err != nil {
+		return nil, err
 	}
-	return []UncommittedEvent{
-		{Event: AssistantMessageFailed{TurnID: command.TurnID, ItemID: command.ItemID, Code: command.Code, Message: command.Message}},
-		{Event: TurnFailed{TurnID: command.TurnID, Code: command.Code, Message: command.Message}},
-	}, nil
+	return failAssistantTurnEvents(command.TurnID, command.ItemID, command.Code, command.Message), nil
 }
 
 func decideCompactInterruptAssistantTurn(state CompactSession, command InterruptAssistantTurn) ([]UncommittedEvent, error) {
 	if _, err := requireCompactRunningItemForCommand(state, command.SessionID, command.TurnID, command.ItemID); err != nil {
 		return nil, err
 	}
-	if !hasRequiredText(command.Code) {
-		return nil, domainError(CodeInvalidCommand, "interruption code is required")
+	if err := validateCommandText(command.Code, "interruption code is required"); err != nil {
+		return nil, err
 	}
-	if !utf8.ValidString(command.Message) {
-		return nil, domainError(CodeInvalidCommand, "interruption message must be valid UTF-8")
+	if err := validateCommandUTF8(command.Message, "interruption message must be valid UTF-8"); err != nil {
+		return nil, err
 	}
-	return []UncommittedEvent{
-		{Event: AssistantMessageInterrupted{TurnID: command.TurnID, ItemID: command.ItemID, Code: command.Code, Message: command.Message}},
-		{Event: TurnInterrupted{TurnID: command.TurnID, Reason: command.Code}},
-	}, nil
+	return interruptAssistantTurnEvents(command.TurnID, command.ItemID, command.Code, command.Message), nil
 }
 
 func decideCompactCloseSession(state CompactSession, command CloseSession) ([]UncommittedEvent, error) {
@@ -218,14 +204,14 @@ func decideCompactCloseSession(state CompactSession, command CloseSession) ([]Un
 	if state.ActiveTurn != nil {
 		return nil, domainError(CodeTurnAlreadyRunning, "a turn is already running")
 	}
-	return []UncommittedEvent{{Event: SessionClosed{}}}, nil
+	return closeSessionEvents(), nil
 }
 
 func requireCompactSessionForCommand(state CompactSession, sessionID SessionID) error {
 	if !state.Exists() {
 		return domainError(CodeSessionNotFound, "session not found")
 	}
-	if _, err := ParseSessionID(string(sessionID)); err != nil {
+	if err := validateCommandSessionID(sessionID); err != nil {
 		return err
 	}
 	if sessionID != state.ID {
@@ -244,7 +230,7 @@ func requireCompactRunningTurnForCommand(state CompactSession, sessionID Session
 	if err := requireCompactSessionForCommand(state, sessionID); err != nil {
 		return CompactTurn{}, err
 	}
-	if _, err := ParseTurnID(string(turnID)); err != nil {
+	if err := validateCommandTurnID(turnID); err != nil {
 		return CompactTurn{}, err
 	}
 	if state.ActiveTurn == nil {
@@ -261,7 +247,7 @@ func requireCompactRunningItemForCommand(state CompactSession, sessionID Session
 	if err != nil {
 		return CompactItem{}, err
 	}
-	if _, err := ParseItemID(string(itemID)); err != nil {
+	if err := validateCommandItemID(itemID); err != nil {
 		return CompactItem{}, err
 	}
 	if turn.ActiveItem == nil {
@@ -284,7 +270,7 @@ func validateCompactSession(state CompactSession) error {
 		return nil
 	}
 	turn := state.ActiveTurn
-	if state.Status != SessionStatusActive || turn.ID == "" || !hasRequiredText(turn.Input) || !validStateTimestamp(turn.StartedAt) {
+	if state.Status != SessionStatusActive || turn.ID == "" || !hasRequiredText(turn.Input) || !validStateTimestamp(turn.StartedAt) || !validStateTimestamp(turn.LastTransitionAt) || turn.LastTransitionAt.Before(turn.StartedAt) {
 		return domainError(CodeInvalidCommand, "active turn structure is invalid")
 	}
 	if _, err := ParseTurnID(string(turn.ID)); err != nil {
@@ -294,7 +280,7 @@ func validateCompactSession(state CompactSession) error {
 		return nil
 	}
 	item := turn.ActiveItem
-	if item.ID == "" || item.TurnID != turn.ID || item.Kind != ItemKindAssistantMessage || !validStateTimestamp(item.StartedAt) || item.StartedAt.Before(turn.StartedAt) {
+	if item.ID == "" || item.TurnID != turn.ID || item.Kind != ItemKindAssistantMessage || !validStateTimestamp(item.StartedAt) || item.StartedAt.Before(turn.LastTransitionAt) {
 		return domainError(CodeInvalidCommand, "active item structure is invalid")
 	}
 	if _, err := ParseItemID(string(item.ID)); err != nil {

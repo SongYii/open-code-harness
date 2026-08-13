@@ -35,6 +35,91 @@ func Decide(state Session, command Command) ([]UncommittedEvent, error) {
 	}
 }
 
+func validateCommandSessionID(sessionID SessionID) error {
+	_, err := ParseSessionID(string(sessionID))
+	return err
+}
+
+func validateCommandTurnID(turnID TurnID) error {
+	_, err := ParseTurnID(string(turnID))
+	return err
+}
+
+func validateCommandItemID(itemID ItemID) error {
+	_, err := ParseItemID(string(itemID))
+	return err
+}
+
+func validateCommandText(value, message string) error {
+	if !hasRequiredText(value) {
+		return domainError(CodeInvalidCommand, message)
+	}
+	return nil
+}
+
+func validateCommandUTF8(value, message string) error {
+	if !utf8.ValidString(value) {
+		return domainError(CodeInvalidCommand, message)
+	}
+	return nil
+}
+
+func startTurnEvents(turnID TurnID, input string) []UncommittedEvent {
+	return []UncommittedEvent{{Event: TurnStarted{TurnID: turnID, Input: input}}}
+}
+
+func startAssistantTurnEvents(turnID TurnID, itemID ItemID, input string) []UncommittedEvent {
+	return []UncommittedEvent{
+		{Event: TurnStarted{TurnID: turnID, Input: input}},
+		{Event: AssistantMessageStarted{TurnID: turnID, ItemID: itemID}},
+	}
+}
+
+func completeTurnEvents(turnID TurnID) []UncommittedEvent {
+	return []UncommittedEvent{{Event: TurnCompleted{TurnID: turnID}}}
+}
+
+func failTurnEvents(turnID TurnID, code, message string) []UncommittedEvent {
+	return []UncommittedEvent{{Event: TurnFailed{TurnID: turnID, Code: code, Message: message}}}
+}
+
+func interruptTurnEvents(turnID TurnID, reason string) []UncommittedEvent {
+	return []UncommittedEvent{{Event: TurnInterrupted{TurnID: turnID, Reason: reason}}}
+}
+
+func startAssistantMessageEvents(turnID TurnID, itemID ItemID) []UncommittedEvent {
+	return []UncommittedEvent{{Event: AssistantMessageStarted{TurnID: turnID, ItemID: itemID}}}
+}
+
+func completeAssistantTurnEvents(turnID TurnID, itemID ItemID, text string) []UncommittedEvent {
+	return []UncommittedEvent{
+		{Event: AssistantMessageCompleted{TurnID: turnID, ItemID: itemID, Text: text}},
+		{Event: TurnCompleted{TurnID: turnID}},
+	}
+}
+
+func failAssistantTurnEvents(turnID TurnID, itemID ItemID, code, message string) []UncommittedEvent {
+	return []UncommittedEvent{
+		{Event: AssistantMessageFailed{TurnID: turnID, ItemID: itemID, Code: code, Message: message}},
+		{Event: TurnFailed{TurnID: turnID, Code: code, Message: message}},
+	}
+}
+
+func interruptAssistantTurnEvents(turnID TurnID, itemID ItemID, code, message string) []UncommittedEvent {
+	return []UncommittedEvent{
+		{Event: AssistantMessageInterrupted{TurnID: turnID, ItemID: itemID, Code: code, Message: message}},
+		{Event: TurnInterrupted{TurnID: turnID, Reason: code}},
+	}
+}
+
+func closeSessionEvents() []UncommittedEvent {
+	return []UncommittedEvent{{Event: SessionClosed{}}}
+}
+
+func createSessionEvents(workspaceRoot string) []UncommittedEvent {
+	return []UncommittedEvent{{Event: SessionCreated{WorkspaceRoot: workspaceRoot}}}
+}
+
 // CheckStartAssistantTurnEligibility validates the complete existing Session
 // structure and reports whether a new assistant Turn may be admitted. It does
 // not inspect request input or identifiers that have not yet been generated.
@@ -65,20 +150,20 @@ func decideStartAssistantTurn(state Session, command StartAssistantTurn) ([]Unco
 	if err := CheckStartAssistantTurnEligibility(state); err != nil {
 		return nil, err
 	}
-	if _, err := ParseSessionID(string(command.SessionID)); err != nil {
+	if err := validateCommandSessionID(command.SessionID); err != nil {
 		return nil, err
 	}
 	if command.SessionID != state.ID {
 		return nil, domainError(CodeInvalidCommand, "command session ID does not match state")
 	}
-	if _, err := ParseTurnID(string(command.TurnID)); err != nil {
+	if err := validateCommandTurnID(command.TurnID); err != nil {
 		return nil, err
 	}
-	if _, err := ParseItemID(string(command.ItemID)); err != nil {
+	if err := validateCommandItemID(command.ItemID); err != nil {
 		return nil, err
 	}
-	if !hasRequiredText(command.Input) {
-		return nil, domainError(CodeInvalidCommand, "turn input is required")
+	if err := validateCommandText(command.Input, "turn input is required"); err != nil {
+		return nil, err
 	}
 	if _, exists := state.Turns[command.TurnID]; exists {
 		return nil, domainError(CodeTurnAlreadyExists, "turn already exists")
@@ -88,10 +173,7 @@ func decideStartAssistantTurn(state Session, command StartAssistantTurn) ([]Unco
 			return nil, domainError(CodeItemAlreadyExists, "item already exists")
 		}
 	}
-	return []UncommittedEvent{
-		{Event: TurnStarted{TurnID: command.TurnID, Input: command.Input}},
-		{Event: AssistantMessageStarted{TurnID: command.TurnID, ItemID: command.ItemID}},
-	}, nil
+	return startAssistantTurnEvents(command.TurnID, command.ItemID, command.Input), nil
 }
 
 func validateSessionStructure(state Session) error {
@@ -228,7 +310,7 @@ func decideCloseSession(state Session, command CloseSession) ([]UncommittedEvent
 	if !state.Exists() {
 		return nil, domainError(CodeSessionNotFound, "session not found")
 	}
-	if _, err := ParseSessionID(string(command.SessionID)); err != nil {
+	if err := validateCommandSessionID(command.SessionID); err != nil {
 		return nil, err
 	}
 	if command.SessionID != state.ID {
@@ -243,27 +325,27 @@ func decideCloseSession(state Session, command CloseSession) ([]UncommittedEvent
 	if state.ActiveTurnID != "" {
 		return nil, domainError(CodeTurnAlreadyRunning, "a turn is already running")
 	}
-	return []UncommittedEvent{{Event: SessionClosed{}}}, nil
+	return closeSessionEvents(), nil
 }
 
 func decideCreateSession(state Session, command CreateSession) ([]UncommittedEvent, error) {
 	if !state.isPristine() {
 		return nil, domainError(CodeSessionAlreadyExists, "session already exists")
 	}
-	if _, err := ParseSessionID(string(command.SessionID)); err != nil {
+	if err := validateCommandSessionID(command.SessionID); err != nil {
 		return nil, err
 	}
-	if !hasRequiredText(command.WorkspaceRoot) {
-		return nil, domainError(CodeInvalidCommand, "workspace root is required")
+	if err := validateCommandText(command.WorkspaceRoot, "workspace root is required"); err != nil {
+		return nil, err
 	}
-	return []UncommittedEvent{{Event: SessionCreated{WorkspaceRoot: command.WorkspaceRoot}}}, nil
+	return createSessionEvents(command.WorkspaceRoot), nil
 }
 
 func decideStartTurn(state Session, command StartTurn) ([]UncommittedEvent, error) {
 	if !state.Exists() {
 		return nil, domainError(CodeSessionNotFound, "session not found")
 	}
-	if _, err := ParseSessionID(string(command.SessionID)); err != nil {
+	if err := validateCommandSessionID(command.SessionID); err != nil {
 		return nil, err
 	}
 	if command.SessionID != state.ID {
@@ -275,11 +357,11 @@ func decideStartTurn(state Session, command StartTurn) ([]UncommittedEvent, erro
 	if state.Status != SessionStatusActive {
 		return nil, domainError(CodeInvalidCommand, "session is not active")
 	}
-	if _, err := ParseTurnID(string(command.TurnID)); err != nil {
+	if err := validateCommandTurnID(command.TurnID); err != nil {
 		return nil, err
 	}
-	if !hasRequiredText(command.Input) {
-		return nil, domainError(CodeInvalidCommand, "turn input is required")
+	if err := validateCommandText(command.Input, "turn input is required"); err != nil {
+		return nil, err
 	}
 	if _, exists := state.Turns[command.TurnID]; exists {
 		return nil, domainError(CodeTurnAlreadyExists, "turn already exists")
@@ -287,10 +369,7 @@ func decideStartTurn(state Session, command StartTurn) ([]UncommittedEvent, erro
 	if state.ActiveTurnID != "" {
 		return nil, domainError(CodeTurnAlreadyRunning, "a turn is already running")
 	}
-	return []UncommittedEvent{{Event: TurnStarted{
-		TurnID: command.TurnID,
-		Input:  command.Input,
-	}}}, nil
+	return startTurnEvents(command.TurnID, command.Input), nil
 }
 
 func decideCompleteTurn(state Session, command CompleteTurn) ([]UncommittedEvent, error) {
@@ -301,7 +380,7 @@ func decideCompleteTurn(state Session, command CompleteTurn) ([]UncommittedEvent
 	if err := rejectRunningItem(turn); err != nil {
 		return nil, err
 	}
-	return []UncommittedEvent{{Event: TurnCompleted{TurnID: command.TurnID}}}, nil
+	return completeTurnEvents(command.TurnID), nil
 }
 
 func decideFailTurn(state Session, command FailTurn) ([]UncommittedEvent, error) {
@@ -312,17 +391,13 @@ func decideFailTurn(state Session, command FailTurn) ([]UncommittedEvent, error)
 	if err := rejectRunningItem(turn); err != nil {
 		return nil, err
 	}
-	if !hasRequiredText(command.Code) {
-		return nil, domainError(CodeInvalidCommand, "failure code is required")
+	if err := validateCommandText(command.Code, "failure code is required"); err != nil {
+		return nil, err
 	}
-	if !hasRequiredText(command.Message) {
-		return nil, domainError(CodeInvalidCommand, "failure message is required")
+	if err := validateCommandText(command.Message, "failure message is required"); err != nil {
+		return nil, err
 	}
-	return []UncommittedEvent{{Event: TurnFailed{
-		TurnID:  command.TurnID,
-		Code:    command.Code,
-		Message: command.Message,
-	}}}, nil
+	return failTurnEvents(command.TurnID, command.Code, command.Message), nil
 }
 
 func decideInterruptTurn(state Session, command InterruptTurn) ([]UncommittedEvent, error) {
@@ -333,13 +408,10 @@ func decideInterruptTurn(state Session, command InterruptTurn) ([]UncommittedEve
 	if err := rejectRunningItem(turn); err != nil {
 		return nil, err
 	}
-	if !hasRequiredText(command.Reason) {
-		return nil, domainError(CodeInvalidCommand, "interruption reason is required")
+	if err := validateCommandText(command.Reason, "interruption reason is required"); err != nil {
+		return nil, err
 	}
-	return []UncommittedEvent{{Event: TurnInterrupted{
-		TurnID: command.TurnID,
-		Reason: command.Reason,
-	}}}, nil
+	return interruptTurnEvents(command.TurnID, command.Reason), nil
 }
 
 func decideStartAssistantMessage(state Session, command StartAssistantMessage) ([]UncommittedEvent, error) {
@@ -347,7 +419,7 @@ func decideStartAssistantMessage(state Session, command StartAssistantMessage) (
 	if err != nil {
 		return nil, err
 	}
-	if _, err := ParseItemID(string(command.ItemID)); err != nil {
+	if err := validateCommandItemID(command.ItemID); err != nil {
 		return nil, err
 	}
 	if _, exists := turn.Items[command.ItemID]; exists {
@@ -356,55 +428,43 @@ func decideStartAssistantMessage(state Session, command StartAssistantMessage) (
 	if err := rejectRunningItem(turn); err != nil {
 		return nil, err
 	}
-	return []UncommittedEvent{{Event: AssistantMessageStarted{
-		TurnID: command.TurnID,
-		ItemID: command.ItemID,
-	}}}, nil
+	return startAssistantMessageEvents(command.TurnID, command.ItemID), nil
 }
 
 func decideCompleteAssistantTurn(state Session, command CompleteAssistantTurn) ([]UncommittedEvent, error) {
 	if _, err := requireRunningItem(state, command.SessionID, command.TurnID, command.ItemID); err != nil {
 		return nil, err
 	}
-	if !utf8.ValidString(command.Text) {
-		return nil, domainError(CodeInvalidCommand, "assistant message text must be valid UTF-8")
+	if err := validateCommandUTF8(command.Text, "assistant message text must be valid UTF-8"); err != nil {
+		return nil, err
 	}
-	return []UncommittedEvent{
-		{Event: AssistantMessageCompleted{TurnID: command.TurnID, ItemID: command.ItemID, Text: command.Text}},
-		{Event: TurnCompleted{TurnID: command.TurnID}},
-	}, nil
+	return completeAssistantTurnEvents(command.TurnID, command.ItemID, command.Text), nil
 }
 
 func decideFailAssistantTurn(state Session, command FailAssistantTurn) ([]UncommittedEvent, error) {
 	if _, err := requireRunningItem(state, command.SessionID, command.TurnID, command.ItemID); err != nil {
 		return nil, err
 	}
-	if !hasRequiredText(command.Code) {
-		return nil, domainError(CodeInvalidCommand, "failure code is required")
+	if err := validateCommandText(command.Code, "failure code is required"); err != nil {
+		return nil, err
 	}
-	if !hasRequiredText(command.Message) {
-		return nil, domainError(CodeInvalidCommand, "failure message is required")
+	if err := validateCommandText(command.Message, "failure message is required"); err != nil {
+		return nil, err
 	}
-	return []UncommittedEvent{
-		{Event: AssistantMessageFailed{TurnID: command.TurnID, ItemID: command.ItemID, Code: command.Code, Message: command.Message}},
-		{Event: TurnFailed{TurnID: command.TurnID, Code: command.Code, Message: command.Message}},
-	}, nil
+	return failAssistantTurnEvents(command.TurnID, command.ItemID, command.Code, command.Message), nil
 }
 
 func decideInterruptAssistantTurn(state Session, command InterruptAssistantTurn) ([]UncommittedEvent, error) {
 	if _, err := requireRunningItem(state, command.SessionID, command.TurnID, command.ItemID); err != nil {
 		return nil, err
 	}
-	if !hasRequiredText(command.Code) {
-		return nil, domainError(CodeInvalidCommand, "interruption code is required")
+	if err := validateCommandText(command.Code, "interruption code is required"); err != nil {
+		return nil, err
 	}
-	if !utf8.ValidString(command.Message) {
-		return nil, domainError(CodeInvalidCommand, "interruption message must be valid UTF-8")
+	if err := validateCommandUTF8(command.Message, "interruption message must be valid UTF-8"); err != nil {
+		return nil, err
 	}
-	return []UncommittedEvent{
-		{Event: AssistantMessageInterrupted{TurnID: command.TurnID, ItemID: command.ItemID, Code: command.Code, Message: command.Message}},
-		{Event: TurnInterrupted{TurnID: command.TurnID, Reason: command.Code}},
-	}, nil
+	return interruptAssistantTurnEvents(command.TurnID, command.ItemID, command.Code, command.Message), nil
 }
 
 func rejectRunningItem(turn Turn) error {
@@ -419,7 +479,7 @@ func requireRunningItem(state Session, sessionID SessionID, turnID TurnID, itemI
 	if err != nil {
 		return Item{}, err
 	}
-	if _, err := ParseItemID(string(itemID)); err != nil {
+	if err := validateCommandItemID(itemID); err != nil {
 		return Item{}, err
 	}
 	if turn.ActiveItemID == "" {
@@ -439,7 +499,7 @@ func requireRunningTurn(state Session, sessionID SessionID, turnID TurnID) (Turn
 	if !state.Exists() {
 		return Turn{}, domainError(CodeSessionNotFound, "session not found")
 	}
-	if _, err := ParseSessionID(string(sessionID)); err != nil {
+	if err := validateCommandSessionID(sessionID); err != nil {
 		return Turn{}, err
 	}
 	if sessionID != state.ID {
@@ -451,7 +511,7 @@ func requireRunningTurn(state Session, sessionID SessionID, turnID TurnID) (Turn
 	if state.Status != SessionStatusActive {
 		return Turn{}, domainError(CodeInvalidCommand, "session is not active")
 	}
-	if _, err := ParseTurnID(string(turnID)); err != nil {
+	if err := validateCommandTurnID(turnID); err != nil {
 		return Turn{}, err
 	}
 	if state.ActiveTurnID == "" {

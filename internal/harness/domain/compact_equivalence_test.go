@@ -7,6 +7,7 @@ import (
 	"os"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestCompactDecisionsMatchFullStateForFixturePrefixes(t *testing.T) {
@@ -64,6 +65,77 @@ func TestCompactHistoricalDuplicateRequiresStoreIdentityIndex(t *testing.T) {
 	}
 	if compactErr != nil || !reflect.DeepEqual(compactEvents, wantCompact) {
 		t.Fatalf("compact historical item duplicate = (%#v, %v), want admission pending Store identity index", compactEvents, compactErr)
+	}
+}
+
+func TestApplyCompactMatchesV1ChronologyRejections(t *testing.T) {
+	base := compactChronologyRecords()
+	full, err := Replay(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compact, err := ReplayCompact(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name  string
+		event Event
+	}{
+		{
+			name:  "later item starts before completed item terminal",
+			event: AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-2"},
+		},
+		{
+			name:  "turn terminal precedes completed item terminal",
+			event: TurnCompleted{TurnID: "turn-1"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			record := RecordedEvent{
+				SchemaVersion: schemaVersion,
+				ID:            "chronology-invalid",
+				CommandID:     "chronology-invalid",
+				SessionID:     "chronology-session",
+				Sequence:      5,
+				OccurredAt:    time.Date(2026, 8, 13, 0, 0, 3, 0, time.UTC),
+				Event:         test.event,
+			}
+			_, fullErr := Apply(full, record)
+			_, compactErr := ApplyCompact(compact, record)
+			if errorCode(fullErr) != CodeInvalidEvent || errorCode(compactErr) != errorCode(fullErr) {
+				t.Fatalf("chronology rejection compact = %v, full = %v", compactErr, fullErr)
+			}
+		})
+	}
+}
+
+func TestApplyCompactMatchesV1DuplicateSessionCreatedPreflightOrder(t *testing.T) {
+	base := compactChronologyRecords()[:1]
+	full, err := Replay(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compact, err := ReplayCompact(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := RecordedEvent{
+		SchemaVersion: schemaVersion,
+		ID:            "duplicate-session-created",
+		CommandID:     "duplicate-session-created",
+		SessionID:     "chronology-session",
+		Sequence:      99,
+		OccurredAt:    time.Date(2026, 8, 13, 0, 0, 5, 0, time.UTC),
+		Event:         SessionCreated{WorkspaceRoot: "/workspace"},
+	}
+	_, fullErr := Apply(full, record)
+	_, compactErr := ApplyCompact(compact, record)
+	if errorCode(fullErr) != CodeSessionAlreadyExists || errorCode(compactErr) != errorCode(fullErr) {
+		t.Fatalf("duplicate create preflight compact = %v, full = %v", compactErr, fullErr)
 	}
 }
 
@@ -131,4 +203,13 @@ func fixtureBytesForFuzz(path string) []byte {
 		panic(err)
 	}
 	return data
+}
+
+func compactChronologyRecords() []RecordedEvent {
+	return []RecordedEvent{
+		{SchemaVersion: schemaVersion, ID: "chronology-1", CommandID: "chronology-1", SessionID: "chronology-session", Sequence: 1, OccurredAt: time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC), Event: SessionCreated{WorkspaceRoot: "/workspace"}},
+		{SchemaVersion: schemaVersion, ID: "chronology-2", CommandID: "chronology-2", SessionID: "chronology-session", Sequence: 2, OccurredAt: time.Date(2026, 8, 13, 0, 0, 1, 0, time.UTC), Event: TurnStarted{TurnID: "turn-1", Input: "inspect"}},
+		{SchemaVersion: schemaVersion, ID: "chronology-3", CommandID: "chronology-3", SessionID: "chronology-session", Sequence: 3, OccurredAt: time.Date(2026, 8, 13, 0, 0, 2, 0, time.UTC), Event: AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"}},
+		{SchemaVersion: schemaVersion, ID: "chronology-4", CommandID: "chronology-4", SessionID: "chronology-session", Sequence: 4, OccurredAt: time.Date(2026, 8, 13, 0, 0, 4, 0, time.UTC), Event: AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "done"}},
+	}
 }
