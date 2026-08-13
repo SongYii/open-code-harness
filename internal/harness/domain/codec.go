@@ -24,7 +24,7 @@ func MarshalRecordedEvent(record RecordedEvent) ([]byte, error) {
 		return nil, err
 	}
 
-	data, eventType, err := marshalEvent(record.Event)
+	eventType, data, err := MarshalEventPayload(record.Event)
 	if err != nil {
 		return nil, err
 	}
@@ -39,6 +39,16 @@ func MarshalRecordedEvent(record RecordedEvent) ([]byte, error) {
 		Type:          eventType,
 		Data:          data,
 	})
+}
+
+// MarshalEventPayload returns the canonical event type and JSON payload used by
+// recorded-event encoding. The returned payload is a defensive copy.
+func MarshalEventPayload(event Event) (eventType string, payload []byte, err error) {
+	data, eventType, err := marshalEvent(event)
+	if err != nil {
+		return "", nil, err
+	}
+	return eventType, append([]byte(nil), data...), nil
 }
 
 func UnmarshalRecordedEvent(data []byte) (RecordedEvent, error) {
