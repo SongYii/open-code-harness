@@ -2,6 +2,7 @@ package application_test
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"sync"
 	"testing"
@@ -15,7 +16,8 @@ import (
 
 func TestConcurrentRunTurnSameSessionHasOneAtomicAdmissionWinner(t *testing.T) {
 	ids := testkit.NewSequenceIDs()
-	base, err := memory.NewEventStore(testkit.FixedClock{Time: acceptanceTime}, ids)
+	authority := application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1}
+	base, err := memory.NewEventStoreV2(authority)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,6 +40,7 @@ func TestConcurrentRunTurnSameSessionHasOneAtomicAdmissionWinner(t *testing.T) {
 			<-start
 			result, runErr := service.RunTurn(context.Background(), application.RunTurnRequest{
 				SessionID: created.SessionID,
+				RequestID: "request-concurrent",
 				Input:     "inspect",
 				Sink:      &testkit.RecordingSink{},
 			})
@@ -69,7 +72,7 @@ func TestConcurrentRunTurnSameSessionHasOneAtomicAdmissionWinner(t *testing.T) {
 	if successes != 1 || conflicts != 1 || len(model.Calls()) != 1 {
 		t.Fatalf("successes=%d conflicts=%d model calls=%d", successes, conflicts, len(model.Calls()))
 	}
-	records, err := base.Load(context.Background(), created.SessionID)
+	records, err := application.ReadWholeStreamPinned(context.Background(), base, created.SessionID, 256)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +98,8 @@ func TestConcurrentRunTurnSameSessionHasOneAtomicAdmissionWinner(t *testing.T) {
 func TestConcurrentRunTurnDifferentSessionsCompleteThirtyTwo(t *testing.T) {
 	const count = 32
 	ids := testkit.NewSequenceIDs()
-	store, err := memory.NewEventStore(testkit.FixedClock{Time: acceptanceTime}, ids)
+	authority := application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1}
+	store, err := memory.NewEventStoreV2(authority)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,6 +129,7 @@ func TestConcurrentRunTurnDifferentSessionsCompleteThirtyTwo(t *testing.T) {
 			<-start
 			outcomes[index].result, outcomes[index].err = service.RunTurn(context.Background(), application.RunTurnRequest{
 				SessionID: sessionID,
+				RequestID: domain.RunTurnRequestID(fmt.Sprintf("request-%d", index)),
 				Input:     "inspect",
 				Sink:      sharedSink,
 			})
@@ -137,7 +142,7 @@ func TestConcurrentRunTurnDifferentSessionsCompleteThirtyTwo(t *testing.T) {
 		if got.err != nil || got.result.Status != domain.TurnStatusCompleted || got.result.Text != "parallel" || !got.result.TerminalCommitted {
 			t.Fatalf("outcome[%d] = %#v, err = %v", index, got.result, got.err)
 		}
-		records, loadErr := store.Load(context.Background(), sessionIDs[index])
+		records, loadErr := application.ReadWholeStreamPinned(context.Background(), store, sessionIDs[index], 256)
 		if loadErr != nil {
 			t.Fatal(loadErr)
 		}
@@ -156,7 +161,7 @@ func TestConcurrentRunTurnDifferentSessionsCompleteThirtyTwo(t *testing.T) {
 }
 
 type acceptanceLoadBarrier struct {
-	application.EventStore
+	application.EventStoreV2
 	target    domain.SessionID
 	mu        sync.Mutex
 	remaining int
@@ -164,20 +169,20 @@ type acceptanceLoadBarrier struct {
 	release   chan struct{}
 }
 
-func newAcceptanceLoadBarrier(store application.EventStore, target domain.SessionID, parties int) *acceptanceLoadBarrier {
+func newAcceptanceLoadBarrier(store application.EventStoreV2, target domain.SessionID, parties int) *acceptanceLoadBarrier {
 	return &acceptanceLoadBarrier{
-		EventStore: store,
-		target:     target,
-		remaining:  parties,
-		entered:    make(chan struct{}, parties),
-		release:    make(chan struct{}),
+		EventStoreV2: store,
+		target:       target,
+		remaining:    parties,
+		entered:      make(chan struct{}, parties),
+		release:      make(chan struct{}),
 	}
 }
 
-func (barrier *acceptanceLoadBarrier) Load(ctx context.Context, sessionID domain.SessionID) ([]domain.RecordedEvent, error) {
-	records, err := barrier.EventStore.Load(ctx, sessionID)
-	if err != nil || sessionID != barrier.target {
-		return records, err
+func (barrier *acceptanceLoadBarrier) ReadStream(ctx context.Context, request application.ReadStreamRequest) (application.StreamPage, error) {
+	page, err := barrier.EventStoreV2.ReadStream(ctx, request)
+	if err != nil || request.SessionID != barrier.target || request.AfterSequence != 0 {
+		return page, err
 	}
 	barrier.mu.Lock()
 	wait := barrier.remaining > 0
@@ -186,14 +191,14 @@ func (barrier *acceptanceLoadBarrier) Load(ctx context.Context, sessionID domain
 	}
 	barrier.mu.Unlock()
 	if !wait {
-		return records, nil
+		return page, nil
 	}
 	barrier.entered <- struct{}{}
 	select {
 	case <-barrier.release:
-		return records, nil
+		return page, nil
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return application.StreamPage{}, ctx.Err()
 	}
 }
 
@@ -242,13 +247,13 @@ func (stream *acceptanceStream) Next(context.Context) (engine.StreamEvent, error
 
 func (*acceptanceStream) Close() error { return nil }
 
-func newAcceptanceService(t *testing.T, store application.EventStore, ids application.IDGenerator, model engine.Model) *application.Service {
+func newAcceptanceService(t *testing.T, store application.EventStoreV2, ids application.IDGenerator, model engine.Model) *application.Service {
 	t.Helper()
 	runner, err := engine.NewTurnRunner(model)
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := application.NewService(store, ids, runner, application.DefaultConfig())
+	service, err := application.NewService(store, ids, testkit.FixedClock{Time: acceptanceTime}, runner, application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1}, application.DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}

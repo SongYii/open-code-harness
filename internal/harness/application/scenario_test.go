@@ -22,7 +22,8 @@ func TestEngineScenarioContract(t *testing.T) {
 	enginescenariotest.Run(t, func(t *testing.T, scenario enginescenariotest.Scenario) enginescenariotest.Harness {
 		t.Helper()
 		ids := testkit.NewSequenceIDs()
-		store, err := memory.NewEventStore(testkit.FixedClock{Time: acceptanceTime}, ids)
+		authority := application.WriterAuthority{RuntimeID: "scenario-runtime", FencingToken: 1}
+		store, err := memory.NewEventStoreV2(authority)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -44,7 +45,7 @@ func TestEngineScenarioContract(t *testing.T) {
 		if scenario.MaxBytes > 0 {
 			config.MaxAssistantBytes = scenario.MaxBytes
 		}
-		service, err := application.NewService(store, ids, runner, config)
+		service, err := application.NewService(store, ids, testkit.FixedClock{Time: acceptanceTime}, runner, authority, config)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -132,7 +133,8 @@ func assertCanonicalJSONLLines(t *testing.T, raw []byte, records []domain.Record
 func runExactSuccessTrace(t *testing.T) ([]domain.RecordedEvent, application.RunTurnResult) {
 	t.Helper()
 	ids := testkit.NewSequenceIDs()
-	store, err := memory.NewEventStore(testkit.FixedClock{Time: acceptanceTime}, ids)
+	authority := application.WriterAuthority{RuntimeID: "scenario-runtime", FencingToken: 1}
+	store, err := memory.NewEventStoreV2(authority)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +153,7 @@ func runExactSuccessTrace(t *testing.T) ([]domain.RecordedEvent, application.Run
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := application.NewService(store, ids, runner, application.DefaultConfig())
+	service, err := application.NewService(store, ids, testkit.FixedClock{Time: acceptanceTime}, runner, authority, application.DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,13 +163,14 @@ func runExactSuccessTrace(t *testing.T) ([]domain.RecordedEvent, application.Run
 	}
 	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{
 		SessionID: created.SessionID,
+		RequestID: "request-scenario",
 		Input:     "inspect repository",
 		Sink:      &testkit.RecordingSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	records, err := store.Load(context.Background(), created.SessionID)
+	records, err := application.ReadWholeStreamPinned(context.Background(), store, created.SessionID, 256)
 	if err != nil {
 		t.Fatal(err)
 	}

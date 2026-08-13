@@ -9,21 +9,14 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 )
 
-type CreateSessionRequest struct {
-	WorkspaceRoot string
-}
-
+type CreateSessionRequest struct{ WorkspaceRoot string }
 type CreateSessionResult struct {
 	SessionID domain.SessionID
 	Records   []domain.RecordedEvent
 }
-
-type CloseSessionRequest struct {
-	SessionID domain.SessionID
-}
-
+type CloseSessionRequest struct{ SessionID domain.SessionID }
 type CloseSessionResult struct {
-	Session domain.Session
+	Session domain.CompactSession
 	Records []domain.RecordedEvent
 }
 
@@ -48,49 +41,25 @@ func (service *Service) CreateSession(ctx context.Context, request CreateSession
 	if _, err := domain.ParseCommandID(string(commandID)); err != nil {
 		return CreateSessionResult{}, applicationError(CategoryInternal, "id_generator_contract_violation", false, err)
 	}
-	if err := contextError(ctx); err != nil {
-		return CreateSessionResult{}, err
-	}
-	state := domain.Session{}
-	decided, err := domain.Decide(state, domain.CreateSession{SessionID: sessionID, WorkspaceRoot: request.WorkspaceRoot})
+	decided, err := domain.DecideCompact(domain.CompactSession{}, domain.CreateSession{SessionID: sessionID, WorkspaceRoot: request.WorkspaceRoot})
 	if err != nil {
 		return CreateSessionResult{}, applicationError(CategoryValidation, "domain_rejected", false, err)
 	}
-	next, records, err := service.appendAndApply(ctx, sessionID, state, decided, commandID)
+	next, records, err := appendCompact(ctx, service, sessionID, domain.CompactSession{}, decided, commandID, nil)
 	if err != nil {
 		return CreateSessionResult{}, err
 	}
 	if next.ID != sessionID {
-		return CreateSessionResult{}, applicationError(CategoryInternal, "store_contract_violation", false, nil)
+		return CreateSessionResult{}, storeContractViolation(nil)
 	}
 	return CreateSessionResult{SessionID: sessionID, Records: records}, nil
 }
 
-func (service *Service) LoadSession(ctx context.Context, sessionID domain.SessionID) (domain.Session, error) {
+func (service *Service) LoadSession(ctx context.Context, sessionID domain.SessionID) (domain.CompactSession, error) {
 	if service == nil {
-		return domain.Session{}, applicationError(CategoryValidation, "invalid_request", false, nil)
+		return domain.CompactSession{}, applicationError(CategoryValidation, "invalid_request", false, nil)
 	}
-	if _, err := domain.ParseSessionID(string(sessionID)); err != nil {
-		return domain.Session{}, applicationError(CategoryValidation, "invalid_request", false, err)
-	}
-	if err := contextError(ctx); err != nil {
-		return domain.Session{}, err
-	}
-	records, err := service.store.Load(ctx, sessionID)
-	if !isNilValue(err) {
-		return domain.Session{}, mapLoadError(ctx, err)
-	}
-	if err := contextError(ctx); err != nil {
-		return domain.Session{}, err
-	}
-	if len(records) == 0 {
-		return domain.Session{}, applicationError(CategoryValidation, "session_not_found", false, nil)
-	}
-	state, err := domain.Replay(records)
-	if err != nil || state.ID != sessionID {
-		return domain.Session{}, applicationError(CategoryInternal, "store_contract_violation", false, err)
-	}
-	return state.Clone(), nil
+	return loadCompactSessionPinned(ctx, service.store, sessionID)
 }
 
 func (service *Service) CloseSession(ctx context.Context, request CloseSessionRequest) (CloseSessionResult, error) {
@@ -104,7 +73,7 @@ func (service *Service) CloseSession(ctx context.Context, request CloseSessionRe
 	if err != nil {
 		return CloseSessionResult{}, err
 	}
-	decided, err := domain.Decide(state, domain.CloseSession{SessionID: request.SessionID})
+	decided, err := domain.DecideCompact(state, domain.CloseSession{SessionID: request.SessionID})
 	if err != nil {
 		return CloseSessionResult{}, applicationError(CategoryValidation, "domain_rejected", false, err)
 	}
@@ -115,7 +84,7 @@ func (service *Service) CloseSession(ctx context.Context, request CloseSessionRe
 	if _, err := domain.ParseCommandID(string(commandID)); err != nil {
 		return CloseSessionResult{}, applicationError(CategoryInternal, "id_generator_contract_violation", false, err)
 	}
-	next, records, err := service.appendAndApply(ctx, request.SessionID, state, decided, commandID)
+	next, records, err := appendCompact(ctx, service, request.SessionID, state, decided, commandID, nil)
 	if err != nil {
 		return CloseSessionResult{}, err
 	}
