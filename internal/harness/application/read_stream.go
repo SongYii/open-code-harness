@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 )
@@ -22,12 +23,18 @@ func ReadWholeStreamPinned(ctx context.Context, store EventStoreV2, sessionID do
 
 	var all []domain.RecordedEvent
 	var cursor uint64
-	var head *uint64
+	var head uint64
+	hasHead := false
 	for {
 		if err := contextError(ctx); err != nil {
 			return nil, err
 		}
-		request := ReadStreamRequest{SessionID: sessionID, AfterSequence: cursor, Limit: limit, HeadVersion: head}
+		var requestedHead *uint64
+		if hasHead {
+			value := head
+			requestedHead = &value
+		}
+		request := ReadStreamRequest{SessionID: sessionID, AfterSequence: cursor, Limit: limit, HeadVersion: requestedHead}
 		page, err := store.ReadStream(ctx, request)
 		if !isNilValue(err) {
 			return nil, mapV2StoreError(ctx, err, "read")
@@ -35,11 +42,10 @@ func ReadWholeStreamPinned(ctx context.Context, store EventStoreV2, sessionID do
 		if err := contextError(ctx); err != nil {
 			return nil, err
 		}
-		if head == nil {
-			value := page.HeadVersion
-			head = &value
-		} else if page.HeadVersion != *head {
-			return nil, storeContractViolation(fmt.Errorf("read head changed from %d to %d", *head, page.HeadVersion))
+		if !hasHead {
+			head, hasHead = page.HeadVersion, true
+		} else if page.HeadVersion != head {
+			return nil, storeContractViolation(fmt.Errorf("read head changed from %d to %d", head, page.HeadVersion))
 		}
 		if page.HeadVersion < cursor || uint32(len(page.Records)) > limit {
 			return nil, storeContractViolation(fmt.Errorf("invalid pinned page bounds"))
@@ -49,6 +55,9 @@ func ReadWholeStreamPinned(ctx context.Context, store EventStoreV2, sessionID do
 			expected := cursor + uint64(index) + 1
 			if record.SessionID != sessionID || record.Sequence != expected || record.Sequence > page.HeadVersion {
 				return nil, storeContractViolation(fmt.Errorf("invalid record at index %d", index))
+			}
+			if err := validatePinnedRecord(record); err != nil {
+				return nil, storeContractViolation(err)
 			}
 			cloned, cloneErr := domain.CloneRecordedEvents([]domain.RecordedEvent{record})
 			if cloneErr != nil {
@@ -84,19 +93,27 @@ func loadCompactSessionPinned(ctx context.Context, store EventStoreV2, sessionID
 	}
 	var state domain.CompactSession
 	var cursor uint64
-	var head *uint64
+	var head uint64
+	hasHead := false
 	for {
 		if err := contextError(ctx); err != nil {
 			return domain.CompactSession{}, err
 		}
-		page, err := store.ReadStream(ctx, ReadStreamRequest{SessionID: sessionID, AfterSequence: cursor, Limit: 256, HeadVersion: head})
+		var requestedHead *uint64
+		if hasHead {
+			value := head
+			requestedHead = &value
+		}
+		page, err := store.ReadStream(ctx, ReadStreamRequest{SessionID: sessionID, AfterSequence: cursor, Limit: 256, HeadVersion: requestedHead})
 		if !isNilValue(err) {
 			return domain.CompactSession{}, mapV2StoreError(ctx, err, "read")
 		}
-		if head == nil {
-			value := page.HeadVersion
-			head = &value
-		} else if page.HeadVersion != *head {
+		if err := contextError(ctx); err != nil {
+			return domain.CompactSession{}, err
+		}
+		if !hasHead {
+			head, hasHead = page.HeadVersion, true
+		} else if page.HeadVersion != head {
 			return domain.CompactSession{}, storeContractViolation(fmt.Errorf("read head changed"))
 		}
 		if page.HeadVersion < cursor || len(page.Records) > 256 {
@@ -106,6 +123,9 @@ func loadCompactSessionPinned(ctx context.Context, store EventStoreV2, sessionID
 		for index, record := range page.Records {
 			if record.SessionID != sessionID || record.Sequence != cursor+uint64(index)+1 || record.Sequence > page.HeadVersion {
 				return domain.CompactSession{}, storeContractViolation(fmt.Errorf("invalid record"))
+			}
+			if err := validatePinnedRecord(record); err != nil {
+				return domain.CompactSession{}, storeContractViolation(err)
 			}
 			applied, applyErr := domain.ApplyCompact(state, record)
 			if applyErr != nil {
@@ -134,6 +154,14 @@ func loadCompactSessionPinned(ctx context.Context, store EventStoreV2, sessionID
 	return state.Clone(), nil
 }
 
+func validatePinnedRecord(record domain.RecordedEvent) error {
+	if record.OccurredAt.Location() != time.UTC {
+		return fmt.Errorf("event timestamp must be UTC")
+	}
+	_, err := domain.MarshalRecordedEvent(record)
+	return err
+}
+
 func storeContractViolation(cause error) error {
 	return applicationError(CategoryInternal, "store_contract_violation", false, cause)
 }
@@ -149,6 +177,9 @@ func contextError(ctx context.Context) error {
 }
 
 func mapV2StoreError(ctx context.Context, cause error, operation string) error {
+	if IsStoreCode(cause, StoreCodeCommitOutcomeUnknown) {
+		return applicationError(CategoryPersistence, "append_outcome_unknown", false, cause)
+	}
 	if err := contextError(ctx); err != nil {
 		return applicationError(CategoryCanceled, "canceled", false, fmt.Errorf("%w: %w", err, cause))
 	}
@@ -157,9 +188,6 @@ func mapV2StoreError(ctx context.Context, cause error, operation string) error {
 	}
 	if IsStoreCode(cause, StoreCodeAppendIdentityMismatch) || IsStoreCode(cause, StoreCodeCommandIdentityMismatch) || IsStoreCode(cause, StoreCodeCommandRequestConflict) || IsStoreCode(cause, StoreCodeDomainIdentityConflict) {
 		return applicationError(CategoryConflict, string(storeCode(cause)), false, cause)
-	}
-	if IsStoreCode(cause, StoreCodeCommitOutcomeUnknown) {
-		return applicationError(CategoryPersistence, "append_outcome_unknown", false, cause)
 	}
 	if IsStoreCode(cause, StoreCodeCorrupt) {
 		return storeContractViolation(cause)

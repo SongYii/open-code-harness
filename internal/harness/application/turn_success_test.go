@@ -165,6 +165,14 @@ func TestRunTurnSequentialTurnsHaveDistinctIdentityAndOrder(t *testing.T) {
 	if state.Version != 9 || state.ActiveTurn != nil {
 		t.Fatalf("session = %#v", state)
 	}
+	records, err := application.ReadWholeStreamPinned(context.Background(), store, created.SessionID, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := domain.Replay(records)
+	if err != nil || legacy.Version != 9 || !reflect.DeepEqual(legacy.TurnOrder, []domain.TurnID{first.TurnID, second.TurnID}) {
+		t.Fatalf("pinned legacy history = %#v, %v", legacy, err)
+	}
 }
 
 func TestRunTurnResultRecordsAreDefensive(t *testing.T) {
@@ -199,6 +207,8 @@ func TestRunTurnValidatesRequestBeforeStoreAndIDs(t *testing.T) {
 		name    string
 		request application.RunTurnRequest
 	}{
+		{name: "empty request ID", request: application.RunTurnRequest{SessionID: "session-1", Input: "inspect", Sink: &testkit.RecordingSink{}}},
+		{name: "padded request ID", request: application.RunTurnRequest{SessionID: "session-1", RequestID: " request-invalid", Input: "inspect", Sink: &testkit.RecordingSink{}}},
 		{name: "invalid session", request: application.RunTurnRequest{SessionID: " session-1", RequestID: "request-invalid", Input: "inspect", Sink: &testkit.RecordingSink{}}},
 		{name: "blank input", request: application.RunTurnRequest{SessionID: "session-1", RequestID: "request-invalid", Input: " \t\n", Sink: &testkit.RecordingSink{}}},
 		{name: "invalid UTF-8 input", request: application.RunTurnRequest{SessionID: "session-1", RequestID: "request-invalid", Input: string([]byte{0xff}), Sink: &testkit.RecordingSink{}}},
@@ -217,6 +227,57 @@ func TestRunTurnValidatesRequestBeforeStoreAndIDs(t *testing.T) {
 				t.Fatalf("rejected request side effects: result %#v, load %d append %d IDs %v model %v", result, store.LoadCalls(), store.AppendCalls(), ids.Calls(), model.Calls())
 			}
 		})
+	}
+}
+
+func TestRunTurnRequestLookupPrecedesIDsAndModel(t *testing.T) {
+	for _, lookup := range []application.CommandRequestLookup{
+		{Kind: application.CommandRequestLookupFound, Record: &application.CommandRequestRecord{RunTurnRequestID: "request-known", SessionID: "session-preflight", CommandID: "command-known", TurnID: "turn-known", ItemID: "item-known", AdmissionAppendID: "append-known"}},
+		{Kind: application.CommandRequestLookupIdentityMismatch},
+	} {
+		base := activeTurnStore(t)
+		store := &lookupTurnStore{EventStoreV2: base, lookup: lookup}
+		ids := &turnIDs{}
+		model := &repeatingSuccessModel{text: "unused"}
+		service := newTurnService(t, store, ids, model)
+		result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: "session-preflight", RequestID: "request-known", Input: "inspect", Sink: &testkit.RecordingSink{}})
+		if !application.IsCategory(err, application.CategoryConflict) || !reflect.DeepEqual(result, application.RunTurnResult{}) || len(ids.Calls()) != 0 || len(model.Calls()) != 0 || store.reads != 0 {
+			t.Fatalf("lookup=%#v result=%#v err=%v ids=%v model=%v reads=%d", lookup, result, err, ids.Calls(), model.Calls(), store.reads)
+		}
+	}
+}
+
+func TestRunTurnCanceledAfterReadStopsBeforeIDsAndModel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	base := activeTurnStore(t)
+	store := &cancelAfterReadStore{EventStoreV2: base, cancel: cancel}
+	ids := &turnIDs{}
+	model := &repeatingSuccessModel{text: "unused"}
+	service := newTurnService(t, store, ids, model)
+	result, err := service.RunTurn(ctx, application.RunTurnRequest{SessionID: "session-preflight", RequestID: "request-cancel-read", Input: "inspect", Sink: &testkit.RecordingSink{}})
+	assertRunTurnError(t, err, application.CategoryCanceled, "canceled", false)
+	if !reflect.DeepEqual(result, application.RunTurnResult{}) || len(ids.Calls()) != 0 || len(model.Calls()) != 0 {
+		t.Fatalf("post-read cancel result=%#v ids=%v model=%v", result, ids.Calls(), model.Calls())
+	}
+}
+
+func TestRunTurnTerminalUnknownDoesNotFallbackAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	base := newTurnMemoryStore(t)
+	store := &terminalUnknownStore{EventStoreV2: base, cancel: cancel}
+	service := newTurnService(t, store, testkit.NewSequenceIDs(), &repeatingSuccessModel{text: "done"})
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.RunTurn(ctx, application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-terminal-unknown", Input: "inspect", Sink: &testkit.RecordingSink{}})
+	assertRunTurnError(t, err, application.CategoryPersistence, "append_outcome_unknown", false)
+	if result.Status != domain.TurnStatusRunning || result.TerminalCommitted || len(result.Records) != 2 || store.terminalCalls != 1 {
+		t.Fatalf("unknown result=%#v terminal calls=%d", result, store.terminalCalls)
+	}
+	records, readErr := application.ReadWholeStreamPinned(context.Background(), base, created.SessionID, 256)
+	if readErr != nil || len(records) != 5 || turnEventTypes(records)[3] != domain.EventAssistantMessageCompleted {
+		t.Fatalf("durable unknown outcome=%#v error=%v", records, readErr)
 	}
 }
 
@@ -650,6 +711,51 @@ type turnCountingStore struct {
 	records     []domain.RecordedEvent
 	loadCalls   int
 	appendCalls int
+}
+
+type lookupTurnStore struct {
+	application.EventStoreV2
+	lookup application.CommandRequestLookup
+	reads  int
+}
+
+func (store *lookupTurnStore) FindCommandRequest(context.Context, application.FindCommandRequestRequest) (application.CommandRequestLookup, error) {
+	return store.lookup, nil
+}
+func (store *lookupTurnStore) ReadStream(ctx context.Context, request application.ReadStreamRequest) (application.StreamPage, error) {
+	store.reads++
+	return store.EventStoreV2.ReadStream(ctx, request)
+}
+
+type cancelAfterReadStore struct {
+	application.EventStoreV2
+	cancel context.CancelFunc
+}
+
+func (store *cancelAfterReadStore) ReadStream(ctx context.Context, request application.ReadStreamRequest) (application.StreamPage, error) {
+	page, err := store.EventStoreV2.ReadStream(ctx, request)
+	store.cancel()
+	return page, err
+}
+
+type terminalUnknownStore struct {
+	application.EventStoreV2
+	cancel        context.CancelFunc
+	terminalCalls int
+}
+
+func (store *terminalUnknownStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
+	receipt, err := store.EventStoreV2.Append(ctx, request)
+	if err != nil || len(request.Events) == 0 || request.Events[0].Event.EventType() != domain.EventAssistantMessageCompleted {
+		return receipt, err
+	}
+	store.terminalCalls++
+	store.cancel()
+	unknown, buildErr := application.NewStoreError(application.StoreError{Code: application.StoreCodeCommitOutcomeUnknown, SessionID: request.SessionID, MayHaveCommitted: true})
+	if buildErr != nil {
+		return application.CommitReceipt{}, buildErr
+	}
+	return application.CommitReceipt{}, unknown
 }
 
 func (store *turnCountingStore) ReadStream(_ context.Context, request application.ReadStreamRequest) (application.StreamPage, error) {

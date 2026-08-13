@@ -110,6 +110,18 @@ func TestLoadSessionMapsMissingCorruptAndStoreFailure(t *testing.T) {
 		_, err := service.LoadSession(ctx, "session-load-canceled")
 		assertApplicationError(t, err, application.CategoryCanceled, "canceled")
 	})
+
+	t.Run("caller canceled after successful page", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		store := &sessionStore{
+			onLoad:           cancel,
+			ignoreContextErr: true,
+			loadRecords:      []domain.RecordedEvent{{SchemaVersion: 1, ID: "event-load-canceled-page", CommandID: "command-load-canceled-page", SessionID: "session-load-canceled-page", Sequence: 1, OccurredAt: validSessionTime(), Event: domain.SessionCreated{WorkspaceRoot: "/workspace"}}},
+		}
+		service := newSessionServiceWithStore(t, store, testkit.NewSequenceIDs())
+		_, err := service.LoadSession(ctx, "session-load-canceled-page")
+		assertApplicationError(t, err, application.CategoryCanceled, "canceled")
+	})
 }
 
 func TestCloseSessionRejectsMissingAndRunningSession(t *testing.T) {
@@ -398,13 +410,14 @@ func seedV2Event(t *testing.T, store application.EventStoreV2, sessionID domain.
 }
 
 type sessionStore struct {
-	loadRecords   []domain.RecordedEvent
-	loadErr       error
-	onLoad        func()
-	appendReceipt *application.CommitReceipt
-	appendErr     error
-	loadCalls     int
-	appendCalls   int
+	loadRecords      []domain.RecordedEvent
+	loadErr          error
+	onLoad           func()
+	ignoreContextErr bool
+	appendReceipt    *application.CommitReceipt
+	appendErr        error
+	loadCalls        int
+	appendCalls      int
 }
 
 func (store *sessionStore) ReadStream(ctx context.Context, request application.ReadStreamRequest) (application.StreamPage, error) {
@@ -412,7 +425,7 @@ func (store *sessionStore) ReadStream(ctx context.Context, request application.R
 	if store.onLoad != nil {
 		store.onLoad()
 	}
-	if err := ctx.Err(); err != nil {
+	if err := ctx.Err(); err != nil && !store.ignoreContextErr {
 		return application.StreamPage{}, err
 	}
 	records, _ := domain.CloneRecordedEvents(store.loadRecords)

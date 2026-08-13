@@ -105,7 +105,7 @@ func (service *Service) RunTurn(ctx context.Context, request RunTurnRequest) (Ru
 	}
 	_, terminalRecords, err := appendCompact(ctx, service, request.SessionID, runningState, decided, commandID, nil)
 	if err != nil {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil && !isAppendOutcomeUnknown(err) {
 			cleanupBase := context.WithoutCancel(ctx)
 			cleanupCtx, cancel := context.WithTimeout(cleanupBase, service.config.TerminalCommitTimeout)
 			defer cancel()
@@ -122,6 +122,11 @@ func (service *Service) RunTurn(ctx context.Context, request RunTurnRequest) (Ru
 		return runTurnDeliveryFailure(completedResult, err)
 	}
 	return cloneRunTurnResult(completedResult), nil
+}
+
+func isAppendOutcomeUnknown(err error) bool {
+	var applicationErr *Error
+	return errors.As(err, &applicationErr) && applicationErr != nil && applicationErr.Code == "append_outcome_unknown"
 }
 
 func (service *Service) terminalizeExecutionFailure(cleanupCtx context.Context, deliveryCtx context.Context, runningState domain.CompactSession, runningResult RunTurnResult, commandID domain.CommandID, emitter *engine.Emitter, primary *Error, executionCause error) (RunTurnResult, error) {

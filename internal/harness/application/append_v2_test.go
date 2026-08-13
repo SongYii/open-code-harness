@@ -13,7 +13,8 @@ func TestBuildAppendIntentOwnsBatchMetadata(t *testing.T) {
 	clock := &countingClock{value: time.Date(2026, 8, 13, 8, 0, 0, 0, time.FixedZone("UTC+8", 8*60*60))}
 	ids := &intentIDs{}
 	events := []domain.UncommittedEvent{{Event: domain.SessionCreated{WorkspaceRoot: "/workspace"}}}
-	intent, err := BuildAppendIntent(clock, ids, WriterAuthority{RuntimeID: "runtime-1", FencingToken: 1}, "session-1", 0, "command-1", nil, events)
+	admission := &CommandAdmission{RunTurnRequestID: "request-1", TurnID: "turn-1", ItemID: "item-1"}
+	intent, err := BuildAppendIntent(clock, ids, WriterAuthority{RuntimeID: "runtime-1", FencingToken: 1}, "session-1", 0, "command-1", admission, events)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,9 +25,57 @@ func TestBuildAppendIntentOwnsBatchMetadata(t *testing.T) {
 		t.Fatalf("intent = %#v", intent)
 	}
 	events[0].Event = domain.SessionCreated{WorkspaceRoot: "/tampered"}
+	admission.TurnID = "turn-tampered"
 	if got := intent.Request.Events[0].Event.(domain.SessionCreated).WorkspaceRoot; got != "/workspace" {
 		t.Fatalf("intent event = %q", got)
 	}
+	if intent.Request.Admission.TurnID != "turn-1" {
+		t.Fatalf("intent admission = %#v", intent.Request.Admission)
+	}
+}
+
+func TestBuildAppendIntentValidatesBatchBoundsAndIDFailures(t *testing.T) {
+	base := []domain.UncommittedEvent{{Event: domain.SessionCreated{WorkspaceRoot: "/workspace"}}}
+	for _, events := range [][]domain.UncommittedEvent{nil, make([]domain.UncommittedEvent, 65)} {
+		if len(events) == 65 {
+			for i := range events {
+				events[i] = base[0]
+			}
+		}
+		ids := &intentIDs{}
+		if _, err := BuildAppendIntent(&countingClock{value: time.Now().UTC()}, ids, WriterAuthority{RuntimeID: "runtime-1", FencingToken: 1}, "session-1", 0, "command-1", nil, events); !IsCategory(err, CategoryValidation) || ids.appendCalls != 0 || ids.eventCalls != 0 {
+			t.Fatalf("events=%d err=%v append=%d events=%d", len(events), err, ids.appendCalls, ids.eventCalls)
+		}
+	}
+	ids := &intentIDs{appendErr: context.DeadlineExceeded}
+	if _, err := BuildAppendIntent(&countingClock{value: time.Now().UTC()}, ids, WriterAuthority{RuntimeID: "runtime-1", FencingToken: 1}, "session-1", 0, "command-1", nil, base); !IsCategory(err, CategoryInternal) || ids.eventCalls != 0 {
+		t.Fatalf("append ID failure = %v events=%d", err, ids.eventCalls)
+	}
+	ids = &intentIDs{eventErrAt: 2}
+	if _, err := BuildAppendIntent(&countingClock{value: time.Now().UTC()}, ids, WriterAuthority{RuntimeID: "runtime-1", FencingToken: 1}, "session-1", 0, "command-1", nil, append(base, base[0])); !IsCategory(err, CategoryInternal) || ids.appendCalls != 1 || ids.eventCalls != 2 {
+		t.Fatalf("event ID failure calls append=%d event=%d", ids.appendCalls, ids.eventCalls)
+	}
+}
+
+func TestCommitAppendIntentRejectsNilAndCanceledContextBeforeStore(t *testing.T) {
+	intent, err := BuildAppendIntent(&countingClock{value: time.Now().UTC()}, &intentIDs{}, WriterAuthority{RuntimeID: "runtime-1", FencingToken: 1}, "session-1", 0, "command-1", nil, []domain.UncommittedEvent{{Event: domain.SessionCreated{WorkspaceRoot: "/workspace"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var nilContext context.Context
+	for _, ctx := range []context.Context{nilContext, canceledContext()} {
+		store := &receiptSpy{}
+		_, _, err := CommitAppendIntent(ctx, store, domain.CompactSession{}, intent)
+		if store.calls != 0 || (!IsCategory(err, CategoryValidation) && !IsCategory(err, CategoryCanceled)) {
+			t.Fatalf("err=%v calls=%d", err, store.calls)
+		}
+	}
+}
+
+func canceledContext() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
 }
 
 // This is the v2 replacement map for the removed v1 appendAndApply tests:
@@ -116,7 +165,10 @@ type countingClock struct {
 
 func (clock *countingClock) Now() time.Time { clock.calls++; return clock.value }
 
-type intentIDs struct{ appendCalls, eventCalls int }
+type intentIDs struct {
+	appendCalls, eventCalls, eventErrAt int
+	appendErr                           error
+}
 
 func (*intentIDs) NewSessionID() (domain.SessionID, error) { return "session-1", nil }
 func (*intentIDs) NewTurnID() (domain.TurnID, error)       { return "turn-1", nil }
@@ -124,10 +176,13 @@ func (*intentIDs) NewItemID() (domain.ItemID, error)       { return "item-1", ni
 func (*intentIDs) NewCommandID() (domain.CommandID, error) { return "command-1", nil }
 func (ids *intentIDs) NewAppendID() (domain.AppendID, error) {
 	ids.appendCalls++
-	return "append-1", nil
+	return "append-1", ids.appendErr
 }
 func (ids *intentIDs) NewEventID() (domain.EventID, error) {
 	ids.eventCalls++
+	if ids.eventErrAt == ids.eventCalls {
+		return "", context.DeadlineExceeded
+	}
 	return domain.EventID("event-" + string(rune('0'+ids.eventCalls))), nil
 }
 

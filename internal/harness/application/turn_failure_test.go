@@ -531,10 +531,7 @@ func TestRunTurnRejectsMalformedAdmissionAppendBeforeModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := &mutateRunAppendStore{EventStoreV2: base, targetType: domain.EventTurnStarted, mutate: func(records []domain.RecordedEvent) []domain.RecordedEvent {
-		records[1].Sequence++
-		return records
-	}}
+	store := &corruptAdmissionReceiptStore{EventStoreV2: base}
 	model := &repeatingSuccessModel{text: "unused"}
 	service := newTurnService(t, store, ids, model)
 	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-malformed-terminal", Input: "inspect", Sink: &testkit.RecordingSink{}})
@@ -547,53 +544,12 @@ func TestRunTurnRejectsMalformedAdmissionAppendBeforeModel(t *testing.T) {
 func TestRunTurnRejectsMalformedTerminalAppendReturnsWithoutSuccessSignal(t *testing.T) {
 	tests := []struct {
 		name   string
-		mutate func([]domain.RecordedEvent) []domain.RecordedEvent
+		mutate func(*application.CommitReceipt)
 	}{
-		{name: "count", mutate: func(records []domain.RecordedEvent) []domain.RecordedEvent { return records[:1] }},
-		{name: "sequence gap", mutate: func(records []domain.RecordedEvent) []domain.RecordedEvent { records[1].Sequence++; return records }},
-		{name: "wrong session", mutate: func(records []domain.RecordedEvent) []domain.RecordedEvent {
-			records[0].SessionID = "session-other"
-			return records
-		}},
-		{name: "wrong command", mutate: func(records []domain.RecordedEvent) []domain.RecordedEvent {
-			records[0].CommandID = "command-other"
-			return records
-		}},
-		{name: "schema", mutate: func(records []domain.RecordedEvent) []domain.RecordedEvent {
-			records[0].SchemaVersion = 2
-			return records
-		}},
-		{name: "event ID", mutate: func(records []domain.RecordedEvent) []domain.RecordedEvent {
-			records[0].ID = " invalid"
-			return records
-		}},
-		{name: "non UTC", mutate: func(records []domain.RecordedEvent) []domain.RecordedEvent {
-			records[0].OccurredAt = records[0].OccurredAt.In(time.FixedZone("offset", 3600))
-			return records
-		}},
-		{name: "timestamp mismatch", mutate: func(records []domain.RecordedEvent) []domain.RecordedEvent {
-			records[1].OccurredAt = records[1].OccurredAt.Add(time.Nanosecond)
-			return records
-		}},
-		{name: "changed type", mutate: func(records []domain.RecordedEvent) []domain.RecordedEvent {
-			records[0].Event = domain.SessionClosed{}
-			return records
-		}},
-		{name: "changed payload", mutate: func(records []domain.RecordedEvent) []domain.RecordedEvent {
-			event := records[0].Event.(domain.AssistantMessageCompleted)
-			event.Text = "changed"
-			records[0].Event = event
-			return records
-		}},
-		{name: "changed order", mutate: func(records []domain.RecordedEvent) []domain.RecordedEvent {
-			records[0].Event, records[1].Event = records[1].Event, records[0].Event
-			return records
-		}},
-		{name: "apply failure", mutate: func(records []domain.RecordedEvent) []domain.RecordedEvent {
-			occurredAt := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
-			records[0].OccurredAt, records[1].OccurredAt = occurredAt, occurredAt
-			return records
-		}},
+		{name: "wrong append id", mutate: func(receipt *application.CommitReceipt) { receipt.AppendID = "append-other" }},
+		{name: "zero position", mutate: func(receipt *application.CommitReceipt) { receipt.CommitPosition = 0 }},
+		{name: "wrong first sequence", mutate: func(receipt *application.CommitReceipt) { receipt.FirstSequence++ }},
+		{name: "wrong last sequence", mutate: func(receipt *application.CommitReceipt) { receipt.LastSequence-- }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -604,7 +560,7 @@ func TestRunTurnRejectsMalformedTerminalAppendReturnsWithoutSuccessSignal(t *tes
 			if err != nil {
 				t.Fatal(err)
 			}
-			store := &mutateRunAppendStore{EventStoreV2: base, targetType: domain.EventAssistantMessageCompleted, mutate: test.mutate}
+			store := &corruptTerminalReceiptStore{EventStoreV2: base, mutate: test.mutate}
 			sink := &testkit.RecordingSink{}
 			service := newTurnService(t, store, ids, &repeatingSuccessModel{text: "done"})
 			result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-concurrent-session", Input: "inspect", Sink: sink})
@@ -615,11 +571,27 @@ func TestRunTurnRejectsMalformedTerminalAppendReturnsWithoutSuccessSignal(t *tes
 			if got := runtimeEventTypes(sink.Attempts()); !reflect.DeepEqual(got, []engine.RuntimeEventType{engine.RuntimeModelStreamStarted, engine.RuntimeModelTextDelta}) {
 				t.Fatalf("runtime attempts = %v, want no terminal success signal", got)
 			}
-			if store.TargetCalls() != 1 {
-				t.Fatalf("terminal append calls = %d, want no retry", store.TargetCalls())
+			if store.calls != 1 {
+				t.Fatalf("terminal append calls = %d, want no retry", store.calls)
 			}
 		})
 	}
+}
+
+type corruptTerminalReceiptStore struct {
+	application.EventStoreV2
+	mutate func(*application.CommitReceipt)
+	calls  int
+}
+
+func (store *corruptTerminalReceiptStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
+	receipt, err := store.EventStoreV2.Append(ctx, request)
+	if err != nil || len(request.Events) == 0 || request.Events[0].Event.EventType() != domain.EventAssistantMessageCompleted {
+		return receipt, err
+	}
+	store.calls++
+	store.mutate(&receipt)
+	return receipt, nil
 }
 
 func TestRunTurnConcurrentSameSessionHasOneAdmissionWinner(t *testing.T) {
@@ -1092,17 +1064,15 @@ func (store *cancelAfterAdmissionStore) SawDetachedBoundedContext() bool {
 	return store.sawDetachedBounded
 }
 
-type mutateRunAppendStore struct {
+type corruptAdmissionReceiptStore struct {
 	application.EventStoreV2
 	mu          sync.Mutex
-	targetType  string
-	mutate      func([]domain.RecordedEvent) []domain.RecordedEvent
 	targetCalls int
 }
 
-func (store *mutateRunAppendStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
+func (store *corruptAdmissionReceiptStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
 	records, err := store.EventStoreV2.Append(ctx, request)
-	if err != nil || len(request.Events) == 0 || request.Events[0].Event.EventType() != store.targetType {
+	if err != nil || len(request.Events) == 0 || request.Events[0].Event.EventType() != domain.EventTurnStarted {
 		return records, err
 	}
 	store.mu.Lock()
@@ -1113,7 +1083,7 @@ func (store *mutateRunAppendStore) Append(ctx context.Context, request applicati
 	return records, nil
 }
 
-func (store *mutateRunAppendStore) TargetCalls() int {
+func (store *corruptAdmissionReceiptStore) TargetCalls() int {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	return store.targetCalls

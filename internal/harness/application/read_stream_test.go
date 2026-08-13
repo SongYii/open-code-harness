@@ -36,6 +36,56 @@ func TestReadWholeStreamPinnedRejectsChangingHead(t *testing.T) {
 	assertStoreContractViolation(t, err)
 }
 
+func TestReadWholeStreamPinnedRejectsMutatedRequestHead(t *testing.T) {
+	store := &headMutatingSpy{}
+	_, err := ReadWholeStreamPinned(context.Background(), store, "session-1", 1)
+	assertStoreContractViolation(t, err)
+	if store.calls != 2 {
+		t.Fatalf("read calls = %d, want 2", store.calls)
+	}
+}
+
+func TestReadWholeStreamPinnedRejectsInvalidRecordContractAndInputs(t *testing.T) {
+	for name, mutate := range map[string]func(*domain.RecordedEvent){
+		"schema":     func(record *domain.RecordedEvent) { record.SchemaVersion = 2 },
+		"event id":   func(record *domain.RecordedEvent) { record.ID = " bad" },
+		"command id": func(record *domain.RecordedEvent) { record.CommandID = " bad" },
+		"timestamp": func(record *domain.RecordedEvent) {
+			record.OccurredAt = time.Date(2026, 8, 13, 0, 0, 0, 0, time.FixedZone("offset", 3600))
+		},
+		"payload":        func(record *domain.RecordedEvent) { record.Event = unknownReadEvent{} },
+		"wrong session":  func(record *domain.RecordedEvent) { record.SessionID = "session-2" },
+		"wrong sequence": func(record *domain.RecordedEvent) { record.Sequence = 2 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			record := readRecord(1)
+			mutate(&record)
+			_, err := ReadWholeStreamPinned(context.Background(), &pagingSpy{pages: []StreamPage{{Records: []domain.RecordedEvent{record}, HeadVersion: 1, NextAfterSequence: 1, End: true}}}, "session-1", 1)
+			assertStoreContractViolation(t, err)
+		})
+	}
+	for name, page := range map[string]StreamPage{
+		"too many": {Records: []domain.RecordedEvent{readRecord(1), readRecord(2)}, HeadVersion: 2, NextAfterSequence: 2, End: true},
+		"cursor":   {Records: []domain.RecordedEvent{readRecord(1)}, HeadVersion: 1, NextAfterSequence: 0, End: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := ReadWholeStreamPinned(context.Background(), &pagingSpy{pages: []StreamPage{page}}, "session-1", 1)
+			assertStoreContractViolation(t, err)
+		})
+	}
+	var nilContext context.Context
+	for _, limit := range []uint32{0, 257} {
+		_, err := ReadWholeStreamPinned(context.Background(), &pagingSpy{}, "session-1", limit)
+		if !IsCategory(err, CategoryValidation) {
+			t.Fatalf("limit %d error = %v", limit, err)
+		}
+	}
+	_, err := ReadWholeStreamPinned(nilContext, &pagingSpy{}, "session-1", 1)
+	if !IsCategory(err, CategoryValidation) {
+		t.Fatalf("nil context error = %v", err)
+	}
+}
+
 func TestReadWholeStreamPinnedRejectsPrematureEndAndNoProgress(t *testing.T) {
 	for name, page := range map[string]StreamPage{
 		"premature end": {Records: []domain.RecordedEvent{readRecord(1)}, HeadVersion: 2, NextAfterSequence: 1, End: true},
@@ -61,6 +111,33 @@ type pagingSpy struct {
 	pages    []StreamPage
 	requests []ReadStreamRequest
 }
+
+type headMutatingSpy struct{ calls int }
+
+func (store *headMutatingSpy) ReadStream(_ context.Context, request ReadStreamRequest) (StreamPage, error) {
+	store.calls++
+	if store.calls == 1 {
+		return StreamPage{Records: []domain.RecordedEvent{readRecord(1)}, HeadVersion: 2, NextAfterSequence: 1}, nil
+	}
+	if request.HeadVersion == nil {
+		return StreamPage{}, nil
+	}
+	*request.HeadVersion = 3
+	return StreamPage{Records: []domain.RecordedEvent{readRecord(2)}, HeadVersion: 3, NextAfterSequence: 2}, nil
+}
+func (*headMutatingSpy) Append(context.Context, AppendRequestV2) (CommitReceipt, error) {
+	return CommitReceipt{}, nil
+}
+func (*headMutatingSpy) ResolveAppend(context.Context, ResolveAppendRequest) (AppendResolution, error) {
+	return AppendResolution{}, nil
+}
+func (*headMutatingSpy) FindCommandRequest(context.Context, FindCommandRequestRequest) (CommandRequestLookup, error) {
+	return CommandRequestLookup{}, nil
+}
+
+type unknownReadEvent struct{}
+
+func (unknownReadEvent) EventType() string { return "unknown" }
 
 func (store *pagingSpy) ReadStream(_ context.Context, request ReadStreamRequest) (StreamPage, error) {
 	store.requests = append(store.requests, request)
