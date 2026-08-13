@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/memory"
 	"github.com/SongYii/open-code-harness/internal/harness/application"
@@ -108,7 +109,7 @@ func TestConcurrentRunTurnAcrossServicesReconcilesDurableAdmissionWinner(t *test
 		t.Fatal(err)
 	}
 	gate := newLookupRaceBarrier(base, 2)
-	modelA, modelB := &acceptanceSuccessModel{text: "done"}, &acceptanceSuccessModel{text: "done"}
+	modelA, modelB := newBlockingAcceptanceModel("done"), newBlockingAcceptanceModel("done")
 	serviceA := newAcceptanceService(t, gate, sharedIDs, modelA)
 	serviceB := newAcceptanceService(t, gate, sharedIDs, modelB)
 	type outcome struct{ err error }
@@ -121,20 +122,24 @@ func TestConcurrentRunTurnAcrossServicesReconcilesDurableAdmissionWinner(t *test
 	}
 	<-gate.ready
 	close(gate.release)
-	successes, reconciliations := 0, 0
-	for range 2 {
-		got := <-done
-		if got.err == nil {
-			successes++
-			continue
-		}
-		var appErr *application.Error
-		if errors.As(got.err, &appErr) && appErr.Code == "reconciliation_required" {
-			reconciliations++
-			continue
-		}
-		t.Fatalf("cross-service result error = %v", got.err)
+	select {
+	case <-modelA.started:
+	case <-modelB.started:
+	case <-time.After(time.Second):
+		t.Fatal("winner did not enter model")
 	}
+	first := <-done
+	var appErr *application.Error
+	if !errors.As(first.err, &appErr) || appErr.Code != "reconciliation_required" {
+		t.Fatalf("cross-service loser error = %v", first.err)
+	}
+	modelA.releaseOnce()
+	modelB.releaseOnce()
+	second := <-done
+	if second.err != nil {
+		t.Fatalf("cross-service winner error = %v", second.err)
+	}
+	successes, reconciliations := 1, 1
 	if successes+reconciliations != 2 || len(modelA.Calls())+len(modelB.Calls()) != 1 {
 		t.Fatalf("successes=%d reconciliations=%d model calls=%d", successes, reconciliations, len(modelA.Calls())+len(modelB.Calls()))
 	}
@@ -316,6 +321,54 @@ type acceptanceSuccessModel struct {
 	mu    sync.Mutex
 	text  string
 	calls []engine.ModelRequest
+}
+
+type blockingAcceptanceModel struct {
+	*acceptanceSuccessModel
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newBlockingAcceptanceModel(text string) *blockingAcceptanceModel {
+	return &blockingAcceptanceModel{acceptanceSuccessModel: &acceptanceSuccessModel{text: text}, started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (model *blockingAcceptanceModel) Stream(ctx context.Context, request engine.ModelRequest) (engine.ModelStream, error) {
+	stream, err := model.acceptanceSuccessModel.Stream(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	model.once.Do(func() { close(model.started) })
+	return &blockingAcceptanceStream{ModelStream: stream, release: model.release}, nil
+}
+
+func (model *blockingAcceptanceModel) releaseOnce() {
+	model.once.Do(func() {})
+	select {
+	case <-model.release:
+	default:
+		close(model.release)
+	}
+}
+
+type blockingAcceptanceStream struct {
+	engine.ModelStream
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func (stream *blockingAcceptanceStream) Next(ctx context.Context) (engine.StreamEvent, error) {
+	blocked := false
+	stream.once.Do(func() { blocked = true })
+	if blocked {
+		select {
+		case <-stream.release:
+		case <-ctx.Done():
+			return engine.StreamEvent{}, ctx.Err()
+		}
+	}
+	return stream.ModelStream.Next(ctx)
 }
 
 func (model *acceptanceSuccessModel) Stream(_ context.Context, request engine.ModelRequest) (engine.ModelStream, error) {

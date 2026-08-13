@@ -14,8 +14,10 @@ type executionPhase string
 
 const (
 	executionPhaseAdmissionInFlight executionPhase = "admission_in_flight"
+	executionPhaseAdmissionUnknown  executionPhase = "admission_unknown"
 	executionPhaseRunning           executionPhase = "running"
 	executionPhaseTerminalInFlight  executionPhase = "terminal_append_in_flight"
+	executionPhaseTerminalUnknown   executionPhase = "terminal_unknown"
 	executionPhaseTerminalCommitted executionPhase = "terminal_committed"
 )
 
@@ -26,22 +28,34 @@ type executionRegistry struct {
 }
 
 type executionEntry struct {
-	requestID domain.RunTurnRequestID
-	sessionID domain.SessionID
-	digest    Digest
-	done      chan struct{}
-	phase     executionPhase
-	intent    *AppendIntent
-	result    RunTurnResult
-	err       error
-	terminal  bool
-	leases    uint32
+	requestID   domain.RunTurnRequestID
+	sessionID   domain.SessionID
+	digest      Digest
+	done        chan struct{}
+	phase       executionPhase
+	intent      *AppendIntent
+	result      RunTurnResult
+	err         error
+	terminal    bool
+	leases      uint32
+	ownerToken  uint64
+	ownerActive bool
+	retained    bool
 }
 
 type executionLease struct {
-	registry *executionRegistry
-	entry    *executionEntry
-	released bool
+	registry   *executionRegistry
+	entry      *executionEntry
+	released   bool
+	ownerToken uint64
+}
+
+type executionSnapshot struct {
+	Phase    executionPhase
+	Terminal bool
+	Retained bool
+	Leases   uint32
+	Intent   *AppendIntent
 }
 
 func newExecutionRegistry() *executionRegistry {
@@ -58,10 +72,10 @@ func (registry *executionRegistry) acquire(requestID domain.RunTurnRequestID, se
 		entry.leases++
 		return &executionLease{registry: registry, entry: entry}, false, nil
 	}
-	entry := &executionEntry{requestID: requestID, sessionID: sessionID, digest: digest, done: make(chan struct{}), phase: executionPhaseAdmissionInFlight, leases: 1}
+	entry := &executionEntry{requestID: requestID, sessionID: sessionID, digest: digest, done: make(chan struct{}), phase: executionPhaseAdmissionInFlight, leases: 1, ownerToken: 1, ownerActive: true}
 	registry.entries[requestID] = entry
 	registry.unresolved[sessionID]++
-	return &executionLease{registry: registry, entry: entry}, true, nil
+	return &executionLease{registry: registry, entry: entry, ownerToken: entry.ownerToken}, true, nil
 }
 
 func (registry *executionRegistry) attachExisting(requestID domain.RunTurnRequestID, sessionID domain.SessionID, digest Digest) (*executionLease, bool) {
@@ -81,31 +95,83 @@ func (registry *executionRegistry) unresolvedForSession(sessionID domain.Session
 	return registry.unresolved[sessionID]
 }
 
-func (lease *executionLease) setPhase(phase executionPhase) {
-	lease.registry.mu.Lock()
-	defer lease.registry.mu.Unlock()
-	if !lease.released && !lease.entry.terminal {
-		lease.entry.phase = phase
+func (registry *executionRegistry) snapshot(requestID domain.RunTurnRequestID) (executionSnapshot, bool) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	entry := registry.entries[requestID]
+	if entry == nil {
+		return executionSnapshot{}, false
 	}
+	snapshot := executionSnapshot{Phase: entry.phase, Terminal: entry.terminal, Retained: entry.retained, Leases: entry.leases}
+	if entry.intent != nil {
+		copy, err := cloneAppendIntent(*entry.intent)
+		if err == nil {
+			snapshot.Intent = &copy
+		}
+	}
+	return snapshot, true
 }
 
-func (lease *executionLease) retainIntent(intent AppendIntent) {
+func (lease *executionLease) ownsLocked() bool {
+	return lease != nil && lease.registry != nil && lease.entry != nil && !lease.released && lease.ownerToken != 0 && lease.registry.entries[lease.entry.requestID] == lease.entry && lease.entry.ownerActive && lease.entry.ownerToken == lease.ownerToken && !lease.entry.terminal
+}
+
+func (lease *executionLease) setPhase(phase executionPhase) error {
+	if lease == nil || lease.registry == nil {
+		return errors.New("invalid execution owner")
+	}
+	lease.registry.mu.Lock()
+	defer lease.registry.mu.Unlock()
+	if !lease.ownsLocked() {
+		return errors.New("execution owner capability rejected")
+	}
+	lease.entry.phase = phase
+	return nil
+}
+
+func (lease *executionLease) retainIntent(intent AppendIntent) error {
 	cloned, err := cloneAppendIntent(intent)
 	if err != nil {
-		return
+		return err
+	}
+	if lease == nil || lease.registry == nil {
+		return errors.New("invalid execution owner")
 	}
 	lease.registry.mu.Lock()
 	defer lease.registry.mu.Unlock()
-	if !lease.released && !lease.entry.terminal {
-		lease.entry.intent = &cloned
+	if !lease.ownsLocked() {
+		return errors.New("execution owner capability rejected")
 	}
+	lease.entry.intent = &cloned
+	return nil
 }
 
-func (lease *executionLease) publish(result RunTurnResult, err error) {
+func (lease *executionLease) retainUnknown(phase executionPhase) error {
+	if phase != executionPhaseAdmissionUnknown && phase != executionPhaseTerminalUnknown {
+		return errors.New("invalid unknown execution phase")
+	}
+	if lease == nil || lease.registry == nil {
+		return errors.New("invalid execution owner")
+	}
 	lease.registry.mu.Lock()
 	defer lease.registry.mu.Unlock()
-	if lease.entry.terminal {
-		return
+	if !lease.ownsLocked() || lease.entry.intent == nil {
+		return errors.New("execution owner capability rejected")
+	}
+	lease.entry.phase = phase
+	lease.entry.retained = true
+	lease.entry.ownerActive = false
+	return nil
+}
+
+func (lease *executionLease) publish(result RunTurnResult, err error) error {
+	if lease == nil || lease.registry == nil {
+		return errors.New("invalid execution owner")
+	}
+	lease.registry.mu.Lock()
+	defer lease.registry.mu.Unlock()
+	if !lease.ownsLocked() {
+		return errors.New("execution owner capability rejected")
 	}
 	lease.entry.result = cloneRunTurnResult(result)
 	lease.entry.err = err
@@ -113,6 +179,7 @@ func (lease *executionLease) publish(result RunTurnResult, err error) {
 	lease.entry.phase = executionPhaseTerminalCommitted
 	close(lease.entry.done)
 	lease.registry.cleanupLocked(lease.entry)
+	return nil
 }
 
 func (lease *executionLease) wait(ctx context.Context) (RunTurnResult, error) {
@@ -146,7 +213,7 @@ func (lease *executionLease) release() {
 }
 
 func (registry *executionRegistry) cleanupLocked(entry *executionEntry) {
-	if !entry.terminal || entry.leases != 0 || registry.entries[entry.requestID] != entry {
+	if !entry.terminal || entry.retained || entry.leases != 0 || registry.entries[entry.requestID] != entry {
 		return
 	}
 	delete(registry.entries, entry.requestID)

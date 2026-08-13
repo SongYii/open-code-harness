@@ -62,3 +62,46 @@ func TestExecutionRegistryRejectsMismatchedIdentityAndWaiterCancellation(t *test
 	owner.publish(RunTurnResult{}, nil)
 	owner.release()
 }
+
+func TestExecutionRegistryRetainsUnknownIntentAfterOwnerDetach(t *testing.T) {
+	registry := newExecutionRegistry()
+	owner, first, err := registry.acquire("request-unknown", "session-1", Digest{9})
+	if err != nil || !first {
+		t.Fatal(err)
+	}
+	intent := AppendIntent{Request: AppendRequestV2{AppendID: "append-1", SessionID: "session-1", CommandID: "command-1", Events: []ProposedEvent{{ID: "event-1", Event: domain.TurnStarted{TurnID: "turn-1", Input: "input"}}}}}
+	if err := owner.retainIntent(intent); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.retainUnknown(executionPhaseAdmissionUnknown); err != nil {
+		t.Fatal(err)
+	}
+	owner.release()
+	snapshot, ok := registry.snapshot("request-unknown")
+	if !ok || snapshot.Phase != executionPhaseAdmissionUnknown || !snapshot.Retained || snapshot.Terminal || snapshot.Intent == nil || snapshot.Intent.Request.AppendID != intent.Request.AppendID || registry.unresolvedForSession("session-1") != 1 {
+		t.Fatalf("unknown snapshot = %#v, present=%t unresolved=%d", snapshot, ok, registry.unresolvedForSession("session-1"))
+	}
+}
+
+func TestExecutionRegistryRejectsWaiterAndReleasedOwnerMutation(t *testing.T) {
+	registry := newExecutionRegistry()
+	owner, _, err := registry.acquire("request-owner", "session-1", Digest{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waiter, _, err := registry.acquire("request-owner", "session-1", Digest{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := waiter.setPhase(executionPhaseRunning); err == nil {
+		t.Fatal("waiter changed phase")
+	}
+	if err := waiter.publish(RunTurnResult{}, nil); err == nil {
+		t.Fatal("waiter published")
+	}
+	owner.release()
+	if err := owner.publish(RunTurnResult{}, nil); err == nil {
+		t.Fatal("released owner published")
+	}
+	waiter.release()
+}
