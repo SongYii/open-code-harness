@@ -424,6 +424,8 @@ type V2Harness struct {
     Store EventStoreV2
     RotateAuthority func(WriterAuthority)
     FailNext func(FaultPoint, error)
+    CorruptReceipt func(AppendID)
+    SetCommitHook func(CommitHookPoint, func())
 }
 
 type V2Factory func(*testing.T) V2Harness
@@ -442,13 +444,20 @@ func RunV2(t *testing.T, factory V2Factory) {
 
 Suite 还必须覆盖 EV2-05 至 EV2-09：64/65 Event Limit、Payload/Request Byte Limit、Global EventID Uniqueness、Historical Turn/Item Identity、Defensive Copy、nil/Canceled Context、Corrupt Receipt Detection、并发 Session Commit-Position Uniqueness 与 Privacy-Preserving Command Mismatch。
 
+`CorruptReceipt` 与 `SetCommitHook` 是 Adapter-Specific Conformance Control，
+不是 `EventStoreV2` 的新增接口。`CorruptReceipt` 只针对一个已提交 Append，
+用于证明 Exact Retry 与 Resolution 遇到损坏状态时以 `store_corrupt`
+Fail Closed。`SetCommitHook` 只允许在 `CommitHookBeforePublish` 或
+`CommitHookAfterPublish` 安装一个有界 Hook；测试仅用它在 Publication Point
+两侧触发 Cancel。Hook 只消费一次，不得削弱生产 Validation 或 Authorization。
+
 - [ ] **步骤 2：把 Suite 连接到缺失 Adapter 并观察失败**
 
 ```go
 func TestEventStoreV2Contract(t *testing.T) {
     eventstoretest.RunV2(t, func(t *testing.T) eventstoretest.V2Harness {
         store := mustV2Store(t, application.WriterAuthority{RuntimeID: "runtime-1", FencingToken: 1})
-        return eventstoretest.V2Harness{Store: store, RotateAuthority: store.SetAuthority, FailNext: store.FailNext}
+        return eventstoretest.V2Harness{Store: store, RotateAuthority: store.SetAuthority, FailNext: store.FailNext, CorruptReceipt: store.CorruptReceipt, SetCommitHook: store.SetCommitHook}
     })
 }
 ```
@@ -476,9 +485,18 @@ type EventStoreV2 struct {
 
 尽可能在 Lock 前 Clone/Validate 完整 Request，然后在 Lock 内重新计算并比较 Digest。新 Append 依次执行 Receipt-before-Authority、Admission Identity、CAS、Global ID、Historical ID、Compact Replay、Commit Position、Receipt 与全部 Map 的单次 Mutation；赋值给 Live Map 前先构建所有 Candidate Copy。
 
+Exact Retry 或 Resolution 返回前，必须依据 Immutable Append Metadata 校验
+Stored Receipt。损坏 Receipt 返回 `store_corrupt`，绝不能传给调用方。Memory
+Adapter 可以暴露以上两个仅用于 Conformance 的 Control，但它们不属于生产
+Store Port。
+
 - [ ] **步骤 4：实现具有精确 Commit Knowledge 的 Fault Point**
 
 定义 `FaultBeforeCommit`、`FaultAfterCommitBeforeAck`、`FaultResolve`。Before-Commit Fault 返回 `store_unavailable` 且不 Mutation；After-Commit Fault 完成全部 Mutation 后返回 `commit_outcome_unknown`；Resolve Fault 返回 `store_unavailable`，绝不返回 `not_found`。Fault Queue 是有界 Test Control，不得循环。
+
+Publication Point 是完整 Candidate State 的单次赋值。紧邻赋值前再次观察到
+Cancellation 时必须确定无提交；赋值后触发的 Cancellation 不得被翻译为确定未
+提交。Commit Hook 只为这两个边界提供确定性覆盖，不改变 Store Semantic。
 
 - [ ] **步骤 5：实现 Pinned Pagination 与 Read Validation**
 

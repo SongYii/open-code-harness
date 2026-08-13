@@ -460,6 +460,8 @@ type V2Harness struct {
     Store EventStoreV2
     RotateAuthority func(WriterAuthority)
     FailNext func(FaultPoint, error)
+    CorruptReceipt func(AppendID)
+    SetCommitHook func(CommitHookPoint, func())
 }
 
 type V2Factory func(*testing.T) V2Harness
@@ -478,6 +480,14 @@ The temporary name is `V2Factory` because the same package retains the v1 `Facto
 
 The suite must additionally test all EV2-05 through EV2-09 rules: 64/65 Event limits, payload/request byte limits, global EventID uniqueness, historical Turn/Item identity, defensive copies, nil/canceled contexts, corrupt receipt detection, concurrent Session commit-position uniqueness, and privacy-preserving command mismatch.
 
+`CorruptReceipt` and `SetCommitHook` are adapter-specific conformance controls,
+not additions to `EventStoreV2`. `CorruptReceipt` targets one committed Append so
+exact retry and resolution can prove corrupt state fails closed with
+`store_corrupt`. `SetCommitHook` installs one bounded hook at either
+`CommitHookBeforePublish` or `CommitHookAfterPublish`; tests use it only to
+cancel at the two sides of the publication point. Hooks are consumed once and
+must never weaken production validation or authorization.
+
 - [ ] **Step 2: Wire the suite to a missing adapter and observe failure**
 
 Add:
@@ -486,7 +496,7 @@ Add:
 func TestEventStoreV2Contract(t *testing.T) {
     eventstoretest.RunV2(t, func(t *testing.T) eventstoretest.V2Harness {
         store := mustV2Store(t, application.WriterAuthority{RuntimeID: "runtime-1", FencingToken: 1})
-        return eventstoretest.V2Harness{Store: store, RotateAuthority: store.SetAuthority, FailNext: store.FailNext}
+        return eventstoretest.V2Harness{Store: store, RotateAuthority: store.SetAuthority, FailNext: store.FailNext, CorruptReceipt: store.CorruptReceipt, SetCommitHook: store.SetCommitHook}
     })
 }
 ```
@@ -516,9 +526,21 @@ type EventStoreV2 struct {
 
 Clone and validate the complete request before locking where possible, then recompute/compare the digest under the lock. For new appends, check receipt before authority, then admission identity, CAS, global IDs, historical IDs, compact replay, commit position, receipt, and all maps as one mutation. Build all candidate copies before assigning any live map.
 
+Stored receipts are validated against their immutable append metadata before
+exact-retry or resolution output. Corrupt receipts return `store_corrupt` and
+are never returned to callers. The in-memory adapter may expose the two
+conformance-only controls above, but they are not part of the production Store
+port.
+
 - [ ] **Step 4: Implement fault points with exact commit knowledge**
 
 Define `FaultBeforeCommit`, `FaultAfterCommitBeforeAck`, and `FaultResolve`. A before-commit fault returns `store_unavailable` with no mutation. An after-commit fault performs the full mutation and returns `commit_outcome_unknown`. A resolve fault returns `store_unavailable`, never `not_found`. Fault queues are bounded test controls and never loop.
+
+The publication point is the single assignment of the fully constructed
+candidate state. Cancellation rechecked immediately before that assignment is
+definitely absent; cancellation triggered after it cannot be translated into a
+definite non-commit result. The commit hooks provide deterministic coverage of
+both sides without changing Store semantics.
 
 - [ ] **Step 5: Implement pinned pagination and read validation**
 
