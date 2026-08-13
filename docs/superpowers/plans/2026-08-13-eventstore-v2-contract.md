@@ -665,7 +665,7 @@ go test -race ./internal/harness/application ./internal/harness/adapters/memory 
 git diff --check
 ```
 
-Expected: PASS; `rg -n '\.Load\(' internal/harness/application --glob '*.go' --glob '!**/*_test.go' --glob '!eventstoretest/**'` finds no production v1 load. The `eventstoretest` exclusion is intentional: its v1 adapter-conformance fixture remains until Task 8 and is not an Application production path. Commit the paths declared in this task:
+Expected: PASS; `rg -n '\.Load\(' internal/harness/application --glob '*.go' --glob '!**/*_test.go' --glob '!**/eventstoretest/**'` finds no production v1 load. The `eventstoretest` exclusion is intentional: its v1 adapter-conformance fixture remains until Task 8 and is not an Application production path. Commit the paths declared in this task:
 
 ```bash
 git add internal/harness/application/read_stream.go internal/harness/application/read_stream_test.go internal/harness/application/append_v2.go internal/harness/application/append_v2_test.go internal/harness/application/append.go internal/harness/application/service.go internal/harness/application/session.go internal/harness/application/turn.go internal/harness/application/ports_test.go internal/harness/application/errors_test.go internal/harness/application/session_test.go internal/harness/application/scenario_test.go internal/harness/application/concurrency_test.go internal/harness/application/turn_success_test.go internal/harness/application/turn_failure_test.go internal/harness/application/enginescenariotest/suite.go internal/harness/testkit/clock.go internal/harness/testkit/v2_store.go
