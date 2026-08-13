@@ -1,8 +1,11 @@
 # EventStore v2 Contract Migration
 
-**状态：** 待审阅  
-**日期：** 2026-08-13  
-**父设计：** [生产 Runtime 持久化、恢复与客户端边界](2026-08-13-runtime-persistence-recovery-client-design.zh-CN.md)  
+**状态：** 待审阅
+
+**日期：** 2026-08-13
+
+**父设计：** [生产 Runtime 持久化、恢复与客户端边界](2026-08-13-runtime-persistence-recovery-client-design.zh-CN.md)
+
 **证据：** [EventStore v2 Contract 架构门](../../research/architecture-gates/2026-08-13-eventstore-v2-contract.zh-CN.md)
 
 ## 1. 决策摘要

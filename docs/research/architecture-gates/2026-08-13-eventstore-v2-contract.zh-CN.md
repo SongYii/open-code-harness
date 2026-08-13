@@ -1,7 +1,9 @@
 # EventStore v2 Contract 架构门
 
-**状态：** 调研证据完成  
-**日期：** 2026-08-13  
+**状态：** 调研证据完成
+
+**日期：** 2026-08-13
+
 **范围：** 实现物理 SQLite Adapter 之前的 Contract Migration。
 
 本架构门把已接受的 Runtime Persistence 调研收窄到第一个交付 Slice。它决定数据库实现开始前，Domain、Application、Adapter Contract、Test Double 与 Conformance Test 必须具备哪些保证；不选择 SQL Schema 或 Driver 机制。

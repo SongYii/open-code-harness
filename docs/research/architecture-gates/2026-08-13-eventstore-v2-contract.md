@@ -1,7 +1,9 @@
 # EventStore v2 Contract Architecture Gate
 
-**Status:** Complete research evidence  
-**Date:** 2026-08-13  
+**Status:** Complete research evidence
+
+**Date:** 2026-08-13
+
 **Scope:** Contract migration before a physical SQLite adapter is implemented.
 
 This gate narrows the accepted runtime persistence research to the first

@@ -1,8 +1,11 @@
 # EventStore v2 Contract Migration
 
-**Status:** Proposed for review  
-**Date:** 2026-08-13  
-**Parent:** [Production Runtime Persistence, Recovery, and Client Boundary](2026-08-13-runtime-persistence-recovery-client-design.md)  
+**Status:** Proposed for review
+
+**Date:** 2026-08-13
+
+**Parent:** [Production Runtime Persistence, Recovery, and Client Boundary](2026-08-13-runtime-persistence-recovery-client-design.md)
+
 **Evidence:** [EventStore v2 Contract Architecture Gate](../../research/architecture-gates/2026-08-13-eventstore-v2-contract.md)
 
 ## 1. Decision summary
