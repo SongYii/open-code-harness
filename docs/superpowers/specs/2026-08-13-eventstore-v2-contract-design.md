@@ -1,6 +1,6 @@
 # EventStore v2 Contract Migration
 
-**Status:** Proposed for review
+**Status:** Accepted design
 
 **Date:** 2026-08-13
 

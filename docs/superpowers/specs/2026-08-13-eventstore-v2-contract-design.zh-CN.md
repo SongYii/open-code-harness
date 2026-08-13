@@ -1,6 +1,6 @@
 # EventStore v2 Contract Migration
 
-**状态：** 待审阅
+**状态：** 已接受设计
 
 **日期：** 2026-08-13
 
