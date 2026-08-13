@@ -44,6 +44,14 @@ func testAtomicAppendAndCAS(t *testing.T, factory V2Factory) {
 	if got := readAll(t, h.Store, "session-other"); len(got) != 0 {
 		t.Fatalf("duplicate EventID leaked batch: %#v", got)
 	}
+	sameBatch := v2Append("append-same-batch-event", "session-same-batch-event", 0, "command-same-batch-event", domain.SessionCreated{WorkspaceRoot: "/same"}, domain.TurnStarted{TurnID: "turn-same", Input: "same"})
+	sameBatch.Events[1].ID = sameBatch.Events[0].ID
+	if _, err := h.Store.Append(context.Background(), sameBatch); err == nil {
+		t.Fatal("same-batch duplicate EventID succeeded")
+	} else {
+		requireCode(t, err, application.StoreCodeInvalidAppend)
+	}
+	assertAppendAbsent(t, h, sameBatch, 0)
 }
 
 func testExactReceiptRetry(t *testing.T, factory V2Factory) {
@@ -53,6 +61,9 @@ func testExactReceiptRetry(t *testing.T, factory V2Factory) {
 	first, err := h.Store.Append(context.Background(), request)
 	if err != nil {
 		t.Fatalf("first Append() error = %v", err)
+	}
+	if _, err := h.Store.Append(context.Background(), v2Append("append-retry-advance", "session-retry", 1, "command-retry-advance", domain.TurnStarted{TurnID: "turn-retry", Input: "advance"})); err != nil {
+		t.Fatalf("advance Append() error = %v", err)
 	}
 	h.RotateAuthority(application.WriterAuthority{RuntimeID: "runtime-successor", FencingToken: 2})
 	retried, err := h.Store.Append(context.Background(), request)
@@ -72,21 +83,25 @@ func testExactReceiptRetry(t *testing.T, factory V2Factory) {
 func testPinnedPagination(t *testing.T, factory V2Factory) {
 	h := factory(t)
 	requireV2(t, h)
-	if _, err := h.Store.Append(context.Background(), v2Append("append-page-1", "session-page", 0, "command-page-1", domain.SessionCreated{WorkspaceRoot: "/page"})); err != nil {
+	if _, err := h.Store.Append(context.Background(), v2Append("append-page-1", "session-page", 0, "command-page-1", domain.SessionCreated{WorkspaceRoot: "/page"}, domain.TurnStarted{TurnID: "turn-page", Input: "next"}, domain.TurnCompleted{TurnID: "turn-page"})); err != nil {
 		t.Fatal(err)
 	}
 	first, err := h.Store.ReadStream(context.Background(), application.ReadStreamRequest{SessionID: "session-page", Limit: 1})
-	if err != nil || first.HeadVersion != 1 || first.NextAfterSequence != 1 || !first.End {
+	if err != nil || len(first.Records) != 1 || first.HeadVersion != 3 || first.NextAfterSequence != 1 || first.End {
 		t.Fatalf("first page = (%#v, %v)", first, err)
 	}
-	if _, err := h.Store.Append(context.Background(), v2Append("append-page-2", "session-page", 1, "command-page-2", domain.TurnStarted{TurnID: "turn-page", Input: "next"})); err != nil {
+	if _, err := h.Store.Append(context.Background(), v2Append("append-page-2", "session-page", 3, "command-page-2", domain.TurnStarted{TurnID: "turn-page-2", Input: "later"})); err != nil {
 		t.Fatal(err)
 	}
 	second, err := h.Store.ReadStream(context.Background(), application.ReadStreamRequest{SessionID: "session-page", AfterSequence: first.NextAfterSequence, HeadVersion: &first.HeadVersion, Limit: 1})
-	if err != nil || len(second.Records) != 0 || second.HeadVersion != 1 || second.NextAfterSequence != 1 || !second.End {
+	if err != nil || len(second.Records) != 1 || second.Records[0].Sequence != 2 || second.HeadVersion != 3 || second.NextAfterSequence != 2 || second.End {
 		t.Fatalf("pinned second page = (%#v, %v)", second, err)
 	}
-	for _, req := range []application.ReadStreamRequest{{SessionID: "session-page", Limit: 0}, {SessionID: "session-page", Limit: 257}, {SessionID: "session-page", AfterSequence: 3, Limit: 1}, {SessionID: "session-page", AfterSequence: 2, HeadVersion: ptr(uint64(1)), Limit: 1}} {
+	third, err := h.Store.ReadStream(context.Background(), application.ReadStreamRequest{SessionID: "session-page", AfterSequence: second.NextAfterSequence, HeadVersion: &first.HeadVersion, Limit: 1})
+	if err != nil || len(third.Records) != 1 || third.Records[0].Sequence != 3 || third.HeadVersion != 3 || third.NextAfterSequence != 3 || !third.End {
+		t.Fatalf("pinned third page = (%#v, %v)", third, err)
+	}
+	for _, req := range []application.ReadStreamRequest{{SessionID: "session-page", Limit: 0}, {SessionID: "session-page", Limit: 257}, {SessionID: "session-page", AfterSequence: 5, Limit: 1}, {SessionID: "session-page", AfterSequence: 2, HeadVersion: ptr(uint64(1)), Limit: 1}} {
 		if _, err := h.Store.ReadStream(context.Background(), req); err == nil {
 			t.Fatalf("ReadStream(%#v) succeeded", req)
 		} else {
@@ -171,6 +186,12 @@ func testUnknownOutcome(t *testing.T, factory V2Factory) {
 	if got := readAll(t, h.Store, "session-unknown"); len(got) != 0 {
 		t.Fatalf("before-commit fault mutated stream: %#v", got)
 	}
+	if _, err := h.Store.Append(context.Background(), request); err != nil {
+		t.Fatalf("one-shot before-commit fault persisted: %v", err)
+	}
+	// Start the after-commit case independently so fault exhaustion is observed
+	// without conflating it with exact retry.
+	request = v2Append("append-unknown-after", "session-unknown-after", 0, "command-unknown-after", domain.SessionCreated{WorkspaceRoot: "/unknown"})
 	h.FailNext(FaultAfterCommitBeforeAck, errors.New("after"))
 	if _, err := h.Store.Append(context.Background(), request); err == nil {
 		t.Fatal("after-commit fault did not report unknown")
@@ -195,6 +216,18 @@ func testUnknownOutcome(t *testing.T, factory V2Factory) {
 	if err != nil || retried != *resolved.Receipt {
 		t.Fatalf("exact retry after unknown = (%#v, %v), want %#v", retried, err, resolved.Receipt)
 	}
+	if got, err := h.Store.ResolveAppend(context.Background(), application.ResolveAppendRequest{AppendID: "append-never", RequestDigest: digest}); err != nil {
+		t.Fatal(err)
+	} else if got.Kind != application.AppendResolutionNotFound || got.Receipt != nil {
+		t.Fatalf("not found resolution = %#v", got)
+	}
+	wrong := digest
+	wrong[0]++
+	if got, err := h.Store.ResolveAppend(context.Background(), application.ResolveAppendRequest{AppendID: request.AppendID, RequestDigest: wrong}); err != nil {
+		t.Fatal(err)
+	} else if got.Kind != application.AppendResolutionIdentityMismatch || got.Receipt != nil {
+		t.Fatalf("mismatch resolution = %#v", got)
+	}
 }
 
 func testLimitsCopiesCancellationAndCorruption(t *testing.T, factory V2Factory) {
@@ -212,26 +245,18 @@ func testLimitsCopiesCancellationAndCorruption(t *testing.T, factory V2Factory) 
 	} else {
 		requireCode(t, err, application.StoreCodeInvalidAppend)
 	}
-	tooMany := v2Append("append-65", "session-65", 0, "command-65", domain.SessionCreated{WorkspaceRoot: "/65"})
-	for len(tooMany.Events) < 65 {
-		n := len(tooMany.Events)
-		tooMany.Events = append(tooMany.Events, proposed(domain.EventID(fmt.Sprintf("event-65-%d", n)), domain.SessionCreated{WorkspaceRoot: fmt.Sprintf("/%d", n)}))
-	}
+	tooMany := v2Append("append-65", "session-65", 0, "command-65", validBatch(65)...)
 	if _, err := h.Store.Append(context.Background(), tooMany); err == nil {
 		t.Fatal("65-event append succeeded")
 	} else {
 		requireCode(t, err, application.StoreCodeInvalidAppend)
 	}
-	maxEvents := []domain.Event{domain.SessionCreated{WorkspaceRoot: "/64"}}
-	for n := 0; n < 31; n++ {
-		turnID := domain.TurnID(fmt.Sprintf("turn-64-%d", n))
-		maxEvents = append(maxEvents, domain.TurnStarted{TurnID: turnID, Input: "ok"}, domain.TurnCompleted{TurnID: turnID})
-	}
-	maxEvents = append(maxEvents, domain.SessionClosed{})
-	maxBatch := v2Append("append-64", "session-64", 0, "command-64", maxEvents...)
+	assertAppendAbsent(t, h, tooMany, 0)
+	maxBatch := v2Append("append-64", "session-64", 0, "command-64", validBatch(64)...)
 	if _, err := h.Store.Append(context.Background(), maxBatch); err != nil {
 		t.Fatalf("valid 64-event append error = %v", err)
 	}
+	testByteLimits(t, h)
 	request := v2Append("append-copy", "session-copy", 0, "command-copy", domain.SessionCreated{WorkspaceRoot: "/copy"})
 	if _, err := h.Store.Append(context.Background(), request); err != nil {
 		t.Fatal(err)
@@ -256,6 +281,15 @@ func testLimitsCopiesCancellationAndCorruption(t *testing.T, factory V2Factory) 
 	} else {
 		requireCode(t, err, application.StoreCodeDomainIdentityConflict)
 	}
+	if _, err := h.Store.Append(context.Background(), v2Append("append-history-item-start", "session-history", 3, "command-history-item-start", domain.TurnStarted{TurnID: "turn-item-history", Input: "item"}, domain.AssistantMessageStarted{TurnID: "turn-item-history", ItemID: "item-history"}, domain.AssistantMessageCompleted{TurnID: "turn-item-history", ItemID: "item-history", Text: "done"}, domain.TurnCompleted{TurnID: "turn-item-history"})); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Store.Append(context.Background(), v2Append("append-history-item-duplicate", "session-history", 7, "command-history-item-duplicate", domain.TurnStarted{TurnID: "turn-item-new", Input: "again"}, domain.AssistantMessageStarted{TurnID: "turn-item-new", ItemID: "item-history"})); err == nil {
+		t.Fatal("historical ItemID reuse succeeded")
+	} else {
+		requireCode(t, err, application.StoreCodeDomainIdentityConflict)
+	}
+	testAllIndexRollback(t, h)
 }
 
 func testConcurrentCommitPositions(t *testing.T, factory V2Factory) {
@@ -296,7 +330,224 @@ func testConcurrentCommitPositions(t *testing.T, factory V2Factory) {
 	if len(seen) != workers {
 		t.Fatalf("commit positions = %d, want %d", len(seen), workers)
 	}
+	for want := uint64(1); want <= workers; want++ {
+		if _, ok := seen[want]; !ok {
+			t.Errorf("commit positions omit %d: %#v", want, seen)
+		}
+	}
 }
+
+func testPublicationCancellationAndCorruptReceipts(t *testing.T, factory V2Factory) {
+	h := factory(t)
+	requireV2(t, h)
+	before := v2Append("append-cancel-before", "session-cancel-before", 0, "command-cancel-before", domain.SessionCreated{WorkspaceRoot: "/before"})
+	ctx, cancel := context.WithCancel(context.Background())
+	h.SetCommitHook(CommitHookBeforePublish, cancel)
+	if _, err := h.Store.Append(ctx, before); err == nil {
+		t.Fatal("cancellation before publication committed")
+	} else {
+		requireCode(t, err, application.StoreCodeInvalidAppend)
+	}
+	assertAppendAbsent(t, h, before, 0)
+
+	after := v2Append("append-cancel-after", "session-cancel-after", 0, "command-cancel-after", domain.SessionCreated{WorkspaceRoot: "/after"})
+	ctx, cancel = context.WithCancel(context.Background())
+	h.SetCommitHook(CommitHookAfterPublish, cancel)
+	receipt, err := h.Store.Append(ctx, after)
+	if err != nil {
+		t.Fatalf("cancellation after publication was reported as absence: %v", err)
+	}
+	digest, err := application.DigestAppendRequest(after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved, err := h.Store.ResolveAppend(context.Background(), application.ResolveAppendRequest{AppendID: after.AppendID, RequestDigest: digest}); err != nil || resolved.Kind != application.AppendResolutionCommitted || resolved.Receipt == nil || *resolved.Receipt != receipt {
+		t.Fatalf("post-publication resolution = (%#v, %v), want %#v", resolved, err, receipt)
+	}
+
+	h.CorruptReceipt(after.AppendID)
+	if _, err := h.Store.Append(context.Background(), after); err == nil {
+		t.Fatal("exact retry returned corrupt receipt")
+	} else {
+		requireCode(t, err, application.StoreCodeCorrupt)
+	}
+	if _, err := h.Store.ResolveAppend(context.Background(), application.ResolveAppendRequest{AppendID: after.AppendID, RequestDigest: digest}); err == nil {
+		t.Fatal("resolve returned corrupt receipt")
+	} else {
+		requireCode(t, err, application.StoreCodeCorrupt)
+	}
+}
+
+func validBatch(count int) []domain.Event {
+	events := []domain.Event{domain.SessionCreated{WorkspaceRoot: "/batch"}}
+	pairs := (count - 1) / 2
+	for n := 0; n < pairs; n++ {
+		id := domain.TurnID(fmt.Sprintf("turn-batch-%d", n))
+		events = append(events, domain.TurnStarted{TurnID: id, Input: "ok"}, domain.TurnCompleted{TurnID: id})
+	}
+	if len(events) < count {
+		events = append(events, domain.SessionClosed{})
+	}
+	return events
+}
+
+func testAllIndexRollback(t *testing.T, h V2Harness) {
+	t.Helper()
+	digest, err := application.DigestRunTurnRequestV1("session-rollback", "rollback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := v2Append("append-rollback-bad", "session-rollback", 0, "command-rollback-bad", domain.SessionCreated{WorkspaceRoot: "/rollback"}, domain.TurnStarted{TurnID: "turn-rollback", Input: "rollback"}, domain.AssistantMessageStarted{TurnID: "turn-rollback", ItemID: "item-rollback"}, domain.AssistantMessageCompleted{TurnID: "turn-rollback", ItemID: "item-rollback", Text: "done"}, domain.AssistantMessageStarted{TurnID: "turn-rollback", ItemID: "item-rollback"})
+	bad.Admission = &application.CommandAdmission{RunTurnRequestID: "request-rollback", RequestDigest: digest, TurnID: "turn-rollback", ItemID: "item-rollback"}
+	if _, err := h.Store.Append(context.Background(), bad); err == nil {
+		t.Fatal("duplicate same-batch ItemID succeeded")
+	} else {
+		requireCode(t, err, application.StoreCodeDomainIdentityConflict)
+	}
+	assertAppendAbsent(t, h, bad, 0)
+	lookup, err := h.Store.FindCommandRequest(context.Background(), application.FindCommandRequestRequest{RunTurnRequestID: "request-rollback", SessionID: "session-rollback", RequestDigest: digest})
+	if err != nil || lookup.Kind != application.CommandRequestLookupNotFound || lookup.Record != nil {
+		t.Fatalf("rejected admission lookup = (%#v, %v)", lookup, err)
+	}
+	good := v2Append("append-rollback-good", "session-rollback", 0, "command-rollback-good", domain.SessionCreated{WorkspaceRoot: "/rollback"}, domain.TurnStarted{TurnID: "turn-rollback", Input: "rollback"}, domain.AssistantMessageStarted{TurnID: "turn-rollback", ItemID: "item-rollback"})
+	good.Events[0].ID, good.Events[1].ID, good.Events[2].ID = bad.Events[0].ID, bad.Events[1].ID, bad.Events[2].ID
+	good.Admission = &application.CommandAdmission{RunTurnRequestID: "request-rollback", RequestDigest: digest, TurnID: "turn-rollback", ItemID: "item-rollback"}
+	if _, err := h.Store.Append(context.Background(), good); err != nil {
+		t.Fatalf("rejected append reserved an index: %v", err)
+	}
+}
+
+func assertAppendAbsent(t *testing.T, h V2Harness, request application.AppendRequestV2, wantVersion int) {
+	t.Helper()
+	page, err := h.Store.ReadStream(context.Background(), application.ReadStreamRequest{SessionID: request.SessionID, Limit: 256})
+	if err != nil || len(page.Records) != wantVersion {
+		t.Fatalf("rejected append stream = (%#v, %v), want version %d", page, err, wantVersion)
+	}
+	if got, err := h.Store.ResolveAppend(context.Background(), application.ResolveAppendRequest{AppendID: request.AppendID}); err != nil || got.Kind != application.AppendResolutionNotFound || got.Receipt != nil {
+		t.Fatalf("rejected append resolution = (%#v, %v)", got, err)
+	}
+}
+
+func testByteLimits(t *testing.T, h V2Harness) {
+	t.Helper()
+	const maxPayload = 8 * 1024 * 1024
+	exactPayload := payloadEventOfSize(t, maxPayload)
+	seed := v2Append("append-payload-seed", "session-payload", 0, "command-payload-seed", domain.SessionCreated{WorkspaceRoot: "/payload"}, domain.TurnStarted{TurnID: "turn-payload", Input: "payload"}, domain.AssistantMessageStarted{TurnID: "turn-payload", ItemID: "item-payload"})
+	if _, err := h.Store.Append(context.Background(), seed); err != nil {
+		t.Fatal(err)
+	}
+	exact := v2Append("append-payload-exact", "session-payload", 3, "command-payload-exact", exactPayload)
+	if _, err := h.Store.Append(context.Background(), exact); err != nil {
+		t.Fatalf("exact 8MiB event payload rejected: %v", err)
+	}
+
+	tooLarge := v2Append("append-payload-plus-one", "session-payload-too-large", 0, "command-payload-plus-one", payloadEventOfSize(t, maxPayload+1))
+	if _, err := h.Store.Append(context.Background(), tooLarge); err == nil {
+		t.Fatal("8MiB+1 event payload succeeded")
+	} else {
+		requireCode(t, err, application.StoreCodeInvalidAppend)
+	}
+	assertAppendAbsent(t, h, tooLarge, 0)
+
+	const maxRequest = 16 * 1024 * 1024
+	exactRequest := requestOfCanonicalSize(t, "append-request-exact", "session-request-exact", maxRequest)
+	if got := canonicalAppendSize(t, exactRequest); got != maxRequest {
+		t.Fatalf("exact request size = %d, want %d", got, maxRequest)
+	}
+	if _, err := application.DigestAppendRequest(exactRequest); err != nil {
+		t.Fatalf("DigestAppendRequest(exact) = %v", err)
+	}
+	if _, err := h.Store.Append(context.Background(), exactRequest); err != nil {
+		t.Fatalf("exact 16MiB request rejected: %v", err)
+	}
+	overRequest := requestOfCanonicalSize(t, "append-request-plus-one", "session-request-plus-one", maxRequest+1)
+	if got := canonicalAppendSize(t, overRequest); got != maxRequest+1 {
+		t.Fatalf("over request size = %d, want %d", got, maxRequest+1)
+	}
+	if _, err := application.DigestAppendRequest(overRequest); err == nil {
+		t.Fatal("DigestAppendRequest accepted 16MiB+1 request")
+	}
+	if _, err := h.Store.Append(context.Background(), overRequest); err == nil {
+		t.Fatal("16MiB+1 request succeeded")
+	} else {
+		requireCode(t, err, application.StoreCodeInvalidAppend)
+	}
+	assertAppendAbsent(t, h, overRequest, 0)
+	// Reusing every rejected candidate identity in an accepted exact-sized
+	// request catches leaked Event/Turn/Item indexes.
+	reuse := v2Append("append-request-reuse", "session-request-plus-one", 0, "command-request-reuse", domain.SessionCreated{WorkspaceRoot: "/request"}, domain.TurnStarted{TurnID: "turn-request", Input: "request"}, domain.AssistantMessageStarted{TurnID: "turn-request", ItemID: "item-request-1"})
+	for i := range reuse.Events {
+		reuse.Events[i].ID = overRequest.Events[i].ID
+	}
+	if _, err := h.Store.Append(context.Background(), reuse); err != nil {
+		t.Fatalf("rejected over-limit request leaked identities: %v", err)
+	}
+}
+
+func payloadEventOfSize(t *testing.T, want int) domain.Event {
+	t.Helper()
+	event := domain.AssistantMessageCompleted{TurnID: "turn-payload", ItemID: "item-payload"}
+	_, payload, err := domain.MarshalEventPayload(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payload) > want {
+		t.Fatalf("payload baseline %d exceeds target %d", len(payload), want)
+	}
+	event.Text = strings.Repeat("x", want-len(payload))
+	_, payload, err = domain.MarshalEventPayload(event)
+	if err != nil || len(payload) != want {
+		t.Fatalf("payload size = (%d, %v), want %d", len(payload), err, want)
+	}
+	return event
+}
+
+func requestOfCanonicalSize(t *testing.T, appendID domain.AppendID, sessionID domain.SessionID, want int) application.AppendRequestV2 {
+	t.Helper()
+	events := []domain.Event{domain.SessionCreated{WorkspaceRoot: "/request"}, domain.TurnStarted{TurnID: "turn-request", Input: "request"}, domain.AssistantMessageStarted{TurnID: "turn-request", ItemID: "item-request-1"}, domain.AssistantMessageCompleted{TurnID: "turn-request", ItemID: "item-request-1"}, domain.AssistantMessageStarted{TurnID: "turn-request", ItemID: "item-request-2"}, domain.AssistantMessageCompleted{TurnID: "turn-request", ItemID: "item-request-2"}, domain.TurnCompleted{TurnID: "turn-request"}}
+	request := v2Append(appendID, sessionID, 0, domain.CommandID("command-"+string(appendID)), events...)
+	base := canonicalAppendSize(t, request)
+	extra := want - base
+	if extra < 0 {
+		t.Fatalf("request baseline %d exceeds target %d", base, want)
+	}
+	const payloadLimit = 8 * 1024 * 1024
+	_, emptyPayload, err := domain.MarshalEventPayload(events[3])
+	if err != nil {
+		t.Fatal(err)
+	}
+	capacity := 2 * (payloadLimit - len(emptyPayload))
+	if extra > capacity {
+		t.Fatalf("request target needs %d payload bytes, capacity %d", extra, capacity)
+	}
+	firstExtra := extra
+	if firstExtra > payloadLimit-len(emptyPayload) {
+		firstExtra = payloadLimit - len(emptyPayload)
+	}
+	secondExtra := extra - firstExtra
+	events[3] = domain.AssistantMessageCompleted{TurnID: "turn-request", ItemID: "item-request-1", Text: strings.Repeat("x", firstExtra)}
+	events[5] = domain.AssistantMessageCompleted{TurnID: "turn-request", ItemID: "item-request-2", Text: strings.Repeat("x", secondExtra)}
+	request = v2Append(appendID, sessionID, 0, domain.CommandID("command-"+string(appendID)), events...)
+	return request
+}
+
+// canonicalAppendSize mirrors the public EV2-04 framing with a hand-derived
+// byte count; it does not call the digest implementation to derive its want.
+func canonicalAppendSize(t *testing.T, request application.AppendRequestV2) int {
+	t.Helper()
+	size := 8 + framedSize(string(request.SessionID)) + 8 + framedSize(string(request.CommandID)) + 1 + 8
+	for _, event := range request.Events {
+		typeName, payload, err := domain.MarshalEventPayload(event.Event)
+		if err != nil {
+			t.Fatal(err)
+		}
+		size += framedSize(string(event.ID)) + framedSize(typeName) + 8 + framedSize(event.OccurredAt.Format(time.RFC3339Nano)) + framedSizeBytes(payload)
+	}
+	return size
+}
+
+func framedSize(value string) int      { return 4 + len(value) }
+func framedSizeBytes(value []byte) int { return 4 + len(value) }
 
 func v2Append(appendID domain.AppendID, sessionID domain.SessionID, expected uint64, commandID domain.CommandID, events ...domain.Event) application.AppendRequestV2 {
 	request := application.AppendRequestV2{AppendID: appendID, SessionID: sessionID, ExpectedVersion: expected, CommandID: commandID, Authority: application.WriterAuthority{RuntimeID: "runtime-1", FencingToken: 1}, Events: make([]application.ProposedEvent, len(events))}

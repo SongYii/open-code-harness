@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/SongYii/open-code-harness/internal/harness/application"
+	"github.com/SongYii/open-code-harness/internal/harness/domain"
 )
 
 // FaultPoint names deterministic test-only storage failure boundaries.
@@ -17,11 +18,22 @@ const (
 	FaultResolve              FaultPoint = "resolve"
 )
 
+// CommitHookPoint names the two sides of the adapter's single publication
+// boundary. It is conformance-only, not a Store-port concern.
+type CommitHookPoint string
+
+const (
+	CommitHookBeforePublish CommitHookPoint = "before_publish"
+	CommitHookAfterPublish  CommitHookPoint = "after_publish"
+)
+
 // V2Harness supplies a fresh adapter instance for one independent test case.
 type V2Harness struct {
 	Store           application.EventStoreV2
 	RotateAuthority func(application.WriterAuthority)
 	FailNext        func(FaultPoint, error)
+	CorruptReceipt  func(domain.AppendID)
+	SetCommitHook   func(CommitHookPoint, func())
 }
 
 // V2Factory avoids colliding with the v1 conformance factory retained during
@@ -37,12 +49,13 @@ func RunV2(t *testing.T, factory V2Factory) {
 	t.Run("writer fencing", func(t *testing.T) { testWriterFencing(t, factory) })
 	t.Run("unknown outcome", func(t *testing.T) { testUnknownOutcome(t, factory) })
 	t.Run("limits copies cancellation and corruption", func(t *testing.T) { testLimitsCopiesCancellationAndCorruption(t, factory) })
+	t.Run("publication cancellation and corrupt receipts", func(t *testing.T) { testPublicationCancellationAndCorruptReceipts(t, factory) })
 	t.Run("concurrent commit positions", func(t *testing.T) { testConcurrentCommitPositions(t, factory) })
 }
 
 func requireV2(t *testing.T, harness V2Harness) {
 	t.Helper()
-	if harness.Store == nil || harness.RotateAuthority == nil || harness.FailNext == nil {
+	if harness.Store == nil || harness.RotateAuthority == nil || harness.FailNext == nil || harness.CorruptReceipt == nil || harness.SetCommitHook == nil {
 		t.Fatal("v2 harness is incomplete")
 	}
 }

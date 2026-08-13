@@ -12,7 +12,11 @@ func TestEventStoreV2Contract(t *testing.T) {
 		store := mustV2Store(t, application.WriterAuthority{RuntimeID: "runtime-1", FencingToken: 1})
 		return eventstoretest.V2Harness{
 			Store: store, RotateAuthority: store.SetAuthority,
-			FailNext: func(point eventstoretest.FaultPoint, err error) { store.FailNext(FaultPoint(point), err) },
+			FailNext:       func(point eventstoretest.FaultPoint, err error) { store.FailNext(FaultPoint(point), err) },
+			CorruptReceipt: store.CorruptReceipt,
+			SetCommitHook: func(point eventstoretest.CommitHookPoint, hook func()) {
+				store.SetCommitHook(CommitHookPoint(point), hook)
+			},
 		}
 	})
 }

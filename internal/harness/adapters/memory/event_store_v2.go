@@ -18,11 +18,33 @@ const (
 	FaultResolve              FaultPoint = "resolve"
 )
 
+// CommitHookPoint is a bounded conformance-only callback boundary.
+type CommitHookPoint string
+
+const (
+	CommitHookBeforePublish CommitHookPoint = "before_publish"
+	CommitHookAfterPublish  CommitHookPoint = "after_publish"
+)
+
 // EventStoreV2 is the deterministic, mutex-protected reference implementation
 // of the v2 stream storage contract.
 type EventStoreV2 struct {
-	mu             sync.Mutex
-	authority      application.WriterAuthority
+	mu          sync.Mutex
+	authority   application.WriterAuthority
+	state       eventStoreV2State
+	faults      map[FaultPoint][]error
+	commitHooks map[CommitHookPoint]func()
+}
+
+type storedAppend struct {
+	digest    application.Digest
+	receipt   application.CommitReceipt
+	sessionID domain.SessionID
+}
+
+// eventStoreV2State owns every fact changed by a successful append. Append
+// constructs a complete copy and publishes it with one assignment.
+type eventStoreV2State struct {
 	commitPosition uint64
 	streams        map[domain.SessionID][]domain.RecordedEvent
 	appends        map[domain.AppendID]storedAppend
@@ -30,12 +52,6 @@ type EventStoreV2 struct {
 	eventIDs       map[domain.EventID]struct{}
 	turnIDs        map[domain.SessionID]map[domain.TurnID]struct{}
 	itemIDs        map[domain.SessionID]map[domain.ItemID]struct{}
-	faults         map[FaultPoint][]error
-}
-
-type storedAppend struct {
-	digest  application.Digest
-	receipt application.CommitReceipt
 }
 
 var _ application.EventStoreV2 = (*EventStoreV2)(nil)
@@ -46,11 +62,12 @@ func NewEventStoreV2(authority application.WriterAuthority) (*EventStoreV2, erro
 		return nil, fmt.Errorf("invalid writer authority: %w", err)
 	}
 	return &EventStoreV2{
-		authority: authority, streams: make(map[domain.SessionID][]domain.RecordedEvent),
-		appends: make(map[domain.AppendID]storedAppend), requests: make(map[domain.RunTurnRequestID]application.CommandRequestRecord),
-		eventIDs: make(map[domain.EventID]struct{}), turnIDs: make(map[domain.SessionID]map[domain.TurnID]struct{}),
-		itemIDs: make(map[domain.SessionID]map[domain.ItemID]struct{}), faults: make(map[FaultPoint][]error),
+		authority: authority, state: newEventStoreV2State(), faults: make(map[FaultPoint][]error), commitHooks: make(map[CommitHookPoint]func()),
 	}, nil
+}
+
+func newEventStoreV2State() eventStoreV2State {
+	return eventStoreV2State{streams: make(map[domain.SessionID][]domain.RecordedEvent), appends: make(map[domain.AppendID]storedAppend), requests: make(map[domain.RunTurnRequestID]application.CommandRequestRecord), eventIDs: make(map[domain.EventID]struct{}), turnIDs: make(map[domain.SessionID]map[domain.TurnID]struct{}), itemIDs: make(map[domain.SessionID]map[domain.ItemID]struct{})}
 }
 
 // SetAuthority rotates the current deterministic owner. Invalid values are
@@ -74,7 +91,29 @@ func (store *EventStoreV2) FailNext(point FaultPoint, err error) {
 		delete(store.faults, point)
 		return
 	}
-	store.faults[point] = append(store.faults[point], err)
+	store.faults[point] = []error{err}
+}
+
+// CorruptReceipt is a conformance-only control that prevents a stored receipt
+// from being emitted; no Store-port caller can access it.
+func (store *EventStoreV2) CorruptReceipt(appendID domain.AppendID) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if value, ok := store.state.appends[appendID]; ok {
+		value.receipt.CommitPosition = 0
+		store.state.appends[appendID] = value
+	}
+}
+
+// SetCommitHook installs one bounded conformance-only hook.
+func (store *EventStoreV2) SetCommitHook(point CommitHookPoint, hook func()) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if hook == nil {
+		delete(store.commitHooks, point)
+		return
+	}
+	store.commitHooks[point] = hook
 }
 
 func (store *EventStoreV2) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
@@ -92,8 +131,11 @@ func (store *EventStoreV2) Append(ctx context.Context, request application.Appen
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if old, exists := store.appends[request.AppendID]; exists {
+	if old, exists := store.state.appends[request.AppendID]; exists {
 		if old.digest == digest {
+			if err := store.validateStoredReceipt(request.AppendID, old); err != nil {
+				return application.CommitReceipt{}, err
+			}
 			return old.receipt, nil
 		}
 		return application.CommitReceipt{}, appendError(application.StoreCodeAppendIdentityMismatch, request.SessionID, nil)
@@ -112,14 +154,14 @@ func (store *EventStoreV2) Append(ctx context.Context, request application.Appen
 		return application.CommitReceipt{}, appendError(application.StoreCodeWriterFenced, request.SessionID, nil)
 	}
 	if request.Admission != nil {
-		if existing, exists := store.requests[request.Admission.RunTurnRequestID]; exists {
+		if existing, exists := store.state.requests[request.Admission.RunTurnRequestID]; exists {
 			if existing.SessionID == request.SessionID && existing.RequestDigest != request.Admission.RequestDigest {
 				return application.CommitReceipt{}, appendError(application.StoreCodeCommandIdentityMismatch, request.SessionID, nil)
 			}
 			return application.CommitReceipt{}, appendError(application.StoreCodeCommandRequestConflict, request.SessionID, nil)
 		}
 	}
-	current := store.streams[request.SessionID]
+	current := store.state.streams[request.SessionID]
 	if actual := uint64(len(current)); actual != request.ExpectedVersion {
 		return application.CommitReceipt{}, storeError(application.StoreCodeVersionConflict, request.SessionID, request.ExpectedVersion, actual, "", nil)
 	}
@@ -144,20 +186,31 @@ func (store *EventStoreV2) Append(ctx context.Context, request application.Appen
 		return application.CommitReceipt{}, appendError(application.StoreCodeUnavailable, request.SessionID, cause)
 	}
 
-	// Publish a complete candidate only after every validation succeeds.
-	position := store.commitPosition + 1
+	// Build every independently owned candidate map before the single publish.
+	candidateState, err := cloneV2State(store.state)
+	if err != nil {
+		return application.CommitReceipt{}, storeError(application.StoreCodeCorrupt, request.SessionID, 0, 0, "", err)
+	}
+	position := candidateState.commitPosition + 1
 	receipt := application.CommitReceipt{AppendID: request.AppendID, CommitPosition: position, FirstSequence: batch[0].Sequence, LastSequence: batch[len(batch)-1].Sequence}
-	store.streams[request.SessionID] = candidate
-	store.commitPosition = position
-	store.appends[request.AppendID] = storedAppend{digest: digest, receipt: receipt}
+	candidateState.streams[request.SessionID] = candidate
+	candidateState.commitPosition = position
+	candidateState.appends[request.AppendID] = storedAppend{digest: digest, receipt: receipt, sessionID: request.SessionID}
 	for _, record := range batch {
-		store.eventIDs[record.ID] = struct{}{}
+		candidateState.eventIDs[record.ID] = struct{}{}
 	}
-	store.reserveIDs(store.turnIDs, request.SessionID, turnIDs)
-	store.reserveIDsItems(store.itemIDs, request.SessionID, itemIDs)
+	reserveIDs(candidateState.turnIDs, request.SessionID, turnIDs)
+	reserveIDsItems(candidateState.itemIDs, request.SessionID, itemIDs)
 	if request.Admission != nil {
-		store.requests[request.Admission.RunTurnRequestID] = application.CommandRequestRecord{RunTurnRequestID: request.Admission.RunTurnRequestID, RequestDigest: request.Admission.RequestDigest, SessionID: request.SessionID, CommandID: request.CommandID, TurnID: request.Admission.TurnID, ItemID: request.Admission.ItemID, AdmissionAppendID: request.AppendID}
+		candidateState.requests[request.Admission.RunTurnRequestID] = application.CommandRequestRecord{RunTurnRequestID: request.Admission.RunTurnRequestID, RequestDigest: request.Admission.RequestDigest, SessionID: request.SessionID, CommandID: request.CommandID, TurnID: request.Admission.TurnID, ItemID: request.Admission.ItemID, AdmissionAppendID: request.AppendID}
 	}
+	store.runCommitHook(CommitHookBeforePublish)
+	if err := contextError(ctx); err != nil {
+		return application.CommitReceipt{}, appendError(application.StoreCodeInvalidAppend, request.SessionID, err)
+	}
+	// This assignment is the sole publication point for append state.
+	store.state = candidateState
+	store.runCommitHook(CommitHookAfterPublish)
 	if cause := store.popFault(FaultAfterCommitBeforeAck); cause != nil {
 		return application.CommitReceipt{}, storeError(application.StoreCodeCommitOutcomeUnknown, request.SessionID, 0, 0, "", cause)
 	}
@@ -195,7 +248,7 @@ func (store *EventStoreV2) buildBatch(request application.AppendRequestV2, curre
 		if _, exists := seenEvents[proposed.ID]; exists {
 			return nil, nil, nil, appendError(application.StoreCodeInvalidAppend, request.SessionID, fmt.Errorf("duplicate event ID"))
 		}
-		if _, exists := store.eventIDs[proposed.ID]; exists {
+		if _, exists := store.state.eventIDs[proposed.ID]; exists {
 			return nil, nil, nil, appendError(application.StoreCodeInvalidAppend, request.SessionID, fmt.Errorf("duplicate event ID"))
 		}
 		cloned, err := domain.CloneEvent(proposed.Event)
@@ -206,7 +259,7 @@ func (store *EventStoreV2) buildBatch(request application.AppendRequestV2, curre
 		batch[i] = domain.RecordedEvent{SchemaVersion: int(proposed.SchemaVersion), ID: proposed.ID, CommandID: request.CommandID, SessionID: request.SessionID, Sequence: uint64(len(current) + i + 1), OccurredAt: proposed.OccurredAt, Event: cloned}
 		switch event := cloned.(type) {
 		case domain.TurnStarted:
-			if _, exists := store.turnIDs[request.SessionID][event.TurnID]; exists {
+			if _, exists := store.state.turnIDs[request.SessionID][event.TurnID]; exists {
 				return nil, nil, nil, identityError(request.SessionID, "turn")
 			}
 			if _, exists := seenTurns[event.TurnID]; exists {
@@ -214,7 +267,7 @@ func (store *EventStoreV2) buildBatch(request application.AppendRequestV2, curre
 			}
 			seenTurns[event.TurnID] = struct{}{}
 		case domain.AssistantMessageStarted:
-			if _, exists := store.itemIDs[request.SessionID][event.ItemID]; exists {
+			if _, exists := store.state.itemIDs[request.SessionID][event.ItemID]; exists {
 				return nil, nil, nil, identityError(request.SessionID, "item")
 			}
 			if _, exists := seenItems[event.ItemID]; exists {
@@ -246,7 +299,7 @@ func (store *EventStoreV2) ReadStream(ctx context.Context, request application.R
 	if err := contextError(ctx); err != nil {
 		return application.StreamPage{}, readError(request.SessionID, err)
 	}
-	stream := store.streams[request.SessionID]
+	stream := store.state.streams[request.SessionID]
 	currentHead := uint64(len(stream))
 	head := currentHead
 	if request.HeadVersion != nil {
@@ -284,11 +337,17 @@ func (store *EventStoreV2) ResolveAppend(ctx context.Context, request applicatio
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	if err := contextError(ctx); err != nil {
+		return application.AppendResolution{}, appendError(application.StoreCodeInvalidAppend, "", err)
+	}
 	if cause := store.popFault(FaultResolve); cause != nil {
 		return application.AppendResolution{}, appendError(application.StoreCodeUnavailable, "", cause)
 	}
-	if old, exists := store.appends[request.AppendID]; exists {
+	if old, exists := store.state.appends[request.AppendID]; exists {
 		if old.digest == request.RequestDigest {
+			if err := store.validateStoredReceipt(request.AppendID, old); err != nil {
+				return application.AppendResolution{}, err
+			}
 			receipt := old.receipt
 			return application.AppendResolution{Kind: application.AppendResolutionCommitted, Receipt: &receipt}, nil
 		}
@@ -309,7 +368,10 @@ func (store *EventStoreV2) FindCommandRequest(ctx context.Context, request appli
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if record, exists := store.requests[request.RunTurnRequestID]; exists {
+	if err := contextError(ctx); err != nil {
+		return application.CommandRequestLookup{}, appendError(application.StoreCodeInvalidAppend, request.SessionID, err)
+	}
+	if record, exists := store.state.requests[request.RunTurnRequestID]; exists {
 		if record.SessionID == request.SessionID && record.RequestDigest == request.RequestDigest {
 			copy := record
 			return application.CommandRequestLookup{Kind: application.CommandRequestLookupFound, Record: &copy}, nil
@@ -333,6 +395,62 @@ func (store *EventStoreV2) popFault(point FaultPoint) error {
 	return cause
 }
 
+func (store *EventStoreV2) runCommitHook(point CommitHookPoint) {
+	hook := store.commitHooks[point]
+	delete(store.commitHooks, point)
+	if hook != nil {
+		hook()
+	}
+}
+
+func (store *EventStoreV2) validateStoredReceipt(appendID domain.AppendID, stored storedAppend) error {
+	receipt := stored.receipt
+	if receipt.AppendID != appendID || receipt.CommitPosition == 0 || receipt.FirstSequence == 0 || receipt.LastSequence < receipt.FirstSequence || receipt.CommitPosition > store.state.commitPosition {
+		return storeError(application.StoreCodeCorrupt, stored.sessionID, 0, 0, "", fmt.Errorf("invalid stored receipt"))
+	}
+	stream := store.state.streams[stored.sessionID]
+	if receipt.LastSequence > uint64(len(stream)) || stream[receipt.FirstSequence-1].Sequence != receipt.FirstSequence || stream[receipt.LastSequence-1].Sequence != receipt.LastSequence {
+		return storeError(application.StoreCodeCorrupt, stored.sessionID, 0, 0, "", fmt.Errorf("receipt sequence range is corrupt"))
+	}
+	return nil
+}
+
+func cloneV2State(source eventStoreV2State) (eventStoreV2State, error) {
+	cloned := newEventStoreV2State()
+	cloned.commitPosition = source.commitPosition
+	for session, records := range source.streams {
+		copied, err := domain.CloneRecordedEvents(records)
+		if err != nil {
+			return eventStoreV2State{}, err
+		}
+		cloned.streams[session] = copied
+	}
+	for id, value := range source.appends {
+		cloned.appends[id] = value
+	}
+	for id, value := range source.requests {
+		cloned.requests[id] = value
+	}
+	for id := range source.eventIDs {
+		cloned.eventIDs[id] = struct{}{}
+	}
+	for session, ids := range source.turnIDs {
+		copied := make(map[domain.TurnID]struct{}, len(ids))
+		for id := range ids {
+			copied[id] = struct{}{}
+		}
+		cloned.turnIDs[session] = copied
+	}
+	for session, ids := range source.itemIDs {
+		copied := make(map[domain.ItemID]struct{}, len(ids))
+		for id := range ids {
+			copied[id] = struct{}{}
+		}
+		cloned.itemIDs[session] = copied
+	}
+	return cloned, nil
+}
+
 func containsTurnID(ids []domain.TurnID, want domain.TurnID) bool {
 	for _, id := range ids {
 		if id == want {
@@ -350,7 +468,7 @@ func containsItemID(ids []domain.ItemID, want domain.ItemID) bool {
 	}
 	return false
 }
-func (store *EventStoreV2) reserveIDs(index map[domain.SessionID]map[domain.TurnID]struct{}, session domain.SessionID, ids []domain.TurnID) {
+func reserveIDs(index map[domain.SessionID]map[domain.TurnID]struct{}, session domain.SessionID, ids []domain.TurnID) {
 	if len(ids) == 0 {
 		return
 	}
@@ -363,7 +481,7 @@ func (store *EventStoreV2) reserveIDs(index map[domain.SessionID]map[domain.Turn
 		set[id] = struct{}{}
 	}
 }
-func (store *EventStoreV2) reserveIDsItems(index map[domain.SessionID]map[domain.ItemID]struct{}, session domain.SessionID, ids []domain.ItemID) {
+func reserveIDsItems(index map[domain.SessionID]map[domain.ItemID]struct{}, session domain.SessionID, ids []domain.ItemID) {
 	if len(ids) == 0 {
 		return
 	}
