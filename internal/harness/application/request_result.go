@@ -17,65 +17,68 @@ func ReconstructRequestResult(record CommandRequestRecord, records []domain.Reco
 	if err := validateRequestView(record.SessionID, records); err != nil {
 		return RunTurnResult{}, corruptRequestResult(err.Error())
 	}
-	start := -1
-	for index := 0; index+1 < len(records); index++ {
-		turn, turnOK := records[index].Event.(domain.TurnStarted)
-		item, itemOK := records[index+1].Event.(domain.AssistantMessageStarted)
-		if !turnOK && !itemOK {
-			continue
-		}
-		if turnOK && turn.TurnID == record.TurnID || itemOK && (item.TurnID == record.TurnID || item.ItemID == record.ItemID) {
-			if !turnOK || !itemOK || records[index].CommandID != record.CommandID || records[index+1].CommandID != record.CommandID || turn.TurnID != record.TurnID || item.TurnID != record.TurnID || item.ItemID != record.ItemID {
-				return RunTurnResult{}, corruptRequestResult("relevant admission pair is malformed")
-			}
-			digest, err := DigestRunTurnRequestV1(record.SessionID, turn.Input)
-			if err != nil || digest != record.RequestDigest {
-				return RunTurnResult{}, corruptRequestResult("admission input digest mismatches record")
-			}
-			if start >= 0 {
-				return RunTurnResult{}, corruptRequestResult("multiple admission pairs")
-			}
-			start = index
+	relevant := make([]int, 0, 4)
+	for index, candidate := range records {
+		if candidate.CommandID == record.CommandID || referencesRequestIdentity(candidate.Event, record) {
+			relevant = append(relevant, index)
 		}
 	}
-	if start < 0 {
-		return RunTurnResult{}, corruptRequestResult("admission start pair is absent")
+	if len(relevant) != 2 && len(relevant) != 4 || len(relevant) >= 2 && relevant[1] != relevant[0]+1 || len(relevant) == 4 && relevant[3] != relevant[2]+1 {
+		return RunTurnResult{}, corruptRequestResult("relevant records do not form ordered adjacent pairs")
 	}
-	result := RunTurnResult{SessionID: record.SessionID, TurnID: record.TurnID, ItemID: record.ItemID, Status: domain.TurnStatusRunning, Records: append([]domain.RecordedEvent(nil), records[start:start+2]...)}
-	terminals := 0
-	for index := start + 2; index+1 < len(records); index++ {
-		terminal, terminalOK, status, text, stableCode := requestTerminal(records[index].Event, record)
-		_, turnOK := records[index+1].Event.(domain.TurnCompleted)
-		if !turnOK {
-			switch records[index+1].Event.(type) {
-			case domain.TurnFailed, domain.TurnInterrupted:
-				turnOK = true
-			}
-		}
-		if !terminalOK {
-			if relevantRequestTerminal(records[index].Event, record) {
-				return RunTurnResult{}, corruptRequestResult("relevant terminal event is malformed")
-			}
-			continue
-		}
-		if records[index].CommandID != record.CommandID || records[index+1].CommandID != record.CommandID || !turnOK || terminals != 0 {
-			return RunTurnResult{}, corruptRequestResult("terminal pair is malformed")
-		}
-		if err := validateTerminalTurn(records[index+1].Event, record, stableCode); err != nil {
-			return RunTurnResult{}, corruptRequestResult(err.Error())
-		}
-		if message, ok := terminal.(domain.AssistantMessageFailed); ok {
-			turn := records[index+1].Event.(domain.TurnFailed)
-			if message.Message != turn.Message {
-				return RunTurnResult{}, corruptRequestResult("failed terminal messages do not match")
-			}
-		}
-		_ = terminal
-		terminals++
-		result.Status, result.Text, result.TerminalCommitted = status, text, true
-		result.Records = append(result.Records, records[index], records[index+1])
+	start, itemStart := records[relevant[0]], records[relevant[1]]
+	turn, turnOK := start.Event.(domain.TurnStarted)
+	item, itemOK := itemStart.Event.(domain.AssistantMessageStarted)
+	if !turnOK || !itemOK || start.CommandID != record.CommandID || itemStart.CommandID != record.CommandID || turn.TurnID != record.TurnID || item.TurnID != record.TurnID || item.ItemID != record.ItemID {
+		return RunTurnResult{}, corruptRequestResult("admission pair is malformed")
 	}
+	digest, err := DigestRunTurnRequestV1(record.SessionID, turn.Input)
+	if err != nil || digest != record.RequestDigest {
+		return RunTurnResult{}, corruptRequestResult("admission input digest mismatches record")
+	}
+	result := RunTurnResult{SessionID: record.SessionID, TurnID: record.TurnID, ItemID: record.ItemID, Status: domain.TurnStatusRunning, Records: []domain.RecordedEvent{start, itemStart}}
+	if len(relevant) == 2 {
+		return cloneRunTurnResult(result), nil
+	}
+	terminalRecord, turnRecord := records[relevant[2]], records[relevant[3]]
+	terminal, ok, status, text, stableCode := requestTerminal(terminalRecord.Event, record)
+	if !ok || terminalRecord.CommandID != record.CommandID || turnRecord.CommandID != record.CommandID {
+		return RunTurnResult{}, corruptRequestResult("terminal pair is malformed")
+	}
+	if err := validateTerminalTurn(turnRecord.Event, record, stableCode); err != nil {
+		return RunTurnResult{}, corruptRequestResult(err.Error())
+	}
+	if message, ok := terminal.(domain.AssistantMessageFailed); ok {
+		if turnRecord.Event.(domain.TurnFailed).Message != message.Message {
+			return RunTurnResult{}, corruptRequestResult("failed terminal messages do not match")
+		}
+	}
+	result.Status, result.Text, result.TerminalCommitted = status, text, true
+	result.Records = append(result.Records, terminalRecord, turnRecord)
 	return cloneRunTurnResult(result), nil
+}
+
+func referencesRequestIdentity(event domain.Event, record CommandRequestRecord) bool {
+	switch value := event.(type) {
+	case domain.TurnStarted:
+		return value.TurnID == record.TurnID
+	case domain.TurnCompleted:
+		return value.TurnID == record.TurnID
+	case domain.TurnFailed:
+		return value.TurnID == record.TurnID
+	case domain.TurnInterrupted:
+		return value.TurnID == record.TurnID
+	case domain.AssistantMessageStarted:
+		return value.TurnID == record.TurnID || value.ItemID == record.ItemID
+	case domain.AssistantMessageCompleted:
+		return value.TurnID == record.TurnID || value.ItemID == record.ItemID
+	case domain.AssistantMessageFailed:
+		return value.TurnID == record.TurnID || value.ItemID == record.ItemID
+	case domain.AssistantMessageInterrupted:
+		return value.TurnID == record.TurnID || value.ItemID == record.ItemID
+	default:
+		return false
+	}
 }
 
 func relevantRequestTerminal(event domain.Event, record CommandRequestRecord) bool {
@@ -119,7 +122,7 @@ func validateCommandRequestRecord(record CommandRequestRecord) error {
 func validateRequestView(sessionID domain.SessionID, records []domain.RecordedEvent) error {
 	var previous uint64
 	for index, record := range records {
-		if record.SessionID != sessionID || (index > 0 && record.Sequence != previous+1) || (index == 0 && record.Sequence == 0) {
+		if record.SessionID != sessionID || (index > 0 && record.Sequence != previous+1) || (index == 0 && record.Sequence != 1) {
 			return fmt.Errorf("records are not one contiguous session view")
 		}
 		if _, err := domain.MarshalRecordedEvent(record); err != nil {

@@ -17,19 +17,20 @@ import (
 )
 
 func TestConcurrentRunTurnSameSessionHasOneAtomicAdmissionWinner(t *testing.T) {
-	ids := testkit.NewSequenceIDs()
 	authority := application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1}
 	base, err := memory.NewEventStoreV2(authority)
 	if err != nil {
 		t.Fatal(err)
 	}
-	barrier := newAcceptanceLoadBarrier(base, "session-1", 1)
-	model := &acceptanceSuccessModel{text: "done"}
-	service := newAcceptanceService(t, barrier, ids, model)
-	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	ids := testkit.NewSequenceIDs()
+	seed := newAcceptanceService(t, base, ids, &acceptanceSuccessModel{text: "seed"})
+	created, err := seed.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	lookupGate := newLookupRaceBarrier(base, 32)
+	model := newBlockingAcceptanceModel("done")
+	service := newAcceptanceService(t, lookupGate, ids, model)
 
 	type outcome struct {
 		result application.RunTurnResult
@@ -50,8 +51,14 @@ func TestConcurrentRunTurnSameSessionHasOneAtomicAdmissionWinner(t *testing.T) {
 		}()
 	}
 	close(start)
-	barrier.WaitAll()
-	barrier.Release()
+	await(t, lookupGate.ready, "all initial request lookups")
+	close(lookupGate.release)
+	select {
+	case <-model.started:
+	case <-time.After(time.Second):
+		t.Fatal("owner did not enter blocking model")
+	}
+	model.releaseOnce()
 
 	successes := 0
 	var first application.RunTurnResult
@@ -66,7 +73,7 @@ func TestConcurrentRunTurnSameSessionHasOneAtomicAdmissionWinner(t *testing.T) {
 		}
 		if first.TurnID == "" {
 			first = got.result
-		} else if got.result.TurnID != first.TurnID || got.result.ItemID != first.ItemID || got.result.Text != first.Text {
+		} else if !reflect.DeepEqual(got.result, first) {
 			t.Fatalf("duplicate result = %#v, want same execution as %#v", got.result, first)
 		}
 	}
@@ -96,6 +103,27 @@ func TestConcurrentRunTurnSameSessionHasOneAtomicAdmissionWinner(t *testing.T) {
 	}
 }
 
+func await(t *testing.T, channel <-chan struct{}, description string) {
+	t.Helper()
+	select {
+	case <-channel:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", description)
+	}
+}
+
+func awaitOutcome[T any](t *testing.T, channel <-chan T, description string) T {
+	t.Helper()
+	select {
+	case value := <-channel:
+		return value
+	case <-time.After(time.Second):
+		var zero T
+		t.Fatalf("timed out waiting for %s", description)
+		return zero
+	}
+}
+
 func TestConcurrentRunTurnAcrossServicesReconcilesDurableAdmissionWinner(t *testing.T) {
 	authority := application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1}
 	base, err := memory.NewEventStoreV2(authority)
@@ -119,7 +147,7 @@ func TestConcurrentRunTurnAcrossServicesReconcilesDurableAdmissionWinner(t *test
 			done <- outcome{err: err}
 		}(service)
 	}
-	<-gate.ready
+	await(t, gate.ready, "both cross-service initial lookups")
 	close(gate.release)
 	select {
 	case <-modelA.started:
@@ -127,14 +155,14 @@ func TestConcurrentRunTurnAcrossServicesReconcilesDurableAdmissionWinner(t *test
 	case <-time.After(time.Second):
 		t.Fatal("winner did not enter model")
 	}
-	first := <-done
+	first := awaitOutcome(t, done, "cross-service loser")
 	var appErr *application.Error
 	if !errors.As(first.err, &appErr) || appErr.Code != "reconciliation_required" {
 		t.Fatalf("cross-service loser error = %v", first.err)
 	}
 	modelA.releaseOnce()
 	modelB.releaseOnce()
-	second := <-done
+	second := awaitOutcome(t, done, "cross-service winner")
 	if second.err != nil {
 		t.Fatalf("cross-service winner error = %v", second.err)
 	}
@@ -197,8 +225,12 @@ func (store *lookupRaceBarrier) FindCommandRequest(ctx context.Context, request 
 	if last {
 		close(store.ready)
 	}
-	<-store.release
-	return lookup, nil
+	select {
+	case <-store.release:
+		return lookup, nil
+	case <-ctx.Done():
+		return application.CommandRequestLookup{}, ctx.Err()
+	}
 }
 
 func TestConcurrentRunTurnDifferentSessionsCompleteThirtyTwo(t *testing.T) {

@@ -105,3 +105,27 @@ func TestExecutionRegistryRejectsWaiterAndReleasedOwnerMutation(t *testing.T) {
 	}
 	waiter.release()
 }
+
+func TestExecutionRegistryRejectsPhaseSkipsAndRegressions(t *testing.T) {
+	registry := newExecutionRegistry()
+	owner, _, err := registry.acquire("request-phase", "session-1", Digest{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.setPhase(executionPhaseTerminalInFlight); err == nil {
+		t.Fatal("accepted phase skip")
+	}
+	if err := owner.setPhase(executionPhaseRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.setPhase(executionPhaseAdmissionInFlight); err == nil {
+		t.Fatal("accepted phase regression")
+	}
+	if err := owner.setPhase(executionPhaseTerminalInFlight); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.setPhase(executionPhaseTerminalUnknown); err == nil {
+		t.Fatal("accepted unknown without retained intent")
+	}
+	owner.release()
+}

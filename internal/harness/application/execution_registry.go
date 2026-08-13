@@ -122,8 +122,11 @@ func (lease *executionLease) setPhase(phase executionPhase) error {
 	}
 	lease.registry.mu.Lock()
 	defer lease.registry.mu.Unlock()
-	if !lease.ownsLocked() {
+	if phase == executionPhaseAdmissionUnknown || phase == executionPhaseTerminalUnknown || !lease.ownsLocked() {
 		return errors.New("execution owner capability rejected")
+	}
+	if !validExecutionTransition(lease.entry.phase, phase) {
+		return errors.New("invalid execution phase transition")
 	}
 	lease.entry.phase = phase
 	return nil
@@ -155,13 +158,26 @@ func (lease *executionLease) retainUnknown(phase executionPhase) error {
 	}
 	lease.registry.mu.Lock()
 	defer lease.registry.mu.Unlock()
-	if !lease.ownsLocked() || lease.entry.intent == nil {
+	if !lease.ownsLocked() || lease.entry.intent == nil || !validExecutionTransition(lease.entry.phase, phase) {
 		return errors.New("execution owner capability rejected")
 	}
 	lease.entry.phase = phase
 	lease.entry.retained = true
 	lease.entry.ownerActive = false
 	return nil
+}
+
+func validExecutionTransition(from, to executionPhase) bool {
+	switch from {
+	case executionPhaseAdmissionInFlight:
+		return to == executionPhaseRunning || to == executionPhaseAdmissionUnknown
+	case executionPhaseRunning:
+		return to == executionPhaseTerminalInFlight
+	case executionPhaseTerminalInFlight:
+		return to == executionPhaseTerminalInFlight || to == executionPhaseTerminalUnknown
+	default:
+		return false
+	}
 }
 
 func (lease *executionLease) publish(result RunTurnResult, err error) error {
