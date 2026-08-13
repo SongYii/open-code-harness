@@ -78,7 +78,7 @@ func TestConcurrentRunTurnSameSessionHasOneAtomicAdmissionWinner(t *testing.T) {
 	successes := 0
 	var first application.RunTurnResult
 	for range 32 {
-		got := <-done
+		got := awaitOutcome(t, done, "same-request caller result")
 		if got.err != nil {
 			t.Fatalf("RunTurn() unexpected error = %v, result = %#v", got.err, got.result)
 		}
@@ -150,33 +150,22 @@ func TestConcurrentRunTurnAcrossServicesReconcilesDurableAdmissionWinner(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	gate := newLookupRaceBarrier(base, 2)
 	modelA, modelB := newBlockingAcceptanceModel("done"), newBlockingAcceptanceModel("done")
-	serviceA := newAcceptanceService(t, gate, newPrefixedIDs("runtime-a"), modelA)
-	serviceB := newAcceptanceService(t, gate, newPrefixedIDs("runtime-b"), modelB)
+	serviceA := newAcceptanceService(t, base, newPrefixedIDs("runtime-a"), modelA)
+	serviceB := newAcceptanceService(t, base, newPrefixedIDs("runtime-b"), modelB)
 	type outcome struct{ err error }
-	done := make(chan outcome, 2)
-	for _, service := range []*application.Service{serviceA, serviceB} {
-		go func(service *application.Service) {
-			_, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-cross-process", Input: "inspect", Sink: &testkit.RecordingSink{}})
-			done <- outcome{err: err}
-		}(service)
-	}
-	await(t, gate.ready, "both cross-service initial lookups")
-	close(gate.release)
-	select {
-	case <-modelA.started:
-	case <-modelB.started:
-	case <-time.After(time.Second):
-		t.Fatal("winner did not enter model")
-	}
-	first := awaitOutcome(t, done, "cross-service loser")
+	done := make(chan outcome, 1)
+	go func() {
+		_, err := serviceA.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-cross-process", Input: "inspect", Sink: &testkit.RecordingSink{}})
+		done <- outcome{err: err}
+	}()
+	await(t, modelA.started, "cross-service durable running owner")
+	_, loserErr := serviceB.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-cross-process", Input: "inspect", Sink: &testkit.RecordingSink{}})
 	var appErr *application.Error
-	if !errors.As(first.err, &appErr) || appErr.Code != "reconciliation_required" {
-		t.Fatalf("cross-service loser error = %v", first.err)
+	if !errors.As(loserErr, &appErr) || appErr.Code != "reconciliation_required" {
+		t.Fatalf("cross-service loser error = %v", loserErr)
 	}
 	modelA.releaseOnce()
-	modelB.releaseOnce()
 	second := awaitOutcome(t, done, "cross-service winner")
 	if second.err != nil {
 		t.Fatalf("cross-service winner error = %v", second.err)

@@ -9,12 +9,8 @@ import (
 )
 
 func TestReconstructRequestResultRejectsWrongAdmissionPair(t *testing.T) {
-	record := CommandRequestRecord{RunTurnRequestID: "request-1", RequestDigest: Digest{1}, SessionID: "session-1", CommandID: "command-1", TurnID: "turn-1", ItemID: "item-1", AdmissionAppendID: "append-1"}
-	when := time.Date(2026, 8, 14, 0, 0, 0, 0, time.UTC)
-	records := []domain.RecordedEvent{
-		{SchemaVersion: 1, ID: "event-1", CommandID: "command-1", SessionID: "session-1", Sequence: 2, OccurredAt: when, Event: domain.TurnStarted{TurnID: "turn-1", Input: "input"}},
-		{SchemaVersion: 1, ID: "event-2", CommandID: "command-1", SessionID: "session-1", Sequence: 3, OccurredAt: when, Event: domain.AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-wrong"}},
-	}
+	record, records := validRequestView(t, nil, nil)
+	records[2].Event = domain.AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-wrong"}
 	if _, err := ReconstructRequestResult(record, records); !IsStoreCode(err, StoreCodeCorrupt) {
 		t.Fatalf("error = %v, want store corrupt", err)
 	}

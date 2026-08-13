@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 )
@@ -156,4 +157,63 @@ func TestExecutionRegistryAllowsRetainedTerminalUnknownOnlyFromTerminalAppend(t 
 		t.Fatalf("snapshot=%#v present=%t", snapshot, ok)
 	}
 	owner.release()
+}
+
+func TestExecutionRegistryThirtyTwoLeasesObserveOneLiveOwner(t *testing.T) {
+	registry := newExecutionRegistry()
+	start := make(chan struct{})
+	type acquired struct {
+		lease *executionLease
+		owner bool
+		err   error
+	}
+	acquiredCh := make(chan acquired, 32)
+	for range 32 {
+		go func() {
+			<-start
+			lease, owner, err := registry.acquire("request-many", "session-1", Digest{3})
+			acquiredCh <- acquired{lease, owner, err}
+		}()
+	}
+	close(start)
+	var owner *executionLease
+	leases := make([]*executionLease, 0, 32)
+	for range 32 {
+		select {
+		case got := <-acquiredCh:
+			if got.err != nil {
+				t.Fatal(got.err)
+			}
+			leases = append(leases, got.lease)
+			if got.owner {
+				if owner != nil {
+					t.Fatal("multiple owners")
+				}
+				owner = got.lease
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out acquiring leases")
+		}
+	}
+	if owner == nil {
+		t.Fatal("missing owner")
+	}
+	snapshot, ok := registry.snapshot("request-many")
+	if !ok || snapshot.Leases != 32 {
+		t.Fatalf("snapshot=%#v present=%t", snapshot, ok)
+	}
+	result := RunTurnResult{SessionID: "session-1", TurnID: "turn-1", ItemID: "item-1", Status: domain.TurnStatusCompleted, TerminalCommitted: true}
+	if err := owner.publish(result, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, lease := range leases {
+		got, err := lease.wait(context.Background())
+		if err != nil || got.SessionID != result.SessionID || got.TurnID != result.TurnID || got.ItemID != result.ItemID || got.Status != result.Status || !got.TerminalCommitted {
+			t.Fatalf("result=%#v err=%v", got, err)
+		}
+		lease.release()
+	}
+	if registry.unresolvedForSession("session-1") != 0 {
+		t.Fatal("entry leaked")
+	}
 }
