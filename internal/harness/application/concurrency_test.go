@@ -58,6 +58,21 @@ func TestConcurrentRunTurnSameSessionHasOneAtomicAdmissionWinner(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("owner did not enter blocking model")
 	}
+	mismatchDone := make(chan error, 1)
+	go func() {
+		_, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-concurrent", Input: "changed", Sink: &testkit.RecordingSink{}})
+		mismatchDone <- err
+	}()
+	mismatch := awaitOutcome(t, mismatchDone, "changed-input rejection")
+	var mismatchErr *application.Error
+	if !errors.As(mismatch, &mismatchErr) || mismatchErr.Code != "command_identity_mismatch" || len(model.Calls()) != 1 {
+		t.Fatalf("changed input error=%v model=%d", mismatch, len(model.Calls()))
+	}
+	canceledCtx, cancelWaiter := context.WithCancel(context.Background())
+	cancelWaiter()
+	if _, err := service.RunTurn(canceledCtx, application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-concurrent", Input: "inspect", Sink: &testkit.RecordingSink{}}); !application.IsCategory(err, application.CategoryCanceled) {
+		t.Fatalf("waiter cancellation error=%v", err)
+	}
 	model.releaseOnce()
 
 	successes := 0

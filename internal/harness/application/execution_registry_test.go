@@ -129,3 +129,31 @@ func TestExecutionRegistryRejectsPhaseSkipsAndRegressions(t *testing.T) {
 	}
 	owner.release()
 }
+
+func TestExecutionRegistryAllowsRetainedTerminalUnknownOnlyFromTerminalAppend(t *testing.T) {
+	registry := newExecutionRegistry()
+	owner, _, err := registry.acquire("request-terminal-unknown", "session-1", Digest{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.retainIntent(AppendIntent{Request: AppendRequestV2{AppendID: "append-1", SessionID: "session-1", CommandID: "command-1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.retainUnknown(executionPhaseTerminalUnknown); err == nil {
+		t.Fatal("accepted terminal unknown before terminal append")
+	}
+	if err := owner.setPhase(executionPhaseRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.setPhase(executionPhaseTerminalInFlight); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.retainUnknown(executionPhaseTerminalUnknown); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, ok := registry.snapshot("request-terminal-unknown")
+	if !ok || snapshot.Phase != executionPhaseTerminalUnknown || !snapshot.Retained {
+		t.Fatalf("snapshot=%#v present=%t", snapshot, ok)
+	}
+	owner.release()
+}
