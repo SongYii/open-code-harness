@@ -19,6 +19,10 @@
 | 系统 | 一手资料 | 已观察到的设计 | 采用 | 不推导或不照搬 |
 | --- | --- | --- | --- | --- |
 | OpenAI Codex | [thread-store README](https://github.com/openai/codex/blob/main/codex-rs/thread-store/README.md)、[live writer](https://github.com/openai/codex/blob/main/codex-rs/thread-store/src/local/live_writer.rs)、[writer lock](https://github.com/openai/codex/blob/main/codex-rs/thread-store/src/local/writer_lock.rs)、[state migrations](https://github.com/openai/codex/blob/main/codex-rs/state/src/migrations.rs) | 规范 rollout JSONL 在可重建 SQLite 元数据视图之前写入并 flush；per-thread 跨进程锁、回填与 migration checksum 支撑这一选择。 | 保留人类可读的无损历史、显式 writer 所有权、带 checksum 的 migration 和可重建投影。 | JSONL 权威并不天然是精确 CAS、lost ACK 重试和三平台行为下最好的绿地选择。锁、扫描、漂移和修复机制都是它的成本。 |
+| OpenCode | [Session Schema](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/session.sql.ts)、[CLI 数据库与 Session 命令](https://opencode.ai/docs/cli/) | SQLite 保存规范化的 Session、Message、Part、Todo、Session Message 和 Permission 记录，是 Session 列表、导出和数据库检查背后的持久恢复来源。Runtime Bus 与 SSE Event 用于通知 Consumer，但本身不是持久历史。 | 显式数据库工具、规范化产品投影、服务端统一拥有持久状态，以及与持久事实分离的瞬态交付 Event。 | 可变 Message/Part Row 和通知 Event 不能证明不可变领域事件权威、精确 Append Receipt、Fencing 或 Lost-ACK Recovery 合同。快速变化的 `dev` Schema 必须在实施复用前重新核验。 |
+| Goose | [Session Manager 与 SQLite Storage](https://github.com/aaif-goose/goose/blob/main/crates/goose/src/session/session_manager.rs) | `SessionManager` 将 Session、Conversation 和 Usage Ledger 的读写统一路由到 SQLite。Schema 初始化使用 `BEGIN IMMEDIATE` 串行化并发首次启动的 Writer，并把旧 Session 导入数据库。 | 串行化 Writer Admission、有界数据库等待、面向 WAL 的运行方式、事务内 Message/Session 更新、显式 Migration 和单向 Legacy Import。 | `replace_conversation` 与可变 Transcript CRUD 属于产品持久化语义，不是 Append-only Audit 或领域事件合同。 |
+| Crush | [仓库架构](https://github.com/charmbracelet/crush/blob/main/AGENTS.md)、[Session Service](https://github.com/charmbracelet/crush/blob/main/internal/session/session.go) | Go Service 通过 sqlc 和 Migration 对 SQLite 执行 Session CRUD；Session 从数据库读取，多表删除使用事务。明确仅用于 UI 的 Estimated Usage 保留在内存中，不与持久事实竞争。 | Go/sqlc Repository 边界、Migration 纪律、事务范围内多表变更，以及持久事实与瞬态 UI 状态的明确区分。 | 可变 Session CRUD、内部 Pub/Sub 和事务删除不提供不可变 Event Replay、Expected-Version Append 或不确定副作用协调。 |
+| Hermes Agent | [Session 持久化文档](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/sessions.md) | SQLite 保存完整 Session Metadata 与 Message History，文档明确称它是 Gateway Message 的 Canonical Store。JSONL 是导出格式；Legacy Mirror 是兼容产物，不是第二权威。 | 在产品文档中明确权威边界、让导出从属于数据库，并围绕单一 Canonical Store 组织 Resume、Routing Continuity 与 FTS History。 | Canonical Transcript Storage 本身不能证明不可变 Batch Event、Expected-Version CAS、AppendID Receipt、Writer Fencing 或不确定外部副作用的 No-Replay Recovery。 |
 | Kimi Code | [数据位置](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/configuration/data-locations.md)、[包映射](https://github.com/MoonshotAI/kimi-code/blob/main/AGENTS.md) | `wire.jsonl` 是完整 replay/resume 记录；application/server、engine、provider、execution environment 和 transcript 包分离。 | consumer-owned 协议投影、按记录顺序 replay 和显式包边界。 | Transcript 幂等不能证明 EventStore 原子 CAS 或精确提交重试。 |
 | Maka | [架构](https://github.com/maka-agent/maka-agent/blob/main/ARCHITECTURE.md)、[Runtime Core 草案](https://github.com/maka-agent/maka-agent/blob/main/docs/architecture/runtime-core-architecture-draft.md)、[恢复架构](https://github.com/maka-agent/maka-agent/blob/main/docs/architecture/runtime-resume-architecture.md) | 语义 Runtime Event Log 是事实权威；UI、Context 和 Recovery 是投影。恢复区分 repair、continuation 与 retry，并拒绝在不确定时盲目 replay。 | 不可变事实、外部副作用前后的短持久事务、投影/信号之前的终止事实，以及不自动重试不确定副作用。 | 公开设计不能证明我们的 SQLite CAS、AppendID 或跨平台文件合同。 |
 | DeepSeek-Reasonix | [v2 规范](https://github.com/esengine/DeepSeek-Reasonix/blob/main-v2/docs/SPEC.md) | Go、无 CGO 分发、append-only transcript 和完整 JSONL Session 持久化。 | 纯 Go 可移植性、完整会话保存和可测试 transcript 行为。 | Transcript 格式本身不是事务型多进程 EventStore。它是社区项目证据，不是规范标准。 |
@@ -29,6 +33,16 @@
 | SQLite | [原子提交](https://sqlite.org/atomiccommit.html)、[WAL](https://sqlite.org/wal.html)、[Backup API](https://sqlite.org/backup.html) | 本地事务提供原子提交和 WAL 恢复；Online Backup API 产生一致性副本。WAL 是数据库恢复机制，不是领域 Event Log，并有文件系统限制。 | SQLite 事务作为唯一提交点、只支持本地文件系统、经过明确配置的 WAL durability，以及使用 Online Backup 作为主要备份。 | SQLite WAL 文件不是公开审计日志，不能当作审计日志暴露。活动数据库不支持放在 NFS、SMB 或同步盘。 |
 | modernc SQLite | [Go Package 文档](https://pkg.go.dev/modernc.org/sqlite) | 由 C 翻译为 Go 的 database/sql SQLite Driver 支持在目标操作系统上的无 CGO 构建路径。 | 作为默认生产 Driver，并在 CI 验证所有目标平台。 | Driver 可移植性本身不能证明我们的 Transaction、PRAGMA、Backup 或 Filesystem 行为；它们仍是 Adapter Contract。 |
 | Transactional Outbox | [Debezium Outbox 文档](https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html) | 业务状态与待发布记录在一个数据库事务中提交；发布过程异步且幂等。 | 每个 JSONL 导出批次都与其事件在同一 SQLite 事务注册。 | SQLite 与文件的同步 dual write 无法提供一个可移植的原子提交。 |
+
+## SQLite 权威评估
+
+“SQLite 权威”包含两个有本质差异的合同。OpenCode、Goose、Crush 与 Hermes 证明了**会话/Transcript 权威**：进程重启后，持久 Session 与 Message 事实从 SQLite 读取，而不是以内存 Bus、UI State、Search Index 或 Export 为准。这有力说明，本地 Coding Agent 把 SQLite 作为产品恢复来源并不是反常的运维模型。
+
+Open Code Harness 要求更严格的**Runtime 领域权威**合同。不可变 Event Stream 必须裁决每个已接受的生命周期事实，可变 Head、Transcript Row、Snapshot 与 JSONL 都只能派生。在本次审阅的公开实现中，没有一个文档化了以下完整组合：原子多 Event Append、Expected-Version CAS、Caller-Stable `AppendID` 与 Request Digest、提交后 Receipt Resolution、Runtime Fencing、Transactional Audit Outbox，以及不确定副作用的 No-Replay Recovery。缺少公开证据并不证明某个未公开内部机制不存在；它意味着我们不能从这些对比对象继承相应保证。
+
+因此，这组对比增强而非改变了已选架构。Goose 提供具体 SQLite 运维机制；Crush 是最接近的 Go 实现参考；Hermes 给出最清晰的 Canonical Store 产品语义；OpenCode 提供丰富的规范化 Session Schema 与数据库运维表面。它们的可变 Transcript 模型仍是 Projection 与 Tooling 的参考，而不是 Canonical Immutable EventStore 的替代。
+
+Codex 是有价值的反例：其源码明确把 SQLite 视为可重建 View，允许其落后、但绝不能领先于 Canonical JSONL。因此，仅仅在 Agent 中发现 SQLite 数据库不足以证明 SQLite 权威；恢复顺序与写入优先级才决定分类。
 
 ## Pi 评估
 
@@ -82,7 +96,7 @@ Grok Build 还提供了积极的运维范例：工具 timeout 与 byte limit、�
 6. 生产 reader 分页；compact command aggregate 与 transcript projection 取代无界完整历史状态加载。
 7. Go Core 是无 CGO 单二进制；TypeScript TUI 是独立 ACP Client 和发布物。
 8. ACP v1 stdio 是唯一稳定 v0 客户端传输。远程 draft transport 保持 experimental，不进入兼容承诺。
-9. 每个实施里程碑都要重新做聚焦的一手资料架构门，并重新核验当时仍公开且与该 Slice 直接相关的实现；适用时必须纳入 Pi 和 Grok Build。
+9. 每个实施里程碑都要重新做聚焦的一手资料架构门，并重新核验当时仍公开且与该 Slice 直接相关的实现；适用时必须纳入 Pi、Grok Build、OpenCode、Goose、Crush 与 Hermes。
 
 ## 证据限制
 
@@ -90,4 +104,5 @@ Grok Build 还提供了积极的运维范例：工具 timeout 与 byte limit、�
 - 未记录某项不变量应标记为未知，不能据此断言项目缺少该不变量。
 - Grok Build 定期从更大的私有 monorepo 同步；本文只把公开代码树作为证据。
 - Pi 的仓库和 package identity 曾发生变化；上述链接标明本次评审使用的源码路径。
+- OpenCode 的公开 `dev` Branch 变化很快；链接 Schema 是带日期的证据，不承诺每个发布版本都具有相同 Table。
 - 所有参考项目都不是默认代码来源。复用任何实现之前仍必须完成 license 与 provenance 审查。
