@@ -86,9 +86,42 @@ func TestMarshalEventPayloadIsCanonical(t *testing.T) {
 func TestMarshalEventPayloadRejectsInvalidUTF8(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := MarshalEventPayload(AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: string([]byte{0xff})})
-	if !IsCode(err, CodeInvalidEvent) {
-		t.Fatalf("MarshalEventPayload() error = %v, want code %q", err, CodeInvalidEvent)
+	invalid := string([]byte{0xff})
+	tests := []struct {
+		name  string
+		event Event
+	}{
+		{"session created workspace root", SessionCreated{WorkspaceRoot: invalid}},
+		{"turn started turn ID", TurnStarted{TurnID: TurnID(invalid), Input: "input"}},
+		{"turn started input", TurnStarted{TurnID: "turn-1", Input: invalid}},
+		{"turn completed turn ID", TurnCompleted{TurnID: TurnID(invalid)}},
+		{"turn failed turn ID", TurnFailed{TurnID: TurnID(invalid), Code: "code", Message: "message"}},
+		{"turn failed code", TurnFailed{TurnID: "turn-1", Code: invalid, Message: "message"}},
+		{"turn failed message", TurnFailed{TurnID: "turn-1", Code: "code", Message: invalid}},
+		{"turn interrupted turn ID", TurnInterrupted{TurnID: TurnID(invalid), Reason: "reason"}},
+		{"turn interrupted reason", TurnInterrupted{TurnID: "turn-1", Reason: invalid}},
+		{"assistant started turn ID", AssistantMessageStarted{TurnID: TurnID(invalid), ItemID: "item-1"}},
+		{"assistant started item ID", AssistantMessageStarted{TurnID: "turn-1", ItemID: ItemID(invalid)}},
+		{"assistant completed turn ID", AssistantMessageCompleted{TurnID: TurnID(invalid), ItemID: "item-1", Text: "text"}},
+		{"assistant completed item ID", AssistantMessageCompleted{TurnID: "turn-1", ItemID: ItemID(invalid), Text: "text"}},
+		{"assistant completed text", AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: invalid}},
+		{"assistant failed turn ID", AssistantMessageFailed{TurnID: TurnID(invalid), ItemID: "item-1", Code: "code", Message: "message"}},
+		{"assistant failed item ID", AssistantMessageFailed{TurnID: "turn-1", ItemID: ItemID(invalid), Code: "code", Message: "message"}},
+		{"assistant failed code", AssistantMessageFailed{TurnID: "turn-1", ItemID: "item-1", Code: invalid, Message: "message"}},
+		{"assistant failed message", AssistantMessageFailed{TurnID: "turn-1", ItemID: "item-1", Code: "code", Message: invalid}},
+		{"assistant interrupted turn ID", AssistantMessageInterrupted{TurnID: TurnID(invalid), ItemID: "item-1", Code: "code", Message: "message"}},
+		{"assistant interrupted item ID", AssistantMessageInterrupted{TurnID: "turn-1", ItemID: ItemID(invalid), Code: "code", Message: "message"}},
+		{"assistant interrupted code", AssistantMessageInterrupted{TurnID: "turn-1", ItemID: "item-1", Code: invalid, Message: "message"}},
+		{"assistant interrupted message", AssistantMessageInterrupted{TurnID: "turn-1", ItemID: "item-1", Code: "code", Message: invalid}},
+		// SessionClosed has no text or identifier field to make invalid.
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, err := MarshalEventPayload(test.event)
+			if !IsCode(err, CodeInvalidEvent) {
+				t.Fatalf("MarshalEventPayload() error = %v, want code %q", err, CodeInvalidEvent)
+			}
+		})
 	}
 }
 

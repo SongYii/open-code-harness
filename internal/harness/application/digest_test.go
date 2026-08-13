@@ -99,6 +99,21 @@ func TestDigestAppendRequestFramingSeparatesFactsAndOrder(t *testing.T) {
 	}
 
 	left, right = validAppendRequest(), validAppendRequest()
+	left.Admission.TurnID, left.Admission.ItemID = "a\x00b", "c"
+	right.Admission.TurnID, right.Admission.ItemID = "a", "\x00bc"
+	if string(left.Admission.TurnID)+string(left.Admission.ItemID) != string(right.Admission.TurnID)+string(right.Admission.ItemID) {
+		t.Fatal("test setup must collide under unframed admission ID concatenation")
+	}
+	leftDigest, leftErr = DigestAppendRequest(left)
+	rightDigest, rightErr = DigestAppendRequest(right)
+	if leftErr != nil || rightErr != nil {
+		t.Fatalf("embedded NUL digest errors = %v, %v", leftErr, rightErr)
+	}
+	if leftDigest == rightDigest {
+		t.Fatal("length framing did not separate embedded-NUL admission IDs")
+	}
+
+	left, right = validAppendRequest(), validAppendRequest()
 	left.Events = append(left.Events, domainEvent("event-2", "second"))
 	right.Events = append(right.Events, domainEvent("event-2", "second"))
 	right.Events[0], right.Events[1] = right.Events[1], right.Events[0]
