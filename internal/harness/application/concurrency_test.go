@@ -102,16 +102,15 @@ func TestConcurrentRunTurnAcrossServicesReconcilesDurableAdmissionWinner(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	sharedIDs := testkit.NewSequenceIDs()
-	seed := newAcceptanceService(t, base, sharedIDs, &acceptanceSuccessModel{text: "seed"})
+	seed := newAcceptanceService(t, base, newPrefixedIDs("seed"), &acceptanceSuccessModel{text: "seed"})
 	created, err := seed.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	gate := newLookupRaceBarrier(base, 2)
 	modelA, modelB := newBlockingAcceptanceModel("done"), newBlockingAcceptanceModel("done")
-	serviceA := newAcceptanceService(t, gate, sharedIDs, modelA)
-	serviceB := newAcceptanceService(t, gate, sharedIDs, modelB)
+	serviceA := newAcceptanceService(t, gate, newPrefixedIDs("runtime-a"), modelA)
+	serviceB := newAcceptanceService(t, gate, newPrefixedIDs("runtime-b"), modelB)
 	type outcome struct{ err error }
 	done := make(chan outcome, 2)
 	for _, service := range []*application.Service{serviceA, serviceB} {
@@ -321,6 +320,38 @@ type acceptanceSuccessModel struct {
 	mu    sync.Mutex
 	text  string
 	calls []engine.ModelRequest
+}
+
+type prefixedIDs struct {
+	mu                                          sync.Mutex
+	prefix                                      string
+	session, turn, item, command, append, event uint64
+}
+
+func newPrefixedIDs(prefix string) *prefixedIDs { return &prefixedIDs{prefix: prefix} }
+func (ids *prefixedIDs) next(kind string, value *uint64) string {
+	ids.mu.Lock()
+	defer ids.mu.Unlock()
+	*value++
+	return fmt.Sprintf("%s-%s-%d", ids.prefix, kind, *value)
+}
+func (ids *prefixedIDs) NewSessionID() (domain.SessionID, error) {
+	return domain.SessionID(ids.next("session", &ids.session)), nil
+}
+func (ids *prefixedIDs) NewTurnID() (domain.TurnID, error) {
+	return domain.TurnID(ids.next("turn", &ids.turn)), nil
+}
+func (ids *prefixedIDs) NewItemID() (domain.ItemID, error) {
+	return domain.ItemID(ids.next("item", &ids.item)), nil
+}
+func (ids *prefixedIDs) NewCommandID() (domain.CommandID, error) {
+	return domain.CommandID(ids.next("command", &ids.command)), nil
+}
+func (ids *prefixedIDs) NewAppendID() (domain.AppendID, error) {
+	return domain.AppendID(ids.next("append", &ids.append)), nil
+}
+func (ids *prefixedIDs) NewEventID() (domain.EventID, error) {
+	return domain.EventID(ids.next("event", &ids.event)), nil
 }
 
 type blockingAcceptanceModel struct {
