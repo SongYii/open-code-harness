@@ -207,7 +207,9 @@ func TestExecutionRegistryThirtyTwoLeasesObserveOneLiveOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, lease := range leases {
-		got, err := lease.wait(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		got, err := lease.wait(ctx)
+		cancel()
 		if err != nil || got.SessionID != result.SessionID || got.TurnID != result.TurnID || got.ItemID != result.ItemID || got.Status != result.Status || !got.TerminalCommitted {
 			t.Fatalf("result=%#v err=%v", got, err)
 		}

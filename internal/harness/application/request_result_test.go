@@ -102,6 +102,10 @@ func TestReconstructRequestResultRejectsEveryRelevantLifecycleCorruption(t *test
 			return r
 		}},
 		{name: "wrong command", mutate: func(r []domain.RecordedEvent) []domain.RecordedEvent { r[2].CommandID = "command-wrong"; return r }},
+		{name: "wrong turn", mutate: func(r []domain.RecordedEvent) []domain.RecordedEvent {
+			r[2].Event = domain.AssistantMessageStarted{TurnID: "turn-wrong", ItemID: "item-1"}
+			return r
+		}},
 		{name: "wrong item", mutate: func(r []domain.RecordedEvent) []domain.RecordedEvent {
 			r[2].Event = domain.AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-wrong"}
 			return r
@@ -120,6 +124,18 @@ func TestReconstructRequestResultRejectsEveryRelevantLifecycleCorruption(t *test
 			tail.ID = "event-7"
 			tail.Sequence = 7
 			return append(r, clone, tail)
+		}},
+		{name: "duplicate admission", mutate: func(r []domain.RecordedEvent) []domain.RecordedEvent {
+			cloneStart, cloneItem := r[1], r[2]
+			cloneStart.ID, cloneItem.ID = "event-6", "event-7"
+			cloneStart.Sequence, cloneItem.Sequence = 6, 7
+			return append(r, cloneStart, cloneItem)
+		}},
+		{name: "pre-admission terminal", mutate: func(r []domain.RecordedEvent) []domain.RecordedEvent {
+			terminal, turn, start, item := r[3], r[4], r[1], r[2]
+			terminal.ID, turn.ID, start.ID, item.ID = "event-6", "event-7", "event-2", "event-3"
+			terminal.Sequence, turn.Sequence, start.Sequence, item.Sequence = 2, 3, 4, 5
+			return []domain.RecordedEvent{r[0], terminal, turn, start, item}
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {

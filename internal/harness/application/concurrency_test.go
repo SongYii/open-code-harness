@@ -68,10 +68,9 @@ func TestConcurrentRunTurnSameSessionHasOneAtomicAdmissionWinner(t *testing.T) {
 	if !errors.As(mismatch, &mismatchErr) || mismatchErr.Code != "command_identity_mismatch" || len(model.Calls()) != 1 {
 		t.Fatalf("changed input error=%v model=%d", mismatch, len(model.Calls()))
 	}
-	canceledCtx, cancelWaiter := context.WithCancel(context.Background())
-	cancelWaiter()
-	if _, err := service.RunTurn(canceledCtx, application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-concurrent", Input: "inspect", Sink: &testkit.RecordingSink{}}); !application.IsCategory(err, application.CategoryCanceled) {
-		t.Fatalf("waiter cancellation error=%v", err)
+	beforeRelease, err := application.ReadWholeStreamPinned(context.Background(), base, created.SessionID, 256)
+	if err != nil || !reflect.DeepEqual(acceptanceEventTypes(beforeRelease), []string{domain.EventSessionCreated, domain.EventTurnStarted, domain.EventAssistantMessageStarted}) {
+		t.Fatalf("pre-release records=%#v err=%v", beforeRelease, err)
 	}
 	model.releaseOnce()
 
@@ -116,6 +115,79 @@ func TestConcurrentRunTurnSameSessionHasOneAtomicAdmissionWinner(t *testing.T) {
 	if state.Version != 5 || len(state.Turns) != 1 || state.ActiveTurnID != "" {
 		t.Fatalf("replayed state = %#v", state)
 	}
+}
+
+func TestFoundRunningAttachesLocalWaiterAndCancellationIsIsolated(t *testing.T) {
+	authority := application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1}
+	base, err := memory.NewEventStoreV2(authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := testkit.NewSequenceIDs()
+	seed := newAcceptanceService(t, base, ids, &acceptanceSuccessModel{text: "seed"})
+	created, err := seed.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	observer := &foundLookupObserver{EventStoreV2: base, found: make(chan struct{}, 4)}
+	model := newBlockingAcceptanceModel("done")
+	service := newAcceptanceService(t, observer, ids, model)
+	type outcome struct {
+		result application.RunTurnResult
+		err    error
+	}
+	ownerDone := make(chan outcome, 1)
+	request := application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-live", Input: "inspect", Sink: &testkit.RecordingSink{}}
+	go func() {
+		result, err := service.RunTurn(context.Background(), request)
+		ownerDone <- outcome{result, err}
+	}()
+	await(t, model.started, "owner durable running admission")
+	waiterCtx, cancelWaiter := context.WithCancel(context.Background())
+	canceledDone := make(chan outcome, 1)
+	go func() { result, err := service.RunTurn(waiterCtx, request); canceledDone <- outcome{result, err} }()
+	await(t, observer.found, "cancelable waiter found-running lookup")
+	cancelWaiter()
+	canceled := awaitOutcome(t, canceledDone, "cancelable waiter result")
+	if !application.IsCategory(canceled.err, application.CategoryCanceled) {
+		t.Fatalf("canceled waiter=%#v", canceled)
+	}
+	select {
+	case owner := <-ownerDone:
+		t.Fatalf("owner returned before release: %#v", owner)
+	default:
+	}
+	attachedDone := make(chan outcome, 1)
+	go func() {
+		result, err := service.RunTurn(context.Background(), request)
+		attachedDone <- outcome{result, err}
+	}()
+	await(t, observer.found, "attached waiter found-running lookup")
+	model.releaseOnce()
+	owner := awaitOutcome(t, ownerDone, "owner terminal result")
+	attached := awaitOutcome(t, attachedDone, "attached waiter terminal result")
+	if owner.err != nil || attached.err != nil || !reflect.DeepEqual(owner.result, attached.result) || len(model.Calls()) != 1 {
+		t.Fatalf("owner=%#v attached=%#v calls=%d", owner, attached, len(model.Calls()))
+	}
+	if records, err := application.ReadWholeStreamPinned(context.Background(), base, created.SessionID, 256); err != nil || len(records) != 5 {
+		t.Fatalf("records=%#v err=%v", records, err)
+	}
+}
+
+type foundLookupObserver struct {
+	application.EventStoreV2
+	found chan struct{}
+}
+
+func (store *foundLookupObserver) FindCommandRequest(ctx context.Context, request application.FindCommandRequestRequest) (application.CommandRequestLookup, error) {
+	lookup, err := store.EventStoreV2.FindCommandRequest(ctx, request)
+	if err == nil && lookup.Kind == application.CommandRequestLookupFound {
+		select {
+		case store.found <- struct{}{}:
+		default:
+		}
+	}
+	return lookup, err
 }
 
 func await(t *testing.T, channel <-chan struct{}, description string) {
@@ -263,11 +335,10 @@ func TestConcurrentRunTurnDifferentSessionsCompleteThirtyTwo(t *testing.T) {
 	}
 	outcomes := make([]outcome, count)
 	start := make(chan struct{})
-	var wait sync.WaitGroup
-	wait.Add(count)
+	finished := make(chan struct{}, count)
 	for index, sessionID := range sessionIDs {
 		go func() {
-			defer wait.Done()
+			defer func() { finished <- struct{}{} }()
 			<-start
 			outcomes[index].result, outcomes[index].err = service.RunTurn(context.Background(), application.RunTurnRequest{
 				SessionID: sessionID,
@@ -278,7 +349,9 @@ func TestConcurrentRunTurnDifferentSessionsCompleteThirtyTwo(t *testing.T) {
 		}()
 	}
 	close(start)
-	wait.Wait()
+	for range count {
+		await(t, finished, "different-session caller")
+	}
 
 	for index, got := range outcomes {
 		if got.err != nil || got.result.Status != domain.TurnStatusCompleted || got.result.Text != "parallel" || !got.result.TerminalCommitted {
