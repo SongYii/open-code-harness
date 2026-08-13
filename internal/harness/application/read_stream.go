@@ -177,8 +177,11 @@ func contextError(ctx context.Context) error {
 }
 
 func mapV2StoreError(ctx context.Context, cause error, operation string) error {
-	if IsStoreCode(cause, StoreCodeCommitOutcomeUnknown) {
+	if IsStoreCode(cause, StoreCodeCommitOutcomeUnknown) && operation == "append" {
 		return applicationError(CategoryPersistence, "append_outcome_unknown", false, cause)
+	}
+	if IsStoreCode(cause, StoreCodeCommitOutcomeUnknown) {
+		return storeContractViolation(cause)
 	}
 	if err := contextError(ctx); err != nil {
 		return applicationError(CategoryCanceled, "canceled", false, fmt.Errorf("%w: %w", err, cause))

@@ -45,6 +45,49 @@ func TestReadWholeStreamPinnedRejectsMutatedRequestHead(t *testing.T) {
 	}
 }
 
+func TestCompactLoaderRejectsMutatedRequestHead(t *testing.T) {
+	_, err := loadCompactSessionPinned(context.Background(), &headMutatingSpy{}, "session-1")
+	assertStoreContractViolation(t, err)
+}
+
+func TestReadWholeStreamPinnedIsNotStatefulReplay(t *testing.T) {
+	record := readRecord(1)
+	record.Event = domain.SessionClosed{}
+	got, err := ReadWholeStreamPinned(context.Background(), &pagingSpy{pages: []StreamPage{{Records: []domain.RecordedEvent{record}, HeadVersion: 1, NextAfterSequence: 1, End: true}}}, "session-1", 1)
+	if err != nil || len(got) != 1 || got[0].Event.EventType() != domain.EventSessionClosed {
+		t.Fatalf("read = %#v, %v", got, err)
+	}
+}
+
+func TestMapV2StoreErrorRejectsUnknownOutsideAppend(t *testing.T) {
+	unknown, err := NewStoreError(StoreError{Code: StoreCodeCommitOutcomeUnknown, MayHaveCommitted: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, operation := range []string{"read", "lookup"} {
+		mapped := mapV2StoreError(ctx, unknown, operation)
+		assertStoreContractViolation(t, mapped)
+		if IsCategory(mapped, CategoryCanceled) || IsCategory(mapped, CategoryPersistence) {
+			t.Fatalf("operation %q mapped impossible unknown to %v", operation, mapped)
+		}
+	}
+}
+
+func TestReadWholeStreamPinnedRejectsImpossibleUnknownStoreCode(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	unknown, err := NewStoreError(StoreError{Code: StoreCodeCommitOutcomeUnknown, MayHaveCommitted: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = ReadWholeStreamPinned(ctx, &errorReadSpy{cancel: cancel, err: unknown}, "session-1", 1)
+	assertStoreContractViolation(t, err)
+	if IsCategory(err, CategoryCanceled) || IsCategory(err, CategoryPersistence) {
+		t.Fatalf("impossible read error = %v", err)
+	}
+}
+
 func TestReadWholeStreamPinnedRejectsInvalidRecordContractAndInputs(t *testing.T) {
 	for name, mutate := range map[string]func(*domain.RecordedEvent){
 		"schema":     func(record *domain.RecordedEvent) { record.SchemaVersion = 2 },
@@ -132,6 +175,25 @@ func (*headMutatingSpy) ResolveAppend(context.Context, ResolveAppendRequest) (Ap
 	return AppendResolution{}, nil
 }
 func (*headMutatingSpy) FindCommandRequest(context.Context, FindCommandRequestRequest) (CommandRequestLookup, error) {
+	return CommandRequestLookup{}, nil
+}
+
+type errorReadSpy struct {
+	cancel context.CancelFunc
+	err    error
+}
+
+func (store *errorReadSpy) ReadStream(context.Context, ReadStreamRequest) (StreamPage, error) {
+	store.cancel()
+	return StreamPage{}, store.err
+}
+func (*errorReadSpy) Append(context.Context, AppendRequestV2) (CommitReceipt, error) {
+	return CommitReceipt{}, nil
+}
+func (*errorReadSpy) ResolveAppend(context.Context, ResolveAppendRequest) (AppendResolution, error) {
+	return AppendResolution{}, nil
+}
+func (*errorReadSpy) FindCommandRequest(context.Context, FindCommandRequestRequest) (CommandRequestLookup, error) {
 	return CommandRequestLookup{}, nil
 }
 

@@ -231,19 +231,41 @@ func TestRunTurnValidatesRequestBeforeStoreAndIDs(t *testing.T) {
 }
 
 func TestRunTurnRequestLookupPrecedesIDsAndModel(t *testing.T) {
-	for _, lookup := range []application.CommandRequestLookup{
-		{Kind: application.CommandRequestLookupFound, Record: &application.CommandRequestRecord{RunTurnRequestID: "request-known", SessionID: "session-preflight", CommandID: "command-known", TurnID: "turn-known", ItemID: "item-known", AdmissionAppendID: "append-known"}},
-		{Kind: application.CommandRequestLookupIdentityMismatch},
+	for _, test := range []struct {
+		lookup application.CommandRequestLookup
+		code   string
+	}{
+		{lookup: application.CommandRequestLookup{Kind: application.CommandRequestLookupFound, Record: &application.CommandRequestRecord{RunTurnRequestID: "request-known", SessionID: "session-preflight", CommandID: "command-known", TurnID: "turn-known", ItemID: "item-known", AdmissionAppendID: "append-known"}}, code: "reconciliation_required"},
+		{lookup: application.CommandRequestLookup{Kind: application.CommandRequestLookupIdentityMismatch}, code: "command_identity_mismatch"},
 	} {
 		base := activeTurnStore(t)
-		store := &lookupTurnStore{EventStoreV2: base, lookup: lookup}
+		store := &lookupTurnStore{EventStoreV2: base, lookup: test.lookup}
 		ids := &turnIDs{}
 		model := &repeatingSuccessModel{text: "unused"}
 		service := newTurnService(t, store, ids, model)
 		result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: "session-preflight", RequestID: "request-known", Input: "inspect", Sink: &testkit.RecordingSink{}})
-		if !application.IsCategory(err, application.CategoryConflict) || !reflect.DeepEqual(result, application.RunTurnResult{}) || len(ids.Calls()) != 0 || len(model.Calls()) != 0 || store.reads != 0 {
-			t.Fatalf("lookup=%#v result=%#v err=%v ids=%v model=%v reads=%d", lookup, result, err, ids.Calls(), model.Calls(), store.reads)
+		var appErr *application.Error
+		if !application.IsCategory(err, application.CategoryConflict) || !errors.As(err, &appErr) || appErr.Code != test.code || !reflect.DeepEqual(result, application.RunTurnResult{}) || ids.TotalCalls() != 0 || len(model.Calls()) != 0 || store.reads != 0 || store.appends != 0 {
+			t.Fatalf("lookup=%#v result=%#v err=%v ids=%d model=%v reads=%d appends=%d", test.lookup, result, err, ids.TotalCalls(), model.Calls(), store.reads, store.appends)
 		}
+	}
+}
+
+func TestRunTurnRejectsImpossibleUnknownLookupCode(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	base := activeTurnStore(t)
+	unknown, err := application.NewStoreError(application.StoreError{Code: application.StoreCodeCommitOutcomeUnknown, MayHaveCommitted: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &lookupTurnStore{EventStoreV2: base, lookupErr: unknown, cancel: cancel}
+	ids := &turnIDs{}
+	model := &repeatingSuccessModel{text: "unused"}
+	service := newTurnService(t, store, ids, model)
+	result, err := service.RunTurn(ctx, application.RunTurnRequest{SessionID: "session-preflight", RequestID: "request-lookup-unknown", Input: "inspect", Sink: &testkit.RecordingSink{}})
+	assertRunTurnError(t, err, application.CategoryInternal, "store_contract_violation", false)
+	if !reflect.DeepEqual(result, application.RunTurnResult{}) || ids.TotalCalls() != 0 || len(model.Calls()) != 0 || store.reads != 0 || store.appends != 0 {
+		t.Fatalf("impossible lookup result=%#v err=%v IDs=%d model=%v reads=%d appends=%d", result, err, ids.TotalCalls(), model.Calls(), store.reads, store.appends)
 	}
 }
 
@@ -264,16 +286,28 @@ func TestRunTurnCanceledAfterReadStopsBeforeIDsAndModel(t *testing.T) {
 func TestRunTurnTerminalUnknownDoesNotFallbackAfterCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	base := newTurnMemoryStore(t)
-	store := &terminalUnknownStore{EventStoreV2: base, cancel: cancel}
-	service := newTurnService(t, store, testkit.NewSequenceIDs(), &repeatingSuccessModel{text: "done"})
-	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	ids := testkit.NewSequenceIDs()
+	seed := newTurnService(t, base, ids, &repeatingSuccessModel{text: "done"})
+	created, err := seed.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	store := &terminalUnknownStore{EventStoreV2: base, cancel: cancel}
+	service := newTurnService(t, store, ids, &repeatingSuccessModel{text: "done"})
 	result, err := service.RunTurn(ctx, application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-terminal-unknown", Input: "inspect", Sink: &testkit.RecordingSink{}})
 	assertRunTurnError(t, err, application.CategoryPersistence, "append_outcome_unknown", false)
-	if result.Status != domain.TurnStatusRunning || result.TerminalCommitted || len(result.Records) != 2 || store.terminalCalls != 1 {
-		t.Fatalf("unknown result=%#v terminal calls=%d", result, store.terminalCalls)
+	requests := store.AppendRequests()
+	if result.Status != domain.TurnStatusRunning || result.TerminalCommitted || len(result.Records) != 2 || store.terminalCalls != 1 || len(requests) != 2 {
+		t.Fatalf("unknown result=%#v terminal calls=%d requests=%#v", result, store.terminalCalls, requests)
+	}
+	admission, terminal := requests[0], requests[1]
+	if len(admission.Events) != 2 || len(terminal.Events) != 2 || admission.CommandID != terminal.CommandID || terminal.AppendID == "" || terminal.AppendID != store.terminalAppendID || !reflect.DeepEqual(terminal.Events, store.terminalEvents) {
+		t.Fatalf("terminal identity was not stable: admission=%#v terminal=%#v", admission, terminal)
+	}
+	for _, request := range requests[1:] {
+		if request.Events[0].Event.EventType() != domain.EventAssistantMessageCompleted {
+			t.Fatalf("unexpected post-unknown append %#v", request)
+		}
 	}
 	records, readErr := application.ReadWholeStreamPinned(context.Background(), base, created.SessionID, 256)
 	if readErr != nil || len(records) != 5 || turnEventTypes(records)[3] != domain.EventAssistantMessageCompleted {
@@ -715,16 +749,26 @@ type turnCountingStore struct {
 
 type lookupTurnStore struct {
 	application.EventStoreV2
-	lookup application.CommandRequestLookup
-	reads  int
+	lookup    application.CommandRequestLookup
+	lookupErr error
+	cancel    context.CancelFunc
+	reads     int
+	appends   int
 }
 
 func (store *lookupTurnStore) FindCommandRequest(context.Context, application.FindCommandRequestRequest) (application.CommandRequestLookup, error) {
-	return store.lookup, nil
+	if store.cancel != nil {
+		store.cancel()
+	}
+	return store.lookup, store.lookupErr
 }
 func (store *lookupTurnStore) ReadStream(ctx context.Context, request application.ReadStreamRequest) (application.StreamPage, error) {
 	store.reads++
 	return store.EventStoreV2.ReadStream(ctx, request)
+}
+func (store *lookupTurnStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
+	store.appends++
+	return store.EventStoreV2.Append(ctx, request)
 }
 
 type cancelAfterReadStore struct {
@@ -740,22 +784,42 @@ func (store *cancelAfterReadStore) ReadStream(ctx context.Context, request appli
 
 type terminalUnknownStore struct {
 	application.EventStoreV2
-	cancel        context.CancelFunc
-	terminalCalls int
+	cancel           context.CancelFunc
+	terminalCalls    int
+	requests         []application.AppendRequestV2
+	terminalAppendID domain.AppendID
+	terminalEvents   []application.ProposedEvent
 }
 
 func (store *terminalUnknownStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
+	store.requests = append(store.requests, cloneTurnAppendRequest(request))
 	receipt, err := store.EventStoreV2.Append(ctx, request)
 	if err != nil || len(request.Events) == 0 || request.Events[0].Event.EventType() != domain.EventAssistantMessageCompleted {
 		return receipt, err
 	}
 	store.terminalCalls++
+	store.terminalAppendID = request.AppendID
+	store.terminalEvents = append([]application.ProposedEvent(nil), request.Events...)
 	store.cancel()
 	unknown, buildErr := application.NewStoreError(application.StoreError{Code: application.StoreCodeCommitOutcomeUnknown, SessionID: request.SessionID, MayHaveCommitted: true})
 	if buildErr != nil {
 		return application.CommitReceipt{}, buildErr
 	}
 	return application.CommitReceipt{}, unknown
+}
+
+func (store *terminalUnknownStore) AppendRequests() []application.AppendRequestV2 {
+	requests := make([]application.AppendRequestV2, len(store.requests))
+	for index, request := range store.requests {
+		requests[index] = cloneTurnAppendRequest(request)
+	}
+	return requests
+}
+
+func cloneTurnAppendRequest(request application.AppendRequestV2) application.AppendRequestV2 {
+	clone := request
+	clone.Events = append([]application.ProposedEvent(nil), request.Events...)
+	return clone
 }
 
 func (store *turnCountingStore) ReadStream(_ context.Context, request application.ReadStreamRequest) (application.StreamPage, error) {
@@ -814,14 +878,21 @@ type turnIDs struct {
 	calls      []string
 	appends    uint64
 	events     uint64
+	totalCalls int
 }
 
-func (ids *turnIDs) NewSessionID() (domain.SessionID, error) { return "session-unused", nil }
+func (ids *turnIDs) NewSessionID() (domain.SessionID, error) {
+	ids.mu.Lock()
+	defer ids.mu.Unlock()
+	ids.totalCalls++
+	return "session-unused", nil
+}
 
 func (ids *turnIDs) NewTurnID() (domain.TurnID, error) {
 	ids.mu.Lock()
 	defer ids.mu.Unlock()
 	ids.calls = append(ids.calls, "turn")
+	ids.totalCalls++
 	return ids.turnID, ids.turnErr
 }
 
@@ -829,12 +900,14 @@ func (ids *turnIDs) NewItemID() (domain.ItemID, error) {
 	ids.mu.Lock()
 	defer ids.mu.Unlock()
 	ids.calls = append(ids.calls, "item")
+	ids.totalCalls++
 	return ids.itemID, ids.itemErr
 }
 
 func (ids *turnIDs) NewCommandID() (domain.CommandID, error) {
 	ids.mu.Lock()
 	ids.calls = append(ids.calls, "command")
+	ids.totalCalls++
 	callback := ids.onCommand
 	id, err := ids.commandID, ids.commandErr
 	ids.mu.Unlock()
@@ -848,12 +921,14 @@ func (ids *turnIDs) NewAppendID() (domain.AppendID, error) {
 	ids.mu.Lock()
 	defer ids.mu.Unlock()
 	ids.appends++
+	ids.totalCalls++
 	return domain.AppendID(fmt.Sprintf("append-%d", ids.appends)), nil
 }
 func (ids *turnIDs) NewEventID() (domain.EventID, error) {
 	ids.mu.Lock()
 	defer ids.mu.Unlock()
 	ids.events++
+	ids.totalCalls++
 	return domain.EventID(fmt.Sprintf("event-%d", ids.events)), nil
 }
 
@@ -861,6 +936,12 @@ func (ids *turnIDs) Calls() []string {
 	ids.mu.Lock()
 	defer ids.mu.Unlock()
 	return append([]string(nil), ids.calls...)
+}
+
+func (ids *turnIDs) TotalCalls() int {
+	ids.mu.Lock()
+	defer ids.mu.Unlock()
+	return ids.totalCalls
 }
 
 type turnFailingAppendStore struct {

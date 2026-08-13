@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"math"
 	"testing"
 	"time"
@@ -63,11 +64,19 @@ func TestCommitAppendIntentRejectsNilAndCanceledContextBeforeStore(t *testing.T)
 		t.Fatal(err)
 	}
 	var nilContext context.Context
-	for _, ctx := range []context.Context{nilContext, canceledContext()} {
+	for _, test := range []struct {
+		ctx      context.Context
+		category ErrorCategory
+		code     string
+	}{{ctx: nilContext, category: CategoryValidation, code: "invalid_context"}, {ctx: canceledContext(), category: CategoryCanceled, code: "canceled"}} {
 		store := &receiptSpy{}
-		_, _, err := CommitAppendIntent(ctx, store, domain.CompactSession{}, intent)
-		if store.calls != 0 || (!IsCategory(err, CategoryValidation) && !IsCategory(err, CategoryCanceled)) {
+		_, _, err := CommitAppendIntent(test.ctx, store, domain.CompactSession{}, intent)
+		if store.calls != 0 || !IsCategory(err, test.category) {
 			t.Fatalf("err=%v calls=%d", err, store.calls)
+		}
+		var applicationErr *Error
+		if !errors.As(err, &applicationErr) || applicationErr.Code != test.code {
+			t.Fatalf("error = %v, want %s/%s", err, test.category, test.code)
 		}
 	}
 }
