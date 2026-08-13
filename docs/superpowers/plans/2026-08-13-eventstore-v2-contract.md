@@ -462,9 +462,9 @@ type V2Harness struct {
     FailNext func(FaultPoint, error)
 }
 
-type Factory func(*testing.T) V2Harness
+type V2Factory func(*testing.T) V2Harness
 
-func RunV2(t *testing.T, factory Factory) {
+func RunV2(t *testing.T, factory V2Factory) {
     t.Run("atomic append and CAS", func(t *testing.T) { testAtomicAppendAndCAS(t, factory) })
     t.Run("exact receipt retry", func(t *testing.T) { testExactReceiptRetry(t, factory) })
     t.Run("pinned pagination", func(t *testing.T) { testPinnedPagination(t, factory) })
@@ -473,6 +473,8 @@ func RunV2(t *testing.T, factory Factory) {
     t.Run("unknown outcome", func(t *testing.T) { testUnknownOutcome(t, factory) })
 }
 ```
+
+The temporary name is `V2Factory` because the same package retains the v1 `Factory` until Task 8; Task 8 promotes the v2 suite and removes the temporary prefix.
 
 The suite must additionally test all EV2-05 through EV2-09 rules: 64/65 Event limits, payload/request byte limits, global EventID uniqueness, historical Turn/Item identity, defensive copies, nil/canceled contexts, corrupt receipt detection, concurrent Session commit-position uniqueness, and privacy-preserving command mismatch.
 

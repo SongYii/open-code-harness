@@ -426,9 +426,9 @@ type V2Harness struct {
     FailNext func(FaultPoint, error)
 }
 
-type Factory func(*testing.T) V2Harness
+type V2Factory func(*testing.T) V2Harness
 
-func RunV2(t *testing.T, factory Factory) {
+func RunV2(t *testing.T, factory V2Factory) {
     t.Run("atomic append and CAS", func(t *testing.T) { testAtomicAppendAndCAS(t, factory) })
     t.Run("exact receipt retry", func(t *testing.T) { testExactReceiptRetry(t, factory) })
     t.Run("pinned pagination", func(t *testing.T) { testPinnedPagination(t, factory) })
@@ -437,6 +437,8 @@ func RunV2(t *testing.T, factory Factory) {
     t.Run("unknown outcome", func(t *testing.T) { testUnknownOutcome(t, factory) })
 }
 ```
+
+临时名称使用 `V2Factory`，因为同一 Package 在任务 8 前仍保留 v1 `Factory`；任务 8 提升 v2 Suite 时删除该临时前缀。
 
 Suite 还必须覆盖 EV2-05 至 EV2-09：64/65 Event Limit、Payload/Request Byte Limit、Global EventID Uniqueness、Historical Turn/Item Identity、Defensive Copy、nil/Canceled Context、Corrupt Receipt Detection、并发 Session Commit-Position Uniqueness 与 Privacy-Preserving Command Mismatch。
 
