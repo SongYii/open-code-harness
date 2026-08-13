@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -52,6 +53,32 @@ func testAtomicAppendAndCAS(t *testing.T, factory V2Factory) {
 		requireCode(t, err, application.StoreCodeInvalidAppend)
 	}
 	assertAppendAbsent(t, h, sameBatch, 0)
+}
+
+func testProposedMetadataPreservation(t *testing.T, factory V2Factory) {
+	h := factory(t)
+	requireV2(t, h)
+	base := time.Date(2027, 3, 4, 5, 6, 7, 890, time.UTC)
+	request := v2Append("append-metadata", "session-metadata", 0, "command-metadata", domain.SessionCreated{WorkspaceRoot: "/metadata"}, domain.TurnStarted{TurnID: "turn-metadata", Input: "distinct input"})
+	request.Events[0].ID, request.Events[0].OccurredAt = "event-metadata-created", base
+	request.Events[1].ID, request.Events[1].OccurredAt = "event-metadata-turn", base.Add(37*time.Nanosecond)
+	receipt, err := h.Store.Append(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.FirstSequence != 1 || receipt.LastSequence != 2 || receipt.CommitPosition == 0 {
+		t.Fatalf("receipt = %#v", receipt)
+	}
+	page, err := h.Store.ReadStream(context.Background(), application.ReadStreamRequest{SessionID: request.SessionID, Limit: 2})
+	if err != nil || len(page.Records) != len(request.Events) {
+		t.Fatalf("ReadStream = (%#v, %v)", page, err)
+	}
+	for i, proposed := range request.Events {
+		record := page.Records[i]
+		if record.Sequence != uint64(i+1) || record.ID != proposed.ID || record.SchemaVersion != int(proposed.SchemaVersion) || record.OccurredAt != proposed.OccurredAt || record.CommandID != request.CommandID || record.SessionID != request.SessionID || !reflect.DeepEqual(record.Event, proposed.Event) {
+			t.Fatalf("record %d = %#v, want preserved proposed metadata %#v", i, record, proposed)
+		}
+	}
 }
 
 func testExactReceiptRetry(t *testing.T, factory V2Factory) {
@@ -198,6 +225,9 @@ func testUnknownOutcome(t *testing.T, factory V2Factory) {
 	} else {
 		requireCode(t, err, application.StoreCodeCommitOutcomeUnknown)
 	}
+	if _, err := h.Store.Append(context.Background(), v2Append("append-unknown-after-fresh", "session-unknown-after-fresh", 0, "command-unknown-after-fresh", domain.SessionCreated{WorkspaceRoot: "/fresh"})); err != nil {
+		t.Fatalf("after-commit fault was not one-shot: %v", err)
+	}
 	digest, err := application.DigestAppendRequest(request)
 	if err != nil {
 		t.Fatal(err)
@@ -252,6 +282,13 @@ func testLimitsCopiesCancellationAndCorruption(t *testing.T, factory V2Factory) 
 		requireCode(t, err, application.StoreCodeInvalidAppend)
 	}
 	assertAppendAbsent(t, h, tooMany, 0)
+	reuseCount := v2Append("append-65-reuse", "session-65", 0, "command-65-reuse", domain.SessionCreated{WorkspaceRoot: "/batch"}, domain.TurnStarted{TurnID: "turn-batch-0", Input: "ok"}, domain.TurnCompleted{TurnID: "turn-batch-0"})
+	for i := range reuseCount.Events {
+		reuseCount.Events[i].ID = tooMany.Events[i].ID
+	}
+	if _, err := h.Store.Append(context.Background(), reuseCount); err != nil {
+		t.Fatalf("65-event rejection leaked event/turn identities: %v", err)
+	}
 	maxBatch := v2Append("append-64", "session-64", 0, "command-64", validBatch(64)...)
 	if _, err := h.Store.Append(context.Background(), maxBatch); err != nil {
 		t.Fatalf("valid 64-event append error = %v", err)
@@ -364,7 +401,12 @@ func testPublicationCancellationAndCorruptReceipts(t *testing.T, factory V2Facto
 	if resolved, err := h.Store.ResolveAppend(context.Background(), application.ResolveAppendRequest{AppendID: after.AppendID, RequestDigest: digest}); err != nil || resolved.Kind != application.AppendResolutionCommitted || resolved.Receipt == nil || *resolved.Receipt != receipt {
 		t.Fatalf("post-publication resolution = (%#v, %v), want %#v", resolved, err, receipt)
 	}
+	if _, err := h.Store.Append(context.Background(), v2Append("append-cancel-after-advance", "session-cancel-after", 1, "command-cancel-after-advance", domain.TurnStarted{TurnID: "turn-cancel-after", Input: "advance"})); err != nil {
+		t.Fatal(err)
+	}
 
+	// The corruption seam changes the first receipt to a different but otherwise
+	// plausible nonzero position/range from this same stream.
 	h.CorruptReceipt(after.AppendID)
 	if _, err := h.Store.Append(context.Background(), after); err == nil {
 		t.Fatal("exact retry returned corrupt receipt")

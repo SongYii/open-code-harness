@@ -37,9 +37,12 @@ type EventStoreV2 struct {
 }
 
 type storedAppend struct {
-	digest    application.Digest
-	receipt   application.CommitReceipt
-	sessionID domain.SessionID
+	digest         application.Digest
+	receipt        application.CommitReceipt
+	sessionID      domain.SessionID
+	commitPosition uint64
+	firstSequence  uint64
+	eventCount     uint64
 }
 
 // eventStoreV2State owns every fact changed by a successful append. Append
@@ -100,7 +103,13 @@ func (store *EventStoreV2) CorruptReceipt(appendID domain.AppendID) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	if value, ok := store.state.appends[appendID]; ok {
-		value.receipt.CommitPosition = 0
+		stream := store.state.streams[value.sessionID]
+		// Pick a real current stream range and global commit position so the
+		// receipt remains structurally plausible while disagreeing with the
+		// append's immutable publication metadata.
+		value.receipt.CommitPosition = store.state.commitPosition
+		value.receipt.FirstSequence = uint64(len(stream))
+		value.receipt.LastSequence = uint64(len(stream))
 		store.state.appends[appendID] = value
 	}
 }
@@ -195,7 +204,7 @@ func (store *EventStoreV2) Append(ctx context.Context, request application.Appen
 	receipt := application.CommitReceipt{AppendID: request.AppendID, CommitPosition: position, FirstSequence: batch[0].Sequence, LastSequence: batch[len(batch)-1].Sequence}
 	candidateState.streams[request.SessionID] = candidate
 	candidateState.commitPosition = position
-	candidateState.appends[request.AppendID] = storedAppend{digest: digest, receipt: receipt, sessionID: request.SessionID}
+	candidateState.appends[request.AppendID] = storedAppend{digest: digest, receipt: receipt, sessionID: request.SessionID, commitPosition: position, firstSequence: receipt.FirstSequence, eventCount: uint64(len(batch))}
 	for _, record := range batch {
 		candidateState.eventIDs[record.ID] = struct{}{}
 	}
@@ -405,7 +414,8 @@ func (store *EventStoreV2) runCommitHook(point CommitHookPoint) {
 
 func (store *EventStoreV2) validateStoredReceipt(appendID domain.AppendID, stored storedAppend) error {
 	receipt := stored.receipt
-	if receipt.AppendID != appendID || receipt.CommitPosition == 0 || receipt.FirstSequence == 0 || receipt.LastSequence < receipt.FirstSequence || receipt.CommitPosition > store.state.commitPosition {
+	lastSequence := stored.firstSequence + stored.eventCount - 1
+	if stored.commitPosition == 0 || stored.firstSequence == 0 || stored.eventCount == 0 || receipt.AppendID != appendID || receipt.CommitPosition != stored.commitPosition || receipt.FirstSequence != stored.firstSequence || receipt.LastSequence != lastSequence {
 		return storeError(application.StoreCodeCorrupt, stored.sessionID, 0, 0, "", fmt.Errorf("invalid stored receipt"))
 	}
 	stream := store.state.streams[stored.sessionID]

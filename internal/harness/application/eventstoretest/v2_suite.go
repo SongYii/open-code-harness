@@ -43,6 +43,7 @@ type V2Factory func(*testing.T) V2Harness
 func RunV2(t *testing.T, factory V2Factory) {
 	t.Helper()
 	t.Run("atomic append and CAS", func(t *testing.T) { testAtomicAppendAndCAS(t, factory) })
+	t.Run("proposed metadata preservation", func(t *testing.T) { testProposedMetadataPreservation(t, factory) })
 	t.Run("exact receipt retry", func(t *testing.T) { testExactReceiptRetry(t, factory) })
 	t.Run("pinned pagination", func(t *testing.T) { testPinnedPagination(t, factory) })
 	t.Run("admission identity", func(t *testing.T) { testAdmissionIdentity(t, factory) })
