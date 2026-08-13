@@ -529,6 +529,7 @@ git commit -m "feat(memory): implement EventStore v2 reference"
 - 创建：`internal/harness/application/read_stream_test.go`
 - 创建：`internal/harness/application/append_v2.go`
 - 创建：`internal/harness/application/append_v2_test.go`
+- 删除：`internal/harness/application/append.go`
 - 修改：`internal/harness/application/service.go`
 - 修改：`internal/harness/application/session.go`
 - 修改：`internal/harness/application/turn.go`
@@ -588,6 +589,11 @@ func BuildAppendIntent(clock Clock, ids IDGenerator, authority WriterAuthority,
 
 `BuildAppendIntent` Clone 每个 Event、捕获一次 UTC Time、分配稳定 ID、构造 Request、计算 Digest，并返回 Deep Immutable Value。`CommitAppendIntent` 只调用 Store 一次，校验 `AppendID`、First/Last Sequence 与非零 Commit Position，用 Proposed Metadata 产生 Record，再 Compact Apply。Receipt 不匹配返回 `store_contract_violation`。
 
+本任务直接删除 v1 `append.go` Helper。它绑定旧 Store Result Shape，无法在不引入
+Duplicate Method 或违规的第二 Compatibility Store 的前提下与 v2
+`Service.store` 共存。替代实现暂时保留 `append_v2.go` 名称，任务 8 再提升为
+最终文件名。
+
 - [ ] **步骤 5：将 Service 与 Normal-Path 测试切到 v2**
 
 ```go
@@ -610,7 +616,7 @@ git diff --check
 预期：PASS；`rg -n '\.Load\(' internal/harness/application --glob '*.go' --glob '!**/*_test.go'` 无 Production v1 Load。提交：
 
 ```bash
-git add internal/harness/application/read_stream.go internal/harness/application/read_stream_test.go internal/harness/application/append_v2.go internal/harness/application/append_v2_test.go internal/harness/application/service.go internal/harness/application/session.go internal/harness/application/turn.go internal/harness/application/ports_test.go internal/harness/application/errors_test.go internal/harness/application/session_test.go internal/harness/application/scenario_test.go internal/harness/application/concurrency_test.go internal/harness/application/turn_success_test.go internal/harness/application/turn_failure_test.go internal/harness/application/enginescenariotest/suite.go internal/harness/testkit/clock.go internal/harness/testkit/v2_store.go
+git add internal/harness/application/read_stream.go internal/harness/application/read_stream_test.go internal/harness/application/append_v2.go internal/harness/application/append_v2_test.go internal/harness/application/append.go internal/harness/application/service.go internal/harness/application/session.go internal/harness/application/turn.go internal/harness/application/ports_test.go internal/harness/application/errors_test.go internal/harness/application/session_test.go internal/harness/application/scenario_test.go internal/harness/application/concurrency_test.go internal/harness/application/turn_success_test.go internal/harness/application/turn_failure_test.go internal/harness/application/enginescenariotest/suite.go internal/harness/testkit/clock.go internal/harness/testkit/v2_store.go
 git commit -m "refactor(application): adopt EventStore v2 appends"
 ```
 
@@ -788,7 +794,6 @@ git commit -m "feat(application): resolve uncertain appends safely"
 - 修改：`internal/harness/domain/apply_test.go`、`decide_test.go`、`replay_test.go`、`compact_test.go`、`compact_equivalence_test.go`
 - 修改：`internal/harness/application/ports.go`
 - 合并后删除：`internal/harness/application/store_v2.go`
-- 删除：`internal/harness/application/append.go`
 - Rename/Merge：`internal/harness/application/append_v2.go` -> `internal/harness/application/append.go`
 - 删除：`internal/harness/application/eventstoretest/suite.go`
 - Rename/Merge：`eventstoretest/v2_suite.go` -> `eventstoretest/suite.go`，`eventstoretest/v2_cases.go` -> `eventstoretest/cases.go`

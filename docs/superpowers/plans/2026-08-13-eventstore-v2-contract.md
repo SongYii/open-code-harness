@@ -575,6 +575,7 @@ git commit -m "feat(memory): implement EventStore v2 reference"
 - Create: `internal/harness/application/read_stream_test.go`
 - Create: `internal/harness/application/append_v2.go`
 - Create: `internal/harness/application/append_v2_test.go`
+- Delete: `internal/harness/application/append.go`
 - Modify: `internal/harness/application/service.go`
 - Modify: `internal/harness/application/session.go`
 - Modify: `internal/harness/application/turn.go`
@@ -636,6 +637,11 @@ func BuildAppendIntent(clock Clock, ids IDGenerator, authority WriterAuthority,
 
 `BuildAppendIntent` clones every Event, captures one UTC time, allocates stable IDs, builds the request, computes its digest, and returns a deep immutable value. `CommitAppendIntent` calls Store once, validates `AppendID`, first/last sequence, and non-zero commit position, creates `RecordedEvent` values from the proposed metadata, then applies them compactly. A mismatched receipt is `store_contract_violation`.
 
+Delete the v1 `append.go` helper in this task. It is tied to the old Store result
+shape and cannot coexist with the v2 `Service.store` without either a duplicate
+method or a forbidden second compatibility Store. Keep the replacement under
+the temporary `append_v2.go` name until Task 8 promotes it.
+
 - [ ] **Step 5: Switch Service and all normal-path tests to v2**
 
 Change construction to:
@@ -662,7 +668,7 @@ git diff --check
 Expected: PASS; `rg -n '\.Load\(' internal/harness/application --glob '*.go' --glob '!**/*_test.go'` finds no production v1 load. Commit the paths declared in this task:
 
 ```bash
-git add internal/harness/application/read_stream.go internal/harness/application/read_stream_test.go internal/harness/application/append_v2.go internal/harness/application/append_v2_test.go internal/harness/application/service.go internal/harness/application/session.go internal/harness/application/turn.go internal/harness/application/ports_test.go internal/harness/application/errors_test.go internal/harness/application/session_test.go internal/harness/application/scenario_test.go internal/harness/application/concurrency_test.go internal/harness/application/turn_success_test.go internal/harness/application/turn_failure_test.go internal/harness/application/enginescenariotest/suite.go internal/harness/testkit/clock.go internal/harness/testkit/v2_store.go
+git add internal/harness/application/read_stream.go internal/harness/application/read_stream_test.go internal/harness/application/append_v2.go internal/harness/application/append_v2_test.go internal/harness/application/append.go internal/harness/application/service.go internal/harness/application/session.go internal/harness/application/turn.go internal/harness/application/ports_test.go internal/harness/application/errors_test.go internal/harness/application/session_test.go internal/harness/application/scenario_test.go internal/harness/application/concurrency_test.go internal/harness/application/turn_success_test.go internal/harness/application/turn_failure_test.go internal/harness/application/enginescenariotest/suite.go internal/harness/testkit/clock.go internal/harness/testkit/v2_store.go
 git commit -m "refactor(application): adopt EventStore v2 appends"
 ```
 
@@ -869,7 +875,6 @@ git commit -m "feat(application): resolve uncertain appends safely"
 - Modify: `internal/harness/domain/compact_equivalence_test.go`
 - Modify: `internal/harness/application/ports.go`
 - Delete after merge: `internal/harness/application/store_v2.go`
-- Delete: `internal/harness/application/append.go`
 - Rename/merge: `internal/harness/application/append_v2.go` -> `internal/harness/application/append.go`
 - Delete: `internal/harness/application/eventstoretest/suite.go`
 - Rename/merge: `internal/harness/application/eventstoretest/v2_suite.go` -> `internal/harness/application/eventstoretest/suite.go`
