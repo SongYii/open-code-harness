@@ -2,6 +2,7 @@ package application_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"sync"
@@ -21,7 +22,7 @@ func TestConcurrentRunTurnSameSessionHasOneAtomicAdmissionWinner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	barrier := newAcceptanceLoadBarrier(base, "session-1", 2)
+	barrier := newAcceptanceLoadBarrier(base, "session-1", 1)
 	model := &acceptanceSuccessModel{text: "done"}
 	service := newAcceptanceService(t, barrier, ids, model)
 	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
@@ -34,8 +35,8 @@ func TestConcurrentRunTurnSameSessionHasOneAtomicAdmissionWinner(t *testing.T) {
 		err    error
 	}
 	start := make(chan struct{})
-	done := make(chan outcome, 2)
-	for index := 0; index < 2; index++ {
+	done := make(chan outcome, 32)
+	for index := 0; index < 32; index++ {
 		go func() {
 			<-start
 			result, runErr := service.RunTurn(context.Background(), application.RunTurnRequest{
@@ -51,26 +52,25 @@ func TestConcurrentRunTurnSameSessionHasOneAtomicAdmissionWinner(t *testing.T) {
 	barrier.WaitAll()
 	barrier.Release()
 
-	successes, conflicts := 0, 0
-	for range 2 {
+	successes := 0
+	var first application.RunTurnResult
+	for range 32 {
 		got := <-done
-		switch {
-		case got.err == nil:
-			successes++
-			if got.result.Status != domain.TurnStatusCompleted || !got.result.TerminalCommitted {
-				t.Fatalf("winner result = %#v", got.result)
-			}
-		case application.IsCategory(got.err, application.CategoryConflict):
-			conflicts++
-			if !reflect.DeepEqual(got.result, application.RunTurnResult{}) {
-				t.Fatalf("conflict result = %#v, want zero result", got.result)
-			}
-		default:
+		if got.err != nil {
 			t.Fatalf("RunTurn() unexpected error = %v, result = %#v", got.err, got.result)
 		}
+		successes++
+		if got.result.Status != domain.TurnStatusCompleted || !got.result.TerminalCommitted {
+			t.Fatalf("result = %#v", got.result)
+		}
+		if first.TurnID == "" {
+			first = got.result
+		} else if got.result.TurnID != first.TurnID || got.result.ItemID != first.ItemID || got.result.Text != first.Text {
+			t.Fatalf("duplicate result = %#v, want same execution as %#v", got.result, first)
+		}
 	}
-	if successes != 1 || conflicts != 1 || len(model.Calls()) != 1 {
-		t.Fatalf("successes=%d conflicts=%d model calls=%d", successes, conflicts, len(model.Calls()))
+	if successes != 32 || len(model.Calls()) != 1 {
+		t.Fatalf("successes=%d model calls=%d", successes, len(model.Calls()))
 	}
 	records, err := application.ReadWholeStreamPinned(context.Background(), base, created.SessionID, 256)
 	if err != nil {
@@ -93,6 +93,108 @@ func TestConcurrentRunTurnSameSessionHasOneAtomicAdmissionWinner(t *testing.T) {
 	if state.Version != 5 || len(state.Turns) != 1 || state.ActiveTurnID != "" {
 		t.Fatalf("replayed state = %#v", state)
 	}
+}
+
+func TestConcurrentRunTurnAcrossServicesReconcilesDurableAdmissionWinner(t *testing.T) {
+	authority := application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1}
+	base, err := memory.NewEventStoreV2(authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sharedIDs := testkit.NewSequenceIDs()
+	seed := newAcceptanceService(t, base, sharedIDs, &acceptanceSuccessModel{text: "seed"})
+	created, err := seed.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := newLookupRaceBarrier(base, 2)
+	modelA, modelB := &acceptanceSuccessModel{text: "done"}, &acceptanceSuccessModel{text: "done"}
+	serviceA := newAcceptanceService(t, gate, sharedIDs, modelA)
+	serviceB := newAcceptanceService(t, gate, sharedIDs, modelB)
+	type outcome struct{ err error }
+	done := make(chan outcome, 2)
+	for _, service := range []*application.Service{serviceA, serviceB} {
+		go func(service *application.Service) {
+			_, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-cross-process", Input: "inspect", Sink: &testkit.RecordingSink{}})
+			done <- outcome{err: err}
+		}(service)
+	}
+	<-gate.ready
+	close(gate.release)
+	successes, reconciliations := 0, 0
+	for range 2 {
+		got := <-done
+		if got.err == nil {
+			successes++
+			continue
+		}
+		var appErr *application.Error
+		if errors.As(got.err, &appErr) && appErr.Code == "reconciliation_required" {
+			reconciliations++
+			continue
+		}
+		t.Fatalf("cross-service result error = %v", got.err)
+	}
+	if successes+reconciliations != 2 || len(modelA.Calls())+len(modelB.Calls()) != 1 {
+		t.Fatalf("successes=%d reconciliations=%d model calls=%d", successes, reconciliations, len(modelA.Calls())+len(modelB.Calls()))
+	}
+	lookup, err := base.FindCommandRequest(context.Background(), application.FindCommandRequestRequest{RunTurnRequestID: "request-cross-process", SessionID: created.SessionID, RequestDigest: mustRunTurnDigest(t, created.SessionID, "inspect")})
+	if err != nil || lookup.Kind != application.CommandRequestLookupFound || lookup.Record == nil {
+		t.Fatalf("admission lookup = %#v, %v", lookup, err)
+	}
+	records, err := application.ReadWholeStreamPinned(context.Background(), base, created.SessionID, 256)
+	if err != nil || countAdmissionStartPairs(records, lookup.Record.CommandID, lookup.Record.TurnID, lookup.Record.ItemID) != 1 {
+		t.Fatalf("admission records = %#v, %v", records, err)
+	}
+}
+
+func mustRunTurnDigest(t *testing.T, sessionID domain.SessionID, input string) application.Digest {
+	t.Helper()
+	digest, err := application.DigestRunTurnRequestV1(sessionID, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return digest
+}
+
+func countAdmissionStartPairs(records []domain.RecordedEvent, commandID domain.CommandID, turnID domain.TurnID, itemID domain.ItemID) int {
+	count := 0
+	for index := 0; index+1 < len(records); index++ {
+		turn, turnOK := records[index].Event.(domain.TurnStarted)
+		item, itemOK := records[index+1].Event.(domain.AssistantMessageStarted)
+		if turnOK && itemOK && records[index].CommandID == commandID && records[index+1].CommandID == commandID && turn.TurnID == turnID && item.TurnID == turnID && item.ItemID == itemID {
+			count++
+		}
+	}
+	return count
+}
+
+type lookupRaceBarrier struct {
+	application.EventStoreV2
+	mu        sync.Mutex
+	remaining int
+	ready     chan struct{}
+	release   chan struct{}
+}
+
+func newLookupRaceBarrier(store application.EventStoreV2, callers int) *lookupRaceBarrier {
+	return &lookupRaceBarrier{EventStoreV2: store, remaining: callers, ready: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (store *lookupRaceBarrier) FindCommandRequest(ctx context.Context, request application.FindCommandRequestRequest) (application.CommandRequestLookup, error) {
+	lookup, err := store.EventStoreV2.FindCommandRequest(ctx, request)
+	if err != nil || lookup.Kind != application.CommandRequestLookupNotFound {
+		return lookup, err
+	}
+	store.mu.Lock()
+	store.remaining--
+	last := store.remaining == 0
+	store.mu.Unlock()
+	if last {
+		close(store.ready)
+	}
+	<-store.release
+	return lookup, nil
 }
 
 func TestConcurrentRunTurnDifferentSessionsCompleteThirtyTwo(t *testing.T) {

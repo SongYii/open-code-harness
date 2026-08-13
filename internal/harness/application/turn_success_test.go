@@ -235,7 +235,6 @@ func TestRunTurnRequestLookupPrecedesIDsAndModel(t *testing.T) {
 		lookup application.CommandRequestLookup
 		code   string
 	}{
-		{lookup: application.CommandRequestLookup{Kind: application.CommandRequestLookupFound, Record: &application.CommandRequestRecord{RunTurnRequestID: "request-known", SessionID: "session-preflight", CommandID: "command-known", TurnID: "turn-known", ItemID: "item-known", AdmissionAppendID: "append-known"}}, code: "reconciliation_required"},
 		{lookup: application.CommandRequestLookup{Kind: application.CommandRequestLookupIdentityMismatch}, code: "command_identity_mismatch"},
 	} {
 		base := activeTurnStore(t)

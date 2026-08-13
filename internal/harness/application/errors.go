@@ -20,6 +20,11 @@ const (
 	CategoryInternal    ErrorCategory = "internal"
 )
 
+const (
+	CodeCommandIdentityMismatch = "command_identity_mismatch"
+	CodeReconciliationRequired  = "reconciliation_required"
+)
+
 // Error is a stable application-facing failure. Cause remains available for
 // deliberate programmatic inspection but is never rendered by Error.
 type Error struct {

@@ -25,7 +25,7 @@ type RunTurnResult struct {
 	Records           []domain.RecordedEvent
 }
 
-func (service *Service) RunTurn(ctx context.Context, request RunTurnRequest) (RunTurnResult, error) {
+func (service *Service) RunTurn(ctx context.Context, request RunTurnRequest) (result RunTurnResult, returnErr error) {
 	if service == nil || !validRunTurnRequest(request) {
 		return RunTurnResult{}, applicationError(CategoryValidation, "invalid_request", false, nil)
 	}
@@ -45,10 +45,26 @@ func (service *Service) RunTurn(ctx context.Context, request RunTurnRequest) (Ru
 	}
 	switch lookup.Kind {
 	case CommandRequestLookupFound:
-		return RunTurnResult{}, applicationError(CategoryConflict, "reconciliation_required", false, nil)
+		return service.runTurnFound(ctx, request, requestDigest, *lookup.Record, true)
 	case CommandRequestLookupIdentityMismatch:
-		return RunTurnResult{}, applicationError(CategoryConflict, "command_identity_mismatch", false, nil)
+		return RunTurnResult{}, applicationError(CategoryConflict, CodeCommandIdentityMismatch, false, nil)
 	}
+	lease, owner, acquireErr := service.executions.acquire(request.RequestID, request.SessionID, requestDigest)
+	if acquireErr != nil {
+		return RunTurnResult{}, applicationError(CategoryConflict, CodeCommandIdentityMismatch, false, acquireErr)
+	}
+	if !owner {
+		defer lease.release()
+		return lease.wait(ctx)
+	}
+	defer func() {
+		lease.publish(result, returnErr)
+		lease.release()
+	}()
+	return service.runTurnOwned(ctx, request, requestDigest, lease)
+}
+
+func (service *Service) runTurnOwned(ctx context.Context, request RunTurnRequest, requestDigest Digest, lease *executionLease) (RunTurnResult, error) {
 
 	state, err := service.LoadSession(ctx, request.SessionID)
 	if err != nil {
@@ -87,30 +103,54 @@ func (service *Service) RunTurn(ctx context.Context, request RunTurnRequest) (Ru
 		return RunTurnResult{}, applicationError(CategoryValidation, "domain_rejected", false, err)
 	}
 	admission := &CommandAdmission{RunTurnRequestID: request.RequestID, RequestDigest: requestDigest, TurnID: turnID, ItemID: itemID}
-	runningState, admissionRecords, err := appendCompact(ctx, service, request.SessionID, state, decided, commandID, admission)
+	admissionIntent, err := BuildAppendIntent(service.clock, service.ids, service.authority, request.SessionID, state.Version, commandID, admission, decided)
 	if err != nil {
 		return RunTurnResult{}, err
 	}
+	lease.retainIntent(admissionIntent)
+	runningState, admissionRecords, err := CommitAppendIntent(ctx, service.store, state, admissionIntent)
+	if err != nil {
+		if IsStoreCode(err, StoreCodeCommandRequestConflict) {
+			lookup, lookupErr := service.store.FindCommandRequest(ctx, FindCommandRequestRequest{RunTurnRequestID: request.RequestID, SessionID: request.SessionID, RequestDigest: requestDigest})
+			if !isNilValue(lookupErr) {
+				return RunTurnResult{}, mapV2StoreError(ctx, lookupErr, "read")
+			}
+			if validateErr := lookup.Validate(); validateErr != nil {
+				return RunTurnResult{}, storeContractViolation(validateErr)
+			}
+			if lookup.Kind == CommandRequestLookupFound {
+				return service.runTurnFound(ctx, request, requestDigest, *lookup.Record, false)
+			}
+		}
+		return RunTurnResult{}, err
+	}
+	lease.setPhase(executionPhaseRunning)
 	runningResult := RunTurnResult{SessionID: request.SessionID, TurnID: turnID, ItemID: itemID, Status: domain.TurnStatusRunning, Records: admissionRecords}
 	runResult, err := service.runner.Run(ctx, engine.RunRequest{ModelRequest: engine.ModelRequest{SessionID: request.SessionID, TurnID: turnID, ItemID: itemID, Input: request.Input}, MaxAssistantBytes: service.config.MaxAssistantBytes}, emitter)
 	if err != nil {
 		cleanupBase := context.WithoutCancel(ctx)
 		cleanupCtx, cancel := context.WithTimeout(cleanupBase, service.config.TerminalCommitTimeout)
 		defer cancel()
-		return service.terminalizeExecutionFailure(cleanupCtx, ctx, runningState, runningResult, commandID, emitter, mapRunError(err), err)
+		return service.terminalizeExecutionFailure(cleanupCtx, ctx, runningState, runningResult, commandID, emitter, lease, mapRunError(err), err)
 	}
 	decided, err = domain.DecideCompact(runningState, domain.CompleteAssistantTurn{SessionID: request.SessionID, TurnID: turnID, ItemID: itemID, Text: runResult.Text})
 	if err != nil {
 		return cloneRunTurnResult(runningResult), applicationError(CategoryInternal, "domain_transition_failed", false, err)
 	}
-	_, terminalRecords, err := appendCompact(ctx, service, request.SessionID, runningState, decided, commandID, nil)
+	lease.setPhase(executionPhaseTerminalInFlight)
+	terminalIntent, err := BuildAppendIntent(service.clock, service.ids, service.authority, request.SessionID, runningState.Version, commandID, nil, decided)
+	if err != nil {
+		return cloneRunTurnResult(runningResult), err
+	}
+	lease.retainIntent(terminalIntent)
+	_, terminalRecords, err := CommitAppendIntent(ctx, service.store, runningState, terminalIntent)
 	if err != nil {
 		if ctx.Err() != nil && !isAppendOutcomeUnknown(err) {
 			cleanupBase := context.WithoutCancel(ctx)
 			cleanupCtx, cancel := context.WithTimeout(cleanupBase, service.config.TerminalCommitTimeout)
 			defer cancel()
 			primary := applicationError(CategoryCanceled, "canceled", false, errors.Join(ctx.Err(), err))
-			return service.terminalizeExecutionFailure(cleanupCtx, ctx, runningState, runningResult, commandID, emitter, primary, primary)
+			return service.terminalizeExecutionFailure(cleanupCtx, ctx, runningState, runningResult, commandID, emitter, lease, primary, primary)
 		}
 		return cloneRunTurnResult(runningResult), err
 	}
@@ -124,18 +164,65 @@ func (service *Service) RunTurn(ctx context.Context, request RunTurnRequest) (Ru
 	return cloneRunTurnResult(completedResult), nil
 }
 
+func (service *Service) runTurnFound(ctx context.Context, request RunTurnRequest, digest Digest, record CommandRequestRecord, attachLocal bool) (RunTurnResult, error) {
+	if record.RunTurnRequestID != request.RequestID || record.SessionID != request.SessionID || record.RequestDigest != digest {
+		return RunTurnResult{}, storeContractViolation(errors.New("found command record does not match lookup identity"))
+	}
+	records, err := ReadWholeStreamPinned(ctx, service.store, request.SessionID, 256)
+	if err != nil {
+		return RunTurnResult{}, err
+	}
+	result, err := ReconstructRequestResult(record, records)
+	if err != nil {
+		return RunTurnResult{}, mapV2StoreError(ctx, err, "read")
+	}
+	if result.Status != domain.TurnStatusRunning {
+		return result, durableRequestTerminalError(result)
+	}
+	if !attachLocal {
+		return RunTurnResult{}, applicationError(CategoryConflict, CodeReconciliationRequired, false, nil)
+	}
+	lease, attached := service.executions.attachExisting(request.RequestID, request.SessionID, digest)
+	if !attached {
+		return RunTurnResult{}, applicationError(CategoryConflict, CodeReconciliationRequired, false, nil)
+	}
+	defer lease.release()
+	return lease.wait(ctx)
+}
+
+func durableRequestTerminalError(result RunTurnResult) error {
+	if !result.TerminalCommitted || len(result.Records) < 2 {
+		return nil
+	}
+	terminal := result.Records[len(result.Records)-2].Event
+	switch event := terminal.(type) {
+	case domain.AssistantMessageFailed:
+		return applicationError(CategoryModel, event.Code, true, nil)
+	case domain.AssistantMessageInterrupted:
+		return applicationError(CategoryCanceled, event.Code, true, nil)
+	default:
+		return nil
+	}
+}
+
 func isAppendOutcomeUnknown(err error) bool {
 	var applicationErr *Error
 	return errors.As(err, &applicationErr) && applicationErr != nil && applicationErr.Code == "append_outcome_unknown"
 }
 
-func (service *Service) terminalizeExecutionFailure(cleanupCtx context.Context, deliveryCtx context.Context, runningState domain.CompactSession, runningResult RunTurnResult, commandID domain.CommandID, emitter *engine.Emitter, primary *Error, executionCause error) (RunTurnResult, error) {
+func (service *Service) terminalizeExecutionFailure(cleanupCtx context.Context, deliveryCtx context.Context, runningState domain.CompactSession, runningResult RunTurnResult, commandID domain.CommandID, emitter *engine.Emitter, lease *executionLease, primary *Error, executionCause error) (RunTurnResult, error) {
 	terminalCommand, status, terminalSignal, stableCode := terminalCommandForExecution(runningResult, primary)
 	decided, err := domain.DecideCompact(runningState, terminalCommand)
 	if err != nil {
 		return cloneRunTurnResult(runningResult), applicationError(CategoryInternal, "domain_transition_failed", false, errors.Join(executionCause, err))
 	}
-	_, terminalRecords, err := appendCompact(cleanupCtx, service, runningResult.SessionID, runningState, decided, commandID, nil)
+	lease.setPhase(executionPhaseTerminalInFlight)
+	terminalIntent, err := BuildAppendIntent(service.clock, service.ids, service.authority, runningResult.SessionID, runningState.Version, commandID, nil, decided)
+	if err != nil {
+		return cloneRunTurnResult(runningResult), err
+	}
+	lease.retainIntent(terminalIntent)
+	_, terminalRecords, err := CommitAppendIntent(cleanupCtx, service.store, runningState, terminalIntent)
 	if err != nil {
 		if cleanupCtx.Err() != nil && IsCategory(err, CategoryCanceled) {
 			err = applicationError(CategoryPersistence, "append_failed", false, err)
