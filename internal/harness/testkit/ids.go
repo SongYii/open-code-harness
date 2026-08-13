@@ -17,6 +17,7 @@ type SequenceIDs struct {
 	turns    uint64
 	items    uint64
 	commands uint64
+	appends  uint64
 	events   uint64
 }
 
@@ -50,6 +51,13 @@ func (ids *SequenceIDs) NewCommandID() (domain.CommandID, error) {
 	defer ids.mu.Unlock()
 	ids.commands++
 	return domain.CommandID(fmt.Sprintf("command-%d", ids.commands)), nil
+}
+
+func (ids *SequenceIDs) NewAppendID() (domain.AppendID, error) {
+	ids.mu.Lock()
+	defer ids.mu.Unlock()
+	ids.appends++
+	return domain.AppendID(fmt.Sprintf("append-%d", ids.appends)), nil
 }
 
 func (ids *SequenceIDs) NewEventID() (domain.EventID, error) {

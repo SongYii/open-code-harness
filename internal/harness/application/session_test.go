@@ -461,4 +461,5 @@ func (ids *sessionIDs) NewCommandID() (domain.CommandID, error) {
 	}
 	return ids.commandID, ids.commandErr
 }
-func (ids *sessionIDs) NewEventID() (domain.EventID, error) { ids.calls++; return "event-1", nil }
+func (ids *sessionIDs) NewAppendID() (domain.AppendID, error) { ids.calls++; return "append-1", nil }
+func (ids *sessionIDs) NewEventID() (domain.EventID, error)   { ids.calls++; return "event-1", nil }

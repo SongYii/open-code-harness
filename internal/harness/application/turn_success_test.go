@@ -730,6 +730,8 @@ func (ids *turnIDs) NewCommandID() (domain.CommandID, error) {
 	return id, err
 }
 
+func (*turnIDs) NewAppendID() (domain.AppendID, error) { return "append-unused", nil }
+
 func (*turnIDs) NewEventID() (domain.EventID, error) { return "event-unused", nil }
 
 func (ids *turnIDs) Calls() []string {

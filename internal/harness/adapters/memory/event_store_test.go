@@ -522,6 +522,7 @@ func (ids *countingIDs) NewSessionID() (domain.SessionID, error) { return "sessi
 func (ids *countingIDs) NewTurnID() (domain.TurnID, error)       { return "turn-unused", nil }
 func (ids *countingIDs) NewItemID() (domain.ItemID, error)       { return "item-unused", nil }
 func (ids *countingIDs) NewCommandID() (domain.CommandID, error) { return "command-unused", nil }
+func (ids *countingIDs) NewAppendID() (domain.AppendID, error)   { return "append-unused", nil }
 func (ids *countingIDs) NewEventID() (domain.EventID, error) {
 	ids.mu.Lock()
 	defer ids.mu.Unlock()
