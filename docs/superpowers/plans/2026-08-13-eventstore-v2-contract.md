@@ -60,6 +60,8 @@
 - Modify: `internal/harness/application/ports.go`
 - Modify: `internal/harness/application/ports_test.go`
 - Modify: `internal/harness/application/session_test.go`
+- Modify: `internal/harness/application/turn_success_test.go`
+- Modify: `internal/harness/adapters/memory/event_store_test.go`
 - Modify: `internal/harness/testkit/ids.go`
 - Modify: `internal/harness/testkit/ids_test.go`
 
@@ -174,7 +176,7 @@ git diff --check
 Expected: PASS. Review the diff for type names and safe error text, then commit:
 
 ```bash
-git add internal/harness/domain/ids.go internal/harness/domain/ids_test.go internal/harness/application/store_v2.go internal/harness/application/store_errors.go internal/harness/application/store_v2_test.go internal/harness/application/ports.go internal/harness/application/ports_test.go internal/harness/application/session_test.go internal/harness/testkit/ids.go internal/harness/testkit/ids_test.go
+git add internal/harness/domain/ids.go internal/harness/domain/ids_test.go internal/harness/application/store_v2.go internal/harness/application/store_errors.go internal/harness/application/store_v2_test.go internal/harness/application/ports.go internal/harness/application/ports_test.go internal/harness/application/session_test.go internal/harness/application/turn_success_test.go internal/harness/adapters/memory/event_store_test.go internal/harness/testkit/ids.go internal/harness/testkit/ids_test.go
 git commit -m "feat(storage): define EventStore v2 primitives"
 ```
 

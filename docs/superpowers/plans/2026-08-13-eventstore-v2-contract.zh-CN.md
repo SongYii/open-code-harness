@@ -60,6 +60,8 @@
 - 修改：`internal/harness/application/ports.go`
 - 修改：`internal/harness/application/ports_test.go`
 - 修改：`internal/harness/application/session_test.go`
+- 修改：`internal/harness/application/turn_success_test.go`
+- 修改：`internal/harness/adapters/memory/event_store_test.go`
 - 修改：`internal/harness/testkit/ids.go`
 - 修改：`internal/harness/testkit/ids_test.go`
 
@@ -168,7 +170,7 @@ git diff --check
 预期：PASS。审阅 Type Name 与安全 Error Text 后提交：
 
 ```bash
-git add internal/harness/domain/ids.go internal/harness/domain/ids_test.go internal/harness/application/store_v2.go internal/harness/application/store_errors.go internal/harness/application/store_v2_test.go internal/harness/application/ports.go internal/harness/application/ports_test.go internal/harness/application/session_test.go internal/harness/testkit/ids.go internal/harness/testkit/ids_test.go
+git add internal/harness/domain/ids.go internal/harness/domain/ids_test.go internal/harness/application/store_v2.go internal/harness/application/store_errors.go internal/harness/application/store_v2_test.go internal/harness/application/ports.go internal/harness/application/ports_test.go internal/harness/application/session_test.go internal/harness/application/turn_success_test.go internal/harness/adapters/memory/event_store_test.go internal/harness/testkit/ids.go internal/harness/testkit/ids_test.go
 git commit -m "feat(storage): define EventStore v2 primitives"
 ```
 
