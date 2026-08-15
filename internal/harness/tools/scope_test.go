@@ -30,6 +30,16 @@ func TestCheckScopeLexicalDeniesEscapesWithoutIO(t *testing.T) {
 		{name: "windows drive", workspace: workspace, requested: `C:\Windows\System32`, reason: ReasonWindowsVolume},
 		{name: "windows drive slash", workspace: workspace, requested: "C:/Windows", reason: ReasonWindowsVolume},
 		{name: "unc", workspace: workspace, requested: `\\server\share\file`, reason: ReasonWindowsVolume},
+		{name: "windows workspace relative", workspace: `C:\proj`, requested: "README.md", in: true, reason: ReasonInWorkspace},
+		{name: "windows workspace nested", workspace: `C:\proj`, requested: `src\foo.go`, in: true, reason: ReasonInWorkspace},
+		{name: "windows workspace same-volume abs", workspace: `C:\proj`, requested: `C:\proj\src`, in: true, reason: ReasonInWorkspace},
+		{name: "windows workspace drive case", workspace: `C:\proj`, requested: `c:\proj\src`, in: true, reason: ReasonInWorkspace},
+		{name: "windows workspace path case", workspace: `C:\Proj`, requested: `C:\proj\src`, in: true, reason: ReasonInWorkspace},
+		{name: "windows workspace other dir", workspace: `C:\proj`, requested: `C:\Windows`, reason: ReasonAbsPrefixMismatch},
+		{name: "windows workspace other drive", workspace: `C:\proj`, requested: `D:\other`, reason: ReasonWindowsVolume},
+		{name: "windows workspace unc escape", workspace: `C:\proj`, requested: `\\server\share\file`, reason: ReasonWindowsVolume},
+		{name: "windows workspace leftover", workspace: `C:\proj`, requested: `..\Windows`, reason: ReasonLeftoverDotDot},
+		{name: "windows workspace cleaned outside", workspace: `C:\proj`, requested: `C:\proj\..\Windows`, reason: ReasonAbsPrefixMismatch},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

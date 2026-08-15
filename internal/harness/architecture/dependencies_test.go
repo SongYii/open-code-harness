@@ -143,6 +143,7 @@ func TestForbiddenImport(t *testing.T) {
 		{name: "openaicompat cannot import application", owner: ownerOpenAICompat, importPath: modulePath + "/internal/harness/application", forbidden: true},
 		{name: "openaicompat cannot import testkit", owner: ownerOpenAICompat, importPath: modulePath + "/internal/harness/testkit", forbidden: true},
 		{name: "openaicompat cannot import memory adapter", owner: ownerOpenAICompat, importPath: modulePath + "/internal/harness/adapters/memory", forbidden: true},
+		{name: "openaicompat cannot import tools", owner: ownerOpenAICompat, importPath: modulePath + "/internal/harness/tools", forbidden: true},
 		{name: "policy cannot import application", owner: ownerPolicy, importPath: modulePath + "/internal/harness/application", forbidden: true},
 		{name: "policy cannot import engine", owner: ownerPolicy, importPath: modulePath + "/internal/harness/engine", forbidden: true},
 		{name: "policy cannot import tools", owner: ownerPolicy, importPath: modulePath + "/internal/harness/tools", forbidden: true},
@@ -341,6 +342,7 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 		forbidden = append(forbidden,
 			modulePath+"/internal/harness/application",
 			modulePath+"/internal/harness/testkit",
+			modulePath+"/internal/harness/tools",
 		)
 	case ownerPolicy:
 		forbidden = append(forbidden,
