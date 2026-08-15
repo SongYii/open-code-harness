@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func recordedForTest(state Session, event Event) RecordedEvent {
+func recordedForTest(state HistoricalSession, event Event) RecordedEvent {
 	sequence := state.Version + 1
 	return RecordedEvent{
 		SchemaVersion: 1,
@@ -19,19 +19,19 @@ func recordedForTest(state Session, event Event) RecordedEvent {
 	}
 }
 
-func activeSessionForTest(t *testing.T) Session {
+func activeSessionForTest(t *testing.T) HistoricalSession {
 	t.Helper()
-	state, err := Apply(Session{}, recordedForTest(Session{}, SessionCreated{WorkspaceRoot: "/workspace"}))
+	state, err := HistoricalApply(HistoricalSession{}, recordedForTest(HistoricalSession{}, SessionCreated{WorkspaceRoot: "/workspace"}))
 	if err != nil {
 		t.Fatalf("create test session: %v", err)
 	}
 	return state
 }
 
-func runningTurnForTest(t *testing.T) Session {
+func runningTurnForTest(t *testing.T) HistoricalSession {
 	t.Helper()
 	state := activeSessionForTest(t)
-	state, err := Apply(state, recordedForTest(state, TurnStarted{
+	state, err := HistoricalApply(state, recordedForTest(state, TurnStarted{
 		TurnID: TurnID("turn-1"), Input: "inspect repository",
 	}))
 	if err != nil {

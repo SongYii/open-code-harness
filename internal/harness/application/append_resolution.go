@@ -15,7 +15,7 @@ func DefaultAppendResolutionConfig() AppendResolutionConfig {
 	return AppendResolutionConfig{Timeout: DefaultAppendResolutionTimeout, MaxOperations: DefaultAppendResolutionMaxOperations}
 }
 
-func ResolveAppendIntent(ctx context.Context, store EventStoreV2, intent AppendIntent, config AppendResolutionConfig) (CommitReceipt, error) {
+func ResolveAppendIntent(ctx context.Context, store EventStore, intent AppendIntent, config AppendResolutionConfig) (CommitReceipt, error) {
 	if err := contextError(ctx); err != nil {
 		return CommitReceipt{}, appendOutcomeUnknown(err)
 	}

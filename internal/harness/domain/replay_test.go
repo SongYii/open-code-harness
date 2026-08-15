@@ -25,11 +25,11 @@ func TestReplayFixtureIsDeterministic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeJSONL() error = %v", err)
 	}
-	first, err := Replay(records)
+	first, err := HistoricalReplay(records)
 	if err != nil {
 		t.Fatalf("Replay() error = %v", err)
 	}
-	second, err := Replay(records)
+	second, err := HistoricalReplay(records)
 	if err != nil {
 		t.Fatalf("Replay() second error = %v", err)
 	}
@@ -85,7 +85,7 @@ func TestReplayAssistantLifecycleFixture(t *testing.T) {
 		t.Fatalf("terminal occurrence times = %s, %s, want equal", records[3].OccurredAt, records[4].OccurredAt)
 	}
 
-	state, err := Replay(records)
+	state, err := HistoricalReplay(records)
 	if err != nil {
 		t.Fatalf("Replay() error = %v", err)
 	}
@@ -332,12 +332,12 @@ func TestReplayRejectsCorruptStreamsWithoutPartialState(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			state, err := Replay(test.records)
+			state, err := HistoricalReplay(test.records)
 			if !IsCode(err, test.code) {
 				t.Fatalf("Replay() error = %v, want code %q", err, test.code)
 			}
-			if !reflect.DeepEqual(state, Session{}) {
-				t.Fatalf("Replay() state = %#v, want zero Session on error", state)
+			if !reflect.DeepEqual(state, HistoricalSession{}) {
+				t.Fatalf("Replay() state = %#v, want zero HistoricalSession on error", state)
 			}
 		})
 	}
@@ -349,12 +349,12 @@ func TestReplayRejectsTypedRecordOutsideCodecContract(t *testing.T) {
 	record := replayRecord(1, SessionCreated{WorkspaceRoot: "/workspace"})
 	record.Event = SessionCreated{WorkspaceRoot: " \t "}
 
-	state, err := Replay([]RecordedEvent{record})
+	state, err := HistoricalReplay([]RecordedEvent{record})
 	if !IsCode(err, CodeInvalidEvent) {
 		t.Fatalf("Replay() error = %v, want code %q", err, CodeInvalidEvent)
 	}
-	if !reflect.DeepEqual(state, Session{}) {
-		t.Fatalf("Replay() state = %#v, want zero Session", state)
+	if !reflect.DeepEqual(state, HistoricalSession{}) {
+		t.Fatalf("Replay() state = %#v, want zero HistoricalSession", state)
 	}
 }
 
@@ -371,7 +371,7 @@ func TestInvalidUTF8CannotDivergeBetweenTypedAndWireReplay(t *testing.T) {
 		t.Fatalf("json.Marshal() = %q, want replacement escape proving invalid UTF-8 rewrite", rewrittenPayload)
 	}
 
-	state, replayErr := Replay([]RecordedEvent{record})
+	state, replayErr := HistoricalReplay([]RecordedEvent{record})
 	encoded, marshalErr := MarshalRecordedEvent(record)
 	if !IsCode(replayErr, CodeInvalidEvent) || !IsCode(marshalErr, CodeInvalidEvent) {
 		t.Fatalf("typed Replay() state = %#v, error = %v; MarshalRecordedEvent() = %q, error = %v; want invalid_event at both boundaries", state, replayErr, encoded, marshalErr)
@@ -384,7 +384,7 @@ func TestReplayDoesNotMutateImmutableRecordsDuringParallelUse(t *testing.T) {
 
 	const workers = 32
 	type result struct {
-		state Session
+		state HistoricalSession
 		err   error
 	}
 	results := make(chan result, workers)
@@ -393,14 +393,14 @@ func TestReplayDoesNotMutateImmutableRecordsDuringParallelUse(t *testing.T) {
 		group.Add(1)
 		go func() {
 			defer group.Done()
-			state, err := Replay(records)
+			state, err := HistoricalReplay(records)
 			results <- result{state: state, err: err}
 		}()
 	}
 	group.Wait()
 	close(results)
 
-	var first Session
+	var first HistoricalSession
 	for index := 0; index < workers; index++ {
 		result := <-results
 		if result.err != nil {

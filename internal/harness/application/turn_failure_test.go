@@ -204,7 +204,7 @@ func TestCancellationWinnerCompletedBeatsLateCancel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := &cancelOnCompletedAppendStore{EventStoreV2: base, cancel: cancel}
+	store := &cancelOnCompletedAppendStore{EventStore: base, cancel: cancel}
 	model := &repeatingSuccessModel{text: "done"}
 	service := newTurnService(t, store, ids, model)
 	result, runErr := service.RunTurn(ctx, application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-late-cancel", Input: "inspect", Sink: &testkit.RecordingSink{}})
@@ -218,15 +218,15 @@ func TestCancellationWinnerCompletedBeatsLateCancel(t *testing.T) {
 }
 
 type cancelOnCompletedAppendStore struct {
-	application.EventStoreV2
+	application.EventStore
 	cancel context.CancelFunc
 }
 
-func (store *cancelOnCompletedAppendStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
+func (store *cancelOnCompletedAppendStore) Append(ctx context.Context, request application.AppendRequest) (application.CommitReceipt, error) {
 	if len(request.Events) > 0 && request.Events[0].Event.EventType() == domain.EventAssistantMessageCompleted {
 		store.cancel()
 	}
-	return store.EventStoreV2.Append(ctx, request)
+	return store.EventStore.Append(ctx, request)
 }
 
 func TestRunTurnDeliveryFailureBeforeTerminalCommitIsDurablyInterrupted(t *testing.T) {
@@ -294,7 +294,7 @@ func TestRunTurnTerminalPersistenceFailurePreservesRunningBoundaryAndCauses(t *t
 	executionCause := errors.New("provider failed")
 	appendCause := errors.New("terminal store failed")
 	base := newTurnMemoryStore(t)
-	store := &failTerminalStore{EventStoreV2: base, failure: appendCause}
+	store := &failTerminalStore{EventStore: base, failure: appendCause}
 	model, err := testkit.NewScriptedModel(engine.ModelRequest{SessionID: "session-1", TurnID: "turn-1", ItemID: "item-1", Input: "inspect"}, testkit.ScriptedModelConfig{StartupError: executionCause})
 	if err != nil {
 		t.Fatal(err)
@@ -322,23 +322,23 @@ func TestRunTurnTerminalCleanupFailureCategoriesPreserveExecutionCause(t *testin
 	executionCause := errors.New("provider failed before terminalization")
 	tests := []struct {
 		name      string
-		wrap      func(application.EventStoreV2) application.EventStoreV2
+		wrap      func(application.EventStore) application.EventStore
 		category  application.ErrorCategory
 		code      string
 		committed bool
 	}{
 		{
 			name: "conflict",
-			wrap: func(store application.EventStoreV2) application.EventStoreV2 {
-				return &failTerminalStore{EventStoreV2: store, failure: &application.VersionConflictError{SessionID: "session-1", ExpectedVersion: 3, ActualVersion: 4}}
+			wrap: func(store application.EventStore) application.EventStore {
+				return &failTerminalStore{EventStore: store, failure: &application.VersionConflictError{SessionID: "session-1", ExpectedVersion: 3, ActualVersion: 4}}
 			},
 			category: application.CategoryConflict,
 			code:     "version_conflict",
 		},
 		{
 			name: "apply contract violation",
-			wrap: func(store application.EventStoreV2) application.EventStoreV2 {
-				return &invalidTerminalReturnStore{EventStoreV2: store}
+			wrap: func(store application.EventStore) application.EventStore {
+				return &invalidTerminalReturnStore{EventStore: store}
 			},
 			category:  application.CategoryInternal,
 			code:      "store_contract_violation",
@@ -377,7 +377,7 @@ func TestRunTurnTerminalCleanupFailureCategoriesPreserveExecutionCause(t *testin
 				if replayErr != nil {
 					t.Fatal(replayErr)
 				}
-				if len(durable) != 5 || state.Turns[result.TurnID].Status != domain.TurnStatusFailed {
+				if len(durable) != 5 || state.ActiveTurn != nil {
 					t.Fatalf("malformed receipt durable state = %#v", state)
 				}
 				return
@@ -398,7 +398,7 @@ func TestRunTurnTerminalCleanupTimeoutIsPersistenceNotCallerCancellation(t *test
 		t.Fatal(err)
 	}
 	base := newTurnMemoryStore(t)
-	store := &blockingTerminalCleanupStore{EventStoreV2: base}
+	store := &blockingTerminalCleanupStore{EventStore: base}
 	config := application.DefaultConfig()
 	config.TerminalCommitTimeout = time.Millisecond
 	service := newTurnServiceWithConfig(t, store, testkit.NewSequenceIDs(), model, config)
@@ -434,7 +434,7 @@ func TestRunTurnCompletedAppendCancellationDoesNotInventInterruption(t *testing.
 	base := newTurnMemoryStore(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	appendCause := errors.New("success append canceled")
-	store := &cancelCompletedAppendStore{EventStoreV2: base, cancel: cancel, failure: appendCause}
+	store := &cancelCompletedAppendStore{EventStore: base, cancel: cancel, failure: appendCause}
 	service := newTurnService(t, store, testkit.NewSequenceIDs(), &repeatingSuccessModel{text: "done"})
 	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
 	if err != nil {
@@ -454,7 +454,7 @@ func TestRunTurnCompletedPersistenceFailureDoesNotInventSecondOutcome(t *testing
 	for _, failure := range []error{errors.New("terminal unavailable"), &application.VersionConflictError{SessionID: "session-1", ExpectedVersion: 3, ActualVersion: 4}} {
 		t.Run(failure.Error(), func(t *testing.T) {
 			base := newTurnMemoryStore(t)
-			store := &failTerminalStore{EventStoreV2: base, failure: failure}
+			store := &failTerminalStore{EventStore: base, failure: failure}
 			service := newTurnService(t, store, testkit.NewSequenceIDs(), &repeatingSuccessModel{text: "done"})
 			created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
 			if err != nil {
@@ -477,7 +477,7 @@ func TestRunTurnCompletedPersistenceFailureDoesNotInventSecondOutcome(t *testing
 func TestRunTurnCancellationImmediatelyAfterAdmissionUsesBoundedDetachedCleanup(t *testing.T) {
 	base := newTurnMemoryStore(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	store := &cancelAfterAdmissionStore{EventStoreV2: base, cancel: cancel}
+	store := &cancelAfterAdmissionStore{EventStore: base, cancel: cancel}
 	config := application.DefaultConfig()
 	config.TerminalCommitTimeout = 2 * time.Second
 	model := &repeatingSuccessModel{text: "unused"}
@@ -502,7 +502,7 @@ func TestRunTurnCancellationAtCompletedTerminalEntryDoesNotInventInterruption(t 
 	base := newTurnMemoryStore(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cause := errors.New("completed append did not commit")
-	store := &cancelCompletedAppendStore{EventStoreV2: base, cancel: cancel, failure: cause}
+	store := &cancelCompletedAppendStore{EventStore: base, cancel: cancel, failure: cause}
 	service := newTurnService(t, store, testkit.NewSequenceIDs(), &repeatingSuccessModel{text: "done"})
 	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
 	if err != nil {
@@ -563,7 +563,7 @@ func TestRunTurnRejectsMalformedAdmissionAppendBeforeModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := &corruptAdmissionReceiptStore{EventStoreV2: base}
+	store := &corruptAdmissionReceiptStore{EventStore: base}
 	model := &repeatingSuccessModel{text: "unused"}
 	service := newTurnService(t, store, ids, model)
 	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-malformed-terminal", Input: "inspect", Sink: &testkit.RecordingSink{}})
@@ -592,7 +592,7 @@ func TestRunTurnRejectsMalformedTerminalAppendReturnsWithoutSuccessSignal(t *tes
 			if err != nil {
 				t.Fatal(err)
 			}
-			store := &corruptTerminalReceiptStore{EventStoreV2: base, mutate: test.mutate}
+			store := &corruptTerminalReceiptStore{EventStore: base, mutate: test.mutate}
 			sink := &testkit.RecordingSink{}
 			service := newTurnService(t, store, ids, &repeatingSuccessModel{text: "done"})
 			result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-concurrent-session", Input: "inspect", Sink: sink})
@@ -611,13 +611,13 @@ func TestRunTurnRejectsMalformedTerminalAppendReturnsWithoutSuccessSignal(t *tes
 }
 
 type corruptTerminalReceiptStore struct {
-	application.EventStoreV2
+	application.EventStore
 	mutate func(*application.CommitReceipt)
 	calls  int
 }
 
-func (store *corruptTerminalReceiptStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
-	receipt, err := store.EventStoreV2.Append(ctx, request)
+func (store *corruptTerminalReceiptStore) Append(ctx context.Context, request application.AppendRequest) (application.CommitReceipt, error) {
+	receipt, err := store.EventStore.Append(ctx, request)
 	if err != nil || len(request.Events) == 0 || request.Events[0].Event.EventType() != domain.EventAssistantMessageCompleted {
 		return receipt, err
 	}
@@ -679,7 +679,7 @@ func TestRunTurnModelCompletionRacingCallerCancelCommitsExactlyOneTerminalPair(t
 			t.Fatal(err)
 		}
 		base := newTurnMemoryStore(t)
-		store := &turnRecordingStore{EventStoreV2: base}
+		store := &turnRecordingStore{EventStore: base}
 		service := newTurnService(t, store, testkit.NewSequenceIDs(), model)
 		created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
 		if err != nil {
@@ -850,7 +850,7 @@ func TestRunTurnDifferentSessionsExecuteConcurrently(t *testing.T) {
 	}
 }
 
-func assertFailedPair(t *testing.T, store application.EventStoreV2, result application.RunTurnResult, code, message string) {
+func assertFailedPair(t *testing.T, store application.EventStore, result application.RunTurnResult, code, message string) {
 	t.Helper()
 	if len(result.Records) != 4 {
 		t.Fatalf("records = %#v", result.Records)
@@ -864,7 +864,7 @@ func assertFailedPair(t *testing.T, store application.EventStoreV2, result appli
 	assertExactTurnRecords(t, store, result, want)
 }
 
-func assertInterruptedPair(t *testing.T, store application.EventStoreV2, result application.RunTurnResult, code string) {
+func assertInterruptedPair(t *testing.T, store application.EventStore, result application.RunTurnResult, code string) {
 	t.Helper()
 	if result.Status != domain.TurnStatusInterrupted || result.Text != "" || !result.TerminalCommitted || len(result.Records) != 4 {
 		t.Fatalf("result = %#v", result)
@@ -878,7 +878,7 @@ func assertInterruptedPair(t *testing.T, store application.EventStoreV2, result 
 	assertExactTurnRecords(t, store, result, want)
 }
 
-func assertExactTurnRecords(t *testing.T, store application.EventStoreV2, result application.RunTurnResult, want []domain.Event) {
+func assertExactTurnRecords(t *testing.T, store application.EventStore, result application.RunTurnResult, want []domain.Event) {
 	t.Helper()
 	commandID := result.Records[0].CommandID
 	for index, event := range want {
@@ -897,13 +897,12 @@ func assertExactTurnRecords(t *testing.T, store application.EventStoreV2, result
 	if err != nil {
 		t.Fatal(err)
 	}
-	item := state.Turns[result.TurnID].Items[result.ItemID]
-	if item.Status == domain.ItemStatusCompleted {
-		t.Fatalf("partial output persisted as completed: %#v", item)
+	if state.ActiveTurn != nil {
+		t.Fatalf("partial output left an active turn: %#v", state)
 	}
 }
 
-func assertRunningBoundary(t *testing.T, store application.EventStoreV2, result application.RunTurnResult) {
+func assertRunningBoundary(t *testing.T, store application.EventStore, result application.RunTurnResult) {
 	t.Helper()
 	if result.Status != domain.TurnStatusRunning || result.TerminalCommitted || len(result.Records) != 2 || result.DeliveryWarning != nil {
 		t.Fatalf("running result = %#v", result)
@@ -916,12 +915,12 @@ func assertRunningBoundary(t *testing.T, store application.EventStoreV2, result 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(durable) != 3 || state.ActiveTurnID != result.TurnID || state.Turns[result.TurnID].ActiveItemID != result.ItemID {
+	if len(durable) != 3 || state.ActiveTurn == nil || state.ActiveTurn.ID != result.TurnID || state.ActiveTurn.ActiveItem == nil || state.ActiveTurn.ActiveItem.ID != result.ItemID {
 		t.Fatalf("running durable boundary = %#v", state)
 	}
 }
 
-func newTurnServiceWithConfig(t *testing.T, store application.EventStoreV2, ids application.IDGenerator, model engine.Model, config application.Config) *application.Service {
+func newTurnServiceWithConfig(t *testing.T, store application.EventStore, ids application.IDGenerator, model engine.Model, config application.Config) *application.Service {
 	t.Helper()
 	runner, err := engine.NewTurnRunner(model)
 	if err != nil {
@@ -935,13 +934,13 @@ func newTurnServiceWithConfig(t *testing.T, store application.EventStoreV2, ids 
 }
 
 type failTerminalStore struct {
-	application.EventStoreV2
+	application.EventStore
 	mu            sync.Mutex
 	failure       error
 	terminalCalls int
 }
 
-func (store *failTerminalStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
+func (store *failTerminalStore) Append(ctx context.Context, request application.AppendRequest) (application.CommitReceipt, error) {
 	if len(request.Events) > 0 {
 		switch request.Events[0].Event.EventType() {
 		case domain.EventAssistantMessageCompleted, domain.EventAssistantMessageFailed, domain.EventAssistantMessageInterrupted:
@@ -951,7 +950,7 @@ func (store *failTerminalStore) Append(ctx context.Context, request application.
 			return application.CommitReceipt{}, store.failure
 		}
 	}
-	return store.EventStoreV2.Append(ctx, request)
+	return store.EventStore.Append(ctx, request)
 }
 
 func (store *failTerminalStore) TerminalCalls() int {
@@ -961,11 +960,11 @@ func (store *failTerminalStore) TerminalCalls() int {
 }
 
 type invalidTerminalReturnStore struct {
-	application.EventStoreV2
+	application.EventStore
 }
 
-func (store *invalidTerminalReturnStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
-	receipt, err := store.EventStoreV2.Append(ctx, request)
+func (store *invalidTerminalReturnStore) Append(ctx context.Context, request application.AppendRequest) (application.CommitReceipt, error) {
+	receipt, err := store.EventStore.Append(ctx, request)
 	if err != nil || len(request.Events) == 0 || request.Events[0].Event.EventType() != domain.EventAssistantMessageFailed {
 		return receipt, err
 	}
@@ -975,14 +974,14 @@ func (store *invalidTerminalReturnStore) Append(ctx context.Context, request app
 }
 
 type blockingTerminalCleanupStore struct {
-	application.EventStoreV2
+	application.EventStore
 	mu             sync.Mutex
 	sawLiveBounded bool
 }
 
-func (store *blockingTerminalCleanupStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
+func (store *blockingTerminalCleanupStore) Append(ctx context.Context, request application.AppendRequest) (application.CommitReceipt, error) {
 	if len(request.Events) == 0 || (request.Events[0].Event.EventType() != domain.EventAssistantMessageFailed && request.Events[0].Event.EventType() != domain.EventAssistantMessageInterrupted) {
-		return store.EventStoreV2.Append(ctx, request)
+		return store.EventStore.Append(ctx, request)
 	}
 	_, bounded := ctx.Deadline()
 	store.mu.Lock()
@@ -1000,7 +999,7 @@ func (store *blockingTerminalCleanupStore) SawLiveBoundedContext() bool {
 
 type durableObservingSink struct {
 	testkit.RecordingSink
-	store     application.EventStoreV2
+	store     application.EventStore
 	sessionID domain.SessionID
 
 	mu       sync.Mutex
@@ -1031,7 +1030,7 @@ func (sink *durableObservingSink) ObservedDurableTerminalBeforeSignals() bool {
 }
 
 type cancelCompletedAppendStore struct {
-	application.EventStoreV2
+	application.EventStore
 	mu               sync.Mutex
 	cancel           context.CancelFunc
 	failure          error
@@ -1039,7 +1038,7 @@ type cancelCompletedAppendStore struct {
 	interruptedCalls int
 }
 
-func (store *cancelCompletedAppendStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
+func (store *cancelCompletedAppendStore) Append(ctx context.Context, request application.AppendRequest) (application.CommitReceipt, error) {
 	if len(request.Events) > 0 && request.Events[0].Event.EventType() == domain.EventAssistantMessageCompleted {
 		store.mu.Lock()
 		store.completedCalls++
@@ -1052,7 +1051,7 @@ func (store *cancelCompletedAppendStore) Append(ctx context.Context, request app
 		store.interruptedCalls++
 		store.mu.Unlock()
 	}
-	return store.EventStoreV2.Append(ctx, request)
+	return store.EventStore.Append(ctx, request)
 }
 
 func (store *cancelCompletedAppendStore) CompletedCalls() int {
@@ -1067,14 +1066,14 @@ func (store *cancelCompletedAppendStore) InterruptedCalls() int {
 }
 
 type cancelAfterAdmissionStore struct {
-	application.EventStoreV2
+	application.EventStore
 	mu                 sync.Mutex
 	cancel             context.CancelFunc
 	sawDetachedBounded bool
 }
 
-func (store *cancelAfterAdmissionStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
-	records, err := store.EventStoreV2.Append(ctx, request)
+func (store *cancelAfterAdmissionStore) Append(ctx context.Context, request application.AppendRequest) (application.CommitReceipt, error) {
+	records, err := store.EventStore.Append(ctx, request)
 	if err != nil || len(request.Events) == 0 {
 		return records, err
 	}
@@ -1097,13 +1096,13 @@ func (store *cancelAfterAdmissionStore) SawDetachedBoundedContext() bool {
 }
 
 type corruptAdmissionReceiptStore struct {
-	application.EventStoreV2
+	application.EventStore
 	mu          sync.Mutex
 	targetCalls int
 }
 
-func (store *corruptAdmissionReceiptStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
-	records, err := store.EventStoreV2.Append(ctx, request)
+func (store *corruptAdmissionReceiptStore) Append(ctx context.Context, request application.AppendRequest) (application.CommitReceipt, error) {
+	records, err := store.EventStore.Append(ctx, request)
 	if err != nil || len(request.Events) == 0 || request.Events[0].Event.EventType() != domain.EventTurnStarted {
 		return records, err
 	}
@@ -1122,18 +1121,18 @@ func (store *corruptAdmissionReceiptStore) TargetCalls() int {
 }
 
 type twoLoadBarrierStore struct {
-	application.EventStoreV2
+	application.EventStore
 	sessionID domain.SessionID
 	entered   chan struct{}
 	release   chan struct{}
 }
 
-func newTwoLoadBarrierStore(store application.EventStoreV2, sessionID domain.SessionID) *twoLoadBarrierStore {
-	return &twoLoadBarrierStore{EventStoreV2: store, sessionID: sessionID, entered: make(chan struct{}, 2), release: make(chan struct{})}
+func newTwoLoadBarrierStore(store application.EventStore, sessionID domain.SessionID) *twoLoadBarrierStore {
+	return &twoLoadBarrierStore{EventStore: store, sessionID: sessionID, entered: make(chan struct{}, 2), release: make(chan struct{})}
 }
 
 func (store *twoLoadBarrierStore) ReadStream(ctx context.Context, request application.ReadStreamRequest) (application.StreamPage, error) {
-	page, err := store.EventStoreV2.ReadStream(ctx, request)
+	page, err := store.EventStore.ReadStream(ctx, request)
 	if err != nil || request.SessionID != store.sessionID || request.AfterSequence != 0 {
 		return page, err
 	}

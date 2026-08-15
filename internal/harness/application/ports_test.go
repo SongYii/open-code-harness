@@ -13,12 +13,20 @@ import (
 
 type testEventStore struct{}
 
-func (testEventStore) Load(context.Context, domain.SessionID) ([]domain.RecordedEvent, error) {
-	return nil, nil
+func (testEventStore) ReadStream(context.Context, ReadStreamRequest) (StreamPage, error) {
+	return StreamPage{End: true}, nil
 }
 
-func (testEventStore) Append(context.Context, AppendRequest) ([]domain.RecordedEvent, error) {
-	return nil, nil
+func (testEventStore) Append(context.Context, AppendRequest) (CommitReceipt, error) {
+	return CommitReceipt{}, nil
+}
+
+func (testEventStore) ResolveAppend(context.Context, ResolveAppendRequest) (AppendResolution, error) {
+	return AppendResolution{Kind: AppendResolutionNotFound}, nil
+}
+
+func (testEventStore) FindCommandRequest(context.Context, FindCommandRequestRequest) (CommandRequestLookup, error) {
+	return CommandRequestLookup{Kind: CommandRequestLookupNotFound}, nil
 }
 
 type testClock struct{}
@@ -40,12 +48,14 @@ func TestApplicationPortsHaveConsumerOwnedSignatures(t *testing.T) {
 	var _ IDGenerator = testIDs{}
 
 	request := AppendRequest{
+		AppendID:        "append-1",
 		SessionID:       "session-1",
 		ExpectedVersion: 7,
 		CommandID:       "command-1",
-		Events:          []domain.Event{domain.SessionCreated{}},
+		Authority:       WriterAuthority{RuntimeID: "runtime-1", FencingToken: 1},
+		Events:          []ProposedEvent{{ID: "event-1", SchemaVersion: 1, Event: domain.SessionCreated{}}},
 	}
-	if request.SessionID != "session-1" || request.ExpectedVersion != 7 || request.CommandID != "command-1" || len(request.Events) != 1 {
+	if request.SessionID != "session-1" || request.ExpectedVersion != 7 || request.CommandID != "command-1" || request.AppendID != "append-1" || len(request.Events) != 1 {
 		t.Fatalf("append request lost typed fields: %#v", request)
 	}
 }
@@ -53,12 +63,13 @@ func TestApplicationPortsHaveConsumerOwnedSignatures(t *testing.T) {
 func TestAppendContractDoesNotRewriteCommittedSuccessAfterCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	store := &committedThenCanceledStore{cancel: cancel}
-	records, err := store.Append(ctx, AppendRequest{
-		SessionID: "session-1", CommandID: "command-1",
-		Events: []domain.Event{domain.SessionCreated{WorkspaceRoot: "/workspace"}},
+	receipt, err := store.Append(ctx, AppendRequest{
+		AppendID: "append-1", SessionID: "session-1", CommandID: "command-1",
+		Authority: WriterAuthority{RuntimeID: "runtime-1", FencingToken: 1},
+		Events:    []ProposedEvent{{ID: "event-1", SchemaVersion: 1, Event: domain.SessionCreated{WorkspaceRoot: "/workspace"}}},
 	})
-	if err != nil || len(records) != 1 || records[0].Sequence != 1 {
-		t.Fatalf("Append() = (%#v, %v), want committed success", records, err)
+	if err != nil || receipt.AppendID != "append-1" || receipt.FirstSequence != 1 || receipt.LastSequence != 1 {
+		t.Fatalf("Append() = (%#v, %v), want committed success", receipt, err)
 	}
 	if ctx.Err() != context.Canceled || !store.committed {
 		t.Fatalf("post-commit state = canceled %v committed %t", ctx.Err(), store.committed)
@@ -70,18 +81,22 @@ type committedThenCanceledStore struct {
 	committed bool
 }
 
-func (*committedThenCanceledStore) Load(context.Context, domain.SessionID) ([]domain.RecordedEvent, error) {
-	return nil, nil
+func (*committedThenCanceledStore) ReadStream(context.Context, ReadStreamRequest) (StreamPage, error) {
+	return StreamPage{End: true}, nil
 }
 
-func (store *committedThenCanceledStore) Append(_ context.Context, request AppendRequest) ([]domain.RecordedEvent, error) {
+func (store *committedThenCanceledStore) Append(_ context.Context, request AppendRequest) (CommitReceipt, error) {
 	store.committed = true
-	record := domain.RecordedEvent{
-		SchemaVersion: 1, ID: "event-1", CommandID: request.CommandID, SessionID: request.SessionID,
-		Sequence: 1, OccurredAt: time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC), Event: request.Events[0],
-	}
 	store.cancel()
-	return []domain.RecordedEvent{record}, nil
+	return CommitReceipt{AppendID: request.AppendID, CommitPosition: 1, FirstSequence: 1, LastSequence: 1}, nil
+}
+
+func (*committedThenCanceledStore) ResolveAppend(context.Context, ResolveAppendRequest) (AppendResolution, error) {
+	return AppendResolution{Kind: AppendResolutionNotFound}, nil
+}
+
+func (*committedThenCanceledStore) FindCommandRequest(context.Context, FindCommandRequestRequest) (CommandRequestLookup, error) {
+	return CommandRequestLookup{Kind: CommandRequestLookupNotFound}, nil
 }
 
 func TestApplicationErrorHasStableTextAndPreservesCause(t *testing.T) {

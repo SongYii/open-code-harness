@@ -70,7 +70,7 @@ func TestCommitAppendIntentRejectsNilAndCanceledContextBeforeStore(t *testing.T)
 		code     string
 	}{{ctx: nilContext, category: CategoryValidation, code: "invalid_context"}, {ctx: canceledContext(), category: CategoryCanceled, code: "canceled"}} {
 		store := &receiptSpy{}
-		_, _, err := CommitAppendIntent(test.ctx, store, domain.CompactSession{}, intent)
+		_, _, err := CommitAppendIntent(test.ctx, store, domain.Session{}, intent)
 		if store.calls != 0 || !IsCategory(err, test.category) {
 			t.Fatalf("err=%v calls=%d", err, store.calls)
 		}
@@ -116,7 +116,7 @@ func TestCommitAppendIntentReconstructsIntentMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := &receiptSpy{receipt: CommitReceipt{AppendID: intent.Request.AppendID, CommitPosition: 1, FirstSequence: 1, LastSequence: 1}}
-	next, records, err := CommitAppendIntent(context.Background(), store, domain.CompactSession{}, intent)
+	next, records, err := CommitAppendIntent(context.Background(), store, domain.Session{}, intent)
 	if err != nil || next.Version != 1 || len(records) != 1 || records[0].ID != intent.Request.Events[0].ID || store.calls != 1 {
 		t.Fatalf("CommitAppendIntent() = %#v %#v %v calls=%d", next, records, err, store.calls)
 	}
@@ -128,17 +128,17 @@ func TestCommitAppendIntentRejectsMalformedReceiptWithoutApply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = CommitAppendIntent(context.Background(), &receiptSpy{receipt: CommitReceipt{AppendID: intent.Request.AppendID, CommitPosition: 1, FirstSequence: 2, LastSequence: 2}}, domain.CompactSession{}, intent)
+	_, _, err = CommitAppendIntent(context.Background(), &receiptSpy{receipt: CommitReceipt{AppendID: intent.Request.AppendID, CommitPosition: 1, FirstSequence: 2, LastSequence: 2}}, domain.Session{}, intent)
 	assertStoreContractViolation(t, err)
 }
 
 func TestCommitAppendIntentRejectsChronologicallyInvalidCompactApply(t *testing.T) {
 	base := time.Date(2026, 8, 13, 2, 0, 0, 0, time.UTC)
-	state, err := domain.ApplyCompact(domain.CompactSession{}, domain.RecordedEvent{SchemaVersion: 1, ID: "event-seed-1", CommandID: "command-seed", SessionID: "session-1", Sequence: 1, OccurredAt: base, Event: domain.SessionCreated{WorkspaceRoot: "/workspace"}})
+	state, err := domain.Apply(domain.Session{}, domain.RecordedEvent{SchemaVersion: 1, ID: "event-seed-1", CommandID: "command-seed", SessionID: "session-1", Sequence: 1, OccurredAt: base, Event: domain.SessionCreated{WorkspaceRoot: "/workspace"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, err = domain.ApplyCompact(state, domain.RecordedEvent{SchemaVersion: 1, ID: "event-seed-2", CommandID: "command-seed", SessionID: "session-1", Sequence: 2, OccurredAt: base.Add(time.Minute), Event: domain.TurnStarted{TurnID: "turn-1", Input: "inspect"}})
+	state, err = domain.Apply(state, domain.RecordedEvent{SchemaVersion: 1, ID: "event-seed-2", CommandID: "command-seed", SessionID: "session-1", Sequence: 2, OccurredAt: base.Add(time.Minute), Event: domain.TurnStarted{TurnID: "turn-1", Input: "inspect"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,10 +158,10 @@ func TestCommitAppendIntentDefendsAgainstStoreRequestMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := &receiptSpy{receipt: CommitReceipt{AppendID: intent.Request.AppendID, CommitPosition: 1, FirstSequence: 1, LastSequence: 1}, mutate: func(request *AppendRequestV2) {
+	store := &receiptSpy{receipt: CommitReceipt{AppendID: intent.Request.AppendID, CommitPosition: 1, FirstSequence: 1, LastSequence: 1}, mutate: func(request *AppendRequest) {
 		request.Events[0].Event = domain.SessionCreated{WorkspaceRoot: "/tampered"}
 	}}
-	_, records, err := CommitAppendIntent(context.Background(), store, domain.CompactSession{}, intent)
+	_, records, err := CommitAppendIntent(context.Background(), store, domain.Session{}, intent)
 	if err != nil || records[0].Event.(domain.SessionCreated).WorkspaceRoot != "/workspace" || intent.Request.Events[0].Event.(domain.SessionCreated).WorkspaceRoot != "/workspace" {
 		t.Fatalf("records=%#v intent=%#v err=%v", records, intent, err)
 	}
@@ -198,13 +198,13 @@ func (ids *intentIDs) NewEventID() (domain.EventID, error) {
 type receiptSpy struct {
 	receipt CommitReceipt
 	calls   int
-	mutate  func(*AppendRequestV2)
+	mutate  func(*AppendRequest)
 }
 
 func (*receiptSpy) ReadStream(context.Context, ReadStreamRequest) (StreamPage, error) {
 	return StreamPage{}, nil
 }
-func (store *receiptSpy) Append(_ context.Context, request AppendRequestV2) (CommitReceipt, error) {
+func (store *receiptSpy) Append(_ context.Context, request AppendRequest) (CommitReceipt, error) {
 	store.calls++
 	if store.mutate != nil {
 		store.mutate(&request)

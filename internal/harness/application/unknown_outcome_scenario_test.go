@@ -42,7 +42,7 @@ func TestUnknownTerminalNotFoundExactAppendDoesNotCallModelAgain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := &exactRetryAfterUnknownStore{EventStoreV2: base}
+	store := &exactRetryAfterUnknownStore{EventStore: base}
 	model := &repeatingSuccessModel{text: "done"}
 	service := newTurnService(t, store, ids, model)
 	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-unknown-retry", Input: "inspect", Sink: &testkit.RecordingSink{}})
@@ -58,7 +58,7 @@ func TestUnknownAdmissionCanceledAfterCommitAbandonsWithoutModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	store := &cancelOnAdmissionUnknownStore{EventStoreV2: base, cancel: cancel, unknown: unknown}
+	store := &cancelOnAdmissionUnknownStore{EventStore: base, cancel: cancel, unknown: unknown}
 	model := &repeatingSuccessModel{text: "unused"}
 	service := newTurnService(t, store, testkit.NewSequenceIDs(), model)
 	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
@@ -88,7 +88,7 @@ func TestUnknownOutcomeWaiterDoesNotStartSecondResolver(t *testing.T) {
 	}
 	started := make(chan struct{})
 	release := make(chan struct{})
-	store := &holdResolveStore{EventStoreV2: base, started: started, release: release}
+	store := &holdResolveStore{EventStore: base, started: started, release: release}
 	model := &repeatingSuccessModel{text: "done"}
 	ids := testkit.NewSequenceIDs()
 	seed := newTurnService(t, base, ids, &repeatingSuccessModel{text: "seed"})
@@ -130,14 +130,14 @@ func TestUnknownOutcomeWaiterDoesNotStartSecondResolver(t *testing.T) {
 }
 
 func TestUnresolvedSessionRejectsDifferentAdmission(t *testing.T) {
-	registryUnknown := &holdResolveStore{EventStoreV2: newTurnMemoryStore(t), started: make(chan struct{}), release: make(chan struct{})}
+	registryUnknown := &holdResolveStore{EventStore: newTurnMemoryStore(t), started: make(chan struct{}), release: make(chan struct{})}
 	unknown, err := application.NewStoreError(application.StoreError{Code: application.StoreCodeCommitOutcomeUnknown, MayHaveCommitted: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	registryUnknown.unknown = unknown
 	ids := testkit.NewSequenceIDs()
-	seed := newTurnService(t, registryUnknown.EventStoreV2, ids, &repeatingSuccessModel{text: "seed"})
+	seed := newTurnService(t, registryUnknown.EventStore, ids, &repeatingSuccessModel{text: "seed"})
 	created, err := seed.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
 	if err != nil {
 		t.Fatal(err)
@@ -171,12 +171,12 @@ func isUnknown(err error) bool {
 }
 
 type exactRetryAfterUnknownStore struct {
-	application.EventStoreV2
+	application.EventStore
 	terminalUnknowns int
 	terminalRetries  int
 }
 
-func (store *exactRetryAfterUnknownStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
+func (store *exactRetryAfterUnknownStore) Append(ctx context.Context, request application.AppendRequest) (application.CommitReceipt, error) {
 	if len(request.Events) > 0 && request.Events[0].Event.EventType() == domain.EventAssistantMessageCompleted {
 		if store.terminalUnknowns == 0 {
 			store.terminalUnknowns++
@@ -188,36 +188,36 @@ func (store *exactRetryAfterUnknownStore) Append(ctx context.Context, request ap
 		}
 		store.terminalRetries++
 	}
-	return store.EventStoreV2.Append(ctx, request)
+	return store.EventStore.Append(ctx, request)
 }
 
 func (store *exactRetryAfterUnknownStore) ResolveAppend(ctx context.Context, request application.ResolveAppendRequest) (application.AppendResolution, error) {
 	if store.terminalUnknowns == 1 && store.terminalRetries == 0 {
 		return application.AppendResolution{Kind: application.AppendResolutionNotFound}, nil
 	}
-	return store.EventStoreV2.ResolveAppend(ctx, request)
+	return store.EventStore.ResolveAppend(ctx, request)
 }
 
 type cancelOnAdmissionUnknownStore struct {
-	application.EventStoreV2
+	application.EventStore
 	cancel  context.CancelFunc
 	unknown error
 }
 
-func (store *cancelOnAdmissionUnknownStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
+func (store *cancelOnAdmissionUnknownStore) Append(ctx context.Context, request application.AppendRequest) (application.CommitReceipt, error) {
 	if request.Admission != nil {
-		receipt, err := store.EventStoreV2.Append(ctx, request)
+		receipt, err := store.EventStore.Append(ctx, request)
 		if err != nil {
 			return receipt, err
 		}
 		store.cancel()
 		return application.CommitReceipt{}, store.unknown
 	}
-	return store.EventStoreV2.Append(ctx, request)
+	return store.EventStore.Append(ctx, request)
 }
 
 type holdResolveStore struct {
-	application.EventStoreV2
+	application.EventStore
 	unknown  error
 	started  chan struct{}
 	release  chan struct{}
@@ -225,15 +225,15 @@ type holdResolveStore struct {
 	resolves int
 }
 
-func (store *holdResolveStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
+func (store *holdResolveStore) Append(ctx context.Context, request application.AppendRequest) (application.CommitReceipt, error) {
 	if request.Admission != nil && store.unknown != nil {
-		receipt, err := store.EventStoreV2.Append(ctx, request)
+		receipt, err := store.EventStore.Append(ctx, request)
 		if err != nil {
 			return receipt, err
 		}
 		return application.CommitReceipt{}, store.unknown
 	}
-	return store.EventStoreV2.Append(ctx, request)
+	return store.EventStore.Append(ctx, request)
 }
 
 func (store *holdResolveStore) ResolveAppend(ctx context.Context, request application.ResolveAppendRequest) (application.AppendResolution, error) {
@@ -249,7 +249,7 @@ func (store *holdResolveStore) ResolveAppend(ctx context.Context, request applic
 	case <-ctx.Done():
 		return application.AppendResolution{}, ctx.Err()
 	}
-	return store.EventStoreV2.ResolveAppend(ctx, request)
+	return store.EventStore.ResolveAppend(ctx, request)
 }
 
 func (store *holdResolveStore) resolveCalls() int {

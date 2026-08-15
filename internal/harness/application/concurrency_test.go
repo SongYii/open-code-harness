@@ -19,7 +19,7 @@ import (
 
 func TestConcurrentRunTurnSameSessionHasOneAtomicAdmissionWinner(t *testing.T) {
 	authority := application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1}
-	base, err := memory.NewEventStoreV2(authority)
+	base, err := memory.NewEventStore(authority)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,14 +113,14 @@ func TestConcurrentRunTurnSameSessionHasOneAtomicAdmissionWinner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Version != 5 || len(state.Turns) != 1 || state.ActiveTurnID != "" {
+	if state.Version != 5 || state.ActiveTurn != nil {
 		t.Fatalf("replayed state = %#v", state)
 	}
 }
 
 func TestFoundRunningAttachesLocalWaiterAndCancellationIsIsolated(t *testing.T) {
 	authority := application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1}
-	base, err := memory.NewEventStoreV2(authority)
+	base, err := memory.NewEventStore(authority)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestFoundRunningAttachesLocalWaiterAndCancellationIsIsolated(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	observer := &foundLookupObserver{EventStoreV2: base, found: make(chan struct{}, 4)}
+	observer := &foundLookupObserver{EventStore: base, found: make(chan struct{}, 4)}
 	model := newBlockingAcceptanceModel("done")
 	service := newAcceptanceService(t, observer, ids, model)
 	type outcome struct {
@@ -193,12 +193,12 @@ func awaitRegistryLeases(t *testing.T, service *application.Service, requestID d
 }
 
 type foundLookupObserver struct {
-	application.EventStoreV2
+	application.EventStore
 	found chan struct{}
 }
 
 func (store *foundLookupObserver) FindCommandRequest(ctx context.Context, request application.FindCommandRequestRequest) (application.CommandRequestLookup, error) {
-	lookup, err := store.EventStoreV2.FindCommandRequest(ctx, request)
+	lookup, err := store.EventStore.FindCommandRequest(ctx, request)
 	if err == nil && lookup.Kind == application.CommandRequestLookupFound {
 		select {
 		case store.found <- struct{}{}:
@@ -231,7 +231,7 @@ func awaitOutcome[T any](t *testing.T, channel <-chan T, description string) T {
 
 func TestConcurrentRunTurnAcrossServicesReconcilesDurableAdmissionWinner(t *testing.T) {
 	authority := application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1}
-	base, err := memory.NewEventStoreV2(authority)
+	base, err := memory.NewEventStore(authority)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,19 +296,19 @@ func countAdmissionStartPairs(records []domain.RecordedEvent, commandID domain.C
 }
 
 type lookupRaceBarrier struct {
-	application.EventStoreV2
+	application.EventStore
 	mu        sync.Mutex
 	remaining int
 	ready     chan struct{}
 	release   chan struct{}
 }
 
-func newLookupRaceBarrier(store application.EventStoreV2, callers int) *lookupRaceBarrier {
-	return &lookupRaceBarrier{EventStoreV2: store, remaining: callers, ready: make(chan struct{}), release: make(chan struct{})}
+func newLookupRaceBarrier(store application.EventStore, callers int) *lookupRaceBarrier {
+	return &lookupRaceBarrier{EventStore: store, remaining: callers, ready: make(chan struct{}), release: make(chan struct{})}
 }
 
 func (store *lookupRaceBarrier) FindCommandRequest(ctx context.Context, request application.FindCommandRequestRequest) (application.CommandRequestLookup, error) {
-	lookup, err := store.EventStoreV2.FindCommandRequest(ctx, request)
+	lookup, err := store.EventStore.FindCommandRequest(ctx, request)
 	if err != nil || lookup.Kind != application.CommandRequestLookupNotFound {
 		return lookup, err
 	}
@@ -331,7 +331,7 @@ func TestConcurrentRunTurnDifferentSessionsCompleteThirtyTwo(t *testing.T) {
 	const count = 32
 	ids := testkit.NewSequenceIDs()
 	authority := application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1}
-	store, err := memory.NewEventStoreV2(authority)
+	store, err := memory.NewEventStore(authority)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,8 +383,7 @@ func TestConcurrentRunTurnDifferentSessionsCompleteThirtyTwo(t *testing.T) {
 		if replayErr != nil {
 			t.Fatal(replayErr)
 		}
-		turn := state.Turns[got.result.TurnID]
-		if state.Version != 5 || turn.Status != domain.TurnStatusCompleted || turn.Items[got.result.ItemID].Status != domain.ItemStatusCompleted {
+		if state.Version != 5 || state.ActiveTurn != nil {
 			t.Fatalf("state[%d] = %#v", index, state)
 		}
 	}
@@ -394,7 +393,7 @@ func TestConcurrentRunTurnDifferentSessionsCompleteThirtyTwo(t *testing.T) {
 }
 
 type acceptanceLoadBarrier struct {
-	application.EventStoreV2
+	application.EventStore
 	target    domain.SessionID
 	mu        sync.Mutex
 	remaining int
@@ -402,18 +401,18 @@ type acceptanceLoadBarrier struct {
 	release   chan struct{}
 }
 
-func newAcceptanceLoadBarrier(store application.EventStoreV2, target domain.SessionID, parties int) *acceptanceLoadBarrier {
+func newAcceptanceLoadBarrier(store application.EventStore, target domain.SessionID, parties int) *acceptanceLoadBarrier {
 	return &acceptanceLoadBarrier{
-		EventStoreV2: store,
-		target:       target,
-		remaining:    parties,
-		entered:      make(chan struct{}, parties),
-		release:      make(chan struct{}),
+		EventStore: store,
+		target:     target,
+		remaining:  parties,
+		entered:    make(chan struct{}, parties),
+		release:    make(chan struct{}),
 	}
 }
 
 func (barrier *acceptanceLoadBarrier) ReadStream(ctx context.Context, request application.ReadStreamRequest) (application.StreamPage, error) {
-	page, err := barrier.EventStoreV2.ReadStream(ctx, request)
+	page, err := barrier.EventStore.ReadStream(ctx, request)
 	if err != nil || request.SessionID != barrier.target || request.AfterSequence != 0 {
 		return page, err
 	}
@@ -560,7 +559,7 @@ func (stream *acceptanceStream) Next(context.Context) (engine.StreamEvent, error
 
 func (*acceptanceStream) Close() error { return nil }
 
-func newAcceptanceService(t *testing.T, store application.EventStoreV2, ids application.IDGenerator, model engine.Model) *application.Service {
+func newAcceptanceService(t *testing.T, store application.EventStore, ids application.IDGenerator, model engine.Model) *application.Service {
 	t.Helper()
 	runner, err := engine.NewTurnRunner(model)
 	if err != nil {

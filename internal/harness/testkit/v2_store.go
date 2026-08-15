@@ -14,11 +14,11 @@ import (
 type V2Store struct {
 	mu          sync.Mutex
 	ReadFn      func(context.Context, application.ReadStreamRequest) (application.StreamPage, error)
-	AppendFn    func(context.Context, application.AppendRequestV2) (application.CommitReceipt, error)
+	AppendFn    func(context.Context, application.AppendRequest) (application.CommitReceipt, error)
 	ResolveFn   func(context.Context, application.ResolveAppendRequest) (application.AppendResolution, error)
 	FindFn      func(context.Context, application.FindCommandRequestRequest) (application.CommandRequestLookup, error)
 	Reads       []application.ReadStreamRequest
-	Appends     []application.AppendRequestV2
+	Appends     []application.AppendRequest
 	Resolves    []application.ResolveAppendRequest
 	Finds       []application.FindCommandRequestRequest
 	ReadPages   []application.StreamPage
@@ -48,7 +48,7 @@ func (store *V2Store) ReadStream(ctx context.Context, request application.ReadSt
 	store.mu.Unlock()
 	return page, err
 }
-func (store *V2Store) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
+func (store *V2Store) Append(ctx context.Context, request application.AppendRequest) (application.CommitReceipt, error) {
 	store.mu.Lock()
 	store.Appends = append(store.Appends, cloneV2Request(request))
 	fn := store.AppendFn
@@ -99,7 +99,7 @@ func (store *V2Store) FindCommandRequest(ctx context.Context, request applicatio
 	return lookup, err
 }
 
-func cloneV2Request(request application.AppendRequestV2) application.AppendRequestV2 {
+func cloneV2Request(request application.AppendRequest) application.AppendRequest {
 	clone := request
 	if request.Admission != nil {
 		admission := *request.Admission

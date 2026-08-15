@@ -75,7 +75,7 @@ func (service *Service) runTurnOwned(ctx context.Context, request RunTurnRequest
 	if err != nil {
 		return RunTurnResult{}, err
 	}
-	if err := domain.CheckStartAssistantTurnEligibilityCompact(state); err != nil {
+	if err := domain.CheckStartAssistantTurnEligibility(state); err != nil {
 		return RunTurnResult{}, applicationError(CategoryValidation, "domain_rejected", false, err)
 	}
 	turnID, sourceErr := service.ids.NewTurnID()
@@ -103,7 +103,7 @@ func (service *Service) runTurnOwned(ctx context.Context, request RunTurnRequest
 	if err != nil {
 		return RunTurnResult{}, applicationError(CategoryInternal, "emitter_construction_failed", false, err)
 	}
-	decided, err := domain.DecideCompact(state, domain.StartAssistantTurn{SessionID: request.SessionID, TurnID: turnID, ItemID: itemID, Input: request.Input})
+	decided, err := domain.Decide(state, domain.StartAssistantTurn{SessionID: request.SessionID, TurnID: turnID, ItemID: itemID, Input: request.Input})
 	if err != nil {
 		return RunTurnResult{}, applicationError(CategoryValidation, "domain_rejected", false, err)
 	}
@@ -152,7 +152,7 @@ func (service *Service) runTurnOwned(ctx context.Context, request RunTurnRequest
 		defer cancel()
 		return service.terminalizeExecutionFailure(cleanupCtx, ctx, runningState, runningResult, commandID, emitter, lease, mapRunError(err), err)
 	}
-	decided, err = domain.DecideCompact(runningState, domain.CompleteAssistantTurn{SessionID: request.SessionID, TurnID: turnID, ItemID: itemID, Text: runResult.Text})
+	decided, err = domain.Decide(runningState, domain.CompleteAssistantTurn{SessionID: request.SessionID, TurnID: turnID, ItemID: itemID, Text: runResult.Text})
 	if err != nil {
 		return cloneRunTurnResult(runningResult), applicationError(CategoryInternal, "domain_transition_failed", false, err)
 	}
@@ -233,7 +233,7 @@ func durableRequestTerminalError(result RunTurnResult) error {
 	}
 }
 
-func (service *Service) resolveAdmissionUnknown(ctx context.Context, request RunTurnRequest, requestDigest Digest, lease *executionLease, state domain.CompactSession, intent AppendIntent, commandID domain.CommandID, emitter *engine.Emitter) (RunTurnResult, error) {
+func (service *Service) resolveAdmissionUnknown(ctx context.Context, request RunTurnRequest, requestDigest Digest, lease *executionLease, state domain.Session, intent AppendIntent, commandID domain.CommandID, emitter *engine.Emitter) (RunTurnResult, error) {
 	resolveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), service.config.AppendResolutionTimeout)
 	defer cancel()
 	receipt, err := ResolveAppendIntent(resolveCtx, service.store, intent, service.appendResolutionConfig())
@@ -262,7 +262,7 @@ func (service *Service) resolveAdmissionUnknown(ctx context.Context, request Run
 		defer cleanupCancel()
 		return service.terminalizeExecutionFailure(cleanupCtx, ctx, runningState, runningResult, commandID, emitter, lease, mapRunError(runErr), runErr)
 	}
-	decided, err := domain.DecideCompact(runningState, domain.CompleteAssistantTurn{SessionID: request.SessionID, TurnID: admission.TurnID, ItemID: admission.ItemID, Text: runResult.Text})
+	decided, err := domain.Decide(runningState, domain.CompleteAssistantTurn{SessionID: request.SessionID, TurnID: admission.TurnID, ItemID: admission.ItemID, Text: runResult.Text})
 	if err != nil {
 		return cloneRunTurnResult(runningResult), applicationError(CategoryInternal, "domain_transition_failed", false, err)
 	}
@@ -296,11 +296,11 @@ func (service *Service) resolveAdmissionUnknown(ctx context.Context, request Run
 	return cloneRunTurnResult(completedResult), nil
 }
 
-func (service *Service) abandonAdmittedTurn(ctx context.Context, lease *executionLease, state domain.CompactSession, runningResult RunTurnResult, commandID domain.CommandID, emitter *engine.Emitter) (RunTurnResult, error) {
+func (service *Service) abandonAdmittedTurn(ctx context.Context, lease *executionLease, state domain.Session, runningResult RunTurnResult, commandID domain.CommandID, emitter *engine.Emitter) (RunTurnResult, error) {
 	if err := lease.setPhase(executionPhaseCancelWon); err != nil {
 		return cloneRunTurnResult(runningResult), storeContractViolation(err)
 	}
-	decided, err := domain.DecideCompact(state, domain.InterruptAssistantTurn{
+	decided, err := domain.Decide(state, domain.InterruptAssistantTurn{
 		SessionID: runningResult.SessionID, TurnID: runningResult.TurnID, ItemID: runningResult.ItemID,
 		Code: domain.InterruptionRequestAbandoned, Message: "",
 	})
@@ -340,7 +340,7 @@ func (service *Service) abandonAdmittedTurn(ctx context.Context, lease *executio
 	return cloneRunTurnResult(result), committed
 }
 
-func (service *Service) resolveTerminalUnknown(ctx context.Context, lease *executionLease, state domain.CompactSession, runningResult RunTurnResult, intent AppendIntent, prior []domain.RecordedEvent, emitter *engine.Emitter) (RunTurnResult, error) {
+func (service *Service) resolveTerminalUnknown(ctx context.Context, lease *executionLease, state domain.Session, runningResult RunTurnResult, intent AppendIntent, prior []domain.RecordedEvent, emitter *engine.Emitter) (RunTurnResult, error) {
 	resolveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), service.config.AppendResolutionTimeout)
 	defer cancel()
 	receipt, err := ResolveAppendIntent(resolveCtx, service.store, intent, service.appendResolutionConfig())
@@ -407,9 +407,9 @@ func isAppendOutcomeUnknown(err error) bool {
 	return errors.As(err, &applicationErr) && applicationErr != nil && applicationErr.Code == "append_outcome_unknown"
 }
 
-func (service *Service) terminalizeExecutionFailure(cleanupCtx context.Context, deliveryCtx context.Context, runningState domain.CompactSession, runningResult RunTurnResult, commandID domain.CommandID, emitter *engine.Emitter, lease *executionLease, primary *Error, executionCause error) (RunTurnResult, error) {
+func (service *Service) terminalizeExecutionFailure(cleanupCtx context.Context, deliveryCtx context.Context, runningState domain.Session, runningResult RunTurnResult, commandID domain.CommandID, emitter *engine.Emitter, lease *executionLease, primary *Error, executionCause error) (RunTurnResult, error) {
 	terminalCommand, status, terminalSignal, stableCode := terminalCommandForExecution(runningResult, primary)
-	decided, err := domain.DecideCompact(runningState, terminalCommand)
+	decided, err := domain.Decide(runningState, terminalCommand)
 	if err != nil {
 		return cloneRunTurnResult(runningResult), applicationError(CategoryInternal, "domain_transition_failed", false, errors.Join(executionCause, err))
 	}

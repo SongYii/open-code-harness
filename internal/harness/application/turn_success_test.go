@@ -18,7 +18,7 @@ import (
 
 func TestRunTurnPersistsExactAssistantMessage(t *testing.T) {
 	store := newTurnMemoryStore(t)
-	recordingStore := &turnRecordingStore{EventStoreV2: store}
+	recordingStore := &turnRecordingStore{EventStore: store}
 	expectedRequest := engine.ModelRequest{
 		SessionID: "session-1",
 		TurnID:    "turn-1",
@@ -98,11 +98,8 @@ func TestRunTurnPersistsExactAssistantMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	turn := state.Turns[result.TurnID]
-	item := turn.Items[result.ItemID]
-	payload, ok := item.Payload.(domain.AssistantMessagePayload)
-	if !ok || state.Version != 5 || turn.Status != domain.TurnStatusCompleted || item.Status != domain.ItemStatusCompleted || payload.Text != result.Text {
-		t.Fatalf("replayed state = %#v, item = %#v", state, item)
+	if state.Version != 5 || state.ActiveTurn != nil {
+		t.Fatalf("replayed state = %#v", state)
 	}
 
 	runtimeEvents := sink.Delivered()
@@ -170,8 +167,8 @@ func TestRunTurnSequentialTurnsHaveDistinctIdentityAndOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	legacy, err := domain.Replay(records)
-	if err != nil || legacy.Version != 9 || !reflect.DeepEqual(legacy.TurnOrder, []domain.TurnID{first.TurnID, second.TurnID}) {
-		t.Fatalf("pinned legacy history = %#v, %v", legacy, err)
+	if err != nil || legacy.Version != 9 || legacy.ActiveTurn != nil {
+		t.Fatalf("pinned compact history = %#v, %v", legacy, err)
 	}
 }
 
@@ -238,7 +235,7 @@ func TestRunTurnRequestLookupPrecedesIDsAndModel(t *testing.T) {
 		{lookup: application.CommandRequestLookup{Kind: application.CommandRequestLookupIdentityMismatch}, code: "command_identity_mismatch"},
 	} {
 		base := activeTurnStore(t)
-		store := &lookupTurnStore{EventStoreV2: base, lookup: test.lookup}
+		store := &lookupTurnStore{EventStore: base, lookup: test.lookup}
 		ids := &turnIDs{}
 		model := &repeatingSuccessModel{text: "unused"}
 		service := newTurnService(t, store, ids, model)
@@ -257,7 +254,7 @@ func TestRunTurnRejectsImpossibleUnknownLookupCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := &lookupTurnStore{EventStoreV2: base, lookupErr: unknown, cancel: cancel}
+	store := &lookupTurnStore{EventStore: base, lookupErr: unknown, cancel: cancel}
 	ids := &turnIDs{}
 	model := &repeatingSuccessModel{text: "unused"}
 	service := newTurnService(t, store, ids, model)
@@ -271,7 +268,7 @@ func TestRunTurnRejectsImpossibleUnknownLookupCode(t *testing.T) {
 func TestRunTurnCanceledAfterReadStopsBeforeIDsAndModel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	base := activeTurnStore(t)
-	store := &cancelAfterReadStore{EventStoreV2: base, cancel: cancel}
+	store := &cancelAfterReadStore{EventStore: base, cancel: cancel}
 	ids := &turnIDs{}
 	model := &repeatingSuccessModel{text: "unused"}
 	service := newTurnService(t, store, ids, model)
@@ -291,7 +288,7 @@ func TestRunTurnTerminalUnknownDoesNotFallbackAfterCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := &terminalUnknownStore{EventStoreV2: base, cancel: cancel}
+	store := &terminalUnknownStore{EventStore: base, cancel: cancel}
 	model := &repeatingSuccessModel{text: "done"}
 	service := newTurnService(t, store, ids, model)
 	result, err := service.RunTurn(ctx, application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-terminal-unknown", Input: "inspect", Sink: &testkit.RecordingSink{}})
@@ -344,11 +341,11 @@ func TestRunTurnRejectsNilContextBeforeStoreAndIDs(t *testing.T) {
 func TestRunTurnReplayAndEligibilityPrecedeRunIDs(t *testing.T) {
 	tests := []struct {
 		name     string
-		store    func(*testing.T) application.EventStoreV2
+		store    func(*testing.T) application.EventStore
 		category application.ErrorCategory
 		code     string
 	}{
-		{name: "missing", store: func(*testing.T) application.EventStoreV2 { return &turnCountingStore{} }, category: application.CategoryValidation, code: "session_not_found"},
+		{name: "missing", store: func(*testing.T) application.EventStore { return &turnCountingStore{} }, category: application.CategoryValidation, code: "session_not_found"},
 		{name: "corrupt", store: corruptTurnStore, category: application.CategoryInternal, code: "store_contract_violation"},
 		{name: "closed", store: closedTurnStore, category: application.CategoryValidation, code: "domain_rejected"},
 		{name: "already running", store: runningTurnStore, category: application.CategoryValidation, code: "domain_rejected"},
@@ -385,7 +382,7 @@ func TestRunTurnValidatesEveryGeneratedIDBeforeAdmission(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			base := activeTurnStore(t)
-			store := &turnRecordingStore{EventStoreV2: base}
+			store := &turnRecordingStore{EventStore: base}
 			model := &repeatingSuccessModel{text: "unused"}
 			service := newTurnService(t, store, test.ids, model)
 			result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: "session-preflight", RequestID: "request-recording", Input: "inspect", Sink: &testkit.RecordingSink{}})
@@ -416,7 +413,7 @@ func TestRunTurnAtomicAdmissionFailureNeverCallsModel(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			base := activeTurnStore(t)
-			store := &turnFailingAppendStore{EventStoreV2: base, failure: test.failure}
+			store := &turnFailingAppendStore{EventStore: base, failure: test.failure}
 			model := &repeatingSuccessModel{text: "unused"}
 			service := newTurnService(t, store, &turnIDs{turnID: "turn-1", itemID: "item-1", commandID: "command-run"}, model)
 			result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: "session-preflight", RequestID: "request-append-failure", Input: "inspect", Sink: &testkit.RecordingSink{}})
@@ -438,7 +435,7 @@ func TestRunTurnAtomicAdmissionFailureNeverCallsModel(t *testing.T) {
 func TestRunTurnCancellationBeforeAdmissionWritesNothing(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	base := activeTurnStore(t)
-	store := &turnRecordingStore{EventStoreV2: base}
+	store := &turnRecordingStore{EventStore: base}
 	ids := &turnIDs{turnID: "turn-1", itemID: "item-1", commandID: "command-run", onCommand: cancel}
 	model := &repeatingSuccessModel{text: "unused"}
 	service := newTurnService(t, store, ids, model)
@@ -495,7 +492,7 @@ func TestRunTurnCancellationAfterTerminalCommitBecomesDeliveryWarning(t *testing
 	base := newTurnMemoryStore(t)
 	committed := make(chan struct{})
 	release := make(chan struct{})
-	store := &terminalBarrierStore{EventStoreV2: base, committed: committed, release: release}
+	store := &terminalBarrierStore{EventStore: base, committed: committed, release: release}
 	model := &repeatingSuccessModel{}
 	service := newTurnService(t, store, testkit.NewSequenceIDs(), model)
 	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
@@ -533,7 +530,7 @@ func TestRunTurnCancellationAfterTerminalCommitBecomesDeliveryWarning(t *testing
 	}
 }
 
-func assertCommittedErrorResultIsDefensive(t *testing.T, store application.EventStoreV2, sessionID domain.SessionID, result application.RunTurnResult, input string) {
+func assertCommittedErrorResultIsDefensive(t *testing.T, store application.EventStore, sessionID domain.SessionID, result application.RunTurnResult, input string) {
 	t.Helper()
 	wantEvents := []domain.Event{
 		domain.TurnStarted{TurnID: result.TurnID, Input: input},
@@ -577,24 +574,21 @@ func assertCommittedErrorResultIsDefensive(t *testing.T, store application.Event
 	if err != nil {
 		t.Fatal(err)
 	}
-	turn := state.Turns[result.TurnID]
-	item := turn.Items[result.ItemID]
-	payload, ok := item.Payload.(domain.AssistantMessagePayload)
-	if !ok || state.Version != 5 || turn.Status != domain.TurnStatusCompleted || item.Status != domain.ItemStatusCompleted || payload.Text != result.Text {
-		t.Fatalf("fresh replay after result mutation = state %#v item %#v", state, item)
+	if state.Version != 5 || state.ActiveTurn != nil {
+		t.Fatalf("fresh replay after result mutation = %#v", state)
 	}
 }
 
-func newTurnMemoryStore(t *testing.T) *memory.EventStoreV2 {
+func newTurnMemoryStore(t *testing.T) *memory.EventStore {
 	t.Helper()
-	store, err := memory.NewEventStoreV2(v2Authority)
+	store, err := memory.NewEventStore(v2Authority)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return store
 }
 
-func newTurnService(t *testing.T, store application.EventStoreV2, ids application.IDGenerator, model engine.Model) *application.Service {
+func newTurnService(t *testing.T, store application.EventStore, ids application.IDGenerator, model engine.Model) *application.Service {
 	t.Helper()
 	runner, err := engine.NewTurnRunner(model)
 	if err != nil {
@@ -607,21 +601,21 @@ func newTurnService(t *testing.T, store application.EventStoreV2, ids applicatio
 	return service
 }
 
-func activeTurnStore(t *testing.T) *memory.EventStoreV2 {
+func activeTurnStore(t *testing.T) *memory.EventStore {
 	t.Helper()
 	store := newTurnMemoryStore(t)
 	seedTurnStore(t, store, []domain.Event{domain.SessionCreated{WorkspaceRoot: "/workspace"}})
 	return store
 }
 
-func closedTurnStore(t *testing.T) application.EventStoreV2 {
+func closedTurnStore(t *testing.T) application.EventStore {
 	t.Helper()
 	store := newTurnMemoryStore(t)
 	seedTurnStore(t, store, []domain.Event{domain.SessionCreated{WorkspaceRoot: "/workspace"}, domain.SessionClosed{}})
 	return store
 }
 
-func runningTurnStore(t *testing.T) application.EventStoreV2 {
+func runningTurnStore(t *testing.T) application.EventStore {
 	t.Helper()
 	store := newTurnMemoryStore(t)
 	seedTurnStore(t, store, []domain.Event{
@@ -632,7 +626,7 @@ func runningTurnStore(t *testing.T) application.EventStoreV2 {
 	return store
 }
 
-func corruptTurnStore(t *testing.T) application.EventStoreV2 {
+func corruptTurnStore(t *testing.T) application.EventStore {
 	t.Helper()
 	return &turnCountingStore{records: []domain.RecordedEvent{{
 		SchemaVersion: 1,
@@ -645,7 +639,7 @@ func corruptTurnStore(t *testing.T) application.EventStoreV2 {
 	}}}
 }
 
-func seedTurnStore(t *testing.T, store application.EventStoreV2, events []domain.Event) {
+func seedTurnStore(t *testing.T, store application.EventStore, events []domain.Event) {
 	t.Helper()
 	for index, event := range events {
 		seedV2Event(t, store, "session-preflight", uint64(index), domain.CommandID("command-seed-"+string(rune('1'+index))), event)
@@ -717,24 +711,24 @@ func (stream *turnSuccessStream) Next(context.Context) (engine.StreamEvent, erro
 func (*turnSuccessStream) Close() error { return nil }
 
 type turnRecordingStore struct {
-	application.EventStoreV2
+	application.EventStore
 	mu       sync.Mutex
-	requests []application.AppendRequestV2
+	requests []application.AppendRequest
 }
 
-func (store *turnRecordingStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
+func (store *turnRecordingStore) Append(ctx context.Context, request application.AppendRequest) (application.CommitReceipt, error) {
 	store.mu.Lock()
 	cloned := request
 	cloned.Events = append([]application.ProposedEvent(nil), request.Events...)
 	store.requests = append(store.requests, cloned)
 	store.mu.Unlock()
-	return store.EventStoreV2.Append(ctx, request)
+	return store.EventStore.Append(ctx, request)
 }
 
-func (store *turnRecordingStore) AppendRequests() []application.AppendRequestV2 {
+func (store *turnRecordingStore) AppendRequests() []application.AppendRequest {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	result := make([]application.AppendRequestV2, len(store.requests))
+	result := make([]application.AppendRequest, len(store.requests))
 	for index, request := range store.requests {
 		result[index] = request
 		result[index].Events = append([]application.ProposedEvent(nil), request.Events...)
@@ -750,7 +744,7 @@ type turnCountingStore struct {
 }
 
 type lookupTurnStore struct {
-	application.EventStoreV2
+	application.EventStore
 	lookup    application.CommandRequestLookup
 	lookupErr error
 	cancel    context.CancelFunc
@@ -766,36 +760,36 @@ func (store *lookupTurnStore) FindCommandRequest(context.Context, application.Fi
 }
 func (store *lookupTurnStore) ReadStream(ctx context.Context, request application.ReadStreamRequest) (application.StreamPage, error) {
 	store.reads++
-	return store.EventStoreV2.ReadStream(ctx, request)
+	return store.EventStore.ReadStream(ctx, request)
 }
-func (store *lookupTurnStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
+func (store *lookupTurnStore) Append(ctx context.Context, request application.AppendRequest) (application.CommitReceipt, error) {
 	store.appends++
-	return store.EventStoreV2.Append(ctx, request)
+	return store.EventStore.Append(ctx, request)
 }
 
 type cancelAfterReadStore struct {
-	application.EventStoreV2
+	application.EventStore
 	cancel context.CancelFunc
 }
 
 func (store *cancelAfterReadStore) ReadStream(ctx context.Context, request application.ReadStreamRequest) (application.StreamPage, error) {
-	page, err := store.EventStoreV2.ReadStream(ctx, request)
+	page, err := store.EventStore.ReadStream(ctx, request)
 	store.cancel()
 	return page, err
 }
 
 type terminalUnknownStore struct {
-	application.EventStoreV2
+	application.EventStore
 	cancel           context.CancelFunc
 	terminalCalls    int
-	requests         []application.AppendRequestV2
+	requests         []application.AppendRequest
 	terminalAppendID domain.AppendID
 	terminalEvents   []application.ProposedEvent
 }
 
-func (store *terminalUnknownStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
+func (store *terminalUnknownStore) Append(ctx context.Context, request application.AppendRequest) (application.CommitReceipt, error) {
 	store.requests = append(store.requests, cloneTurnAppendRequest(request))
-	receipt, err := store.EventStoreV2.Append(ctx, request)
+	receipt, err := store.EventStore.Append(ctx, request)
 	if err != nil || len(request.Events) == 0 || request.Events[0].Event.EventType() != domain.EventAssistantMessageCompleted {
 		return receipt, err
 	}
@@ -810,15 +804,15 @@ func (store *terminalUnknownStore) Append(ctx context.Context, request applicati
 	return application.CommitReceipt{}, unknown
 }
 
-func (store *terminalUnknownStore) AppendRequests() []application.AppendRequestV2 {
-	requests := make([]application.AppendRequestV2, len(store.requests))
+func (store *terminalUnknownStore) AppendRequests() []application.AppendRequest {
+	requests := make([]application.AppendRequest, len(store.requests))
 	for index, request := range store.requests {
 		requests[index] = cloneTurnAppendRequest(request)
 	}
 	return requests
 }
 
-func cloneTurnAppendRequest(request application.AppendRequestV2) application.AppendRequestV2 {
+func cloneTurnAppendRequest(request application.AppendRequest) application.AppendRequest {
 	clone := request
 	clone.Events = append([]application.ProposedEvent(nil), request.Events...)
 	return clone
@@ -843,7 +837,7 @@ func (store *turnCountingStore) ReadStream(_ context.Context, request applicatio
 	return application.StreamPage{Records: records[request.AfterSequence:end], HeadVersion: head, NextAfterSequence: end, End: end == head}, nil
 }
 
-func (store *turnCountingStore) Append(context.Context, application.AppendRequestV2) (application.CommitReceipt, error) {
+func (store *turnCountingStore) Append(context.Context, application.AppendRequest) (application.CommitReceipt, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	store.appendCalls++
@@ -947,13 +941,13 @@ func (ids *turnIDs) TotalCalls() int {
 }
 
 type turnFailingAppendStore struct {
-	application.EventStoreV2
+	application.EventStore
 	mu          sync.Mutex
 	failure     error
 	appendCalls int
 }
 
-func (store *turnFailingAppendStore) Append(context.Context, application.AppendRequestV2) (application.CommitReceipt, error) {
+func (store *turnFailingAppendStore) Append(context.Context, application.AppendRequest) (application.CommitReceipt, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	store.appendCalls++
@@ -967,13 +961,13 @@ func (store *turnFailingAppendStore) AppendCalls() int {
 }
 
 type terminalBarrierStore struct {
-	application.EventStoreV2
+	application.EventStore
 	committed chan<- struct{}
 	release   <-chan struct{}
 }
 
-func (store *terminalBarrierStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
-	receipt, err := store.EventStoreV2.Append(ctx, request)
+func (store *terminalBarrierStore) Append(ctx context.Context, request application.AppendRequest) (application.CommitReceipt, error) {
+	receipt, err := store.EventStore.Append(ctx, request)
 	if err != nil || len(request.Events) == 0 || request.Events[0].Event.EventType() != domain.EventAssistantMessageCompleted {
 		return receipt, err
 	}

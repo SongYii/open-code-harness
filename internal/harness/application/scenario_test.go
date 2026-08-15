@@ -23,7 +23,7 @@ func TestEngineScenarioContract(t *testing.T) {
 		t.Helper()
 		ids := testkit.NewSequenceIDs()
 		authority := application.WriterAuthority{RuntimeID: "scenario-runtime", FencingToken: 1}
-		store, err := memory.NewEventStoreV2(authority)
+		store, err := memory.NewEventStore(authority)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -86,11 +86,7 @@ func TestRunTurnSuccessFixtureMatchesLiveTrace(t *testing.T) {
 	if !reflect.DeepEqual(liveState, fixtureState) {
 		t.Fatalf("replayed states differ\nlive: %#v\nfixture: %#v", liveState, fixtureState)
 	}
-	item := fixtureState.Turns[result.TurnID].Items[result.ItemID]
-	payload, ok := item.Payload.(domain.AssistantMessagePayload)
-	if !ok || fixtureState.Status != domain.SessionStatusActive ||
-		fixtureState.Turns[result.TurnID].Status != domain.TurnStatusCompleted ||
-		item.Status != domain.ItemStatusCompleted || payload.Text != "你好\n" || result.Text != payload.Text {
+	if fixtureState.Status != domain.SessionStatusActive || fixtureState.ActiveTurn != nil || result.Text != "你好\n" {
 		t.Fatalf("fixture replay = %#v, result = %#v", fixtureState, result)
 	}
 }
@@ -134,7 +130,7 @@ func runExactSuccessTrace(t *testing.T) ([]domain.RecordedEvent, application.Run
 	t.Helper()
 	ids := testkit.NewSequenceIDs()
 	authority := application.WriterAuthority{RuntimeID: "scenario-runtime", FencingToken: 1}
-	store, err := memory.NewEventStoreV2(authority)
+	store, err := memory.NewEventStore(authority)
 	if err != nil {
 		t.Fatal(err)
 	}

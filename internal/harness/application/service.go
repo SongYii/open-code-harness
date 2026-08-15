@@ -33,7 +33,7 @@ func DefaultConfig() Config {
 // Service is the single application command authority for Session and Turn
 // use cases. Its dependencies and configuration are immutable after creation.
 type Service struct {
-	store      EventStoreV2
+	store      EventStore
 	ids        IDGenerator
 	clock      Clock
 	runner     *engine.TurnRunner
@@ -42,7 +42,7 @@ type Service struct {
 	executions *executionRegistry
 }
 
-func NewService(store EventStoreV2, ids IDGenerator, clock Clock, runner *engine.TurnRunner, authority WriterAuthority, config Config) (*Service, error) {
+func NewService(store EventStore, ids IDGenerator, clock Clock, runner *engine.TurnRunner, authority WriterAuthority, config Config) (*Service, error) {
 	if config.AppendResolutionTimeout == 0 {
 		config.AppendResolutionTimeout = DefaultAppendResolutionTimeout
 	}

@@ -168,7 +168,7 @@ func (store *headMutatingSpy) ReadStream(_ context.Context, request ReadStreamRe
 	*request.HeadVersion = 3
 	return StreamPage{Records: []domain.RecordedEvent{readRecord(2)}, HeadVersion: 3, NextAfterSequence: 2}, nil
 }
-func (*headMutatingSpy) Append(context.Context, AppendRequestV2) (CommitReceipt, error) {
+func (*headMutatingSpy) Append(context.Context, AppendRequest) (CommitReceipt, error) {
 	return CommitReceipt{}, nil
 }
 func (*headMutatingSpy) ResolveAppend(context.Context, ResolveAppendRequest) (AppendResolution, error) {
@@ -187,7 +187,7 @@ func (store *errorReadSpy) ReadStream(context.Context, ReadStreamRequest) (Strea
 	store.cancel()
 	return StreamPage{}, store.err
 }
-func (*errorReadSpy) Append(context.Context, AppendRequestV2) (CommitReceipt, error) {
+func (*errorReadSpy) Append(context.Context, AppendRequest) (CommitReceipt, error) {
 	return CommitReceipt{}, nil
 }
 func (*errorReadSpy) ResolveAppend(context.Context, ResolveAppendRequest) (AppendResolution, error) {
@@ -211,7 +211,7 @@ func (store *pagingSpy) ReadStream(_ context.Context, request ReadStreamRequest)
 	return page, nil
 }
 
-func (*pagingSpy) Append(context.Context, AppendRequestV2) (CommitReceipt, error) {
+func (*pagingSpy) Append(context.Context, AppendRequest) (CommitReceipt, error) {
 	return CommitReceipt{}, nil
 }
 func (*pagingSpy) ResolveAppend(context.Context, ResolveAppendRequest) (AppendResolution, error) {

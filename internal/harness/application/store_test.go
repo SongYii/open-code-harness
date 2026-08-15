@@ -17,7 +17,7 @@ func (*contractStore) ReadStream(context.Context, ReadStreamRequest) (StreamPage
 	return StreamPage{}, nil
 }
 
-func (*contractStore) Append(context.Context, AppendRequestV2) (CommitReceipt, error) {
+func (*contractStore) Append(context.Context, AppendRequest) (CommitReceipt, error) {
 	return CommitReceipt{}, nil
 }
 
@@ -29,7 +29,7 @@ func (*contractStore) FindCommandRequest(context.Context, FindCommandRequestRequ
 	return CommandRequestLookup{}, nil
 }
 
-var _ EventStoreV2 = (*contractStore)(nil)
+var _ EventStore = (*contractStore)(nil)
 
 func TestParseRuntimeIDRejectsInvalidValues(t *testing.T) {
 	for _, input := range []string{"", "   ", " runtime-1", "runtime-1 ", "runtime-\xff"} {
@@ -210,13 +210,13 @@ func TestStoreErrorRendersOnlySafeMetadata(t *testing.T) {
 
 func TestV2RequestCarriesImmutableAppendFacts(t *testing.T) {
 	now := time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
-	request := AppendRequestV2{
+	request := AppendRequest{
 		AppendID: "append-1", SessionID: "session-1", ExpectedVersion: 7, CommandID: "command-1",
 		Authority: WriterAuthority{RuntimeID: "runtime-1", FencingToken: 1},
 		Admission: &CommandAdmission{RunTurnRequestID: "request-1", TurnID: "turn-1", ItemID: "item-1"},
 		Events:    []ProposedEvent{{ID: "event-1", SchemaVersion: 1, OccurredAt: now, Event: domain.SessionCreated{WorkspaceRoot: "/workspace"}}},
 	}
 	if request.AppendID != "append-1" || request.Admission.RunTurnRequestID != "request-1" || request.Events[0].OccurredAt != now {
-		t.Fatalf("AppendRequestV2 lost immutable facts: %#v", request)
+		t.Fatalf("AppendRequest lost immutable facts: %#v", request)
 	}
 }

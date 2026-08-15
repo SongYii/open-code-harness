@@ -33,3 +33,7 @@ func IsCode(err error, code ErrorCode) bool {
 	var target *DomainError
 	return errors.As(err, &target) && target.Code == code
 }
+
+func domainError(code ErrorCode, message string) error {
+	return &DomainError{Code: code, Message: message}
+}

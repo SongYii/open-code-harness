@@ -49,91 +49,48 @@ type ItemTerminal struct {
 	Message string
 }
 
+// Item retains only the information needed while an item is active.
 type Item struct {
 	ID        ItemID
 	TurnID    TurnID
 	Kind      ItemKind
-	Status    ItemStatus
-	Payload   ItemPayload
 	StartedAt time.Time
-	EndedAt   time.Time
-	Terminal  *ItemTerminal
 }
 
-func (item Item) Clone() Item {
-	clone := item
-	if item.Payload != nil {
-		clone.Payload = item.Payload.cloneItemPayload()
-	}
-	if item.Terminal != nil {
-		terminal := *item.Terminal
-		clone.Terminal = &terminal
-	}
-	return clone
-}
-
+// Turn retains only the information needed while a turn is active.
 type Turn struct {
-	ID           TurnID
-	Status       TurnStatus
-	Input        string
-	StartedAt    time.Time
-	EndedAt      time.Time
-	FailureCode  string
-	FailureText  string
-	InterruptWhy string
-	ActiveItemID ItemID
-	ItemOrder    []ItemID
-	Items        map[ItemID]Item
+	ID               TurnID
+	Input            string
+	StartedAt        time.Time
+	LastTransitionAt time.Time
+	ActiveItem       *Item
 }
 
-func (turn Turn) Clone() Turn {
-	clone := turn
-	if turn.ItemOrder != nil {
-		clone.ItemOrder = make([]ItemID, len(turn.ItemOrder))
-		copy(clone.ItemOrder, turn.ItemOrder)
-	}
-	if turn.Items != nil {
-		clone.Items = make(map[ItemID]Item, len(turn.Items))
-		for id, item := range turn.Items {
-			clone.Items[id] = item.Clone()
-		}
-	}
-	return clone
-}
-
+// Session discards completed turns and items. Persistent identity
+// uniqueness for discarded records is enforced by the Store identity index.
 type Session struct {
 	ID            SessionID
 	Status        SessionStatus
 	Version       uint64
 	WorkspaceRoot string
-	ActiveTurnID  TurnID
-	TurnOrder     []TurnID
-	Turns         map[TurnID]Turn
+	ActiveTurn    *Turn
 }
 
-func (s Session) Exists() bool { return s.ID != "" }
+func (state Session) Exists() bool { return state.ID != "" }
 
-func (s Session) Clone() Session {
-	clone := s
-	if s.TurnOrder != nil {
-		clone.TurnOrder = make([]TurnID, len(s.TurnOrder))
-		copy(clone.TurnOrder, s.TurnOrder)
-	}
-	if s.Turns != nil {
-		clone.Turns = make(map[TurnID]Turn, len(s.Turns))
-		for id, turn := range s.Turns {
-			clone.Turns[id] = turn.Clone()
+func (state Session) Clone() Session {
+	clone := state
+	if state.ActiveTurn != nil {
+		turn := *state.ActiveTurn
+		clone.ActiveTurn = &turn
+		if state.ActiveTurn.ActiveItem != nil {
+			item := *state.ActiveTurn.ActiveItem
+			clone.ActiveTurn.ActiveItem = &item
 		}
 	}
 	return clone
 }
 
-func (s Session) isPristine() bool {
-	return s.ID == "" &&
-		s.Status == "" &&
-		s.Version == 0 &&
-		s.WorkspaceRoot == "" &&
-		s.ActiveTurnID == "" &&
-		s.TurnOrder == nil &&
-		s.Turns == nil
+func (state Session) isPristine() bool {
+	return state.ID == "" && state.Status == "" && state.Version == 0 && state.WorkspaceRoot == "" && state.ActiveTurn == nil
 }

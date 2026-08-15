@@ -16,9 +16,9 @@ import (
 
 var v2Time = time.Date(2026, 8, 13, 9, 0, 0, 0, time.UTC)
 
-func testAtomicAppendAndCAS(t *testing.T, factory V2Factory) {
+func testAtomicAppendAndCAS(t *testing.T, factory Factory) {
 	h := factory(t)
-	requireV2(t, h)
+	requireHarness(t, h)
 	first := v2Append("append-cas-1", "session-cas", 0, "command-cas-1", domain.SessionCreated{WorkspaceRoot: "/cas"})
 	receipt, err := h.Store.Append(context.Background(), first)
 	if err != nil || receipt.FirstSequence != 1 || receipt.LastSequence != 1 || receipt.CommitPosition == 0 {
@@ -55,9 +55,9 @@ func testAtomicAppendAndCAS(t *testing.T, factory V2Factory) {
 	assertAppendAbsent(t, h, sameBatch, 0)
 }
 
-func testProposedMetadataPreservation(t *testing.T, factory V2Factory) {
+func testProposedMetadataPreservation(t *testing.T, factory Factory) {
 	h := factory(t)
-	requireV2(t, h)
+	requireHarness(t, h)
 	base := time.Date(2027, 3, 4, 5, 6, 7, 890, time.UTC)
 	request := v2Append("append-metadata", "session-metadata", 0, "command-metadata", domain.SessionCreated{WorkspaceRoot: "/metadata"}, domain.TurnStarted{TurnID: "turn-metadata", Input: "distinct input"})
 	request.Events[0].ID, request.Events[0].OccurredAt = "event-metadata-created", base
@@ -81,9 +81,9 @@ func testProposedMetadataPreservation(t *testing.T, factory V2Factory) {
 	}
 }
 
-func testExactReceiptRetry(t *testing.T, factory V2Factory) {
+func testExactReceiptRetry(t *testing.T, factory Factory) {
 	h := factory(t)
-	requireV2(t, h)
+	requireHarness(t, h)
 	request := v2Append("append-retry", "session-retry", 0, "command-retry", domain.SessionCreated{WorkspaceRoot: "/retry"})
 	first, err := h.Store.Append(context.Background(), request)
 	if err != nil {
@@ -107,9 +107,9 @@ func testExactReceiptRetry(t *testing.T, factory V2Factory) {
 	}
 }
 
-func testPinnedPagination(t *testing.T, factory V2Factory) {
+func testPinnedPagination(t *testing.T, factory Factory) {
 	h := factory(t)
-	requireV2(t, h)
+	requireHarness(t, h)
 	if _, err := h.Store.Append(context.Background(), v2Append("append-page-1", "session-page", 0, "command-page-1", domain.SessionCreated{WorkspaceRoot: "/page"}, domain.TurnStarted{TurnID: "turn-page", Input: "next"}, domain.TurnCompleted{TurnID: "turn-page"})); err != nil {
 		t.Fatal(err)
 	}
@@ -137,9 +137,9 @@ func testPinnedPagination(t *testing.T, factory V2Factory) {
 	}
 }
 
-func testAdmissionIdentity(t *testing.T, factory V2Factory) {
+func testAdmissionIdentity(t *testing.T, factory Factory) {
 	h := factory(t)
-	requireV2(t, h)
+	requireHarness(t, h)
 	if _, err := h.Store.Append(context.Background(), v2Append("append-admission-session", "session-admission", 0, "command-admission-session", domain.SessionCreated{WorkspaceRoot: "/admission"})); err != nil {
 		t.Fatal(err)
 	}
@@ -184,9 +184,9 @@ func testAdmissionIdentity(t *testing.T, factory V2Factory) {
 	}
 }
 
-func testWriterFencing(t *testing.T, factory V2Factory) {
+func testWriterFencing(t *testing.T, factory Factory) {
 	h := factory(t)
-	requireV2(t, h)
+	requireHarness(t, h)
 	h.RotateAuthority(application.WriterAuthority{RuntimeID: "runtime-2", FencingToken: 2})
 	request := v2Append("append-fenced", "session-fenced", 0, "command-fenced", domain.SessionCreated{WorkspaceRoot: "/fenced"})
 	if _, err := h.Store.Append(context.Background(), request); err == nil {
@@ -200,9 +200,9 @@ func testWriterFencing(t *testing.T, factory V2Factory) {
 	}
 }
 
-func testUnknownOutcome(t *testing.T, factory V2Factory) {
+func testUnknownOutcome(t *testing.T, factory Factory) {
 	h := factory(t)
-	requireV2(t, h)
+	requireHarness(t, h)
 	request := v2Append("append-unknown", "session-unknown", 0, "command-unknown", domain.SessionCreated{WorkspaceRoot: "/unknown"})
 	h.FailNext(FaultBeforeCommit, errors.New("before"))
 	if _, err := h.Store.Append(context.Background(), request); err == nil {
@@ -260,9 +260,9 @@ func testUnknownOutcome(t *testing.T, factory V2Factory) {
 	}
 }
 
-func testLimitsCopiesCancellationAndCorruption(t *testing.T, factory V2Factory) {
+func testLimitsCopiesCancellationAndCorruption(t *testing.T, factory Factory) {
 	h := factory(t)
-	requireV2(t, h)
+	requireHarness(t, h)
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := h.Store.Append(canceled, v2Append("append-canceled", "session-canceled", 0, "command-canceled", domain.SessionCreated{WorkspaceRoot: "/canceled"})); err == nil {
@@ -329,9 +329,9 @@ func testLimitsCopiesCancellationAndCorruption(t *testing.T, factory V2Factory) 
 	testAllIndexRollback(t, h)
 }
 
-func testConcurrentCommitPositions(t *testing.T, factory V2Factory) {
+func testConcurrentCommitPositions(t *testing.T, factory Factory) {
 	h := factory(t)
-	requireV2(t, h)
+	requireHarness(t, h)
 	const workers = 16
 	positions := make(chan uint64, workers)
 	errs := make(chan error, workers)
@@ -374,9 +374,9 @@ func testConcurrentCommitPositions(t *testing.T, factory V2Factory) {
 	}
 }
 
-func testPublicationCancellationAndCorruptReceipts(t *testing.T, factory V2Factory) {
+func testPublicationCancellationAndCorruptReceipts(t *testing.T, factory Factory) {
 	h := factory(t)
-	requireV2(t, h)
+	requireHarness(t, h)
 	before := v2Append("append-cancel-before", "session-cancel-before", 0, "command-cancel-before", domain.SessionCreated{WorkspaceRoot: "/before"})
 	ctx, cancel := context.WithCancel(context.Background())
 	h.SetCommitHook(CommitHookBeforePublish, cancel)
@@ -433,7 +433,7 @@ func validBatch(count int) []domain.Event {
 	return events
 }
 
-func testAllIndexRollback(t *testing.T, h V2Harness) {
+func testAllIndexRollback(t *testing.T, h Harness) {
 	t.Helper()
 	digest, err := application.DigestRunTurnRequestV1("session-rollback", "rollback")
 	if err != nil {
@@ -459,7 +459,7 @@ func testAllIndexRollback(t *testing.T, h V2Harness) {
 	}
 }
 
-func assertAppendAbsent(t *testing.T, h V2Harness, request application.AppendRequestV2, wantVersion int) {
+func assertAppendAbsent(t *testing.T, h Harness, request application.AppendRequest, wantVersion int) {
 	t.Helper()
 	page, err := h.Store.ReadStream(context.Background(), application.ReadStreamRequest{SessionID: request.SessionID, Limit: 256})
 	if err != nil || len(page.Records) != wantVersion {
@@ -470,7 +470,7 @@ func assertAppendAbsent(t *testing.T, h V2Harness, request application.AppendReq
 	}
 }
 
-func testByteLimits(t *testing.T, h V2Harness) {
+func testByteLimits(t *testing.T, h Harness) {
 	t.Helper()
 	const maxPayload = 8 * 1024 * 1024
 	exactPayload := payloadEventOfSize(t, maxPayload)
@@ -544,7 +544,7 @@ func payloadEventOfSize(t *testing.T, want int) domain.Event {
 	return event
 }
 
-func requestOfCanonicalSize(t *testing.T, appendID domain.AppendID, sessionID domain.SessionID, want int) application.AppendRequestV2 {
+func requestOfCanonicalSize(t *testing.T, appendID domain.AppendID, sessionID domain.SessionID, want int) application.AppendRequest {
 	t.Helper()
 	events := []domain.Event{domain.SessionCreated{WorkspaceRoot: "/request"}, domain.TurnStarted{TurnID: "turn-request", Input: "request"}, domain.AssistantMessageStarted{TurnID: "turn-request", ItemID: "item-request-1"}, domain.AssistantMessageCompleted{TurnID: "turn-request", ItemID: "item-request-1"}, domain.AssistantMessageStarted{TurnID: "turn-request", ItemID: "item-request-2"}, domain.AssistantMessageCompleted{TurnID: "turn-request", ItemID: "item-request-2"}, domain.TurnCompleted{TurnID: "turn-request"}}
 	request := v2Append(appendID, sessionID, 0, domain.CommandID("command-"+string(appendID)), events...)
@@ -575,7 +575,7 @@ func requestOfCanonicalSize(t *testing.T, appendID domain.AppendID, sessionID do
 
 // canonicalAppendSize mirrors the public EV2-04 framing with a hand-derived
 // byte count; it does not call the digest implementation to derive its want.
-func canonicalAppendSize(t *testing.T, request application.AppendRequestV2) int {
+func canonicalAppendSize(t *testing.T, request application.AppendRequest) int {
 	t.Helper()
 	size := 8 + framedSize(string(request.SessionID)) + 8 + framedSize(string(request.CommandID)) + 1 + 8
 	for _, event := range request.Events {
@@ -591,8 +591,8 @@ func canonicalAppendSize(t *testing.T, request application.AppendRequestV2) int 
 func framedSize(value string) int      { return 4 + len(value) }
 func framedSizeBytes(value []byte) int { return 4 + len(value) }
 
-func v2Append(appendID domain.AppendID, sessionID domain.SessionID, expected uint64, commandID domain.CommandID, events ...domain.Event) application.AppendRequestV2 {
-	request := application.AppendRequestV2{AppendID: appendID, SessionID: sessionID, ExpectedVersion: expected, CommandID: commandID, Authority: application.WriterAuthority{RuntimeID: "runtime-1", FencingToken: 1}, Events: make([]application.ProposedEvent, len(events))}
+func v2Append(appendID domain.AppendID, sessionID domain.SessionID, expected uint64, commandID domain.CommandID, events ...domain.Event) application.AppendRequest {
+	request := application.AppendRequest{AppendID: appendID, SessionID: sessionID, ExpectedVersion: expected, CommandID: commandID, Authority: application.WriterAuthority{RuntimeID: "runtime-1", FencingToken: 1}, Events: make([]application.ProposedEvent, len(events))}
 	for i, event := range events {
 		request.Events[i] = proposed(domain.EventID(fmt.Sprintf("event-%s-%d", appendID, i)), event)
 	}
@@ -604,7 +604,7 @@ func proposed(id domain.EventID, event domain.Event) application.ProposedEvent {
 }
 func ptr(value uint64) *uint64 { return &value }
 
-func readAll(t *testing.T, store application.EventStoreV2, sessionID domain.SessionID) []domain.RecordedEvent {
+func readAll(t *testing.T, store application.EventStore, sessionID domain.SessionID) []domain.RecordedEvent {
 	t.Helper()
 	page, err := store.ReadStream(context.Background(), application.ReadStreamRequest{SessionID: sessionID, Limit: 256})
 	if err != nil {
