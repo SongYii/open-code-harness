@@ -812,10 +812,15 @@ func TestRunTurnModelCompletionRacingCallerCancelCommitsExactlyOneTerminalPair(t
 		for _, request := range requests[2:] {
 			terminalAttempts = append(terminalAttempts, request.Events[0].Event.EventType())
 		}
-		if len(terminalAttempts) == 2 && !reflect.DeepEqual(terminalAttempts, []string{domain.EventAssistantMessageCompleted, domain.EventAssistantMessageInterrupted}) {
-			t.Fatalf("iteration %d: terminal attempts=%v, want only authorized completed-to-interrupted fallback", iteration, terminalAttempts)
+		// A canceled first complete attempt that did not publish is retried with
+		// the same AppendID. That is exact resolution, not a second decision.
+		exactCompletedRetry := len(requests) >= 4 && requests[2].AppendID != "" && requests[2].AppendID == requests[3].AppendID &&
+			reflect.DeepEqual(terminalAttempts, []string{domain.EventAssistantMessageCompleted, domain.EventAssistantMessageCompleted})
+		if len(terminalAttempts) == 2 && !exactCompletedRetry &&
+			!reflect.DeepEqual(terminalAttempts, []string{domain.EventAssistantMessageCompleted, domain.EventAssistantMessageInterrupted}) {
+			t.Fatalf("iteration %d: terminal attempts=%v appends=%q/%q, want interrupt fallback or exact completed retry", iteration, terminalAttempts, requests[2].AppendID, requests[3].AppendID)
 		}
-		if completed && !reflect.DeepEqual(terminalAttempts, []string{domain.EventAssistantMessageCompleted}) {
+		if completed && !reflect.DeepEqual(terminalAttempts, []string{domain.EventAssistantMessageCompleted}) && !exactCompletedRetry {
 			t.Fatalf("iteration %d: completed durable result with terminal attempts=%v", iteration, terminalAttempts)
 		}
 		if interrupted && !reflect.DeepEqual(terminalAttempts, []string{domain.EventAssistantMessageInterrupted}) &&
