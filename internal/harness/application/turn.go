@@ -152,7 +152,7 @@ func (service *Service) runTurnOwned(ctx context.Context, request RunTurnRequest
 		defer cancel()
 		return service.terminalizeExecutionFailure(cleanupCtx, ctx, runningState, runningResult, commandID, emitter, lease, mapRunError(err), err, runResult.Stats)
 	}
-	decided, err = decideTurnTerminal(runningState, request.SessionID, turnID, itemID, runResult.Stats, domain.CompleteAssistantTurn{SessionID: request.SessionID, TurnID: turnID, ItemID: itemID, Text: runResult.Text})
+	decided, err = service.decideTurnTerminal(runningState, request.SessionID, turnID, itemID, runResult.Stats, domain.CompleteAssistantTurn{SessionID: request.SessionID, TurnID: turnID, ItemID: itemID, Text: runResult.Text})
 	if err != nil {
 		return cloneRunTurnResult(runningResult), applicationError(CategoryInternal, "domain_transition_failed", false, err)
 	}
@@ -261,7 +261,7 @@ func (service *Service) resolveAdmissionUnknown(ctx context.Context, request Run
 		defer cleanupCancel()
 		return service.terminalizeExecutionFailure(cleanupCtx, ctx, runningState, runningResult, commandID, emitter, lease, mapRunError(runErr), runErr, runResult.Stats)
 	}
-	decided, err := decideTurnTerminal(runningState, request.SessionID, admission.TurnID, admission.ItemID, runResult.Stats, domain.CompleteAssistantTurn{SessionID: request.SessionID, TurnID: admission.TurnID, ItemID: admission.ItemID, Text: runResult.Text})
+	decided, err := service.decideTurnTerminal(runningState, request.SessionID, admission.TurnID, admission.ItemID, runResult.Stats, domain.CompleteAssistantTurn{SessionID: request.SessionID, TurnID: admission.TurnID, ItemID: admission.ItemID, Text: runResult.Text})
 	if err != nil {
 		return cloneRunTurnResult(runningResult), applicationError(CategoryInternal, "domain_transition_failed", false, err)
 	}
@@ -408,7 +408,7 @@ func isAppendOutcomeUnknown(err error) bool {
 
 func (service *Service) terminalizeExecutionFailure(cleanupCtx context.Context, deliveryCtx context.Context, runningState domain.Session, runningResult RunTurnResult, commandID domain.CommandID, emitter *engine.Emitter, lease *executionLease, primary *Error, executionCause error, stats engine.AttemptStats) (RunTurnResult, error) {
 	terminalCommand, status, terminalSignal, stableCode := terminalCommandForExecution(runningResult, primary)
-	decided, err := decideTurnTerminal(runningState, runningResult.SessionID, runningResult.TurnID, runningResult.ItemID, stats, terminalCommand)
+	decided, err := service.decideTurnTerminal(runningState, runningResult.SessionID, runningResult.TurnID, runningResult.ItemID, stats, terminalCommand)
 	if err != nil {
 		return cloneRunTurnResult(runningResult), applicationError(CategoryInternal, "domain_transition_failed", false, errors.Join(executionCause, err))
 	}
@@ -507,9 +507,9 @@ func displayFailureSentence(code string) string {
 	}
 }
 
-func decideTurnTerminal(state domain.Session, sessionID domain.SessionID, turnID domain.TurnID, itemID domain.ItemID, stats engine.AttemptStats, terminal domain.Command) ([]domain.UncommittedEvent, error) {
+func (service *Service) decideTurnTerminal(state domain.Session, sessionID domain.SessionID, turnID domain.TurnID, itemID domain.ItemID, stats engine.AttemptStats, terminal domain.Command) ([]domain.UncommittedEvent, error) {
 	var events []domain.UncommittedEvent
-	if observedAttemptStats(stats) {
+	if service.config.RequestIdentity != nil && observedAttemptStats(stats) {
 		usage, err := domain.Decide(state, domain.RecordModelUsage{
 			SessionID:          sessionID,
 			ModelUsageRecorded: modelUsageFromStats(turnID, itemID, stats),

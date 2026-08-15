@@ -135,7 +135,10 @@ func TestRunTurnContentFilterPersistsPermanentUsageWithoutFinishReason(t *testin
 		FinishReason: "",
 		LatencyMs:    33,
 	}}
-	service := newTurnService(t, store, testkit.NewSequenceIDs(), model)
+	identity := validTurnRequestIdentity()
+	config := application.DefaultConfig()
+	config.RequestIdentity = &identity
+	service := newTurnServiceWithConfig(t, store, testkit.NewSequenceIDs(), model, config)
 	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
 	if err != nil {
 		t.Fatal(err)
@@ -148,15 +151,16 @@ func TestRunTurnContentFilterPersistsPermanentUsageWithoutFinishReason(t *testin
 	if got, want := turnEventTypes(result.Records), []string{
 		domain.EventTurnStarted,
 		domain.EventAssistantMessageStarted,
+		domain.EventModelRequestRecorded,
 		domain.EventModelUsageRecorded,
 		domain.EventAssistantMessageFailed,
 		domain.EventTurnFailed,
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("result record types = %v, want %v", got, want)
 	}
-	usage, ok := result.Records[2].Event.(domain.ModelUsageRecorded)
+	usage, ok := result.Records[3].Event.(domain.ModelUsageRecorded)
 	if !ok || usage.FinishReason != "" || usage.LatencyMs != 33 || usage.InputTokens != 8 {
-		t.Fatalf("usage = %#v, want latency with empty finish reason", result.Records[2].Event)
+		t.Fatalf("usage = %#v, want latency with empty finish reason", result.Records[3].Event)
 	}
 	failed, ok := itemTerminalRecord(result.Records).Event.(domain.AssistantMessageFailed)
 	if !ok || failed.Code != "provider_permanent" || failed.Message != "provider rejected the request" {

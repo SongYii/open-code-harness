@@ -791,6 +791,35 @@ func TestTurnRunnerCopiesCompletedUsageAndObserverStats(t *testing.T) {
 	}
 }
 
+func TestTurnRunnerClonesSnapshotUsageBeforeClose(t *testing.T) {
+	usage := &TokenUsage{InputTokens: 3, OutputTokens: 5, CachedInputTokens: 1}
+	stream := &observingStream{
+		controlledStream: controlledStream{
+			next: func(context.Context) (StreamEvent, error) {
+				return StreamEvent{}, &Error{Code: CodeModelStream, Cause: &ProviderFailure{Code: "provider_transient"}}
+			},
+			close: func() error {
+				*usage = TokenUsage{}
+				return nil
+			},
+		},
+		stats: AttemptStats{Usage: usage, LatencyMs: 17, ProviderRequestID: "req-clone"},
+	}
+	runner, _ := NewTurnRunner(&controlledModel{stream: func(context.Context, ModelRequest) (ModelStream, error) { return stream, nil }})
+	emitter, _ := NewEmitter(&controlledSink{}, validRunnerCorrelation())
+	got, err := runner.Run(context.Background(), runnerRequest(), emitter)
+	assertRunFailure(t, got, err, CodeModelStream)
+	if got.Stats.Usage == nil || *got.Stats.Usage != (TokenUsage{InputTokens: 3, OutputTokens: 5, CachedInputTokens: 1}) {
+		t.Fatalf("Stats.Usage = %#v, want cloned snapshot after Close zeroed adapter memory", got.Stats.Usage)
+	}
+	if got.Stats.Usage == usage {
+		t.Fatal("Stats.Usage aliases adapter snapshot memory")
+	}
+	if got.Stats.LatencyMs != 17 || got.Stats.ProviderRequestID != "req-clone" {
+		t.Fatalf("Stats = %#v", got.Stats)
+	}
+}
+
 func TestTurnRunnerSnapshotsBeforeCancelOnFailAndCancel(t *testing.T) {
 	stats := AttemptStats{Usage: &TokenUsage{InputTokens: 2}, FinishReason: "stop", ProviderRequestID: "req-fail", LatencyMs: 40}
 	t.Run("fail", func(t *testing.T) {

@@ -79,8 +79,8 @@ func validRequestModelID(modelID string) error {
 }
 
 func validRequestEndpointID(endpointID string) error {
-	// EndpointID is host[:port][/path-prefix]; credentials and query never belong here.
-	if endpointID == "" || !utf8.ValidString(endpointID) || strings.ContainsAny(endpointID, "@?#") {
+	// EndpointID is host[:port][/path-prefix]; credentials, query, padding, and a trailing slash never belong here.
+	if endpointID == "" || !utf8.ValidString(endpointID) || strings.TrimSpace(endpointID) != endpointID || strings.HasSuffix(endpointID, "/") || strings.ContainsAny(endpointID, "@?#") {
 		return errInvalidRequestIdentity
 	}
 	return nil

@@ -192,7 +192,9 @@ func snapshotAttempt(stream ModelStream) AttemptStats {
 	if !ok || isNil(observer) {
 		return AttemptStats{}
 	}
-	return observer.Snapshot()
+	stats := observer.Snapshot()
+	stats.Usage = copyTokenUsage(stats.Usage)
+	return stats
 }
 
 func copyTokenUsage(usage *TokenUsage) *TokenUsage {

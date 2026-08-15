@@ -25,6 +25,8 @@ func TestRequestIdentityValidateRejectsMalformedFields(t *testing.T) {
 		{name: "long model id", mutate: func(id *RequestIdentity) { id.ModelID = strings.Repeat("m", 257) }},
 		{name: "invalid utf8 model id", mutate: func(id *RequestIdentity) { id.ModelID = string([]byte{0xff}) }},
 		{name: "empty endpoint", mutate: func(id *RequestIdentity) { id.EndpointID = "" }},
+		{name: "padded endpoint", mutate: func(id *RequestIdentity) { id.EndpointID = " api.example.com" }},
+		{name: "trailing slash endpoint", mutate: func(id *RequestIdentity) { id.EndpointID = "api.example.com/" }},
 		{name: "endpoint userinfo", mutate: func(id *RequestIdentity) { id.EndpointID = "user:pass@api.example.com" }},
 		{name: "endpoint query", mutate: func(id *RequestIdentity) { id.EndpointID = "api.example.com?key=1" }},
 		{name: "endpoint fragment", mutate: func(id *RequestIdentity) { id.EndpointID = "api.example.com#frag" }},

@@ -206,6 +206,33 @@ func TestRunTurnPrependsObservedUsageBeforeTerminal(t *testing.T) {
 	}
 }
 
+func TestRunTurnObservedStatsWithoutIdentityDoNotPersistUsage(t *testing.T) {
+	store := newTurnMemoryStore(t)
+	inner := &repeatingSuccessModel{text: "done"}
+	model := &observingModel{inner: inner, stats: engine.AttemptStats{
+		Usage:        &engine.TokenUsage{InputTokens: 4, OutputTokens: 6},
+		FinishReason: "stop",
+		LatencyMs:    21,
+	}}
+	service := newTurnService(t, store, testkit.NewSequenceIDs(), model)
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-scripted-stats", Input: "inspect", Sink: &testkit.RecordingSink{}})
+	if err != nil || result.Status != domain.TurnStatusCompleted || result.Text != "done" || !result.TerminalCommitted {
+		t.Fatalf("result = %#v, err = %v", result, err)
+	}
+	if got, want := turnEventTypes(result.Records), []string{
+		domain.EventTurnStarted,
+		domain.EventAssistantMessageStarted,
+		domain.EventAssistantMessageCompleted,
+		domain.EventTurnCompleted,
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("result record types = %v, want %v", got, want)
+	}
+}
+
 func TestRunTurnSequentialTurnsHaveDistinctIdentityAndOrder(t *testing.T) {
 	store := newTurnMemoryStore(t)
 	model := &repeatingSuccessModel{text: "answer"}
