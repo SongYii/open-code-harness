@@ -32,14 +32,19 @@ test-only production branches for the capabilities it does deliver.
 | Implemented | Reading copy | [已实现 Engine 纵切](architecture/engine-vertical-slice.zh-CN.md) | 与已实现 Engine 合同同步的中文语义阅读版 |
 | Implemented | Implemented contract | [EventStore v2](architecture/eventstore-v2.md) | Current four-method Store, identity ownership, digest, pagination, admission, compact state, resolution, and exclusions |
 | Implemented | Reading copy | [已实现 EventStore v2 合同](architecture/eventstore-v2.zh-CN.md) | 与已实现 EventStore v2 合同同步的中文语义阅读版 |
+| Implemented | Implemented contract | [Provider adapter](architecture/provider-adapter.md) | Current `engine.Model` HTTP adapter, Chat Completions SSE, capability profiles, classified `ProviderFailure`, reconstructable request/usage facts, and exclusions |
+| Implemented | Reading copy | [已实现 Provider Adapter 合同](architecture/provider-adapter.zh-CN.md) | 与已实现 Provider Adapter 合同同步的中文语义阅读版 |
 | Complete | Evidence ledger | [EventStore v2 completion evidence / EventStore v2 完成证据](architecture/eventstore-v2-evidence.md) | Auditable Task 1–9 commits, verification commands, benchmark sample, and deferred blockers |
 | Complete | Evidence ledger | [Engine vertical slice completion evidence / Engine 纵切完成证据](architecture/engine-vertical-slice-evidence.md) | Auditable Task 1–10 commits, architecture gates, verification commands, and deferred GA blockers |
+| Complete | Evidence ledger | [Provider adapter completion evidence / Provider Adapter 完成证据](architecture/provider-adapter-evidence.md) | Auditable PR 1–5 commits, keyless verification commands, and deferred GA blockers |
 | Accepted | Normative design | [Industrial Engine vertical slice](superpowers/specs/2026-08-12-engine-vertical-slice-design.md) | Application/Engine boundary, formal ports, deterministic adapters, atomic event flow, failure semantics, and acceptance criteria |
 | Accepted | Reading copy | [工业级 Engine 最小纵切](superpowers/specs/2026-08-12-engine-vertical-slice-design.zh-CN.md) | Chinese synchronized reading copy of the Engine design |
 | Accepted | Normative design | [Production Runtime persistence, recovery, and client boundary](superpowers/specs/2026-08-13-runtime-persistence-recovery-client-design.md) | SQLite canonical events, exact append retry, audit replica, fencing, crash recovery, ACP boundary, resource limits, and staged delivery |
 | Accepted | Reading copy | [生产 Runtime 持久化、恢复与客户端边界](superpowers/specs/2026-08-13-runtime-persistence-recovery-client-design.zh-CN.md) | 与生产 Runtime 持久化、恢复和客户端边界规范完整同步的中文阅读版 |
 | Accepted | Normative design | [EventStore v2 contract migration](superpowers/specs/2026-08-13-eventstore-v2-contract-design.md) | Focused Slice 1 identities, exact append, pagination, admission, compact aggregate, unknown-outcome, and verification contract |
 | Accepted | Reading copy | [EventStore v2 Contract Migration 中文阅读版](superpowers/specs/2026-08-13-eventstore-v2-contract-design.zh-CN.md) | 与 EventStore v2 聚焦规范完整同步的中文阅读版 |
+| Accepted | Normative design | [Provider contract and first real adapter](superpowers/specs/2026-08-15-provider-adapter-design.md) | `engine.Model` HTTP adapter, Chat Completions SSE, capability profiles, classified failures, reconstructable request/usage facts |
+| Accepted | Reading copy | [Provider 合同与第一个真实 Adapter](superpowers/specs/2026-08-15-provider-adapter-design.zh-CN.md) | 与 Provider 设计同步的中文阅读版：行业对照、是否自研、关键决策与五步 PR Plan |
 | Implemented plan | Plan | [EventStore v2 contract migration implementation plan](superpowers/plans/2026-08-13-eventstore-v2-contract.md) | Frozen nine-task sequence; completion claims are backed by the evidence ledger, not checkbox state |
 | Implemented plan | Reading copy | [EventStore v2 Contract Migration 实施计划中文阅读版](superpowers/plans/2026-08-13-eventstore-v2-contract.zh-CN.md) | 与 EventStore v2 实施计划完整同步的中文执行阅读版 |
 | Implemented plan | Plan | [Engine vertical slice implementation plan](superpowers/plans/2026-08-12-engine-vertical-slice.md) | Frozen ten-task implementation sequence; completion claims are backed by the evidence ledger, not checkbox state |
@@ -65,7 +70,7 @@ test-only production branches for the capabilities it does deliver.
 1. **Harness domain, events, Session/Turn state machine** — implemented.
 2. **Industrial Go Engine executable vertical slice** — implemented and verified.
 3. **EventStore v2 contract migration** — implemented and verified; required before a SQLite adapter, not a replacement for Provider/Tool.
-4. **Provider contract and first real provider** — not designed yet; next product design after EventStore v2 Slice 1.
+4. **Provider contract and first real provider** — designed and implemented; not GA. First adapter is a thin OpenAI-compatible Chat Completions SSE client behind `engine.Model`, not a vendor SDK or plugin kernel.
 5. **Tool Runtime, Policy, and minimal workspace tools** — not designed yet; next product design after EventStore v2 Slice 1.
 6. **ACP v1 adapter and conformance** — cross-cutting boundary accepted; focused implementation specification not written yet.
 7. **TypeScript TUI client** — cross-cutting boundary accepted; focused implementation specification not written yet.
