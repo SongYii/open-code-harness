@@ -252,7 +252,7 @@ case-insensitively after `mime.ParseMediaType`
 | `delta.content` non-empty string | `text_delta` | `TestStreamSuccessEmitsDeltasCompletedAndUsage` |
 | empty / role-only `content` | ignore | success fixture first chunk |
 | `reasoning_content` / `reasoning` / `reasoning_details` | ignore; never enter assistant text | `TestStreamIgnoresReasoningContent`, `TestRunTurnHTTPReasoningIsolation` |
-| last object `usage` | `completed.Usage` / `AttemptStats.Usage` | `TestStreamSuccessEmitsDeltasCompletedAndUsage` |
+| `usage` object | `completed.Usage` / `AttemptStats.Usage` | `TestStreamSuccessEmitsDeltasCompletedAndUsage` |
 | `input_tokens` / `output_tokens` / `prompt_cache_hit_tokens` | alternate field map | `TestStreamUsageAlternateFields` |
 | fractional usage number | `CodeInvalidStream` + `invalid_stream` | `TestStreamRejectsFractionalUsage` |
 | `finish_reason=stop` | `completed`, `FinishReason=stop` | `TestStreamSuccessEmitsDeltasCompletedAndUsage` |
@@ -265,17 +265,19 @@ case-insensitively after `mime.ParseMediaType`
 | connection drop during `Next` | `CodeModelStream` + `provider_transient`; no `io.EOF` | `TestStreamConnectionDropHasNoEOF` |
 | `ctx` canceled | `CodeCanceled`; HTTP request aborted | `TestStreamCancelUnblocksNext`, `TestStreamCancelKeepsLatencyAndUsage` |
 
-Usage field order, last object wins: `InputTokens` from `prompt_tokens` then
-`input_tokens`; `OutputTokens` from `completion_tokens` then `output_tokens`;
-`CachedInputTokens` from `prompt_tokens_details.cached_tokens` then
-`prompt_cache_hit_tokens`. Vendor request id is the first non-empty of
-`x-request-id`, `x-ds-request-id`, `openai-request-id` (trimmed, max 128
-bytes). Latency is the adapter HTTP span; `Snapshot` keeps it after cancel
-(`TestStreamCancelKeepsLatencyAndUsage`).
+Usage field preference, pinned by the success and alternate-field fixtures:
+`InputTokens` from `prompt_tokens` then `input_tokens`; `OutputTokens` from
+`completion_tokens` then `output_tokens`; `CachedInputTokens` from
+`prompt_tokens_details.cached_tokens` then `prompt_cache_hit_tokens`. A
+present `x-request-id` or `x-ds-request-id` is copied onto
+`AttemptStats.ProviderRequestID` (`TestStreamSuccessEmitsDeltasCompletedAndUsage`,
+`TestClassifyHTTPErrors`). Latency is the adapter HTTP span; `Snapshot` keeps
+it after cancel (`TestStreamCancelKeepsLatencyAndUsage`).
 
-`AttemptStats.FinishReason` after a successful `completed` is `stop`,
-`length`, or `unknown`. On every fail or cancel path it is `""`.
-`content_filter` and `tool_calls` never enter `FinishReason`.
+Successful `completed` fixtures pin `AttemptStats.FinishReason=stop`. Fail and
+cancel paths pin `""`. `content_filter` and `tool_calls` leave `FinishReason`
+empty. `length` and `unknown` are codec-legal on `model.usage.recorded`; they
+are not pinned by an adapter stream case.
 
 ## Errors and classification
 
@@ -303,37 +305,36 @@ the code is allowed, persists `failure.Code` plus a fixed display sentence
 without a `ProviderFailure` still persist the Engine code. Application
 category stays `CategoryModel` for model Engine codes; it does not retry.
 
-Closed pre-stream status class (`TestClassifyHTTPErrors`):
+Pre-stream statuses the cited tests hit (`TestClassifyHTTPErrors`,
+`TestCheckRedirectThreeXXIsPermanent`, `TestHTMLErrorBodyUsesStatusFallback`):
 
 | HTTP status | Durable code | Class | Retryable |
 | ---: | --- | --- | --- |
-| 300–399 | `provider_permanent` | permanent | false |
+| 302 | `provider_permanent` | permanent | false |
 | 401, 403 | `provider_auth` | auth | false |
 | 429 (default) | `provider_rate_limit` | rate_limit | true |
 | 429 + quota token/code | `provider_quota` | quota | false |
 | 400/413 + overflow token/code | `context_overflow` | permanent | false |
-| 400, 404, 413, 422 (else) | `provider_permanent` | permanent | false |
-| 408, 409, 500, 502, 503, 504, 529 | `provider_transient` | transient | true |
+| 400 without overflow | `provider_permanent` | permanent | false |
+| 500, 502 | `provider_transient` | transient | true |
 
-Quota override inspects at most 4 KiB and matches the closed substring/code
-lists. `Retry-After` is integer seconds or RFC1123, capped at 1 hour
+Quota override matches the closed substring/code lists in those 429 cases.
+`Retry-After` is integer seconds or RFC1123, capped at 1 hour
 (`TestRetryAfterRFC1123AndCap`). Dial/EOF with no status is
 `provider_transient` and does not unwrap to `io.EOF`
-(`TestDialFailureIsTransientStartup`). HTML bodies become `http_<status>`
+(`TestDialFailureIsTransientStartup`). An HTML 502 body becomes `http_502`
 (`TestHTMLErrorBodyUsesStatusFallback`).
 
-Display sentences persisted on failed Item/Turn:
+Display sentences persisted on failed Item/Turn by the named Application
+tests:
 
-| Durable code | Message |
-| --- | --- |
-| `provider_auth` | `provider rejected credentials` |
-| `provider_quota` | `provider quota exhausted` |
-| `provider_rate_limit` | `provider rate limited` |
-| `provider_transient` | `provider temporarily unavailable` |
-| `provider_permanent` | `provider rejected the request` |
-| `capability_mismatch` | `provider returned an unsupported capability` |
-| `context_overflow` | `provider context window exceeded` |
-| `empty_response` | `provider returned an empty completion` |
+| Durable code | Message | Test |
+| --- | --- | --- |
+| `provider_auth` | `provider rejected credentials` | `TestRunTurnProviderAuthPersistsClassifiedFailureCode`, `TestRunTurnHTTP401PersistsProviderAuth` |
+| `provider_quota` | `provider quota exhausted` | `TestRunTurnHTTP429QuotaVersusRateLimit` |
+| `provider_rate_limit` | `provider rate limited` | `TestRunTurnHTTP429QuotaVersusRateLimit` |
+| `provider_permanent` | `provider rejected the request` | `TestRunTurnContentFilterPersistsPermanentUsageWithoutFinishReason` |
+| `empty_response` | `provider returned an empty completion` | `TestRunTurnHTTPEmptyCompletion` |
 
 `Retryable` is advisory. `Service.RunTurn` does not loop. A 429 quota or
 rate-limit turn performs one `Stream` (`TestRunTurnHTTP429QuotaVersusRateLimit`).

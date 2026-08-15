@@ -246,7 +246,7 @@ EndpointID、profile 和两个 wire hint（`TestIdentityCopiesProfileAndHints`�
 | 非空字符串 `delta.content` | `text_delta` | `TestStreamSuccessEmitsDeltasCompletedAndUsage` |
 | 空 / 仅 role 的 `content` | 忽略 | success fixture 第一块 |
 | `reasoning_content` / `reasoning` / `reasoning_details` | 忽略；永不进入助手文本 | `TestStreamIgnoresReasoningContent`、`TestRunTurnHTTPReasoningIsolation` |
-| 最后一个 object `usage` | `completed.Usage` / `AttemptStats.Usage` | `TestStreamSuccessEmitsDeltasCompletedAndUsage` |
+| `usage` object | `completed.Usage` / `AttemptStats.Usage` | `TestStreamSuccessEmitsDeltasCompletedAndUsage` |
 | `input_tokens` / `output_tokens` / `prompt_cache_hit_tokens` | 备选字段映射 | `TestStreamUsageAlternateFields` |
 | 小数 usage | `CodeInvalidStream` + `invalid_stream` | `TestStreamRejectsFractionalUsage` |
 | `finish_reason=stop` | `completed`，`FinishReason=stop` | `TestStreamSuccessEmitsDeltasCompletedAndUsage` |
@@ -259,17 +259,19 @@ EndpointID、profile 和两个 wire hint（`TestIdentityCopiesProfileAndHints`�
 | `Next` 期间连接断开 | `CodeModelStream` + `provider_transient`；无 `io.EOF` | `TestStreamConnectionDropHasNoEOF` |
 | `ctx` 取消 | `CodeCanceled`；中止 HTTP 请求 | `TestStreamCancelUnblocksNext`、`TestStreamCancelKeepsLatencyAndUsage` |
 
-Usage 字段顺序，以后到的 object 为准：`InputTokens` 先 `prompt_tokens` 再
-`input_tokens`；`OutputTokens` 先 `completion_tokens` 再 `output_tokens`；
-`CachedInputTokens` 先 `prompt_tokens_details.cached_tokens` 再
-`prompt_cache_hit_tokens`。厂商 request id 取 `x-request-id`、
-`x-ds-request-id`、`openai-request-id` 中第一个非空值（trim，最长 128
-字节）。Latency 是适配器 HTTP 跨度；取消后 `Snapshot` 仍保留
+Usage 字段优先级由成功与备选字段 fixture 钉住：`InputTokens` 先
+`prompt_tokens` 再 `input_tokens`；`OutputTokens` 先 `completion_tokens` 再
+`output_tokens`；`CachedInputTokens` 先 `prompt_tokens_details.cached_tokens`
+再 `prompt_cache_hit_tokens`。出现的 `x-request-id` 或 `x-ds-request-id` 会
+拷到 `AttemptStats.ProviderRequestID`
+（`TestStreamSuccessEmitsDeltasCompletedAndUsage`、`TestClassifyHTTPErrors`）。
+Latency 是适配器 HTTP 跨度；取消后 `Snapshot` 仍保留
 （`TestStreamCancelKeepsLatencyAndUsage`）。
 
-成功 `completed` 之后 `AttemptStats.FinishReason` 只能是 `stop`、`length` 或
-`unknown`。失败或取消路径一律为 `""`。`content_filter` 和 `tool_calls` 永不
-进入 `FinishReason`。
+成功 `completed` fixture 钉住 `AttemptStats.FinishReason=stop`。失败和取消
+路径钉住 `""`。`content_filter` 和 `tool_calls` 让 `FinishReason` 保持空。
+`length` 与 `unknown` 是 `model.usage.recorded` 的 codec 合法值；适配器流
+用例没有钉住它们。
 
 ## 错误与分类
 
@@ -297,36 +299,34 @@ code 在允许集合内，则持久化 `failure.Code` 和固定展示句
 `ProviderFailure` 的 Scripted 错误仍持久化 Engine code。模型 Engine code 的
 Application category 仍是 `CategoryModel`；不重试。
 
-封闭的预流状态分类（`TestClassifyHTTPErrors`）：
+引用测试实际覆盖的预流状态（`TestClassifyHTTPErrors`、
+`TestCheckRedirectThreeXXIsPermanent`、`TestHTMLErrorBodyUsesStatusFallback`）：
 
 | HTTP 状态 | Durable code | Class | Retryable |
 | ---: | --- | --- | --- |
-| 300–399 | `provider_permanent` | permanent | false |
+| 302 | `provider_permanent` | permanent | false |
 | 401、403 | `provider_auth` | auth | false |
 | 429（默认） | `provider_rate_limit` | rate_limit | true |
 | 429 + 配额 token/code | `provider_quota` | quota | false |
 | 400/413 + overflow token/code | `context_overflow` | permanent | false |
-| 400、404、413、422（其余） | `provider_permanent` | permanent | false |
-| 408、409、500、502、503、504、529 | `provider_transient` | transient | true |
+| 400 且无 overflow | `provider_permanent` | permanent | false |
+| 500、502 | `provider_transient` | transient | true |
 
-配额覆盖最多检查 4 KiB，并匹配封闭的子串/code 列表。`Retry-After` 为整数秒
-或 RFC1123，上限 1 小时（`TestRetryAfterRFC1123AndCap`）。无状态的
-dial/EOF 是 `provider_transient`，且不 unwrap 成 `io.EOF`
-（`TestDialFailureIsTransientStartup`）。HTML 正文变成 `http_<status>`
+配额覆盖匹配这些 429 用例中的封闭子串/code 列表。`Retry-After` 为整数秒或
+RFC1123，上限 1 小时（`TestRetryAfterRFC1123AndCap`）。无状态的 dial/EOF 是
+`provider_transient`，且不 unwrap 成 `io.EOF`
+（`TestDialFailureIsTransientStartup`）。HTML 502 正文变成 `http_502`
 （`TestHTMLErrorBodyUsesStatusFallback`）。
 
-失败 Item/Turn 上持久化的展示句：
+命名 Application 测试在失败 Item/Turn 上持久化的展示句：
 
-| Durable code | 文案 |
-| --- | --- |
-| `provider_auth` | `provider rejected credentials` |
-| `provider_quota` | `provider quota exhausted` |
-| `provider_rate_limit` | `provider rate limited` |
-| `provider_transient` | `provider temporarily unavailable` |
-| `provider_permanent` | `provider rejected the request` |
-| `capability_mismatch` | `provider returned an unsupported capability` |
-| `context_overflow` | `provider context window exceeded` |
-| `empty_response` | `provider returned an empty completion` |
+| Durable code | 文案 | 测试 |
+| --- | --- | --- |
+| `provider_auth` | `provider rejected credentials` | `TestRunTurnProviderAuthPersistsClassifiedFailureCode`、`TestRunTurnHTTP401PersistsProviderAuth` |
+| `provider_quota` | `provider quota exhausted` | `TestRunTurnHTTP429QuotaVersusRateLimit` |
+| `provider_rate_limit` | `provider rate limited` | `TestRunTurnHTTP429QuotaVersusRateLimit` |
+| `provider_permanent` | `provider rejected the request` | `TestRunTurnContentFilterPersistsPermanentUsageWithoutFinishReason` |
+| `empty_response` | `provider returned an empty completion` | `TestRunTurnHTTPEmptyCompletion` |
 
 `Retryable` 只是建议。`Service.RunTurn` 不循环。429 配额或限流 Turn 只做一次
 `Stream`（`TestRunTurnHTTP429QuotaVersusRateLimit`）。

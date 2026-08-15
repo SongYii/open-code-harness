@@ -2,7 +2,7 @@
 
 - **Author:** TBD
 - **Date:** 2026-08-15
-- **Status:** Draft
+- **Status:** Accepted
 - **Stability:** `experimental` / `internal`
 - **Maturity:** pre-v0; not a general availability release
 - **Repository:** `open-code-harness` (`github.com/SongYii/open-code-harness`)
