@@ -234,7 +234,7 @@ func TestCloseSessionMapsEveryGeneratedCommandIDFailure(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			store, err := memory.NewEventStoreV2(v2Authority)
+			store, err := memory.NewEventStore(v2Authority)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -305,7 +305,7 @@ func TestNewServiceValidatesDependenciesAndConfiguration(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		store  application.EventStoreV2
+		store  application.EventStore
 		ids    application.IDGenerator
 		runner *engine.TurnRunner
 		config application.Config
@@ -335,16 +335,16 @@ func TestNewServiceValidatesDependenciesAndConfiguration(t *testing.T) {
 	}
 }
 
-func newSessionServiceForTest(t *testing.T, ids application.IDGenerator) (*application.Service, *memory.EventStoreV2) {
+func newSessionServiceForTest(t *testing.T, ids application.IDGenerator) (*application.Service, *memory.EventStore) {
 	t.Helper()
-	store, err := memory.NewEventStoreV2(v2Authority)
+	store, err := memory.NewEventStore(v2Authority)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return newSessionServiceWithStore(t, store, ids), store
 }
 
-func newSessionServiceWithStore(t *testing.T, store application.EventStoreV2, ids application.IDGenerator) *application.Service {
+func newSessionServiceWithStore(t *testing.T, store application.EventStore, ids application.IDGenerator) *application.Service {
 	t.Helper()
 	service, err := application.NewService(store, ids, testkit.FixedClock{Time: validSessionTime()}, sessionRunnerForTest(t), v2Authority, application.DefaultConfig())
 	if err != nil {
@@ -391,7 +391,7 @@ func validSessionTime() time.Time {
 
 var v2Authority = application.WriterAuthority{RuntimeID: "runtime-test", FencingToken: 1}
 
-func seedV2Event(t *testing.T, store application.EventStoreV2, sessionID domain.SessionID, version uint64, commandID domain.CommandID, event domain.Event) {
+func seedV2Event(t *testing.T, store application.EventStore, sessionID domain.SessionID, version uint64, commandID domain.CommandID, event domain.Event) {
 	t.Helper()
 	ids := testkit.NewSequenceIDs()
 	for offset := uint64(0); offset <= version; offset++ {
@@ -456,7 +456,7 @@ func (store *sessionStore) ReadStream(ctx context.Context, request application.R
 	return page, nil
 }
 
-func (store *sessionStore) Append(_ context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
+func (store *sessionStore) Append(_ context.Context, request application.AppendRequest) (application.CommitReceipt, error) {
 	store.appendCalls++
 	if store.appendErr != nil {
 		return application.CommitReceipt{}, store.appendErr

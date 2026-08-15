@@ -72,7 +72,7 @@ type Scenario struct {
 // RuntimeDelivered includes only calls accepted by the sink.
 type Harness struct {
 	Service          *application.Service
-	Store            application.EventStoreV2
+	Store            application.EventStore
 	Sink             engine.RuntimeSink
 	RuntimeAttempts  func() []engine.RuntimeEvent
 	RuntimeDelivered func() []engine.RuntimeEvent
@@ -281,19 +281,10 @@ func runScenario(t *testing.T, factory Factory, scenario Scenario) {
 	if err != nil {
 		t.Fatalf("Replay() error = %v", err)
 	}
-	turn, exists := state.Turns[got.result.TurnID]
-	if !exists || turn.Status != scenario.WantStatus || turn.ActiveItemID != "" || state.ActiveTurnID != "" {
-		t.Fatalf("replayed turn = %#v, session = %#v", turn, state)
+	if state.Version != uint64(len(records)) || state.ActiveTurn != nil {
+		t.Fatalf("replayed compact session = %#v, want version %d and no active turn", state, len(records))
 	}
-	item, exists := turn.Items[got.result.ItemID]
-	if !exists || item.Status != itemStatusForTurn(scenario.WantStatus) {
-		t.Fatalf("replayed item = %#v", item)
-	}
-	payload, ok := item.Payload.(domain.AssistantMessagePayload)
-	if !ok || payload.Text != scenario.WantText {
-		t.Fatalf("replayed assistant payload = %#v, want text %q", item.Payload, scenario.WantText)
-	}
-	assertDurableTerminal(t, turn, item, scenario.WantDurableTerminal)
+	assertDurableTerminalFromRecords(t, records, got.result, scenario.WantStatus, scenario.WantText, scenario.WantDurableTerminal)
 
 	attempts := harness.RuntimeAttempts()
 	delivered := harness.RuntimeDelivered()
@@ -319,25 +310,26 @@ func assertApplicationError(t *testing.T, got error, want *ErrorExpectation) {
 	}
 }
 
-func assertDurableTerminal(t *testing.T, turn domain.Turn, item domain.Item, want *DurableTerminalExpectation) {
+func assertDurableTerminalFromRecords(t *testing.T, records []domain.RecordedEvent, result application.RunTurnResult, wantStatus domain.TurnStatus, wantText string, want *DurableTerminalExpectation) {
 	t.Helper()
-	if want == nil {
-		if item.Terminal != nil || turn.FailureCode != "" || turn.FailureText != "" || turn.InterruptWhy != "" {
-			t.Fatalf("durable terminal = item:%#v turn:%#v, want no terminal detail", item.Terminal, turn)
-		}
-		return
+	if len(records) < 2 {
+		t.Fatalf("records = %#v, want terminal pair", records)
 	}
-	if item.Terminal == nil || item.Terminal.Code != want.Code || item.Terminal.Message != want.Message {
-		t.Fatalf("item terminal = %#v, want code=%q message=%q", item.Terminal, want.Code, want.Message)
-	}
-	if turn.Status == domain.TurnStatusFailed {
-		if turn.FailureCode != want.Code || turn.FailureText != want.Message || turn.InterruptWhy != "" {
-			t.Fatalf("failed turn terminal = %#v, want code=%q message=%q", turn, want.Code, want.Message)
+	switch event := records[len(records)-2].Event.(type) {
+	case domain.AssistantMessageCompleted:
+		if wantStatus != domain.TurnStatusCompleted || event.Text != wantText || event.TurnID != result.TurnID || event.ItemID != result.ItemID || want != nil {
+			t.Fatalf("completed terminal = %#v status=%s text=%q want=%#v", event, wantStatus, wantText, want)
 		}
-	} else if turn.Status == domain.TurnStatusInterrupted {
-		if turn.InterruptWhy != want.Code || turn.FailureCode != "" || turn.FailureText != "" {
-			t.Fatalf("interrupted turn terminal = %#v, want reason=%q", turn, want.Code)
+	case domain.AssistantMessageFailed:
+		if wantStatus != domain.TurnStatusFailed || want == nil || event.Code != want.Code || event.Message != want.Message {
+			t.Fatalf("failed terminal = %#v want=%#v", event, want)
 		}
+	case domain.AssistantMessageInterrupted:
+		if wantStatus != domain.TurnStatusInterrupted || want == nil || event.Code != want.Code {
+			t.Fatalf("interrupted terminal = %#v want=%#v", event, want)
+		}
+	default:
+		t.Fatalf("missing assistant terminal event: %#v", records[len(records)-2])
 	}
 }
 

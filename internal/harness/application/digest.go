@@ -20,7 +20,7 @@ const (
 
 // DigestAppendRequest returns the version-1 canonical digest for an immutable
 // append request. Receipt and authority facts are validated but not encoded.
-func DigestAppendRequest(request AppendRequestV2) (Digest, error) {
+func DigestAppendRequest(request AppendRequest) (Digest, error) {
 	events, err := validateAppendRequestForDigest(request)
 	if err != nil {
 		return Digest{}, err
@@ -98,7 +98,7 @@ type canonicalProposedEvent struct {
 	payload       []byte
 }
 
-func validateAppendRequestForDigest(request AppendRequestV2) ([]canonicalProposedEvent, error) {
+func validateAppendRequestForDigest(request AppendRequest) ([]canonicalProposedEvent, error) {
 	if _, err := domain.ParseAppendID(string(request.AppendID)); err != nil {
 		return nil, fmt.Errorf("invalid append ID: %w", err)
 	}

@@ -61,7 +61,7 @@ func TestExecutionRegistryRejectsDifferentAdmissionWhileUnknown(t *testing.T) {
 	if err != nil || !first {
 		t.Fatal(err)
 	}
-	if err := owner.retainIntent(AppendIntent{Request: AppendRequestV2{AppendID: "append-1", SessionID: "session-1", CommandID: "command-1"}}); err != nil {
+	if err := owner.retainIntent(AppendIntent{Request: AppendRequest{AppendID: "append-1", SessionID: "session-1", CommandID: "command-1"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := owner.retainUnknown(executionPhaseAdmissionUnknown); err != nil {
@@ -110,7 +110,7 @@ func TestExecutionRegistryRetainsUnknownIntentAfterOwnerDetach(t *testing.T) {
 	if err != nil || !first {
 		t.Fatal(err)
 	}
-	intent := AppendIntent{Request: AppendRequestV2{AppendID: "append-1", SessionID: "session-1", CommandID: "command-1", Events: []ProposedEvent{{ID: "event-1", Event: domain.TurnStarted{TurnID: "turn-1", Input: "input"}}}}}
+	intent := AppendIntent{Request: AppendRequest{AppendID: "append-1", SessionID: "session-1", CommandID: "command-1", Events: []ProposedEvent{{ID: "event-1", Event: domain.TurnStarted{TurnID: "turn-1", Input: "input"}}}}}
 	if err := owner.retainIntent(intent); err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +177,7 @@ func TestExecutionRegistryAllowsRetainedTerminalUnknownOnlyFromTerminalAppend(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := owner.retainIntent(AppendIntent{Request: AppendRequestV2{AppendID: "append-1", SessionID: "session-1", CommandID: "command-1"}}); err != nil {
+	if err := owner.retainIntent(AppendIntent{Request: AppendRequest{AppendID: "append-1", SessionID: "session-1", CommandID: "command-1"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := owner.retainUnknown(executionPhaseTerminalUnknown); err == nil {

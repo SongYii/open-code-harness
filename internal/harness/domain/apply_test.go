@@ -20,7 +20,7 @@ func TestApplySessionCreated(t *testing.T) {
 		Event:         SessionCreated{WorkspaceRoot: "/workspace"},
 	}
 
-	got, err := Apply(Session{}, record)
+	got, err := HistoricalApply(HistoricalSession{}, record)
 	if err != nil {
 		t.Fatalf("Apply() error = %v", err)
 	}
@@ -35,7 +35,7 @@ func TestApplySessionCreated(t *testing.T) {
 func TestApplyRejectsNonInitialSequence(t *testing.T) {
 	t.Parallel()
 
-	_, err := Apply(Session{}, RecordedEvent{
+	_, err := HistoricalApply(HistoricalSession{}, RecordedEvent{
 		SchemaVersion: 1,
 		ID:            EventID("event-2"),
 		CommandID:     CommandID("command-2"),
@@ -52,7 +52,7 @@ func TestApplyRejectsNonInitialSequence(t *testing.T) {
 func TestApplySessionCreatedRejectsNonPristineState(t *testing.T) {
 	t.Parallel()
 
-	_, err := Apply(Session{Version: 1}, RecordedEvent{
+	_, err := HistoricalApply(HistoricalSession{Version: 1}, RecordedEvent{
 		SchemaVersion: 1,
 		ID:            EventID("event-3"),
 		CommandID:     CommandID("command-3"),
@@ -71,7 +71,7 @@ func TestApplyRejectsRecordedEventsOutsideCodecContract(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		state  Session
+		state  HistoricalSession
 		record RecordedEvent
 		code   ErrorCode
 	}{
@@ -134,7 +134,7 @@ func TestApplyRejectsRecordedEventsOutsideCodecContract(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := Apply(test.state, test.record)
+			got, err := HistoricalApply(test.state, test.record)
 			if !IsCode(err, test.code) {
 				t.Fatalf("Apply() state = %#v, error = %v, want code %q", got, err, test.code)
 			}
@@ -145,12 +145,12 @@ func TestApplyRejectsRecordedEventsOutsideCodecContract(t *testing.T) {
 func TestApplyRejectsSessionVersionOverflow(t *testing.T) {
 	t.Parallel()
 
-	state := Session{
+	state := HistoricalSession{
 		ID:            "session-1",
 		Status:        SessionStatusActive,
 		Version:       math.MaxUint64,
 		WorkspaceRoot: "/workspace",
-		Turns:         map[TurnID]Turn{},
+		Turns:         map[TurnID]HistoricalTurn{},
 	}
 	before := state.Clone()
 	record := RecordedEvent{
@@ -158,7 +158,7 @@ func TestApplyRejectsSessionVersionOverflow(t *testing.T) {
 		Sequence: 0, OccurredAt: time.Date(2026, 8, 11, 1, 2, 3, 0, time.UTC), Event: SessionClosed{},
 	}
 
-	got, err := Apply(state, record)
+	got, err := HistoricalApply(state, record)
 	if !IsCode(err, CodeSequenceMismatch) {
 		t.Fatalf("Apply() state = %#v, error = %v, want code %q", got, err, CodeSequenceMismatch)
 	}
@@ -183,9 +183,9 @@ func TestApplyRejectsInvalidUTF8MetadataIDs(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			record := recordedForTest(Session{}, SessionCreated{WorkspaceRoot: "/workspace"})
+			record := recordedForTest(HistoricalSession{}, SessionCreated{WorkspaceRoot: "/workspace"})
 			test.mutate(&record)
-			state, err := Apply(Session{}, record)
+			state, err := HistoricalApply(HistoricalSession{}, record)
 			if !IsCode(err, test.code) {
 				t.Fatalf("Apply() state = %#v, error = %v, want code %q", state, err, test.code)
 			}
@@ -199,7 +199,7 @@ func TestApplyRejectsInvalidUTF8EventPayloads(t *testing.T) {
 	invalid := "value-\xff"
 	tests := []struct {
 		name  string
-		state Session
+		state HistoricalSession
 		event Event
 	}{
 		{name: "workspace root", event: SessionCreated{WorkspaceRoot: invalid}},
@@ -212,7 +212,7 @@ func TestApplyRejectsInvalidUTF8EventPayloads(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			record := recordedForTest(test.state, test.event)
-			state, err := Apply(test.state, record)
+			state, err := HistoricalApply(test.state, record)
 			if !IsCode(err, CodeInvalidEvent) {
 				t.Fatalf("Apply() state = %#v, error = %v, want code %q", state, err, CodeInvalidEvent)
 			}
@@ -228,7 +228,7 @@ func TestApplyTurnStarted(t *testing.T) {
 		TurnID: TurnID("turn-1"), Input: "inspect repository",
 	})
 
-	got, err := Apply(state, record)
+	got, err := HistoricalApply(state, record)
 	if err != nil {
 		t.Fatalf("Apply() error = %v", err)
 	}
@@ -238,10 +238,10 @@ func TestApplyTurnStarted(t *testing.T) {
 	if !reflect.DeepEqual(got.TurnOrder, []TurnID{TurnID("turn-1")}) {
 		t.Fatalf("Apply() turn order = %#v, want %#v", got.TurnOrder, []TurnID{TurnID("turn-1")})
 	}
-	wantTurn := Turn{
+	wantTurn := HistoricalTurn{
 		ID: TurnID("turn-1"), Status: TurnStatusRunning,
 		Input: "inspect repository", StartedAt: record.OccurredAt,
-		ItemOrder: []ItemID{}, Items: map[ItemID]Item{},
+		ItemOrder: []ItemID{}, Items: map[ItemID]HistoricalItem{},
 	}
 	if !reflect.DeepEqual(got.Turns[TurnID("turn-1")], wantTurn) {
 		t.Fatalf("Apply() turn = %#v, want %#v", got.Turns[TurnID("turn-1")], wantTurn)
@@ -252,7 +252,7 @@ func TestApplyTurnStartedDoesNotMutateInputState(t *testing.T) {
 	state := activeSessionForTest(t)
 	before := state.Clone()
 
-	_, err := Apply(state, recordedForTest(state, TurnStarted{
+	_, err := HistoricalApply(state, recordedForTest(state, TurnStarted{
 		TurnID: TurnID("turn-1"), Input: "inspect repository",
 	}))
 	if err != nil {
@@ -266,7 +266,7 @@ func TestApplyTurnStartedDoesNotMutateInputState(t *testing.T) {
 func TestApplyTurnStartedAllocatesTurnsForValidActiveSessionWithNilMap(t *testing.T) {
 	t.Parallel()
 
-	state := Session{
+	state := HistoricalSession{
 		ID:            SessionID("session-1"),
 		Status:        SessionStatusActive,
 		Version:       1,
@@ -276,7 +276,7 @@ func TestApplyTurnStartedAllocatesTurnsForValidActiveSessionWithNilMap(t *testin
 		TurnID: TurnID("turn-1"), Input: "inspect repository",
 	})
 
-	got, err := Apply(state, record)
+	got, err := HistoricalApply(state, record)
 	if err != nil {
 		t.Fatalf("Apply() error = %v", err)
 	}
@@ -294,22 +294,22 @@ func TestApplyTerminalTurnEvents(t *testing.T) {
 	tests := []struct {
 		name  string
 		event Event
-		want  Turn
+		want  HistoricalTurn
 	}{
 		{
 			name:  "complete",
 			event: TurnCompleted{TurnID: TurnID("turn-1")},
-			want:  Turn{ID: TurnID("turn-1"), Status: TurnStatusCompleted, Input: "inspect repository"},
+			want:  HistoricalTurn{ID: TurnID("turn-1"), Status: TurnStatusCompleted, Input: "inspect repository"},
 		},
 		{
 			name:  "fail",
 			event: TurnFailed{TurnID: TurnID("turn-1"), Code: "provider_rate_limit", Message: "retry budget exhausted"},
-			want:  Turn{ID: TurnID("turn-1"), Status: TurnStatusFailed, Input: "inspect repository", FailureCode: "provider_rate_limit", FailureText: "retry budget exhausted"},
+			want:  HistoricalTurn{ID: TurnID("turn-1"), Status: TurnStatusFailed, Input: "inspect repository", FailureCode: "provider_rate_limit", FailureText: "retry budget exhausted"},
 		},
 		{
 			name:  "interrupt",
 			event: TurnInterrupted{TurnID: TurnID("turn-1"), Reason: "user_cancelled"},
-			want:  Turn{ID: TurnID("turn-1"), Status: TurnStatusInterrupted, Input: "inspect repository", InterruptWhy: "user_cancelled"},
+			want:  HistoricalTurn{ID: TurnID("turn-1"), Status: TurnStatusInterrupted, Input: "inspect repository", InterruptWhy: "user_cancelled"},
 		},
 	}
 
@@ -317,7 +317,7 @@ func TestApplyTerminalTurnEvents(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			state := runningTurnForTest(t)
 			record := recordedForTest(state, tt.event)
-			got, err := Apply(state, record)
+			got, err := HistoricalApply(state, record)
 			if err != nil {
 				t.Fatalf("Apply() error = %v", err)
 			}
@@ -328,7 +328,7 @@ func TestApplyTerminalTurnEvents(t *testing.T) {
 			want.StartedAt = state.Turns[TurnID("turn-1")].StartedAt
 			want.EndedAt = record.OccurredAt
 			want.ItemOrder = []ItemID{}
-			want.Items = map[ItemID]Item{}
+			want.Items = map[ItemID]HistoricalItem{}
 			if !reflect.DeepEqual(got.Turns[TurnID("turn-1")], want) {
 				t.Fatalf("Apply() turn = %#v, want %#v", got.Turns[TurnID("turn-1")], want)
 			}
@@ -341,7 +341,7 @@ func TestApplyTerminalRejectsMismatchedRunningTurn(t *testing.T) {
 
 	state := runningTurnForTest(t)
 	before := state.Clone()
-	_, err := Apply(state, recordedForTest(state, TurnCompleted{TurnID: TurnID("turn-2")}))
+	_, err := HistoricalApply(state, recordedForTest(state, TurnCompleted{TurnID: TurnID("turn-2")}))
 	if !IsCode(err, CodeTurnMismatch) {
 		t.Fatalf("Apply() error = %v, want code %q", err, CodeTurnMismatch)
 	}
@@ -354,7 +354,7 @@ func TestApplyTerminalStatesAreMutuallyExclusive(t *testing.T) {
 	t.Parallel()
 
 	state := runningTurnForTest(t)
-	completed, err := Apply(state, recordedForTest(state, TurnCompleted{TurnID: TurnID("turn-1")}))
+	completed, err := HistoricalApply(state, recordedForTest(state, TurnCompleted{TurnID: TurnID("turn-1")}))
 	if err != nil {
 		t.Fatalf("apply completion: %v", err)
 	}
@@ -364,7 +364,7 @@ func TestApplyTerminalStatesAreMutuallyExclusive(t *testing.T) {
 		TurnFailed{TurnID: TurnID("turn-1"), Code: "provider_rate_limit", Message: "retry budget exhausted"},
 		TurnInterrupted{TurnID: TurnID("turn-1"), Reason: "user_cancelled"},
 	} {
-		_, err := Apply(completed, recordedForTest(completed, event))
+		_, err := HistoricalApply(completed, recordedForTest(completed, event))
 		if !IsCode(err, CodeTurnNotRunning) {
 			t.Fatalf("Apply() error = %v, want code %q", err, CodeTurnNotRunning)
 		}
@@ -379,7 +379,7 @@ func TestApplySessionClosed(t *testing.T) {
 
 	state := activeSessionForTest(t)
 	record := recordedForTest(state, SessionClosed{})
-	got, err := Apply(state, record)
+	got, err := HistoricalApply(state, record)
 	if err != nil {
 		t.Fatalf("Apply() error = %v", err)
 	}
@@ -392,7 +392,7 @@ func TestApplySessionClosedRejectsRunningTurn(t *testing.T) {
 	t.Parallel()
 
 	state := runningTurnForTest(t)
-	_, err := Apply(state, recordedForTest(state, SessionClosed{}))
+	_, err := HistoricalApply(state, recordedForTest(state, SessionClosed{}))
 	if !IsCode(err, CodeTurnAlreadyRunning) {
 		t.Fatalf("Apply() error = %v, want code %q", err, CodeTurnAlreadyRunning)
 	}
@@ -403,7 +403,7 @@ func TestApplyAssistantMessageLifecycle(t *testing.T) {
 
 	state := runningTurnForTest(t)
 	started := recordedForTest(state, AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"})
-	state, err := Apply(state, started)
+	state, err := HistoricalApply(state, started)
 	if err != nil {
 		t.Fatalf("start item: %v", err)
 	}
@@ -411,7 +411,7 @@ func TestApplyAssistantMessageLifecycle(t *testing.T) {
 	completed := recordedForTest(state, AssistantMessageCompleted{
 		TurnID: "turn-1", ItemID: "item-1", Text: "你好, exact bytes\n",
 	})
-	state, err = Apply(state, completed)
+	state, err = HistoricalApply(state, completed)
 	if err != nil {
 		t.Fatalf("complete item: %v", err)
 	}
@@ -441,7 +441,7 @@ func TestApplyAssistantMessageStartedRejectsTimestampBeforeTurnStart(t *testing.
 	record := recordedForTest(state, AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"})
 	record.OccurredAt = time.Date(2026, 8, 11, 0, 0, 1, 0, time.UTC)
 
-	_, err := Apply(state, record)
+	_, err := HistoricalApply(state, record)
 	if !IsCode(err, CodeInvalidEvent) {
 		t.Fatalf("Apply() error = %v, want code %q", err, CodeInvalidEvent)
 	}
@@ -468,7 +468,7 @@ func TestApplyAssistantMessageTerminalRejectsTimestampBeforeItemStart(t *testing
 			state := runningTurnForTest(t)
 			started := recordedForTest(state, AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"})
 			started.OccurredAt = time.Date(2026, 8, 11, 0, 0, 4, 0, time.UTC)
-			state, err := Apply(state, started)
+			state, err := HistoricalApply(state, started)
 			if err != nil {
 				t.Fatalf("start item: %v", err)
 			}
@@ -476,7 +476,7 @@ func TestApplyAssistantMessageTerminalRejectsTimestampBeforeItemStart(t *testing
 			terminal := recordedForTest(state, test.event)
 			terminal.OccurredAt = time.Date(2026, 8, 11, 0, 0, 3, 0, time.UTC)
 
-			_, err = Apply(state, terminal)
+			_, err = HistoricalApply(state, terminal)
 			if !IsCode(err, CodeInvalidEvent) {
 				t.Fatalf("Apply() error = %v, want code %q", err, CodeInvalidEvent)
 			}
@@ -493,13 +493,13 @@ func TestApplyTurnTerminalRejectsTimestampBeforeLatestItemEnd(t *testing.T) {
 	state := runningTurnForTest(t)
 	started := recordedForTest(state, AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"})
 	started.OccurredAt = time.Date(2026, 8, 11, 0, 0, 3, 0, time.UTC)
-	state, err := Apply(state, started)
+	state, err := HistoricalApply(state, started)
 	if err != nil {
 		t.Fatalf("start item: %v", err)
 	}
 	completed := recordedForTest(state, AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "done"})
 	completed.OccurredAt = time.Date(2026, 8, 11, 0, 0, 5, 0, time.UTC)
-	state, err = Apply(state, completed)
+	state, err = HistoricalApply(state, completed)
 	if err != nil {
 		t.Fatalf("complete item: %v", err)
 	}
@@ -507,7 +507,7 @@ func TestApplyTurnTerminalRejectsTimestampBeforeLatestItemEnd(t *testing.T) {
 	terminal := recordedForTest(state, TurnCompleted{TurnID: "turn-1"})
 	terminal.OccurredAt = time.Date(2026, 8, 11, 0, 0, 4, 0, time.UTC)
 
-	_, err = Apply(state, terminal)
+	_, err = HistoricalApply(state, terminal)
 	if !IsCode(err, CodeInvalidEvent) {
 		t.Fatalf("Apply() error = %v, want code %q", err, CodeInvalidEvent)
 	}
@@ -535,12 +535,12 @@ func TestApplyAssistantMessageTerminalEvents(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			state := runningTurnForTest(t)
 			var err error
-			state, err = Apply(state, recordedForTest(state, AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"}))
+			state, err = HistoricalApply(state, recordedForTest(state, AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"}))
 			if err != nil {
 				t.Fatalf("start item: %v", err)
 			}
 			record := recordedForTest(state, test.event)
-			state, err = Apply(state, record)
+			state, err = HistoricalApply(state, record)
 			if err != nil {
 				t.Fatalf("terminal item: %v", err)
 			}
@@ -563,18 +563,18 @@ func TestApplyAssistantMessageRejectsInvalidTransitionsWithoutMutation(t *testin
 	t.Parallel()
 
 	running := runningTurnForTest(t)
-	withItem, err := Apply(running, recordedForTest(running, AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"}))
+	withItem, err := HistoricalApply(running, recordedForTest(running, AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"}))
 	if err != nil {
 		t.Fatalf("start item fixture: %v", err)
 	}
-	completed, err := Apply(withItem, recordedForTest(withItem, AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "done"}))
+	completed, err := HistoricalApply(withItem, recordedForTest(withItem, AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "done"}))
 	if err != nil {
 		t.Fatalf("complete item fixture: %v", err)
 	}
 
 	tests := []struct {
 		name  string
-		state Session
+		state HistoricalSession
 		event Event
 	}{
 		{name: "second active item", state: withItem, event: AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-2"}},
@@ -588,7 +588,7 @@ func TestApplyAssistantMessageRejectsInvalidTransitionsWithoutMutation(t *testin
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			before := test.state.Clone()
-			_, err := Apply(test.state, recordedForTest(test.state, test.event))
+			_, err := HistoricalApply(test.state, recordedForTest(test.state, test.event))
 			if !IsCode(err, CodeInvalidEvent) {
 				t.Fatalf("Apply() error = %v, want code %q", err, CodeInvalidEvent)
 			}
@@ -603,38 +603,46 @@ func TestApplyAssistantMessageRejectsMalformedTurnPreState(t *testing.T) {
 	t.Parallel()
 
 	valid := runningTurnForTest(t)
-	valid, err := Apply(valid, recordedForTest(valid, AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"}))
+	valid, err := HistoricalApply(valid, recordedForTest(valid, AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"}))
 	if err != nil {
 		t.Fatalf("start item fixture: %v", err)
 	}
 
 	tests := []struct {
 		name   string
-		mutate func(*Turn)
+		mutate func(*HistoricalTurn)
 	}{
-		{name: "duplicate order", mutate: func(turn *Turn) { turn.ItemOrder = append(turn.ItemOrder, "item-1") }},
-		{name: "order missing map item", mutate: func(turn *Turn) { turn.ItemOrder = nil }},
-		{name: "map key mismatch", mutate: func(turn *Turn) {
+		{name: "duplicate order", mutate: func(turn *HistoricalTurn) { turn.ItemOrder = append(turn.ItemOrder, "item-1") }},
+		{name: "order missing map item", mutate: func(turn *HistoricalTurn) { turn.ItemOrder = nil }},
+		{name: "map key mismatch", mutate: func(turn *HistoricalTurn) {
 			item := turn.Items["item-1"]
 			delete(turn.Items, "item-1")
 			turn.Items["item-2"] = item
 			turn.ItemOrder[0] = "item-2"
 		}},
-		{name: "wrong owner", mutate: func(turn *Turn) { item := turn.Items["item-1"]; item.TurnID = "turn-2"; turn.Items["item-1"] = item }},
-		{name: "turn identity mismatch", mutate: func(turn *Turn) {
+		{name: "wrong owner", mutate: func(turn *HistoricalTurn) {
+			item := turn.Items["item-1"]
+			item.TurnID = "turn-2"
+			turn.Items["item-1"] = item
+		}},
+		{name: "turn identity mismatch", mutate: func(turn *HistoricalTurn) {
 			turn.ID = "turn-2"
 			item := turn.Items["item-1"]
 			item.TurnID = "turn-2"
 			turn.Items["item-1"] = item
 		}},
-		{name: "active ID missing", mutate: func(turn *Turn) { turn.ActiveItemID = "" }},
-		{name: "running ended", mutate: func(turn *Turn) { item := turn.Items["item-1"]; item.EndedAt = time.Now(); turn.Items["item-1"] = item }},
-		{name: "running terminal", mutate: func(turn *Turn) {
+		{name: "active ID missing", mutate: func(turn *HistoricalTurn) { turn.ActiveItemID = "" }},
+		{name: "running ended", mutate: func(turn *HistoricalTurn) {
+			item := turn.Items["item-1"]
+			item.EndedAt = time.Now()
+			turn.Items["item-1"] = item
+		}},
+		{name: "running terminal", mutate: func(turn *HistoricalTurn) {
 			item := turn.Items["item-1"]
 			item.Terminal = &ItemTerminal{Code: "bad"}
 			turn.Items["item-1"] = item
 		}},
-		{name: "payload kind mismatch", mutate: func(turn *Turn) {
+		{name: "payload kind mismatch", mutate: func(turn *HistoricalTurn) {
 			item := turn.Items["item-1"]
 			item.Kind = ItemKind("unknown")
 			turn.Items["item-1"] = item
@@ -648,7 +656,7 @@ func TestApplyAssistantMessageRejectsMalformedTurnPreState(t *testing.T) {
 			test.mutate(&turn)
 			state.Turns["turn-1"] = turn
 			before := state.Clone()
-			_, err := Apply(state, recordedForTest(state, AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "done"}))
+			_, err := HistoricalApply(state, recordedForTest(state, AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "done"}))
 			if !IsCode(err, CodeInvalidEvent) {
 				t.Fatalf("Apply() error = %v, want code %q", err, CodeInvalidEvent)
 			}
@@ -663,12 +671,12 @@ func TestApplyTerminalTurnRejectsActiveOrMalformedItem(t *testing.T) {
 	t.Parallel()
 
 	state := runningTurnForTest(t)
-	state, err := Apply(state, recordedForTest(state, AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"}))
+	state, err := HistoricalApply(state, recordedForTest(state, AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"}))
 	if err != nil {
 		t.Fatalf("start item: %v", err)
 	}
 	before := state.Clone()
-	_, err = Apply(state, recordedForTest(state, TurnCompleted{TurnID: "turn-1"}))
+	_, err = HistoricalApply(state, recordedForTest(state, TurnCompleted{TurnID: "turn-1"}))
 	if !IsCode(err, CodeInvalidEvent) {
 		t.Fatalf("Apply() error = %v, want code %q", err, CodeInvalidEvent)
 	}
@@ -681,11 +689,11 @@ func TestSessionCloneDeepCopiesTurnItems(t *testing.T) {
 	t.Parallel()
 
 	state := runningTurnForTest(t)
-	state, err := Apply(state, recordedForTest(state, AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"}))
+	state, err := HistoricalApply(state, recordedForTest(state, AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"}))
 	if err != nil {
 		t.Fatalf("start item: %v", err)
 	}
-	state, err = Apply(state, recordedForTest(state, AssistantMessageFailed{TurnID: "turn-1", ItemID: "item-1", Code: "provider_error", Message: "safe"}))
+	state, err = HistoricalApply(state, recordedForTest(state, AssistantMessageFailed{TurnID: "turn-1", ItemID: "item-1", Code: "provider_error", Message: "safe"}))
 	if err != nil {
 		t.Fatalf("fail item: %v", err)
 	}

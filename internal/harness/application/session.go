@@ -16,7 +16,7 @@ type CreateSessionResult struct {
 }
 type CloseSessionRequest struct{ SessionID domain.SessionID }
 type CloseSessionResult struct {
-	Session domain.CompactSession
+	Session domain.Session
 	Records []domain.RecordedEvent
 }
 
@@ -41,11 +41,11 @@ func (service *Service) CreateSession(ctx context.Context, request CreateSession
 	if _, err := domain.ParseCommandID(string(commandID)); err != nil {
 		return CreateSessionResult{}, applicationError(CategoryInternal, "id_generator_contract_violation", false, err)
 	}
-	decided, err := domain.DecideCompact(domain.CompactSession{}, domain.CreateSession{SessionID: sessionID, WorkspaceRoot: request.WorkspaceRoot})
+	decided, err := domain.Decide(domain.Session{}, domain.CreateSession{SessionID: sessionID, WorkspaceRoot: request.WorkspaceRoot})
 	if err != nil {
 		return CreateSessionResult{}, applicationError(CategoryValidation, "domain_rejected", false, err)
 	}
-	next, records, err := appendCompact(ctx, service, sessionID, domain.CompactSession{}, decided, commandID, nil)
+	next, records, err := appendCompact(ctx, service, sessionID, domain.Session{}, decided, commandID, nil)
 	if err != nil {
 		return CreateSessionResult{}, err
 	}
@@ -55,9 +55,9 @@ func (service *Service) CreateSession(ctx context.Context, request CreateSession
 	return CreateSessionResult{SessionID: sessionID, Records: records}, nil
 }
 
-func (service *Service) LoadSession(ctx context.Context, sessionID domain.SessionID) (domain.CompactSession, error) {
+func (service *Service) LoadSession(ctx context.Context, sessionID domain.SessionID) (domain.Session, error) {
 	if service == nil {
-		return domain.CompactSession{}, applicationError(CategoryValidation, "invalid_request", false, nil)
+		return domain.Session{}, applicationError(CategoryValidation, "invalid_request", false, nil)
 	}
 	return loadCompactSessionPinned(ctx, service.store, sessionID)
 }
@@ -73,7 +73,7 @@ func (service *Service) CloseSession(ctx context.Context, request CloseSessionRe
 	if err != nil {
 		return CloseSessionResult{}, err
 	}
-	decided, err := domain.DecideCompact(state, domain.CloseSession{SessionID: request.SessionID})
+	decided, err := domain.Decide(state, domain.CloseSession{SessionID: request.SessionID})
 	if err != nil {
 		return CloseSessionResult{}, applicationError(CategoryValidation, "domain_rejected", false, err)
 	}

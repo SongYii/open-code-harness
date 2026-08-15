@@ -45,11 +45,10 @@ func (authority WriterAuthority) Validate() error {
 	return nil
 }
 
-// EventStoreV2 is the v2 event-stream boundary. It remains distinct from the
-// existing v1 EventStore while the migration is in progress.
-type EventStoreV2 interface {
+// EventStore is the authoritative per-Session event-stream boundary.
+type EventStore interface {
 	ReadStream(context.Context, ReadStreamRequest) (StreamPage, error)
-	Append(context.Context, AppendRequestV2) (CommitReceipt, error)
+	Append(context.Context, AppendRequest) (CommitReceipt, error)
 	ResolveAppend(context.Context, ResolveAppendRequest) (AppendResolution, error)
 	FindCommandRequest(context.Context, FindCommandRequestRequest) (CommandRequestLookup, error)
 }
@@ -68,7 +67,7 @@ type StreamPage struct {
 	End               bool
 }
 
-type AppendRequestV2 struct {
+type AppendRequest struct {
 	AppendID        domain.AppendID
 	SessionID       domain.SessionID
 	ExpectedVersion uint64

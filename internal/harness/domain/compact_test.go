@@ -9,7 +9,7 @@ import (
 
 func TestReplayCompactDiscardsTerminalTranscript(t *testing.T) {
 	records := fixtureRecords(t, "testdata/assistant_lifecycle.jsonl")
-	got, err := ReplayCompact(records)
+	got, err := Replay(records)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,12 +46,12 @@ func TestApplyCompactRejectsWrongTerminalIdentity(t *testing.T) {
 	state = applyCompactRecord(t, state, AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"})
 	before := state.Clone()
 
-	got, err := ApplyCompact(state, compactRecord(state, AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-other", Text: "done"}))
+	got, err := Apply(state, compactRecord(state, AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-other", Text: "done"}))
 	if !IsCode(err, CodeInvalidEvent) {
-		t.Fatalf("ApplyCompact() = (%#v, %v), want invalid event", got, err)
+		t.Fatalf("Apply() = (%#v, %v), want invalid event", got, err)
 	}
 	if !reflect.DeepEqual(state, before) {
-		t.Fatalf("ApplyCompact() mutated input: got %#v, want %#v", state, before)
+		t.Fatalf("Apply() mutated input: got %#v, want %#v", state, before)
 	}
 }
 
@@ -68,9 +68,9 @@ func TestApplyCompactTerminalizationIsIrreversible(t *testing.T) {
 		t.Fatalf("compact turn terminal state = %#v", state)
 	}
 
-	_, err := ApplyCompact(state, compactRecord(state, TurnCompleted{TurnID: "turn-1"}))
+	_, err := Apply(state, compactRecord(state, TurnCompleted{TurnID: "turn-1"}))
 	if !IsCode(err, CodeTurnNotRunning) {
-		t.Fatalf("ApplyCompact() terminal replay error = %v, want %q", err, CodeTurnNotRunning)
+		t.Fatalf("Apply() terminal replay error = %v, want %q", err, CodeTurnNotRunning)
 	}
 }
 
@@ -80,9 +80,9 @@ func TestApplyCompactClosesIdleSession(t *testing.T) {
 	if state.Status != SessionStatusClosed || state.ActiveTurn != nil {
 		t.Fatalf("closed compact state = %#v", state)
 	}
-	_, err := ApplyCompact(state, compactRecord(state, TurnStarted{TurnID: "turn-1", Input: "late"}))
+	_, err := Apply(state, compactRecord(state, TurnStarted{TurnID: "turn-1", Input: "late"}))
 	if !IsCode(err, CodeSessionClosed) {
-		t.Fatalf("ApplyCompact() after close error = %v, want %q", err, CodeSessionClosed)
+		t.Fatalf("Apply() after close error = %v, want %q", err, CodeSessionClosed)
 	}
 }
 
@@ -90,9 +90,9 @@ func TestApplyCompactRejectsInvalidSequence(t *testing.T) {
 	state := compactActiveSession(t)
 	record := compactRecord(state, TurnStarted{TurnID: "turn-1", Input: "inspect"})
 	record.Sequence++
-	_, err := ApplyCompact(state, record)
+	_, err := Apply(state, record)
 	if !IsCode(err, CodeSequenceMismatch) {
-		t.Fatalf("ApplyCompact() error = %v, want %q", err, CodeSequenceMismatch)
+		t.Fatalf("Apply() error = %v, want %q", err, CodeSequenceMismatch)
 	}
 }
 
@@ -123,25 +123,25 @@ func fixtureRecords(t *testing.T, path string) []RecordedEvent {
 	return records
 }
 
-func compactActiveSession(t *testing.T) CompactSession {
+func compactActiveSession(t *testing.T) Session {
 	t.Helper()
-	state, err := ApplyCompact(CompactSession{}, compactRecord(CompactSession{}, SessionCreated{WorkspaceRoot: "/workspace"}))
+	state, err := Apply(Session{}, compactRecord(Session{}, SessionCreated{WorkspaceRoot: "/workspace"}))
 	if err != nil {
 		t.Fatalf("create compact session: %v", err)
 	}
 	return state
 }
 
-func applyCompactRecord(t *testing.T, state CompactSession, event Event) CompactSession {
+func applyCompactRecord(t *testing.T, state Session, event Event) Session {
 	t.Helper()
-	next, err := ApplyCompact(state, compactRecord(state, event))
+	next, err := Apply(state, compactRecord(state, event))
 	if err != nil {
-		t.Fatalf("ApplyCompact(%T) error = %v", event, err)
+		t.Fatalf("Apply(%T) error = %v", event, err)
 	}
 	return next
 }
 
-func compactRecord(state CompactSession, event Event) RecordedEvent {
+func compactRecord(state Session, event Event) RecordedEvent {
 	sequence := state.Version + 1
 	return RecordedEvent{
 		SchemaVersion: schemaVersion,
@@ -154,7 +154,7 @@ func compactRecord(state CompactSession, event Event) RecordedEvent {
 	}
 }
 
-func compactSessionID(state CompactSession) SessionID {
+func compactSessionID(state Session) SessionID {
 	if state.ID == "" {
 		return "compact-session"
 	}

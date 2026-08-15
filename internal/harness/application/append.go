@@ -11,7 +11,7 @@ import (
 // AppendIntent is the immutable application-owned proposal and its canonical
 // identity. A caller may safely retain it for exact retry/resolution later.
 type AppendIntent struct {
-	Request AppendRequestV2
+	Request AppendRequest
 	Digest  Digest
 }
 
@@ -56,7 +56,7 @@ func BuildAppendIntent(clock Clock, ids IDGenerator, authority WriterAuthority, 
 		}
 		proposed[index] = ProposedEvent{ID: id, SchemaVersion: 1, OccurredAt: occurredAt, Event: event}
 	}
-	request := AppendRequestV2{AppendID: appendID, SessionID: sessionID, ExpectedVersion: version, CommandID: commandID, Authority: authority, Admission: copiedAdmission, Events: proposed}
+	request := AppendRequest{AppendID: appendID, SessionID: sessionID, ExpectedVersion: version, CommandID: commandID, Authority: authority, Admission: copiedAdmission, Events: proposed}
 	digest, err := DigestAppendRequest(request)
 	if err != nil {
 		return AppendIntent{}, applicationError(CategoryInternal, "append_intent_invalid", false, err)
@@ -64,31 +64,31 @@ func BuildAppendIntent(clock Clock, ids IDGenerator, authority WriterAuthority, 
 	return cloneAppendIntent(AppendIntent{Request: request, Digest: digest})
 }
 
-func CommitAppendIntent(ctx context.Context, store EventStoreV2, state domain.CompactSession, intent AppendIntent) (domain.CompactSession, []domain.RecordedEvent, error) {
+func CommitAppendIntent(ctx context.Context, store EventStore, state domain.Session, intent AppendIntent) (domain.Session, []domain.RecordedEvent, error) {
 	if err := contextError(ctx); err != nil {
-		return domain.CompactSession{}, nil, err
+		return domain.Session{}, nil, err
 	}
 	if isNilValue(store) {
-		return domain.CompactSession{}, nil, applicationError(CategoryValidation, "invalid_request", false, nil)
+		return domain.Session{}, nil, applicationError(CategoryValidation, "invalid_request", false, nil)
 	}
 	owned, err := cloneAppendIntent(intent)
 	if err != nil {
-		return domain.CompactSession{}, nil, storeContractViolation(err)
+		return domain.Session{}, nil, storeContractViolation(err)
 	}
 	digest, err := DigestAppendRequest(owned.Request)
 	if err != nil || digest != owned.Digest {
 		if err != nil {
-			return domain.CompactSession{}, nil, storeContractViolation(fmt.Errorf("intent digest mismatch: %w", err))
+			return domain.Session{}, nil, storeContractViolation(fmt.Errorf("intent digest mismatch: %w", err))
 		}
-		return domain.CompactSession{}, nil, storeContractViolation(fmt.Errorf("intent digest mismatch"))
+		return domain.Session{}, nil, storeContractViolation(fmt.Errorf("intent digest mismatch"))
 	}
 	requestForStore, err := cloneAppendIntent(owned)
 	if err != nil {
-		return domain.CompactSession{}, nil, storeContractViolation(err)
+		return domain.Session{}, nil, storeContractViolation(err)
 	}
 	receipt, err := store.Append(ctx, requestForStore.Request)
 	if !isNilValue(err) {
-		return domain.CompactSession{}, nil, mapV2StoreError(ctx, err, "append")
+		return domain.Session{}, nil, mapV2StoreError(ctx, err, "append")
 	}
 	return ApplyCommittedIntent(state, owned, receipt)
 }
@@ -100,31 +100,31 @@ func validateCommitReceipt(intent AppendIntent, receipt CommitReceipt) error {
 	return nil
 }
 
-func ApplyCommittedIntent(state domain.CompactSession, intent AppendIntent, receipt CommitReceipt) (domain.CompactSession, []domain.RecordedEvent, error) {
+func ApplyCommittedIntent(state domain.Session, intent AppendIntent, receipt CommitReceipt) (domain.Session, []domain.RecordedEvent, error) {
 	owned, err := cloneAppendIntent(intent)
 	if err != nil {
-		return domain.CompactSession{}, nil, storeContractViolation(err)
+		return domain.Session{}, nil, storeContractViolation(err)
 	}
 	if err := validateCommitReceipt(owned, receipt); err != nil {
-		return domain.CompactSession{}, nil, storeContractViolation(err)
+		return domain.Session{}, nil, storeContractViolation(err)
 	}
 	records := make([]domain.RecordedEvent, len(owned.Request.Events))
 	next := state.Clone()
 	for index, proposed := range owned.Request.Events {
 		event, cloneErr := domain.CloneEvent(proposed.Event)
 		if cloneErr != nil {
-			return domain.CompactSession{}, nil, storeContractViolation(cloneErr)
+			return domain.Session{}, nil, storeContractViolation(cloneErr)
 		}
 		record := domain.RecordedEvent{SchemaVersion: int(proposed.SchemaVersion), ID: proposed.ID, CommandID: owned.Request.CommandID, SessionID: owned.Request.SessionID, Sequence: receipt.FirstSequence + uint64(index), OccurredAt: proposed.OccurredAt, Event: event}
-		applied, applyErr := domain.ApplyCompact(next, record)
+		applied, applyErr := domain.Apply(next, record)
 		if applyErr != nil {
-			return domain.CompactSession{}, nil, storeContractViolation(applyErr)
+			return domain.Session{}, nil, storeContractViolation(applyErr)
 		}
 		next, records[index] = applied, record
 	}
 	defensive, err := domain.CloneRecordedEvents(records)
 	if err != nil {
-		return domain.CompactSession{}, nil, storeContractViolation(err)
+		return domain.Session{}, nil, storeContractViolation(err)
 	}
 	return next.Clone(), defensive, nil
 }
@@ -147,10 +147,10 @@ func cloneAppendIntent(intent AppendIntent) (AppendIntent, error) {
 	return cloned, nil
 }
 
-func appendCompact(ctx context.Context, service *Service, sessionID domain.SessionID, state domain.CompactSession, events []domain.UncommittedEvent, commandID domain.CommandID, admission *CommandAdmission) (domain.CompactSession, []domain.RecordedEvent, error) {
+func appendCompact(ctx context.Context, service *Service, sessionID domain.SessionID, state domain.Session, events []domain.UncommittedEvent, commandID domain.CommandID, admission *CommandAdmission) (domain.Session, []domain.RecordedEvent, error) {
 	intent, err := BuildAppendIntent(service.clock, service.ids, service.authority, sessionID, state.Version, commandID, admission, events)
 	if err != nil {
-		return domain.CompactSession{}, nil, err
+		return domain.Session{}, nil, err
 	}
 	return CommitAppendIntent(ctx, service.store, state, intent)
 }

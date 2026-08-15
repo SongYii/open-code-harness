@@ -10,7 +10,7 @@ import (
 
 // ReadWholeStreamPinned reads a complete immutable view of a stream using the
 // EV2-08 pinned-head protocol. Returned records are detached from the Store.
-func ReadWholeStreamPinned(ctx context.Context, store EventStoreV2, sessionID domain.SessionID, limit uint32) ([]domain.RecordedEvent, error) {
+func ReadWholeStreamPinned(ctx context.Context, store EventStore, sessionID domain.SessionID, limit uint32) ([]domain.RecordedEvent, error) {
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
@@ -81,23 +81,23 @@ func ReadWholeStreamPinned(ctx context.Context, store EventStoreV2, sessionID do
 
 // loadCompactSessionPinned replays each page as it arrives, retaining only the
 // bounded compact aggregate rather than a second copy of the whole stream.
-func loadCompactSessionPinned(ctx context.Context, store EventStoreV2, sessionID domain.SessionID) (domain.CompactSession, error) {
+func loadCompactSessionPinned(ctx context.Context, store EventStore, sessionID domain.SessionID) (domain.Session, error) {
 	if err := contextError(ctx); err != nil {
-		return domain.CompactSession{}, err
+		return domain.Session{}, err
 	}
 	if isNilValue(store) {
-		return domain.CompactSession{}, applicationError(CategoryValidation, "invalid_request", false, nil)
+		return domain.Session{}, applicationError(CategoryValidation, "invalid_request", false, nil)
 	}
 	if _, err := domain.ParseSessionID(string(sessionID)); err != nil {
-		return domain.CompactSession{}, applicationError(CategoryValidation, "invalid_request", false, err)
+		return domain.Session{}, applicationError(CategoryValidation, "invalid_request", false, err)
 	}
-	var state domain.CompactSession
+	var state domain.Session
 	var cursor uint64
 	var head uint64
 	hasHead := false
 	for {
 		if err := contextError(ctx); err != nil {
-			return domain.CompactSession{}, err
+			return domain.Session{}, err
 		}
 		var requestedHead *uint64
 		if hasHead {
@@ -106,50 +106,50 @@ func loadCompactSessionPinned(ctx context.Context, store EventStoreV2, sessionID
 		}
 		page, err := store.ReadStream(ctx, ReadStreamRequest{SessionID: sessionID, AfterSequence: cursor, Limit: 256, HeadVersion: requestedHead})
 		if !isNilValue(err) {
-			return domain.CompactSession{}, mapV2StoreError(ctx, err, "read")
+			return domain.Session{}, mapV2StoreError(ctx, err, "read")
 		}
 		if err := contextError(ctx); err != nil {
-			return domain.CompactSession{}, err
+			return domain.Session{}, err
 		}
 		if !hasHead {
 			head, hasHead = page.HeadVersion, true
 		} else if page.HeadVersion != head {
-			return domain.CompactSession{}, storeContractViolation(fmt.Errorf("read head changed"))
+			return domain.Session{}, storeContractViolation(fmt.Errorf("read head changed"))
 		}
 		if page.HeadVersion < cursor || len(page.Records) > 256 {
-			return domain.CompactSession{}, storeContractViolation(fmt.Errorf("invalid pinned page bounds"))
+			return domain.Session{}, storeContractViolation(fmt.Errorf("invalid pinned page bounds"))
 		}
 		next := cursor
 		for index, record := range page.Records {
 			if record.SessionID != sessionID || record.Sequence != cursor+uint64(index)+1 || record.Sequence > page.HeadVersion {
-				return domain.CompactSession{}, storeContractViolation(fmt.Errorf("invalid record"))
+				return domain.Session{}, storeContractViolation(fmt.Errorf("invalid record"))
 			}
 			if err := validatePinnedRecord(record); err != nil {
-				return domain.CompactSession{}, storeContractViolation(err)
+				return domain.Session{}, storeContractViolation(err)
 			}
-			applied, applyErr := domain.ApplyCompact(state, record)
+			applied, applyErr := domain.Apply(state, record)
 			if applyErr != nil {
-				return domain.CompactSession{}, storeContractViolation(applyErr)
+				return domain.Session{}, storeContractViolation(applyErr)
 			}
 			state = applied
 			next = record.Sequence
 		}
 		if page.NextAfterSequence != next || page.End != (next == page.HeadVersion) {
-			return domain.CompactSession{}, storeContractViolation(fmt.Errorf("invalid pinned page cursor or end"))
+			return domain.Session{}, storeContractViolation(fmt.Errorf("invalid pinned page cursor or end"))
 		}
 		if page.End {
 			break
 		}
 		if next == cursor {
-			return domain.CompactSession{}, storeContractViolation(fmt.Errorf("non-terminal page made no progress"))
+			return domain.Session{}, storeContractViolation(fmt.Errorf("non-terminal page made no progress"))
 		}
 		cursor = next
 	}
 	if !state.Exists() {
-		return domain.CompactSession{}, applicationError(CategoryValidation, "session_not_found", false, nil)
+		return domain.Session{}, applicationError(CategoryValidation, "session_not_found", false, nil)
 	}
 	if state.ID != sessionID {
-		return domain.CompactSession{}, storeContractViolation(fmt.Errorf("replayed session mismatch"))
+		return domain.Session{}, storeContractViolation(fmt.Errorf("replayed session mismatch"))
 	}
 	return state.Clone(), nil
 }

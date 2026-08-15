@@ -24,21 +24,21 @@ func TestDigestAppendRequestIsStableAndCoversImmutableFacts(t *testing.T) {
 
 	changes := []struct {
 		name   string
-		mutate func(*AppendRequestV2)
+		mutate func(*AppendRequest)
 	}{
-		{"session", func(r *AppendRequestV2) { r.SessionID = "session-2" }},
-		{"expected version", func(r *AppendRequestV2) { r.ExpectedVersion++ }},
-		{"command", func(r *AppendRequestV2) { r.CommandID = "command-2" }},
-		{"admission request ID", func(r *AppendRequestV2) { r.Admission.RunTurnRequestID = "request-2" }},
-		{"admission digest", func(r *AppendRequestV2) { r.Admission.RequestDigest[0]++ }},
-		{"admission turn", func(r *AppendRequestV2) { r.Admission.TurnID = "turn-2" }},
-		{"admission item", func(r *AppendRequestV2) { r.Admission.ItemID = "item-2" }},
-		{"event ID", func(r *AppendRequestV2) { r.Events[0].ID = "event-2" }},
-		{"event time", func(r *AppendRequestV2) { r.Events[0].OccurredAt = r.Events[0].OccurredAt.Add(time.Nanosecond) }},
-		{"event type", func(r *AppendRequestV2) {
+		{"session", func(r *AppendRequest) { r.SessionID = "session-2" }},
+		{"expected version", func(r *AppendRequest) { r.ExpectedVersion++ }},
+		{"command", func(r *AppendRequest) { r.CommandID = "command-2" }},
+		{"admission request ID", func(r *AppendRequest) { r.Admission.RunTurnRequestID = "request-2" }},
+		{"admission digest", func(r *AppendRequest) { r.Admission.RequestDigest[0]++ }},
+		{"admission turn", func(r *AppendRequest) { r.Admission.TurnID = "turn-2" }},
+		{"admission item", func(r *AppendRequest) { r.Admission.ItemID = "item-2" }},
+		{"event ID", func(r *AppendRequest) { r.Events[0].ID = "event-2" }},
+		{"event time", func(r *AppendRequest) { r.Events[0].OccurredAt = r.Events[0].OccurredAt.Add(time.Nanosecond) }},
+		{"event type", func(r *AppendRequest) {
 			r.Events[0].Event = domain.AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"}
 		}},
-		{"event payload", func(r *AppendRequestV2) {
+		{"event payload", func(r *AppendRequest) {
 			r.Events[0].Event = domain.AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "changed"}
 		}},
 	}
@@ -73,9 +73,9 @@ func TestDigestAppendRequestExcludesReceiptAndAuthorityButValidatesThem(t *testi
 		t.Fatalf("excluded facts digest = (%x, %v), want (%x, nil)", got, err, base)
 	}
 
-	for _, mutate := range []func(*AppendRequestV2){
-		func(r *AppendRequestV2) { r.AppendID = " invalid" },
-		func(r *AppendRequestV2) { r.Authority = WriterAuthority{} },
+	for _, mutate := range []func(*AppendRequest){
+		func(r *AppendRequest) { r.AppendID = " invalid" },
+		func(r *AppendRequest) { r.Authority = WriterAuthority{} },
 	} {
 		invalid := validAppendRequest()
 		mutate(&invalid)
@@ -127,24 +127,24 @@ func TestDigestAppendRequestFramingSeparatesFactsAndOrder(t *testing.T) {
 func TestDigestAppendRequestRejectsInvalidAndOversizedFacts(t *testing.T) {
 	tests := []struct {
 		name   string
-		mutate func(*AppendRequestV2)
+		mutate func(*AppendRequest)
 	}{
-		{"empty events", func(r *AppendRequestV2) { r.Events = nil }},
-		{"invalid event ID", func(r *AppendRequestV2) { r.Events[0].ID = " invalid" }},
-		{"non UTC time", func(r *AppendRequestV2) {
+		{"empty events", func(r *AppendRequest) { r.Events = nil }},
+		{"invalid event ID", func(r *AppendRequest) { r.Events[0].ID = " invalid" }},
+		{"non UTC time", func(r *AppendRequest) {
 			r.Events[0].OccurredAt = r.Events[0].OccurredAt.In(time.FixedZone("offset", 3600))
 		}},
-		{"zero time", func(r *AppendRequestV2) { r.Events[0].OccurredAt = time.Time{} }},
-		{"unsupported schema", func(r *AppendRequestV2) { r.Events[0].SchemaVersion = 2 }},
-		{"invalid payload", func(r *AppendRequestV2) {
+		{"zero time", func(r *AppendRequest) { r.Events[0].OccurredAt = time.Time{} }},
+		{"unsupported schema", func(r *AppendRequest) { r.Events[0].SchemaVersion = 2 }},
+		{"invalid payload", func(r *AppendRequest) {
 			r.Events[0].Event = domain.AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: string([]byte{0xff})}
 		}},
-		{"more than 64 events", func(r *AppendRequestV2) {
+		{"more than 64 events", func(r *AppendRequest) {
 			for n := 2; n <= 65; n++ {
 				r.Events = append(r.Events, domainEvent(domain.EventID("event-"+strings.Repeat("x", n)), "x"))
 			}
 		}},
-		{"payload over 8 MiB", func(r *AppendRequestV2) {
+		{"payload over 8 MiB", func(r *AppendRequest) {
 			r.Events[0].Event = domain.AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: strings.Repeat("x", 8*1024*1024)}
 		}},
 	}
@@ -233,8 +233,8 @@ func TestDigestTextEncodingIsStrictLowercaseHex(t *testing.T) {
 	}
 }
 
-func validAppendRequest() AppendRequestV2 {
-	return AppendRequestV2{
+func validAppendRequest() AppendRequest {
+	return AppendRequest{
 		AppendID:        "append-1",
 		SessionID:       "session-1",
 		ExpectedVersion: 7,

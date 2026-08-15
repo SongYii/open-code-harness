@@ -18,13 +18,13 @@ func TestCompactDecisionsMatchFullStateForFixturePrefixes(t *testing.T) {
 		records := fixtureRecords(t, path)
 		for prefix := 0; prefix <= len(records); prefix++ {
 			t.Run(fmt.Sprintf("%s/prefix-%d", path, prefix), func(t *testing.T) {
-				full, err := Replay(records[:prefix])
+				full, err := HistoricalReplay(records[:prefix])
+				if err != nil {
+					t.Fatalf("HistoricalReplay() prefix %d error = %v", prefix, err)
+				}
+				compact, err := Replay(records[:prefix])
 				if err != nil {
 					t.Fatalf("Replay() prefix %d error = %v", prefix, err)
-				}
-				compact, err := ReplayCompact(records[:prefix])
-				if err != nil {
-					t.Fatalf("ReplayCompact() prefix %d error = %v", prefix, err)
 				}
 				for _, command := range freshCommandsForPrefix(full, prefix) {
 					assertDecisionEquivalent(t, full, compact, command)
@@ -36,17 +36,17 @@ func TestCompactDecisionsMatchFullStateForFixturePrefixes(t *testing.T) {
 
 func TestCompactHistoricalDuplicateRequiresStoreIdentityIndex(t *testing.T) {
 	records := fixtureRecords(t, "testdata/assistant_lifecycle.jsonl")
-	full, err := Replay(records[:5])
+	full, err := HistoricalReplay(records[:5])
 	if err != nil {
 		t.Fatal(err)
 	}
-	compact, err := ReplayCompact(records[:5])
+	compact, err := Replay(records[:5])
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	fullEvents, fullErr := Decide(full, StartTurn{SessionID: full.ID, TurnID: "turn-1", Input: "duplicate"})
-	compactEvents, compactErr := DecideCompact(compact, StartTurn{SessionID: compact.ID, TurnID: "turn-1", Input: "duplicate"})
+	fullEvents, fullErr := HistoricalDecide(full, StartTurn{SessionID: full.ID, TurnID: "turn-1", Input: "duplicate"})
+	compactEvents, compactErr := Decide(compact, StartTurn{SessionID: compact.ID, TurnID: "turn-1", Input: "duplicate"})
 	if !IsCode(fullErr, CodeTurnAlreadyExists) || fullEvents != nil {
 		t.Fatalf("full historical turn duplicate = (%#v, %v), want %q", fullEvents, fullErr, CodeTurnAlreadyExists)
 	}
@@ -54,8 +54,8 @@ func TestCompactHistoricalDuplicateRequiresStoreIdentityIndex(t *testing.T) {
 		t.Fatalf("compact historical turn duplicate = (%#v, %v), want admission pending Store identity index", compactEvents, compactErr)
 	}
 
-	fullEvents, fullErr = Decide(full, StartAssistantTurn{SessionID: full.ID, TurnID: "turn-new", ItemID: "item-1", Input: "duplicate item"})
-	compactEvents, compactErr = DecideCompact(compact, StartAssistantTurn{SessionID: compact.ID, TurnID: "turn-new", ItemID: "item-1", Input: "duplicate item"})
+	fullEvents, fullErr = HistoricalDecide(full, StartAssistantTurn{SessionID: full.ID, TurnID: "turn-new", ItemID: "item-1", Input: "duplicate item"})
+	compactEvents, compactErr = Decide(compact, StartAssistantTurn{SessionID: compact.ID, TurnID: "turn-new", ItemID: "item-1", Input: "duplicate item"})
 	if !IsCode(fullErr, CodeItemAlreadyExists) || fullEvents != nil {
 		t.Fatalf("full historical item duplicate = (%#v, %v), want %q", fullEvents, fullErr, CodeItemAlreadyExists)
 	}
@@ -70,11 +70,11 @@ func TestCompactHistoricalDuplicateRequiresStoreIdentityIndex(t *testing.T) {
 
 func TestApplyCompactMatchesV1ChronologyRejections(t *testing.T) {
 	base := compactChronologyRecords()
-	full, err := Replay(base)
+	full, err := HistoricalReplay(base)
 	if err != nil {
 		t.Fatal(err)
 	}
-	compact, err := ReplayCompact(base)
+	compact, err := Replay(base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,8 +104,8 @@ func TestApplyCompactMatchesV1ChronologyRejections(t *testing.T) {
 				OccurredAt:    time.Date(2026, 8, 13, 0, 0, 3, 0, time.UTC),
 				Event:         test.event,
 			}
-			_, fullErr := Apply(full, record)
-			_, compactErr := ApplyCompact(compact, record)
+			_, fullErr := HistoricalApply(full, record)
+			_, compactErr := Apply(compact, record)
 			if errorCode(fullErr) != CodeInvalidEvent || errorCode(compactErr) != errorCode(fullErr) {
 				t.Fatalf("chronology rejection compact = %v, full = %v", compactErr, fullErr)
 			}
@@ -115,11 +115,11 @@ func TestApplyCompactMatchesV1ChronologyRejections(t *testing.T) {
 
 func TestApplyCompactMatchesV1DuplicateSessionCreatedPreflightOrder(t *testing.T) {
 	base := compactChronologyRecords()[:1]
-	full, err := Replay(base)
+	full, err := HistoricalReplay(base)
 	if err != nil {
 		t.Fatal(err)
 	}
-	compact, err := ReplayCompact(base)
+	compact, err := Replay(base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,8 +132,8 @@ func TestApplyCompactMatchesV1DuplicateSessionCreatedPreflightOrder(t *testing.T
 		OccurredAt:    time.Date(2026, 8, 13, 0, 0, 5, 0, time.UTC),
 		Event:         SessionCreated{WorkspaceRoot: "/workspace"},
 	}
-	_, fullErr := Apply(full, record)
-	_, compactErr := ApplyCompact(compact, record)
+	_, fullErr := HistoricalApply(full, record)
+	_, compactErr := Apply(compact, record)
 	if errorCode(fullErr) != CodeSessionAlreadyExists || errorCode(compactErr) != errorCode(fullErr) {
 		t.Fatalf("duplicate create preflight compact = %v, full = %v", compactErr, fullErr)
 	}
@@ -147,24 +147,24 @@ func FuzzReplayCompact(f *testing.F) {
 		if err != nil {
 			return
 		}
-		first, firstErr := ReplayCompact(records)
-		second, secondErr := ReplayCompact(records)
+		first, firstErr := Replay(records)
+		second, secondErr := Replay(records)
 		if errorCode(firstErr) != errorCode(secondErr) || !reflect.DeepEqual(first, second) {
 			t.Fatalf("non-deterministic replay: (%#v,%v) then (%#v,%v)", first, firstErr, second, secondErr)
 		}
 	})
 }
 
-func assertDecisionEquivalent(t *testing.T, full Session, compact CompactSession, command Command) {
+func assertDecisionEquivalent(t *testing.T, full HistoricalSession, compact Session, command Command) {
 	t.Helper()
-	wantEvents, wantErr := Decide(full, command)
-	gotEvents, gotErr := DecideCompact(compact, command)
+	wantEvents, wantErr := HistoricalDecide(full, command)
+	gotEvents, gotErr := Decide(compact, command)
 	if errorCode(gotErr) != errorCode(wantErr) || !reflect.DeepEqual(gotEvents, wantEvents) {
 		t.Fatalf("command %T compact decision = (%#v,%v), full = (%#v,%v)", command, gotEvents, gotErr, wantEvents, wantErr)
 	}
 }
 
-func freshCommandsForPrefix(state Session, prefix int) []Command {
+func freshCommandsForPrefix(state HistoricalSession, prefix int) []Command {
 	sessionID := state.ID
 	turnID := TurnID(fmt.Sprintf("turn-fresh-%d", prefix))
 	itemID := ItemID(fmt.Sprintf("item-fresh-%d", prefix))

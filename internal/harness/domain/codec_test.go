@@ -359,7 +359,7 @@ func TestSessionLifecycleFixtureUsesCanonicalCodecRecords(t *testing.T) {
 		}
 	}
 
-	state, err := Replay(want)
+	state, err := HistoricalReplay(want)
 	if err != nil {
 		t.Fatalf("Replay() fixture error = %v", err)
 	}

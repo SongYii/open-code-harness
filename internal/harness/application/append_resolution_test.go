@@ -111,14 +111,14 @@ type resolutionScript struct {
 	resolveFn    func(context.Context) (AppendResolution, error)
 	resolveCalls int
 	appendCalls  int
-	lastAppend   AppendRequestV2
+	lastAppend   AppendRequest
 }
 
 func (store *resolutionScript) ReadStream(context.Context, ReadStreamRequest) (StreamPage, error) {
 	return StreamPage{}, errors.New("unexpected read")
 }
 
-func (store *resolutionScript) Append(_ context.Context, request AppendRequestV2) (CommitReceipt, error) {
+func (store *resolutionScript) Append(_ context.Context, request AppendRequest) (CommitReceipt, error) {
 	store.appendCalls++
 	store.lastAppend = request
 	if store.appendCalls-1 < len(store.appends) {
