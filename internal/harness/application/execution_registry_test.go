@@ -265,6 +265,9 @@ func TestExecutionRegistryRetainsStepAppendUnknown(t *testing.T) {
 	if !ok || snapshot.Phase != executionPhaseStepAppendUnknown || !snapshot.Retained {
 		t.Fatalf("snapshot=%#v present=%t", snapshot, ok)
 	}
+	if _, attached := registry.attachExisting("request-step-unknown", "session-1", Digest{4}); attached {
+		t.Fatal("attachExisting treated retained unknown as a local owner")
+	}
 }
 
 func TestExecutionRegistryThirtyTwoLeasesObserveOneLiveOwner(t *testing.T) {

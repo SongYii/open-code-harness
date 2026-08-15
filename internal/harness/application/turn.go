@@ -182,8 +182,7 @@ func durableRequestTerminalError(result RunTurnResult) error {
 	if !result.TerminalCommitted {
 		return nil
 	}
-	// Classify by the turn event so cancel-during-tool and idle_in_turn
-	// failures (step_limit / envelope_limit) do not require an assistant terminal.
+	// turn event wins: tool cancel has no assistant terminal
 	switch event := requestOutcomeEvent(result.Records).(type) {
 	case domain.TurnFailed:
 		return applicationError(CategoryModel, event.Code, true, nil)
@@ -394,9 +393,9 @@ func isAppendOutcomeUnknown(err error) bool {
 	return errors.As(err, &applicationErr) && applicationErr != nil && applicationErr.Code == "append_outcome_unknown"
 }
 
-func (service *Service) terminalizeExecutionFailure(cleanupCtx context.Context, deliveryCtx context.Context, runningState domain.Session, runningResult RunTurnResult, commandID domain.CommandID, emitter *engine.Emitter, lease *executionLease, primary *Error, executionCause error, stats engine.AttemptStats) (RunTurnResult, error) {
-	terminalCommand, status, terminalSignal, stableCode := terminalCommandForExecution(runningResult, primary)
-	decided, err := service.decideTurnTerminal(runningState, runningResult.SessionID, runningResult.TurnID, runningResult.ItemID, stats, terminalCommand)
+func (service *Service) terminalizeExecutionFailure(cleanupCtx context.Context, deliveryCtx context.Context, runningState domain.Session, runningResult RunTurnResult, itemID domain.ItemID, commandID domain.CommandID, emitter *engine.Emitter, lease *executionLease, primary *Error, executionCause error, stats engine.AttemptStats) (RunTurnResult, error) {
+	terminalCommand, status, terminalSignal, stableCode := terminalCommandForExecution(runningResult, itemID, primary)
+	decided, err := service.decideTurnTerminal(runningState, runningResult.SessionID, runningResult.TurnID, itemID, stats, terminalCommand)
 	if err != nil {
 		return cloneRunTurnResult(runningResult), applicationError(CategoryInternal, "domain_transition_failed", false, errors.Join(executionCause, err))
 	}
@@ -438,15 +437,15 @@ func (service *Service) terminalizeExecutionFailure(cleanupCtx context.Context, 
 	return cloneRunTurnResult(terminalResult), committedError
 }
 
-func terminalCommandForExecution(result RunTurnResult, primary *Error) (domain.Command, domain.TurnStatus, engine.RuntimeEventType, string) {
+func terminalCommandForExecution(result RunTurnResult, itemID domain.ItemID, primary *Error) (domain.Command, domain.TurnStatus, engine.RuntimeEventType, string) {
 	if primary.Category == CategoryCanceled {
-		return domain.InterruptAssistantTurn{SessionID: result.SessionID, TurnID: result.TurnID, ItemID: result.ItemID, Code: domain.InterruptionCallerCanceled}, domain.TurnStatusInterrupted, engine.RuntimeModelStreamInterrupted, domain.InterruptionCallerCanceled
+		return domain.InterruptAssistantTurn{SessionID: result.SessionID, TurnID: result.TurnID, ItemID: itemID, Code: domain.InterruptionCallerCanceled}, domain.TurnStatusInterrupted, engine.RuntimeModelStreamInterrupted, domain.InterruptionCallerCanceled
 	}
 	if primary.Category == CategoryDelivery {
-		return domain.InterruptAssistantTurn{SessionID: result.SessionID, TurnID: result.TurnID, ItemID: result.ItemID, Code: domain.InterruptionDeliveryFailed}, domain.TurnStatusInterrupted, engine.RuntimeModelStreamInterrupted, domain.InterruptionDeliveryFailed
+		return domain.InterruptAssistantTurn{SessionID: result.SessionID, TurnID: result.TurnID, ItemID: itemID, Code: domain.InterruptionDeliveryFailed}, domain.TurnStatusInterrupted, engine.RuntimeModelStreamInterrupted, domain.InterruptionDeliveryFailed
 	}
 	code, message := durableFailure(primary)
-	return domain.FailAssistantTurn{SessionID: result.SessionID, TurnID: result.TurnID, ItemID: result.ItemID, Code: code, Message: message}, domain.TurnStatusFailed, engine.RuntimeModelStreamFailed, code
+	return domain.FailAssistantTurn{SessionID: result.SessionID, TurnID: result.TurnID, ItemID: itemID, Code: code, Message: message}, domain.TurnStatusFailed, engine.RuntimeModelStreamFailed, code
 }
 func durableFailure(primary *Error) (string, string) {
 	var failure *engine.ProviderFailure

@@ -138,7 +138,7 @@ func (service *Service) runSingleAttempt(ctx context.Context, owned *ownedTurn) 
 		cleanupBase := context.WithoutCancel(ctx)
 		cleanupCtx, cancel := context.WithTimeout(cleanupBase, service.config.TerminalCommitTimeout)
 		defer cancel()
-		return service.terminalizeExecutionFailure(cleanupCtx, ctx, owned.state, owned.result, owned.commandID, owned.emitter, owned.lease, mapRunError(err), err, runResult.Stats)
+		return service.terminalizeExecutionFailure(cleanupCtx, ctx, owned.state, owned.result, owned.assistantItem, owned.commandID, owned.emitter, owned.lease, mapRunError(err), err, runResult.Stats)
 	}
 	return service.completeAssistantTurn(ctx, owned, runResult)
 }
@@ -167,7 +167,7 @@ func (service *Service) runStepLoop(ctx context.Context, owned *ownedTurn) (RunT
 			cleanupBase := context.WithoutCancel(ctx)
 			cleanupCtx, cancel := context.WithTimeout(cleanupBase, service.config.TerminalCommitTimeout)
 			defer cancel()
-			return service.terminalizeExecutionFailure(cleanupCtx, ctx, owned.state, owned.result, owned.commandID, owned.emitter, owned.lease, mapRunError(err), err, runResult.Stats)
+			return service.terminalizeExecutionFailure(cleanupCtx, ctx, owned.state, owned.result, owned.assistantItem, owned.commandID, owned.emitter, owned.lease, mapRunError(err), err, runResult.Stats)
 		}
 		if len(runResult.ToolCalls) == 0 {
 			return service.completeAssistantTurn(ctx, owned, runResult)

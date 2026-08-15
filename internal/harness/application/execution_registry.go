@@ -94,6 +94,9 @@ func (registry *executionRegistry) attachExisting(requestID domain.RunTurnReques
 	if entry == nil || entry.sessionID != sessionID || entry.digest != digest {
 		return nil, false
 	}
+	if entry.retained && !entry.ownerActive && !entry.terminal && entry.leases == 0 {
+		return nil, false
+	}
 	entry.leases++
 	return &executionLease{registry: registry, entry: entry}, true
 }

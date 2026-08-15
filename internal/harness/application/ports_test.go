@@ -213,7 +213,7 @@ func TestErrorCategoriesAreStable(t *testing.T) {
 	}
 
 	if len(tests) != 9 {
-		t.Fatalf("category count = %d, want 8", len(tests))
+		t.Fatalf("category count = %d, want 9", len(tests))
 	}
 	for category, want := range tests {
 		if got := string(category); got != want {

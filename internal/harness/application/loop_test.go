@@ -63,6 +63,20 @@ func TestNewServiceToolComposition(t *testing.T) {
 		_, err := application.NewService(store, ids, testkit.FixedClock{Time: toolClock()}, runner, v2Authority, config)
 		assertApplicationError(t, err, application.CategoryPolicy, "invalid_configuration")
 	})
+	t.Run("catalog missing commands", func(t *testing.T) {
+		config := toolConfig(catalog, files, nil, nil)
+		_, err := application.NewService(store, ids, testkit.FixedClock{Time: toolClock()}, runner, v2Authority, config)
+		assertApplicationError(t, err, application.CategoryPolicy, "invalid_configuration")
+	})
+	t.Run("exec-only catalog missing files", func(t *testing.T) {
+		execOnly, err := tools.NewCatalog(execOnlySpecs())
+		if err != nil {
+			t.Fatal(err)
+		}
+		config := toolConfig(execOnly, nil, commands, nil)
+		_, err = application.NewService(store, ids, testkit.FixedClock{Time: toolClock()}, runner, v2Authority, config)
+		assertApplicationError(t, err, application.CategoryPolicy, "invalid_configuration")
+	})
 	t.Run("unknown policy mode", func(t *testing.T) {
 		config := application.DefaultConfig()
 		config.PolicyMode = "yolo"
@@ -125,6 +139,18 @@ func TestTwoStepReadFileSuccess(t *testing.T) {
 	}
 	if calls[1].Messages[2].Text != "hello from fixture" || calls[1].Messages[2].ToolCallID != "call-read" {
 		t.Fatalf("tool message = %#v", calls[1].Messages[2])
+	}
+	if calls[1].Messages[0].Role != domain.PromptRoleUser {
+		t.Fatalf("step2 stream must start with user: %#v", calls[1].Messages)
+	}
+	suffix := lastModelRequestMessages(result.Records)
+	if len(suffix) == 0 || suffix[0].Role != domain.PromptRoleAssistant {
+		t.Fatalf("step2 logged envelope = %#v, want suffix starting with assistant", suffix)
+	}
+	for _, message := range suffix {
+		if message.Role == domain.PromptRoleUser {
+			t.Fatalf("step2 logged envelope included user: %#v", suffix)
+		}
 	}
 
 	second, secondErr := service.RunTurn(context.Background(), application.RunTurnRequest{
@@ -376,8 +402,13 @@ func TestToolDenialsContinueTurnWithFrozenText(t *testing.T) {
 			if toolMsg.Text != test.wantText {
 				t.Fatalf("tool text = %q, want %q", toolMsg.Text, test.wantText)
 			}
-			if test.wantCode == application.CodeScopeDenied && test.name == "lexical escape" && counter.Resolves() != 0 {
-				t.Fatalf("lexical escape called Resolve: %d", counter.Resolves())
+			if test.wantCode == application.CodeScopeDenied && test.name == "lexical escape" {
+				if counter.Resolves() != 0 {
+					t.Fatalf("lexical escape called Resolve: %d", counter.Resolves())
+				}
+				if countEventType(result.Records, domain.EventPolicyDecisionRecorded) != 0 {
+					t.Fatalf("lexical escape recorded Decide: %v", turnEventTypes(result.Records))
+				}
 			}
 			if test.wantCode != application.CodeScopeDenied && test.wantCode != application.CodeInvalidArgs && test.wantCode != application.CodeUnknownTool {
 				if counter.Writes() != 0 {
@@ -504,6 +535,18 @@ func TestTableA2UnknownStartedDoesNotExecute(t *testing.T) {
 	if counter.Reads() != 0 || counter.Resolves() != 0 || len(model.Calls()) != 1 {
 		t.Fatalf("reads=%d resolves=%d streams=%d", counter.Reads(), counter.Resolves(), len(model.Calls()))
 	}
+	retryCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, retryErr := service.RunTurn(retryCtx, application.RunTurnRequest{
+		SessionID: created.SessionID, RequestID: "request-unknown-started", Input: "inspect", Sink: &testkit.RecordingSink{},
+	})
+	assertApplicationError(t, retryErr, application.CategoryConflict, application.CodeReconciliationRequired)
+	if retryCtx.Err() != nil {
+		t.Fatal("same-request retry waited on a closed-over unknown lease")
+	}
+	if len(model.Calls()) != 1 {
+		t.Fatalf("retry streamed: %d", len(model.Calls()))
+	}
 }
 
 func TestTableA2UnknownToolTerminalDoesNotReexecute(t *testing.T) {
@@ -560,6 +603,122 @@ func TestTableA2UnknownStepStartDoesNotStream(t *testing.T) {
 	}
 	if len(model.Calls()) != 1 {
 		t.Fatalf("streamed while step-start unknown: %d", len(model.Calls()))
+	}
+}
+
+func TestStepTwoStreamCancelInterruptsLiveAssistant(t *testing.T) {
+	fs := testkit.NewMemFS("/workspace")
+	fs.AddFile("README.md", []byte("hello"))
+	entered := make(chan struct{})
+	model := &stepTwoControlModel{entered: entered, second: []engine.StreamEvent{}}
+	model.waitSecond = true
+	service, _ := newToolService(t, model, fs, nil, nil, application.DefaultConfig())
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	var result application.RunTurnResult
+	var runErr error
+	go func() {
+		defer close(done)
+		result, runErr = service.RunTurn(ctx, application.RunTurnRequest{
+			SessionID: created.SessionID, RequestID: "request-step2-cancel", Input: "inspect", Sink: &testkit.RecordingSink{},
+		})
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("step 2 stream did not start")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunTurn did not return")
+	}
+	assertRunTurnError(t, runErr, application.CategoryCanceled, "canceled", true)
+	if result.ItemID != "item-1" {
+		t.Fatalf("ItemID = %s, want admission item-1", result.ItemID)
+	}
+	stepItem := lastAssistantStarted(result.Records)
+	interrupted := lastAssistantInterrupted(result.Records)
+	if stepItem == "" || stepItem == result.ItemID || interrupted.ItemID != stepItem {
+		t.Fatalf("step2 item=%s admission=%s interrupted=%#v", stepItem, result.ItemID, interrupted)
+	}
+}
+
+func TestStepTwoInvalidStreamFailsLiveAssistant(t *testing.T) {
+	fs := testkit.NewMemFS("/workspace")
+	fs.AddFile("README.md", []byte("hello"))
+	model := newSequenceModel(
+		[]engine.StreamEvent{
+			{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "call-read", Name: tools.NameReadFile, Arguments: `{"path":"README.md"}`}},
+			{Type: engine.StreamEventCompleted},
+		},
+		[]engine.StreamEvent{
+			{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "c2", Name: tools.NameReadFile, Arguments: `{"path":"README.md"}`}},
+			{Type: engine.StreamEventTextDelta, Text: "after-tool"},
+			{Type: engine.StreamEventCompleted},
+		},
+	)
+	service, _ := newToolService(t, model, fs, nil, nil, application.DefaultConfig())
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, runErr := service.RunTurn(context.Background(), application.RunTurnRequest{
+		SessionID: created.SessionID, RequestID: "request-step2-invalid", Input: "inspect", Sink: &testkit.RecordingSink{},
+	})
+	assertRunTurnError(t, runErr, application.CategoryModel, string(engine.CodeInvalidStream), true)
+	if result.ItemID != "item-1" {
+		t.Fatalf("ItemID = %s, want admission item-1", result.ItemID)
+	}
+	stepItem := lastAssistantStarted(result.Records)
+	failed := lastAssistantFailed(result.Records)
+	if stepItem == "" || stepItem == result.ItemID || failed.ItemID != stepItem || failed.Code != string(engine.CodeInvalidStream) {
+		t.Fatalf("step2 item=%s admission=%s failed=%#v", stepItem, result.ItemID, failed)
+	}
+}
+
+func TestExecArgvSymlinkOutNeverRuns(t *testing.T) {
+	fs := testkit.NewMemFS("/workspace")
+	fs.AddSymlink("bin/tool", "/usr/bin/tool")
+	counter := &countingFS{FileSystem: fs}
+	runner := testkit.NewScriptedRunner()
+	model := newSequenceModel(
+		[]engine.StreamEvent{
+			{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "call-exec", Name: tools.NameExec, Arguments: `{"argv":["bin/tool"]}`}},
+			{Type: engine.StreamEventCompleted},
+		},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "continued"}, {Type: engine.StreamEventCompleted}},
+	)
+	service, _ := newToolService(t, model, counter, runner, nil, application.DefaultConfig())
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+		SessionID: created.SessionID, RequestID: "request-exec-symlink", Input: "inspect", Sink: &testkit.RecordingSink{},
+	})
+	if err != nil || result.Text != "continued" {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if counter.Resolves() == 0 {
+		t.Fatal("exec argv path never called Resolve")
+	}
+	if len(runner.Calls()) != 0 {
+		t.Fatalf("CommandRunner.Run called: %#v", runner.Calls())
+	}
+	if lastToolMessage(model.Calls()[1].Messages).Text != application.ToolTextScopeDenied {
+		t.Fatalf("tool text = %#v", model.Calls()[1].Messages)
+	}
+	if failed := lastToolFailed(result.Records); failed.Code != application.CodeScopeDenied {
+		t.Fatalf("failed = %#v", failed)
+	}
+	if countEventType(result.Records, domain.EventPolicyDecisionRecorded) != 1 {
+		t.Fatalf("expected Decide after Resolve-out: %v", turnEventTypes(result.Records))
 	}
 }
 
@@ -663,6 +822,48 @@ func (model *sequenceModel) Calls() []engine.ModelRequest {
 	defer model.mu.Unlock()
 	return append([]engine.ModelRequest(nil), model.calls...)
 }
+
+type stepTwoControlModel struct {
+	mu         sync.Mutex
+	calls      []engine.ModelRequest
+	entered    chan struct{}
+	waitSecond bool
+	second     []engine.StreamEvent
+}
+
+func (model *stepTwoControlModel) Stream(ctx context.Context, request engine.ModelRequest) (engine.ModelStream, error) {
+	model.mu.Lock()
+	model.calls = append(model.calls, request)
+	n := len(model.calls)
+	model.mu.Unlock()
+	if n == 1 {
+		return &turnSuccessStream{events: []engine.StreamEvent{
+			{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "call-read", Name: tools.NameReadFile, Arguments: `{"path":"README.md"}`}},
+			{Type: engine.StreamEventCompleted},
+		}}, nil
+	}
+	if model.waitSecond {
+		return &waitCancelStream{entered: model.entered}, nil
+	}
+	return &turnSuccessStream{events: model.second}, nil
+}
+
+type waitCancelStream struct {
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (stream *waitCancelStream) Next(ctx context.Context) (engine.StreamEvent, error) {
+	stream.once.Do(func() {
+		if stream.entered != nil {
+			close(stream.entered)
+		}
+	})
+	<-ctx.Done()
+	return engine.StreamEvent{}, ctx.Err()
+}
+
+func (*waitCancelStream) Close() error { return nil }
 
 type countingFS struct {
 	tools.FileSystem
@@ -818,4 +1019,51 @@ func jsonMarshalProjection(messages []domain.ModelPromptMessage, toolSchemas []d
 		Messages []domain.ModelPromptMessage `json:"messages"`
 		Tools    []domain.ToolSchema         `json:"tools"`
 	}{Messages: messages, Tools: toolSchemas})
+}
+
+func lastModelRequestMessages(records []domain.RecordedEvent) []domain.ModelPromptMessage {
+	var last []domain.ModelPromptMessage
+	for _, record := range records {
+		if event, ok := record.Event.(domain.ModelRequestRecorded); ok {
+			last = event.Messages
+		}
+	}
+	return last
+}
+
+func lastAssistantStarted(records []domain.RecordedEvent) domain.ItemID {
+	var id domain.ItemID
+	for _, record := range records {
+		if event, ok := record.Event.(domain.AssistantMessageStarted); ok {
+			id = event.ItemID
+		}
+	}
+	return id
+}
+
+func lastAssistantInterrupted(records []domain.RecordedEvent) domain.AssistantMessageInterrupted {
+	for i := len(records) - 1; i >= 0; i-- {
+		if event, ok := records[i].Event.(domain.AssistantMessageInterrupted); ok {
+			return event
+		}
+	}
+	return domain.AssistantMessageInterrupted{}
+}
+
+func lastAssistantFailed(records []domain.RecordedEvent) domain.AssistantMessageFailed {
+	for i := len(records) - 1; i >= 0; i-- {
+		if event, ok := records[i].Event.(domain.AssistantMessageFailed); ok {
+			return event
+		}
+	}
+	return domain.AssistantMessageFailed{}
+}
+
+func execOnlySpecs() []domain.ToolSpec {
+	for _, spec := range tools.DefaultWorkspaceSpecs() {
+		if spec.Name == tools.NameExec {
+			return []domain.ToolSpec{spec}
+		}
+	}
+	return nil
 }

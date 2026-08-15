@@ -85,6 +85,16 @@ func (service *Service) executeOneTool(ctx context.Context, owned *ownedTurn, ca
 			resolved = abs
 		}
 	}
+	if extra := args.execBinaryPath(); extra != "" && !isNilValue(service.files) {
+		abs, resolveErr := service.files.Resolve(ctx, owned.state.WorkspaceRoot, extra)
+		if contextError(ctx) != nil || isCancelCause(resolveErr) {
+			result, cancelErr := service.cancelOwnedTurn(ctx, owned, domain.InterruptionCallerCanceled)
+			return true, result, cancelErr
+		}
+		if resolveErr != nil || abs == "" {
+			workspaceIn = false
+		}
+	}
 
 	decision, decideErr := service.policy.Decide(policy.Input{
 		Name: spec.Name, Risk: spec.Risk, Mutates: spec.Mutates,
