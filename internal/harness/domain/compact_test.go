@@ -86,6 +86,35 @@ func TestApplyCompactClosesIdleSession(t *testing.T) {
 	}
 }
 
+func TestApplyCompactModelFactsAreVersionOnly(t *testing.T) {
+	state := compactActiveSession(t)
+	state = applyCompactRecord(t, state, TurnStarted{TurnID: "turn-1", Input: "inspect repository"})
+	state = applyCompactRecord(t, state, AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"})
+	before := state.Clone()
+
+	for _, event := range []Event{
+		validModelRequestRecorded("turn-1", "item-1", "inspect repository"),
+		validModelUsageRecorded("turn-1", "item-1"),
+	} {
+		record := compactRecord(state, event)
+		record.OccurredAt = state.ActiveTurn.ActiveItem.StartedAt
+		next, err := Apply(state, record)
+		if err != nil {
+			t.Fatalf("Apply(%T) error = %v", event, err)
+		}
+		if next.Version != record.Sequence {
+			t.Fatalf("version = %d, want %d", next.Version, record.Sequence)
+		}
+		next.Version = before.Version
+		if !reflect.DeepEqual(next, before) {
+			t.Fatalf("version-only apply changed compact fields: got %#v want %#v", next, before)
+		}
+		next.Version = record.Sequence
+		state = next
+		before = state.Clone()
+	}
+}
+
 func TestApplyCompactRejectsInvalidSequence(t *testing.T) {
 	state := compactActiveSession(t)
 	record := compactRecord(state, TurnStarted{TurnID: "turn-1", Input: "inspect"})

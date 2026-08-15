@@ -38,9 +38,24 @@ func CloneEvent(event Event) (Event, error) {
 		return event, nil
 	case AssistantMessageInterrupted:
 		return event, nil
+	case ModelRequestRecorded:
+		cloned := event
+		cloned.Messages = cloneModelPromptMessages(event.Messages)
+		return cloned, nil
+	case ModelUsageRecorded:
+		return event, nil
 	default:
 		return nil, domainError(CodeInvalidEvent, "event type cannot be cloned")
 	}
+}
+
+func cloneModelPromptMessages(messages []ModelPromptMessage) []ModelPromptMessage {
+	if messages == nil {
+		return nil
+	}
+	cloned := make([]ModelPromptMessage, len(messages))
+	copy(cloned, messages)
+	return cloned
 }
 
 func CloneRecordedEvents(records []RecordedEvent) ([]RecordedEvent, error) {

@@ -715,17 +715,96 @@ type mutableUnknownEvent struct{ Values []string }
 
 func (mutableUnknownEvent) EventType() string { return "test.mutable" }
 
+func TestApplyModelFactsAreVersionOnly(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		event Event
+	}{
+		{name: "request", event: validModelRequestRecorded("turn-1", "item-1", "inspect repository")},
+		{name: "usage", event: validModelUsageRecorded("turn-1", "item-1")},
+		{name: "usage zeros", event: ModelUsageRecorded{TurnID: "turn-1", ItemID: "item-1"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := runningAssistantItemForTest(t)
+			before := state.Clone()
+			record := recordedForTest(state, test.event)
+			record.OccurredAt = state.Turns["turn-1"].Items["item-1"].StartedAt
+			got, err := HistoricalApply(state, record)
+			if err != nil {
+				t.Fatalf("Apply() error = %v", err)
+			}
+			if got.Version != record.Sequence {
+				t.Fatalf("version = %d, want %d", got.Version, record.Sequence)
+			}
+			got.Version = before.Version
+			if !reflect.DeepEqual(got, before) {
+				t.Fatalf("version-only apply changed historical items: got %#v want %#v", got, before)
+			}
+			if !reflect.DeepEqual(state, before) {
+				t.Fatalf("Apply() mutated input: got %#v want %#v", state, before)
+			}
+		})
+	}
+}
+
+func TestApplyModelFactsRejectInvalidTransitions(t *testing.T) {
+	t.Parallel()
+
+	runningItem := runningAssistantItemForTest(t)
+	idle := activeSessionForTest(t)
+	completed := terminalAssistantItemForTest(t)
+	tests := []struct {
+		name  string
+		state HistoricalSession
+		event Event
+	}{
+		{name: "request before item start", state: runningItem, event: validModelRequestRecorded("turn-1", "item-1", "inspect repository")},
+		{name: "usage after item terminal", state: completed, event: validModelUsageRecorded("turn-1", "item-1")},
+		{name: "request without item", state: runningTurnForTest(t), event: validModelRequestRecorded("turn-1", "item-1", "inspect repository")},
+		{name: "request idle session", state: idle, event: validModelRequestRecorded("turn-1", "item-1", "inspect repository")},
+		{name: "usage wrong item", state: runningItem, event: validModelUsageRecorded("turn-1", "item-2")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			record := recordedForTest(test.state, test.event)
+			if test.name == "request before item start" {
+				record.OccurredAt = test.state.Turns["turn-1"].Items["item-1"].StartedAt.Add(-time.Second)
+			}
+			before := test.state.Clone()
+			_, err := HistoricalApply(test.state, record)
+			if !IsCode(err, CodeInvalidEvent) && !IsCode(err, CodeTurnNotRunning) {
+				t.Fatalf("Apply() error = %v, want invalid event or turn not running", err)
+			}
+			if !reflect.DeepEqual(test.state, before) {
+				t.Fatalf("Apply() mutated input: got %#v want %#v", test.state, before)
+			}
+		})
+	}
+}
+
 func TestCloneRecordedEventsDeepCopiesEventsAndRejectsUnknownTypes(t *testing.T) {
 	t.Parallel()
 
-	records := []RecordedEvent{{Event: AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "original"}}}
+	request := validModelRequestRecorded("turn-1", "item-1", "original")
+	records := []RecordedEvent{
+		{Event: AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "original"}},
+		{Event: request},
+		{Event: validModelUsageRecorded("turn-1", "item-1")},
+	}
 	cloned, err := CloneRecordedEvents(records)
 	if err != nil {
 		t.Fatalf("CloneRecordedEvents() error = %v", err)
 	}
 	cloned[0].Event = AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "changed"}
+	cloned[1].Event.(ModelRequestRecorded).Messages[0].Text = "changed"
 	if records[0].Event.(AssistantMessageCompleted).Text != "original" {
 		t.Fatalf("mutating cloned records changed source = %#v", records)
+	}
+	if records[1].Event.(ModelRequestRecorded).Messages[0].Text != "original" {
+		t.Fatalf("mutating cloned request messages changed source = %#v", records[1])
 	}
 
 	_, err = CloneRecordedEvents([]RecordedEvent{{Event: mutableUnknownEvent{Values: []string{"mutable"}}}})

@@ -154,6 +154,16 @@ func HistoricalApply(state HistoricalSession, record RecordedEvent) (HistoricalS
 		return historical_applyAssistantMessageInterrupted(state, record, event)
 	case SessionClosed:
 		return historical_applySessionClosed(state, record)
+	case ModelRequestRecorded:
+		if err := validateModelRequestPayload(event, CodeInvalidEvent); err != nil {
+			return HistoricalSession{}, err
+		}
+		return historical_applyVersionOnlyRunningItem(state, record, event.TurnID, event.ItemID, "model request timestamp precedes item start")
+	case ModelUsageRecorded:
+		if err := validateModelUsagePayload(event, CodeInvalidEvent); err != nil {
+			return HistoricalSession{}, err
+		}
+		return historical_applyVersionOnlyRunningItem(state, record, event.TurnID, event.ItemID, "model usage timestamp precedes item start")
 	default:
 		return HistoricalSession{}, domainError(CodeInvalidEvent, "event type cannot be applied")
 	}
@@ -322,6 +332,19 @@ func historical_applyTerminalTurn(state HistoricalSession, record RecordedEvent,
 	turn.InterruptWhy = interruptWhy
 	next.Turns[turn.ID] = turn
 	next.ActiveTurnID = ""
+	next.Version = record.Sequence
+	return next, nil
+}
+
+func historical_applyVersionOnlyRunningItem(state HistoricalSession, record RecordedEvent, turnID TurnID, itemID ItemID, beforeStartMessage string) (HistoricalSession, error) {
+	_, item, err := historical_requireRunningItemForEvent(state, record.SessionID, turnID, itemID)
+	if err != nil {
+		return HistoricalSession{}, err
+	}
+	if record.OccurredAt.Before(item.StartedAt) {
+		return HistoricalSession{}, domainError(CodeInvalidEvent, beforeStartMessage)
+	}
+	next := state.Clone()
 	next.Version = record.Sequence
 	return next, nil
 }
@@ -552,6 +575,8 @@ func HistoricalDecide(state HistoricalSession, command Command) ([]UncommittedEv
 		return historical_decideFailAssistantTurn(state, command)
 	case InterruptAssistantTurn:
 		return historical_decideInterruptAssistantTurn(state, command)
+	case RecordModelUsage:
+		return historical_decideRecordModelUsage(state, command)
 	case CloseSession:
 		return historical_decideCloseSession(state, command)
 	default:
@@ -601,6 +626,9 @@ func historical_decideStartAssistantTurn(state HistoricalSession, command StartA
 	if err := validateCommandText(command.Input, "turn input is required"); err != nil {
 		return nil, err
 	}
+	if err := validateStartAssistantTurnRequest(command); err != nil {
+		return nil, err
+	}
 	if _, exists := state.Turns[command.TurnID]; exists {
 		return nil, domainError(CodeTurnAlreadyExists, "turn already exists")
 	}
@@ -609,7 +637,17 @@ func historical_decideStartAssistantTurn(state HistoricalSession, command StartA
 			return nil, domainError(CodeItemAlreadyExists, "item already exists")
 		}
 	}
-	return startAssistantTurnEvents(command.TurnID, command.ItemID, command.Input), nil
+	return startAssistantTurnEvents(command.TurnID, command.ItemID, command.Input, command.Request), nil
+}
+
+func historical_decideRecordModelUsage(state HistoricalSession, command RecordModelUsage) ([]UncommittedEvent, error) {
+	if _, err := historical_requireRunningItem(state, command.SessionID, command.TurnID, command.ItemID); err != nil {
+		return nil, err
+	}
+	if err := validateModelUsagePayload(command.ModelUsageRecorded, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	return recordModelUsageEvents(command.ModelUsageRecorded), nil
 }
 
 func historical_validateSessionStructure(state HistoricalSession) error {
@@ -726,7 +764,12 @@ func historical_validateSessionStructure(state HistoricalSession) error {
 	if state.Status == SessionStatusClosed && !advanceVersion() { // session.closed
 		return domainError(CodeInvalidCommand, "session version shape overflows")
 	}
-	if state.Version != expectedVersion {
+	itemCount := 0
+	for _, turn := range state.Turns {
+		itemCount += len(turn.Items)
+	}
+	maxLogOnly := uint64(itemCount) * 2
+	if state.Version < expectedVersion || state.Version-expectedVersion > maxLogOnly {
 		return domainError(CodeInvalidCommand, "session version does not match lifecycle structure")
 	}
 	return nil

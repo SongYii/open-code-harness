@@ -59,6 +59,16 @@ func Apply(state Session, record RecordedEvent) (Session, error) {
 		return applyTerminalItem(state, record, event.TurnID, event.ItemID)
 	case SessionClosed:
 		return applySessionClosed(state, record)
+	case ModelRequestRecorded:
+		if err := validateModelRequestPayload(event, CodeInvalidEvent); err != nil {
+			return Session{}, err
+		}
+		return applyVersionOnlyRunningItem(state, record, event.TurnID, event.ItemID, "model request timestamp precedes item start")
+	case ModelUsageRecorded:
+		if err := validateModelUsagePayload(event, CodeInvalidEvent); err != nil {
+			return Session{}, err
+		}
+		return applyVersionOnlyRunningItem(state, record, event.TurnID, event.ItemID, "model usage timestamp precedes item start")
 	default:
 		return Session{}, domainError(CodeInvalidEvent, "event type cannot be applied")
 	}
@@ -167,6 +177,19 @@ func applyAssistantMessageStarted(state Session, record RecordedEvent, event Ass
 	}
 	next := state.Clone()
 	next.ActiveTurn.ActiveItem = &Item{ID: event.ItemID, TurnID: event.TurnID, Kind: ItemKindAssistantMessage, StartedAt: record.OccurredAt}
+	next.Version = record.Sequence
+	return next, nil
+}
+
+func applyVersionOnlyRunningItem(state Session, record RecordedEvent, turnID TurnID, itemID ItemID, beforeStartMessage string) (Session, error) {
+	item, err := requireRunningItemForEvent(state, record.SessionID, turnID, itemID)
+	if err != nil {
+		return Session{}, err
+	}
+	if record.OccurredAt.Before(item.StartedAt) {
+		return Session{}, domainError(CodeInvalidEvent, beforeStartMessage)
+	}
+	next := state.Clone()
 	next.Version = record.Sequence
 	return next, nil
 }

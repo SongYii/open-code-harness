@@ -28,6 +28,38 @@ func activeSessionForTest(t *testing.T) HistoricalSession {
 	return state
 }
 
+func validModelRequestSpec(input string) *ModelRequestSpec {
+	return &ModelRequestSpec{
+		AdapterFamily:    "openai_compat",
+		ModelID:          "test-model",
+		EndpointID:       "api.example.com",
+		NativeTools:      "unsupported",
+		Images:           "unsupported",
+		StructuredOutput: "unsupported",
+		ReasoningFields:  "unsupported",
+		PromptCache:      "unsupported",
+		IncludeUsage:     true,
+		Messages:         []ModelPromptMessage{{Role: PromptRoleUser, Text: input}},
+	}
+}
+
+func validModelRequestRecorded(turnID TurnID, itemID ItemID, input string) ModelRequestRecorded {
+	return modelRequestRecordedFromSpec(turnID, itemID, *validModelRequestSpec(input))
+}
+
+func validModelUsageRecorded(turnID TurnID, itemID ItemID) ModelUsageRecorded {
+	return ModelUsageRecorded{
+		TurnID:            turnID,
+		ItemID:            itemID,
+		InputTokens:       3,
+		OutputTokens:      5,
+		CachedInputTokens: 1,
+		LatencyMs:         12,
+		FinishReason:      FinishReasonStop,
+		ProviderRequestID: "req-1",
+	}
+}
+
 func runningTurnForTest(t *testing.T) HistoricalSession {
 	t.Helper()
 	state := activeSessionForTest(t)
