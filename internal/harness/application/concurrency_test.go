@@ -2,9 +2,13 @@ package application_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"reflect"
+	"runtime"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/memory"
 	"github.com/SongYii/open-code-harness/internal/harness/application"
@@ -14,30 +18,33 @@ import (
 )
 
 func TestConcurrentRunTurnSameSessionHasOneAtomicAdmissionWinner(t *testing.T) {
+	authority := application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1}
+	base, err := memory.NewEventStoreV2(authority)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ids := testkit.NewSequenceIDs()
-	base, err := memory.NewEventStore(testkit.FixedClock{Time: acceptanceTime}, ids)
+	seed := newAcceptanceService(t, base, ids, &acceptanceSuccessModel{text: "seed"})
+	created, err := seed.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	barrier := newAcceptanceLoadBarrier(base, "session-1", 2)
-	model := &acceptanceSuccessModel{text: "done"}
-	service := newAcceptanceService(t, barrier, ids, model)
-	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	lookupGate := newLookupRaceBarrier(base, 32)
+	model := newBlockingAcceptanceModel("done")
+	service := newAcceptanceService(t, lookupGate, ids, model)
 
 	type outcome struct {
 		result application.RunTurnResult
 		err    error
 	}
 	start := make(chan struct{})
-	done := make(chan outcome, 2)
-	for index := 0; index < 2; index++ {
+	done := make(chan outcome, 32)
+	for index := 0; index < 32; index++ {
 		go func() {
 			<-start
 			result, runErr := service.RunTurn(context.Background(), application.RunTurnRequest{
 				SessionID: created.SessionID,
+				RequestID: "request-concurrent",
 				Input:     "inspect",
 				Sink:      &testkit.RecordingSink{},
 			})
@@ -45,31 +52,50 @@ func TestConcurrentRunTurnSameSessionHasOneAtomicAdmissionWinner(t *testing.T) {
 		}()
 	}
 	close(start)
-	barrier.WaitAll()
-	barrier.Release()
+	await(t, lookupGate.ready, "all initial request lookups")
+	close(lookupGate.release)
+	select {
+	case <-model.started:
+	case <-time.After(time.Second):
+		t.Fatal("owner did not enter blocking model")
+	}
+	mismatchDone := make(chan error, 1)
+	go func() {
+		_, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-concurrent", Input: "changed", Sink: &testkit.RecordingSink{}})
+		mismatchDone <- err
+	}()
+	mismatch := awaitOutcome(t, mismatchDone, "changed-input rejection")
+	var mismatchErr *application.Error
+	if !errors.As(mismatch, &mismatchErr) || mismatchErr.Code != "command_identity_mismatch" || len(model.Calls()) != 1 {
+		t.Fatalf("changed input error=%v model=%d", mismatch, len(model.Calls()))
+	}
+	beforeRelease, err := application.ReadWholeStreamPinned(context.Background(), base, created.SessionID, 256)
+	if err != nil || !reflect.DeepEqual(acceptanceEventTypes(beforeRelease), []string{domain.EventSessionCreated, domain.EventTurnStarted, domain.EventAssistantMessageStarted}) {
+		t.Fatalf("pre-release records=%#v err=%v", beforeRelease, err)
+	}
+	model.releaseOnce()
 
-	successes, conflicts := 0, 0
-	for range 2 {
-		got := <-done
-		switch {
-		case got.err == nil:
-			successes++
-			if got.result.Status != domain.TurnStatusCompleted || !got.result.TerminalCommitted {
-				t.Fatalf("winner result = %#v", got.result)
-			}
-		case application.IsCategory(got.err, application.CategoryConflict):
-			conflicts++
-			if !reflect.DeepEqual(got.result, application.RunTurnResult{}) {
-				t.Fatalf("conflict result = %#v, want zero result", got.result)
-			}
-		default:
+	successes := 0
+	var first application.RunTurnResult
+	for range 32 {
+		got := awaitOutcome(t, done, "same-request caller result")
+		if got.err != nil {
 			t.Fatalf("RunTurn() unexpected error = %v, result = %#v", got.err, got.result)
 		}
+		successes++
+		if got.result.Status != domain.TurnStatusCompleted || !got.result.TerminalCommitted {
+			t.Fatalf("result = %#v", got.result)
+		}
+		if first.TurnID == "" {
+			first = got.result
+		} else if !reflect.DeepEqual(got.result, first) {
+			t.Fatalf("duplicate result = %#v, want same execution as %#v", got.result, first)
+		}
 	}
-	if successes != 1 || conflicts != 1 || len(model.Calls()) != 1 {
-		t.Fatalf("successes=%d conflicts=%d model calls=%d", successes, conflicts, len(model.Calls()))
+	if successes != 32 || len(model.Calls()) != 1 {
+		t.Fatalf("successes=%d model calls=%d", successes, len(model.Calls()))
 	}
-	records, err := base.Load(context.Background(), created.SessionID)
+	records, err := application.ReadWholeStreamPinned(context.Background(), base, created.SessionID, 256)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,10 +118,220 @@ func TestConcurrentRunTurnSameSessionHasOneAtomicAdmissionWinner(t *testing.T) {
 	}
 }
 
+func TestFoundRunningAttachesLocalWaiterAndCancellationIsIsolated(t *testing.T) {
+	authority := application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1}
+	base, err := memory.NewEventStoreV2(authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := testkit.NewSequenceIDs()
+	seed := newAcceptanceService(t, base, ids, &acceptanceSuccessModel{text: "seed"})
+	created, err := seed.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	observer := &foundLookupObserver{EventStoreV2: base, found: make(chan struct{}, 4)}
+	model := newBlockingAcceptanceModel("done")
+	service := newAcceptanceService(t, observer, ids, model)
+	type outcome struct {
+		result application.RunTurnResult
+		err    error
+	}
+	ownerDone := make(chan outcome, 1)
+	request := application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-live", Input: "inspect", Sink: &testkit.RecordingSink{}}
+	go func() {
+		result, err := service.RunTurn(context.Background(), request)
+		ownerDone <- outcome{result, err}
+	}()
+	await(t, model.started, "owner durable running admission")
+	waiterCtx, cancelWaiter := context.WithCancel(context.Background())
+	canceledDone := make(chan outcome, 1)
+	go func() { result, err := service.RunTurn(waiterCtx, request); canceledDone <- outcome{result, err} }()
+	await(t, observer.found, "cancelable waiter found-running lookup")
+	awaitRegistryLeases(t, service, request.RequestID, 2, "cancelable waiter attach")
+	cancelWaiter()
+	canceled := awaitOutcome(t, canceledDone, "cancelable waiter result")
+	if !application.IsCategory(canceled.err, application.CategoryCanceled) {
+		t.Fatalf("canceled waiter=%#v", canceled)
+	}
+	awaitRegistryLeases(t, service, request.RequestID, 1, "canceled waiter detach")
+	select {
+	case owner := <-ownerDone:
+		t.Fatalf("owner returned before release: %#v", owner)
+	default:
+	}
+	attachedDone := make(chan outcome, 1)
+	go func() {
+		result, err := service.RunTurn(context.Background(), request)
+		attachedDone <- outcome{result, err}
+	}()
+	await(t, observer.found, "attached waiter found-running lookup")
+	awaitRegistryLeases(t, service, request.RequestID, 2, "attached waiter lease")
+	model.releaseOnce()
+	owner := awaitOutcome(t, ownerDone, "owner terminal result")
+	attached := awaitOutcome(t, attachedDone, "attached waiter terminal result")
+	if owner.err != nil || attached.err != nil || !reflect.DeepEqual(owner.result, attached.result) || len(model.Calls()) != 1 {
+		t.Fatalf("owner=%#v attached=%#v calls=%d", owner, attached, len(model.Calls()))
+	}
+	if records, err := application.ReadWholeStreamPinned(context.Background(), base, created.SessionID, 256); err != nil || len(records) != 5 {
+		t.Fatalf("records=%#v err=%v", records, err)
+	}
+}
+
+func awaitRegistryLeases(t *testing.T, service *application.Service, requestID domain.RunTurnRequestID, want uint32, description string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		snapshot := application.ExecutionRegistrySnapshotForTest(service, requestID)
+		if snapshot.Present && snapshot.Leases == want {
+			return
+		}
+		runtime.Gosched()
+	}
+	snapshot := application.ExecutionRegistrySnapshotForTest(service, requestID)
+	t.Fatalf("timed out waiting for %s: snapshot=%#v want leases=%d", description, snapshot, want)
+}
+
+type foundLookupObserver struct {
+	application.EventStoreV2
+	found chan struct{}
+}
+
+func (store *foundLookupObserver) FindCommandRequest(ctx context.Context, request application.FindCommandRequestRequest) (application.CommandRequestLookup, error) {
+	lookup, err := store.EventStoreV2.FindCommandRequest(ctx, request)
+	if err == nil && lookup.Kind == application.CommandRequestLookupFound {
+		select {
+		case store.found <- struct{}{}:
+		default:
+		}
+	}
+	return lookup, err
+}
+
+func await(t *testing.T, channel <-chan struct{}, description string) {
+	t.Helper()
+	select {
+	case <-channel:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", description)
+	}
+}
+
+func awaitOutcome[T any](t *testing.T, channel <-chan T, description string) T {
+	t.Helper()
+	select {
+	case value := <-channel:
+		return value
+	case <-time.After(time.Second):
+		var zero T
+		t.Fatalf("timed out waiting for %s", description)
+		return zero
+	}
+}
+
+func TestConcurrentRunTurnAcrossServicesReconcilesDurableAdmissionWinner(t *testing.T) {
+	authority := application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1}
+	base, err := memory.NewEventStoreV2(authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := newAcceptanceService(t, base, newPrefixedIDs("seed"), &acceptanceSuccessModel{text: "seed"})
+	created, err := seed.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelA, modelB := newBlockingAcceptanceModel("done"), newBlockingAcceptanceModel("done")
+	serviceA := newAcceptanceService(t, base, newPrefixedIDs("runtime-a"), modelA)
+	serviceB := newAcceptanceService(t, base, newPrefixedIDs("runtime-b"), modelB)
+	type outcome struct{ err error }
+	done := make(chan outcome, 1)
+	go func() {
+		_, err := serviceA.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-cross-process", Input: "inspect", Sink: &testkit.RecordingSink{}})
+		done <- outcome{err: err}
+	}()
+	await(t, modelA.started, "cross-service durable running owner")
+	_, loserErr := serviceB.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-cross-process", Input: "inspect", Sink: &testkit.RecordingSink{}})
+	var appErr *application.Error
+	if !errors.As(loserErr, &appErr) || appErr.Code != "reconciliation_required" {
+		t.Fatalf("cross-service loser error = %v", loserErr)
+	}
+	modelA.releaseOnce()
+	second := awaitOutcome(t, done, "cross-service winner")
+	if second.err != nil {
+		t.Fatalf("cross-service winner error = %v", second.err)
+	}
+	successes, reconciliations := 1, 1
+	if successes+reconciliations != 2 || len(modelA.Calls())+len(modelB.Calls()) != 1 {
+		t.Fatalf("successes=%d reconciliations=%d model calls=%d", successes, reconciliations, len(modelA.Calls())+len(modelB.Calls()))
+	}
+	lookup, err := base.FindCommandRequest(context.Background(), application.FindCommandRequestRequest{RunTurnRequestID: "request-cross-process", SessionID: created.SessionID, RequestDigest: mustRunTurnDigest(t, created.SessionID, "inspect")})
+	if err != nil || lookup.Kind != application.CommandRequestLookupFound || lookup.Record == nil {
+		t.Fatalf("admission lookup = %#v, %v", lookup, err)
+	}
+	records, err := application.ReadWholeStreamPinned(context.Background(), base, created.SessionID, 256)
+	if err != nil || countAdmissionStartPairs(records, lookup.Record.CommandID, lookup.Record.TurnID, lookup.Record.ItemID) != 1 {
+		t.Fatalf("admission records = %#v, %v", records, err)
+	}
+}
+
+func mustRunTurnDigest(t *testing.T, sessionID domain.SessionID, input string) application.Digest {
+	t.Helper()
+	digest, err := application.DigestRunTurnRequestV1(sessionID, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return digest
+}
+
+func countAdmissionStartPairs(records []domain.RecordedEvent, commandID domain.CommandID, turnID domain.TurnID, itemID domain.ItemID) int {
+	count := 0
+	for index := 0; index+1 < len(records); index++ {
+		turn, turnOK := records[index].Event.(domain.TurnStarted)
+		item, itemOK := records[index+1].Event.(domain.AssistantMessageStarted)
+		if turnOK && itemOK && records[index].CommandID == commandID && records[index+1].CommandID == commandID && turn.TurnID == turnID && item.TurnID == turnID && item.ItemID == itemID {
+			count++
+		}
+	}
+	return count
+}
+
+type lookupRaceBarrier struct {
+	application.EventStoreV2
+	mu        sync.Mutex
+	remaining int
+	ready     chan struct{}
+	release   chan struct{}
+}
+
+func newLookupRaceBarrier(store application.EventStoreV2, callers int) *lookupRaceBarrier {
+	return &lookupRaceBarrier{EventStoreV2: store, remaining: callers, ready: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (store *lookupRaceBarrier) FindCommandRequest(ctx context.Context, request application.FindCommandRequestRequest) (application.CommandRequestLookup, error) {
+	lookup, err := store.EventStoreV2.FindCommandRequest(ctx, request)
+	if err != nil || lookup.Kind != application.CommandRequestLookupNotFound {
+		return lookup, err
+	}
+	store.mu.Lock()
+	store.remaining--
+	last := store.remaining == 0
+	store.mu.Unlock()
+	if last {
+		close(store.ready)
+	}
+	select {
+	case <-store.release:
+		return lookup, nil
+	case <-ctx.Done():
+		return application.CommandRequestLookup{}, ctx.Err()
+	}
+}
+
 func TestConcurrentRunTurnDifferentSessionsCompleteThirtyTwo(t *testing.T) {
 	const count = 32
 	ids := testkit.NewSequenceIDs()
-	store, err := memory.NewEventStore(testkit.FixedClock{Time: acceptanceTime}, ids)
+	authority := application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1}
+	store, err := memory.NewEventStoreV2(authority)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,27 +353,29 @@ func TestConcurrentRunTurnDifferentSessionsCompleteThirtyTwo(t *testing.T) {
 	}
 	outcomes := make([]outcome, count)
 	start := make(chan struct{})
-	var wait sync.WaitGroup
-	wait.Add(count)
+	finished := make(chan struct{}, count)
 	for index, sessionID := range sessionIDs {
 		go func() {
-			defer wait.Done()
+			defer func() { finished <- struct{}{} }()
 			<-start
 			outcomes[index].result, outcomes[index].err = service.RunTurn(context.Background(), application.RunTurnRequest{
 				SessionID: sessionID,
+				RequestID: domain.RunTurnRequestID(fmt.Sprintf("request-%d", index)),
 				Input:     "inspect",
 				Sink:      sharedSink,
 			})
 		}()
 	}
 	close(start)
-	wait.Wait()
+	for range count {
+		await(t, finished, "different-session caller")
+	}
 
 	for index, got := range outcomes {
 		if got.err != nil || got.result.Status != domain.TurnStatusCompleted || got.result.Text != "parallel" || !got.result.TerminalCommitted {
 			t.Fatalf("outcome[%d] = %#v, err = %v", index, got.result, got.err)
 		}
-		records, loadErr := store.Load(context.Background(), sessionIDs[index])
+		records, loadErr := application.ReadWholeStreamPinned(context.Background(), store, sessionIDs[index], 256)
 		if loadErr != nil {
 			t.Fatal(loadErr)
 		}
@@ -156,7 +394,7 @@ func TestConcurrentRunTurnDifferentSessionsCompleteThirtyTwo(t *testing.T) {
 }
 
 type acceptanceLoadBarrier struct {
-	application.EventStore
+	application.EventStoreV2
 	target    domain.SessionID
 	mu        sync.Mutex
 	remaining int
@@ -164,20 +402,20 @@ type acceptanceLoadBarrier struct {
 	release   chan struct{}
 }
 
-func newAcceptanceLoadBarrier(store application.EventStore, target domain.SessionID, parties int) *acceptanceLoadBarrier {
+func newAcceptanceLoadBarrier(store application.EventStoreV2, target domain.SessionID, parties int) *acceptanceLoadBarrier {
 	return &acceptanceLoadBarrier{
-		EventStore: store,
-		target:     target,
-		remaining:  parties,
-		entered:    make(chan struct{}, parties),
-		release:    make(chan struct{}),
+		EventStoreV2: store,
+		target:       target,
+		remaining:    parties,
+		entered:      make(chan struct{}, parties),
+		release:      make(chan struct{}),
 	}
 }
 
-func (barrier *acceptanceLoadBarrier) Load(ctx context.Context, sessionID domain.SessionID) ([]domain.RecordedEvent, error) {
-	records, err := barrier.EventStore.Load(ctx, sessionID)
-	if err != nil || sessionID != barrier.target {
-		return records, err
+func (barrier *acceptanceLoadBarrier) ReadStream(ctx context.Context, request application.ReadStreamRequest) (application.StreamPage, error) {
+	page, err := barrier.EventStoreV2.ReadStream(ctx, request)
+	if err != nil || request.SessionID != barrier.target || request.AfterSequence != 0 {
+		return page, err
 	}
 	barrier.mu.Lock()
 	wait := barrier.remaining > 0
@@ -186,14 +424,14 @@ func (barrier *acceptanceLoadBarrier) Load(ctx context.Context, sessionID domain
 	}
 	barrier.mu.Unlock()
 	if !wait {
-		return records, nil
+		return page, nil
 	}
 	barrier.entered <- struct{}{}
 	select {
 	case <-barrier.release:
-		return records, nil
+		return page, nil
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return application.StreamPage{}, ctx.Err()
 	}
 }
 
@@ -209,6 +447,86 @@ type acceptanceSuccessModel struct {
 	mu    sync.Mutex
 	text  string
 	calls []engine.ModelRequest
+}
+
+type prefixedIDs struct {
+	mu                                          sync.Mutex
+	prefix                                      string
+	session, turn, item, command, append, event uint64
+}
+
+func newPrefixedIDs(prefix string) *prefixedIDs { return &prefixedIDs{prefix: prefix} }
+func (ids *prefixedIDs) next(kind string, value *uint64) string {
+	ids.mu.Lock()
+	defer ids.mu.Unlock()
+	*value++
+	return fmt.Sprintf("%s-%s-%d", ids.prefix, kind, *value)
+}
+func (ids *prefixedIDs) NewSessionID() (domain.SessionID, error) {
+	return domain.SessionID(ids.next("session", &ids.session)), nil
+}
+func (ids *prefixedIDs) NewTurnID() (domain.TurnID, error) {
+	return domain.TurnID(ids.next("turn", &ids.turn)), nil
+}
+func (ids *prefixedIDs) NewItemID() (domain.ItemID, error) {
+	return domain.ItemID(ids.next("item", &ids.item)), nil
+}
+func (ids *prefixedIDs) NewCommandID() (domain.CommandID, error) {
+	return domain.CommandID(ids.next("command", &ids.command)), nil
+}
+func (ids *prefixedIDs) NewAppendID() (domain.AppendID, error) {
+	return domain.AppendID(ids.next("append", &ids.append)), nil
+}
+func (ids *prefixedIDs) NewEventID() (domain.EventID, error) {
+	return domain.EventID(ids.next("event", &ids.event)), nil
+}
+
+type blockingAcceptanceModel struct {
+	*acceptanceSuccessModel
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newBlockingAcceptanceModel(text string) *blockingAcceptanceModel {
+	return &blockingAcceptanceModel{acceptanceSuccessModel: &acceptanceSuccessModel{text: text}, started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (model *blockingAcceptanceModel) Stream(ctx context.Context, request engine.ModelRequest) (engine.ModelStream, error) {
+	stream, err := model.acceptanceSuccessModel.Stream(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	model.once.Do(func() { close(model.started) })
+	return &blockingAcceptanceStream{ModelStream: stream, release: model.release}, nil
+}
+
+func (model *blockingAcceptanceModel) releaseOnce() {
+	model.once.Do(func() {})
+	select {
+	case <-model.release:
+	default:
+		close(model.release)
+	}
+}
+
+type blockingAcceptanceStream struct {
+	engine.ModelStream
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func (stream *blockingAcceptanceStream) Next(ctx context.Context) (engine.StreamEvent, error) {
+	blocked := false
+	stream.once.Do(func() { blocked = true })
+	if blocked {
+		select {
+		case <-stream.release:
+		case <-ctx.Done():
+			return engine.StreamEvent{}, ctx.Err()
+		}
+	}
+	return stream.ModelStream.Next(ctx)
 }
 
 func (model *acceptanceSuccessModel) Stream(_ context.Context, request engine.ModelRequest) (engine.ModelStream, error) {
@@ -242,13 +560,13 @@ func (stream *acceptanceStream) Next(context.Context) (engine.StreamEvent, error
 
 func (*acceptanceStream) Close() error { return nil }
 
-func newAcceptanceService(t *testing.T, store application.EventStore, ids application.IDGenerator, model engine.Model) *application.Service {
+func newAcceptanceService(t *testing.T, store application.EventStoreV2, ids application.IDGenerator, model engine.Model) *application.Service {
 	t.Helper()
 	runner, err := engine.NewTurnRunner(model)
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := application.NewService(store, ids, runner, application.DefaultConfig())
+	service, err := application.NewService(store, ids, testkit.FixedClock{Time: acceptanceTime}, runner, application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1}, application.DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}

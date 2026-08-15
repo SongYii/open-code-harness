@@ -35,7 +35,7 @@ func TestCreateLoadCloseSession(t *testing.T) {
 	if closed.Session.Status != domain.SessionStatusClosed || closed.Session.Version != 2 {
 		t.Fatalf("closed state = %#v", closed.Session)
 	}
-	records, err := store.Load(context.Background(), created.SessionID)
+	records, err := application.ReadWholeStreamPinned(context.Background(), store, created.SessionID, 256)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,9 +44,11 @@ func TestCreateLoadCloseSession(t *testing.T) {
 	}
 	created.Records[0].Event = domain.SessionCreated{WorkspaceRoot: "/mutated"}
 	closed.Records[0].Event = domain.SessionCreated{WorkspaceRoot: "/mutated"}
-	loaded.TurnOrder = append(loaded.TurnOrder, "turn-mutated")
+	if loaded.ActiveTurn != nil {
+		t.Fatal("new session unexpectedly has an active turn")
+	}
 	fresh, err := service.LoadSession(context.Background(), created.SessionID)
-	if err != nil || fresh.WorkspaceRoot != "/workspace" || len(fresh.TurnOrder) != 0 {
+	if err != nil || fresh.WorkspaceRoot != "/workspace" || fresh.ActiveTurn != nil {
 		t.Fatalf("fresh LoadSession() = (%#v, %v), want defensive state", fresh, err)
 	}
 }
@@ -108,6 +110,18 @@ func TestLoadSessionMapsMissingCorruptAndStoreFailure(t *testing.T) {
 		_, err := service.LoadSession(ctx, "session-load-canceled")
 		assertApplicationError(t, err, application.CategoryCanceled, "canceled")
 	})
+
+	t.Run("caller canceled after successful page", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		store := &sessionStore{
+			onLoad:           cancel,
+			ignoreContextErr: true,
+			loadRecords:      []domain.RecordedEvent{{SchemaVersion: 1, ID: "event-load-canceled-page", CommandID: "command-load-canceled-page", SessionID: "session-load-canceled-page", Sequence: 1, OccurredAt: validSessionTime(), Event: domain.SessionCreated{WorkspaceRoot: "/workspace"}}},
+		}
+		service := newSessionServiceWithStore(t, store, testkit.NewSequenceIDs())
+		_, err := service.LoadSession(ctx, "session-load-canceled-page")
+		assertApplicationError(t, err, application.CategoryCanceled, "canceled")
+	})
 }
 
 func TestCloseSessionRejectsMissingAndRunningSession(t *testing.T) {
@@ -124,16 +138,11 @@ func TestCloseSessionRejectsMissingAndRunningSession(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.Append(context.Background(), application.AppendRequest{
-			SessionID: created.SessionID, ExpectedVersion: 1, CommandID: "command-running",
-			Events: []domain.Event{domain.TurnStarted{TurnID: "turn-running", Input: "hello"}},
-		}); err != nil {
-			t.Fatal(err)
-		}
+		seedV2Event(t, store, created.SessionID, 1, "command-running", domain.TurnStarted{TurnID: "turn-running", Input: "hello"})
 		_, err = service.CloseSession(context.Background(), application.CloseSessionRequest{SessionID: created.SessionID})
 		assertApplicationError(t, err, application.CategoryValidation, "domain_rejected")
-		if ids.calls != 2 {
-			t.Fatalf("ID calls = %d, want only CreateSession's two calls", ids.calls)
+		if ids.calls != 4 {
+			t.Fatalf("ID calls = %d, want CreateSession identity plus append/event IDs", ids.calls)
 		}
 	})
 }
@@ -225,20 +234,15 @@ func TestCloseSessionMapsEveryGeneratedCommandIDFailure(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			store, err := memory.NewEventStore(testkit.FixedClock{Time: validSessionTime()}, testkit.NewSequenceIDs())
+			store, err := memory.NewEventStoreV2(v2Authority)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.Append(context.Background(), application.AppendRequest{
-				SessionID: "session-close-id", CommandID: "command-seed",
-				Events: []domain.Event{domain.SessionCreated{WorkspaceRoot: "/workspace"}},
-			}); err != nil {
-				t.Fatal(err)
-			}
+			seedV2Event(t, store, "session-close-id", 0, "command-seed", domain.SessionCreated{WorkspaceRoot: "/workspace"})
 			service := newSessionServiceWithStore(t, store, test.ids)
 			_, err = service.CloseSession(context.Background(), application.CloseSessionRequest{SessionID: "session-close-id"})
 			assertApplicationError(t, err, test.category, test.code)
-			records, loadErr := store.Load(context.Background(), "session-close-id")
+			records, loadErr := application.ReadWholeStreamPinned(context.Background(), store, "session-close-id", 256)
 			if loadErr != nil || len(records) != 1 {
 				t.Fatalf("stream after rejected close = (%#v, %v), want unchanged version 1", records, loadErr)
 			}
@@ -271,36 +275,24 @@ func TestSessionUseCasesValidateInputsBeforePorts(t *testing.T) {
 func TestCreateSessionRejectsMalformedAppendReturn(t *testing.T) {
 	tests := []struct {
 		name   string
-		mutate func(*domain.RecordedEvent)
+		mutate func(*application.CommitReceipt)
 	}{
-		{name: "wrong sequence", mutate: func(record *domain.RecordedEvent) { record.Sequence = 2 }},
-		{name: "wrong session", mutate: func(record *domain.RecordedEvent) { record.SessionID = "session-other" }},
-		{name: "wrong command", mutate: func(record *domain.RecordedEvent) { record.CommandID = "command-other" }},
-		{name: "wrong schema", mutate: func(record *domain.RecordedEvent) { record.SchemaVersion = 2 }},
-		{name: "invalid event ID", mutate: func(record *domain.RecordedEvent) { record.ID = " event-1" }},
-		{name: "non UTC time", mutate: func(record *domain.RecordedEvent) {
-			record.OccurredAt = record.OccurredAt.In(time.FixedZone("offset", 3600))
-		}},
-		{name: "changed payload", mutate: func(record *domain.RecordedEvent) { record.Event = domain.SessionCreated{WorkspaceRoot: "/changed"} }},
+		{name: "wrong append ID", mutate: func(receipt *application.CommitReceipt) { receipt.AppendID = "append-other" }},
+		{name: "zero commit position", mutate: func(receipt *application.CommitReceipt) { receipt.CommitPosition = 0 }},
+		{name: "wrong first sequence", mutate: func(receipt *application.CommitReceipt) { receipt.FirstSequence = 2 }},
+		{name: "wrong last sequence", mutate: func(receipt *application.CommitReceipt) { receipt.LastSequence = 2 }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			store := &sessionStore{appendResult: []domain.RecordedEvent{{
-				SchemaVersion: 1, ID: "event-1", CommandID: "command-1", SessionID: "session-1",
-				Sequence: 1, OccurredAt: validSessionTime(), Event: domain.SessionCreated{WorkspaceRoot: "/workspace"},
-			}}}
-			test.mutate(&store.appendResult[0])
+			receipt := application.CommitReceipt{AppendID: "append-1", CommitPosition: 1, FirstSequence: 1, LastSequence: 1}
+			test.mutate(&receipt)
+			store := &sessionStore{appendReceipt: &receipt}
 			service := newSessionServiceWithStore(t, store, &sessionIDs{sessionID: "session-1", commandID: "command-1"})
 			_, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
 			assertApplicationError(t, err, application.CategoryInternal, "store_contract_violation")
 		})
 	}
 
-	t.Run("wrong count", func(t *testing.T) {
-		service := newSessionServiceWithStore(t, &sessionStore{appendResult: []domain.RecordedEvent{}}, &sessionIDs{sessionID: "session-1", commandID: "command-1"})
-		_, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
-		assertApplicationError(t, err, application.CategoryInternal, "store_contract_violation")
-	})
 }
 
 func TestNewServiceValidatesDependenciesAndConfiguration(t *testing.T) {
@@ -313,7 +305,7 @@ func TestNewServiceValidatesDependenciesAndConfiguration(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		store  application.EventStore
+		store  application.EventStoreV2
 		ids    application.IDGenerator
 		runner *engine.TurnRunner
 		config application.Config
@@ -329,7 +321,7 @@ func TestNewServiceValidatesDependenciesAndConfiguration(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			service, err := application.NewService(test.store, test.ids, test.runner, test.config)
+			service, err := application.NewService(test.store, test.ids, testkit.FixedClock{Time: validSessionTime()}, test.runner, v2Authority, test.config)
 			if service != nil {
 				t.Fatalf("NewService() service = %#v, want nil", service)
 			}
@@ -337,24 +329,24 @@ func TestNewServiceValidatesDependenciesAndConfiguration(t *testing.T) {
 		})
 	}
 
-	service, err := application.NewService(validStore, validIDs, validRunner, application.DefaultConfig())
+	service, err := application.NewService(validStore, validIDs, testkit.FixedClock{Time: validSessionTime()}, validRunner, v2Authority, application.DefaultConfig())
 	if err != nil || service == nil {
 		t.Fatalf("NewService(valid) = (%#v, %v)", service, err)
 	}
 }
 
-func newSessionServiceForTest(t *testing.T, ids application.IDGenerator) (*application.Service, *memory.EventStore) {
+func newSessionServiceForTest(t *testing.T, ids application.IDGenerator) (*application.Service, *memory.EventStoreV2) {
 	t.Helper()
-	store, err := memory.NewEventStore(testkit.FixedClock{Time: validSessionTime()}, testkit.NewSequenceIDs())
+	store, err := memory.NewEventStoreV2(v2Authority)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return newSessionServiceWithStore(t, store, ids), store
 }
 
-func newSessionServiceWithStore(t *testing.T, store application.EventStore, ids application.IDGenerator) *application.Service {
+func newSessionServiceWithStore(t *testing.T, store application.EventStoreV2, ids application.IDGenerator) *application.Service {
 	t.Helper()
-	service, err := application.NewService(store, ids, sessionRunnerForTest(t), application.DefaultConfig())
+	service, err := application.NewService(store, ids, testkit.FixedClock{Time: validSessionTime()}, sessionRunnerForTest(t), v2Authority, application.DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,46 +389,89 @@ func validSessionTime() time.Time {
 	return time.Date(2026, 8, 12, 3, 4, 5, 6, time.UTC)
 }
 
-type sessionStore struct {
-	loadRecords  []domain.RecordedEvent
-	loadErr      error
-	onLoad       func()
-	appendResult []domain.RecordedEvent
-	appendErr    error
-	loadCalls    int
-	appendCalls  int
+var v2Authority = application.WriterAuthority{RuntimeID: "runtime-test", FencingToken: 1}
+
+func seedV2Event(t *testing.T, store application.EventStoreV2, sessionID domain.SessionID, version uint64, commandID domain.CommandID, event domain.Event) {
+	t.Helper()
+	ids := testkit.NewSequenceIDs()
+	for offset := uint64(0); offset <= version; offset++ {
+		_, _ = ids.NewAppendID()
+		_, _ = ids.NewEventID()
+	}
+	intent, err := application.BuildAppendIntent(testkit.FixedClock{Time: validSessionTime()}, ids, v2Authority, sessionID, version, commandID, nil, []domain.UncommittedEvent{{Event: event}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent.Request.AppendID = domain.AppendID(fmt.Sprintf("seed-append-%d", version))
+	intent.Request.Events[0].ID = domain.EventID(fmt.Sprintf("seed-event-%d", version))
+	if _, err := store.Append(context.Background(), intent.Request); err != nil {
+		t.Fatal(err)
+	}
 }
 
-func (store *sessionStore) Load(context.Context, domain.SessionID) ([]domain.RecordedEvent, error) {
+type sessionStore struct {
+	loadRecords      []domain.RecordedEvent
+	loadErr          error
+	onLoad           func()
+	ignoreContextErr bool
+	appendReceipt    *application.CommitReceipt
+	appendErr        error
+	loadCalls        int
+	appendCalls      int
+}
+
+func (store *sessionStore) ReadStream(ctx context.Context, request application.ReadStreamRequest) (application.StreamPage, error) {
 	store.loadCalls++
 	if store.onLoad != nil {
 		store.onLoad()
 	}
+	if err := ctx.Err(); err != nil && !store.ignoreContextErr {
+		return application.StreamPage{}, err
+	}
 	records, _ := domain.CloneRecordedEvents(store.loadRecords)
-	return records, store.loadErr
+	if store.loadErr != nil {
+		return application.StreamPage{}, store.loadErr
+	}
+	if request.AfterSequence > uint64(len(records)) {
+		return application.StreamPage{}, errors.New("invalid cursor")
+	}
+	head := uint64(len(records))
+	if request.HeadVersion != nil {
+		head = *request.HeadVersion
+	}
+	if head > uint64(len(records)) {
+		return application.StreamPage{}, errors.New("invalid head")
+	}
+	start := request.AfterSequence
+	end := start + uint64(request.Limit)
+	if end > head {
+		end = head
+	}
+	page := application.StreamPage{HeadVersion: head, NextAfterSequence: start, End: start == head}
+	if start < end {
+		page.Records = records[start:end]
+		page.NextAfterSequence = end
+		page.End = end == head
+	}
+	return page, nil
 }
 
-func (store *sessionStore) Append(_ context.Context, request application.AppendRequest) ([]domain.RecordedEvent, error) {
+func (store *sessionStore) Append(_ context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
 	store.appendCalls++
 	if store.appendErr != nil {
-		return nil, store.appendErr
+		return application.CommitReceipt{}, store.appendErr
 	}
-	if store.appendResult != nil {
-		return domain.CloneRecordedEvents(store.appendResult)
+	if store.appendReceipt != nil {
+		return *store.appendReceipt, nil
 	}
-	records := make([]domain.RecordedEvent, len(request.Events))
-	for index, event := range request.Events {
-		records[index] = domain.RecordedEvent{
-			SchemaVersion: 1,
-			ID:            domain.EventID(fmt.Sprintf("event-%d", index+1)),
-			CommandID:     request.CommandID,
-			SessionID:     request.SessionID,
-			Sequence:      request.ExpectedVersion + uint64(index) + 1,
-			OccurredAt:    validSessionTime(),
-			Event:         event,
-		}
-	}
-	return records, nil
+	return application.CommitReceipt{AppendID: request.AppendID, CommitPosition: 1, FirstSequence: request.ExpectedVersion + 1, LastSequence: request.ExpectedVersion + uint64(len(request.Events))}, nil
+}
+
+func (*sessionStore) ResolveAppend(context.Context, application.ResolveAppendRequest) (application.AppendResolution, error) {
+	return application.AppendResolution{Kind: application.AppendResolutionNotFound}, nil
+}
+func (*sessionStore) FindCommandRequest(context.Context, application.FindCommandRequestRequest) (application.CommandRequestLookup, error) {
+	return application.CommandRequestLookup{Kind: application.CommandRequestLookupNotFound}, nil
 }
 
 type sessionIDs struct {
@@ -446,6 +481,8 @@ type sessionIDs struct {
 	commandErr error
 	onCommand  func()
 	calls      int
+	appends    uint64
+	events     uint64
 }
 
 func (ids *sessionIDs) NewSessionID() (domain.SessionID, error) {
@@ -461,4 +498,13 @@ func (ids *sessionIDs) NewCommandID() (domain.CommandID, error) {
 	}
 	return ids.commandID, ids.commandErr
 }
-func (ids *sessionIDs) NewEventID() (domain.EventID, error) { ids.calls++; return "event-1", nil }
+func (ids *sessionIDs) NewAppendID() (domain.AppendID, error) {
+	ids.calls++
+	ids.appends++
+	return domain.AppendID(fmt.Sprintf("append-%d", ids.appends)), nil
+}
+func (ids *sessionIDs) NewEventID() (domain.EventID, error) {
+	ids.calls++
+	ids.events++
+	return domain.EventID(fmt.Sprintf("event-%d", ids.events)), nil
+}

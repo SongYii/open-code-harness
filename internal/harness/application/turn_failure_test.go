@@ -3,6 +3,7 @@ package application_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"sync"
@@ -61,7 +62,7 @@ func TestRunTurnModelOutputFailureCommitsStableFailedPair(t *testing.T) {
 				t.Fatal(err)
 			}
 			sink := &testkit.RecordingSink{}
-			result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, Input: expected.Input, Sink: sink})
+			result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-model-failure", Input: expected.Input, Sink: sink})
 			assertRunTurnError(t, err, test.category, test.code, true)
 			if test.wantCause != nil && !errors.Is(err, test.wantCause) {
 				t.Fatalf("error %v does not preserve %v", err, test.wantCause)
@@ -107,7 +108,7 @@ func TestRunTurnRunnerEngineCodeRemainsAuthorityOverProviderApplicationError(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, Input: "inspect", Sink: &testkit.RecordingSink{}})
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-engine-authority", Input: "inspect", Sink: &testkit.RecordingSink{}})
 	assertRunTurnError(t, err, application.CategoryModel, string(engine.CodeModelStartup), true)
 	if !errors.Is(err, injected) {
 		t.Fatalf("error = %v, want raw provider cause inspectable", err)
@@ -125,6 +126,7 @@ func TestRunTurnRunnerDeliveryCodeRemainsAuthorityOverSinkApplicationError(t *te
 	}
 	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{
 		SessionID: created.SessionID,
+		RequestID: "request-delivery-authority",
 		Input:     "inspect",
 		Sink:      &testkit.RecordingSink{FailOrdinal: 1, Failure: injected},
 	})
@@ -146,7 +148,7 @@ func TestRunTurnEmptySuccessfulOutputIsCompleted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, Input: "inspect", Sink: &testkit.RecordingSink{}})
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-empty-output", Input: "inspect", Sink: &testkit.RecordingSink{}})
 	if err != nil || result.Status != domain.TurnStatusCompleted || result.Text != "" || !result.TerminalCommitted {
 		t.Fatalf("result = %#v, err = %v", result, err)
 	}
@@ -174,7 +176,7 @@ func TestRunTurnCancellationDuringScriptedStepCommitsInterruptedPair(t *testing.
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		result, runErr := service.RunTurn(ctx, application.RunTurnRequest{SessionID: created.SessionID, Input: "inspect", Sink: sink})
+		result, runErr := service.RunTurn(ctx, application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-step-cancel", Input: "inspect", Sink: sink})
 		done <- outcome{result, runErr}
 	}()
 	<-entered
@@ -217,7 +219,7 @@ func TestRunTurnDeliveryFailureBeforeTerminalCommitIsDurablyInterrupted(t *testi
 				store:         store,
 				sessionID:     created.SessionID,
 			}
-			result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, Input: "inspect", Sink: sink})
+			result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-delivery-failure", Input: "inspect", Sink: sink})
 			assertRunTurnError(t, err, application.CategoryDelivery, "runtime_delivery_failed", true)
 			if !errors.Is(err, cause) {
 				t.Fatalf("error %v does not preserve sink cause", err)
@@ -259,7 +261,7 @@ func TestRunTurnTerminalPersistenceFailurePreservesRunningBoundaryAndCauses(t *t
 	executionCause := errors.New("provider failed")
 	appendCause := errors.New("terminal store failed")
 	base := newTurnMemoryStore(t)
-	store := &failTerminalStore{EventStore: base, failure: appendCause}
+	store := &failTerminalStore{EventStoreV2: base, failure: appendCause}
 	model, err := testkit.NewScriptedModel(engine.ModelRequest{SessionID: "session-1", TurnID: "turn-1", ItemID: "item-1", Input: "inspect"}, testkit.ScriptedModelConfig{StartupError: executionCause})
 	if err != nil {
 		t.Fatal(err)
@@ -269,7 +271,7 @@ func TestRunTurnTerminalPersistenceFailurePreservesRunningBoundaryAndCauses(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, Input: "inspect", Sink: &testkit.RecordingSink{}})
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-terminal-failure", Input: "inspect", Sink: &testkit.RecordingSink{}})
 	assertRunTurnError(t, err, application.CategoryPersistence, "append_failed", false)
 	if !errors.Is(err, executionCause) || !errors.Is(err, appendCause) {
 		t.Fatalf("error = %v, want both causes", err)
@@ -286,26 +288,28 @@ func TestRunTurnTerminalPersistenceFailurePreservesRunningBoundaryAndCauses(t *t
 func TestRunTurnTerminalCleanupFailureCategoriesPreserveExecutionCause(t *testing.T) {
 	executionCause := errors.New("provider failed before terminalization")
 	tests := []struct {
-		name     string
-		wrap     func(application.EventStore) application.EventStore
-		category application.ErrorCategory
-		code     string
+		name      string
+		wrap      func(application.EventStoreV2) application.EventStoreV2
+		category  application.ErrorCategory
+		code      string
+		committed bool
 	}{
 		{
 			name: "conflict",
-			wrap: func(store application.EventStore) application.EventStore {
-				return &failTerminalStore{EventStore: store, failure: &application.VersionConflictError{SessionID: "session-1", ExpectedVersion: 3, ActualVersion: 4}}
+			wrap: func(store application.EventStoreV2) application.EventStoreV2 {
+				return &failTerminalStore{EventStoreV2: store, failure: &application.VersionConflictError{SessionID: "session-1", ExpectedVersion: 3, ActualVersion: 4}}
 			},
 			category: application.CategoryConflict,
 			code:     "version_conflict",
 		},
 		{
 			name: "apply contract violation",
-			wrap: func(store application.EventStore) application.EventStore {
-				return &invalidTerminalReturnStore{EventStore: store}
+			wrap: func(store application.EventStoreV2) application.EventStoreV2 {
+				return &invalidTerminalReturnStore{EventStoreV2: store}
 			},
-			category: application.CategoryInternal,
-			code:     "store_contract_violation",
+			category:  application.CategoryInternal,
+			code:      "store_contract_violation",
+			committed: true,
 		},
 	}
 	for _, test := range tests {
@@ -323,7 +327,7 @@ func TestRunTurnTerminalCleanupFailureCategoriesPreserveExecutionCause(t *testin
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, Input: "inspect", Sink: &testkit.RecordingSink{}})
+			result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-cleanup-failure", Input: "inspect", Sink: &testkit.RecordingSink{}})
 			assertRunTurnError(t, err, test.category, test.code, false)
 			if !errors.Is(err, executionCause) {
 				t.Fatalf("error = %v, want execution cause", err)
@@ -331,8 +335,19 @@ func TestRunTurnTerminalCleanupFailureCategoriesPreserveExecutionCause(t *testin
 			if test.category == application.CategoryConflict && !application.IsVersionConflict(err) {
 				t.Fatalf("error = %v, want conflict cause", err)
 			}
-			if test.category == application.CategoryInternal && !domain.IsCode(err, domain.CodeInvalidEvent) {
-				t.Fatalf("error = %v, want Apply cause", err)
+			if test.committed {
+				durable, loadErr := application.ReadWholeStreamPinned(context.Background(), base, created.SessionID, 256)
+				if loadErr != nil {
+					t.Fatal(loadErr)
+				}
+				state, replayErr := domain.Replay(durable)
+				if replayErr != nil {
+					t.Fatal(replayErr)
+				}
+				if len(durable) != 5 || state.Turns[result.TurnID].Status != domain.TurnStatusFailed {
+					t.Fatalf("malformed receipt durable state = %#v", state)
+				}
+				return
 			}
 			assertRunningBoundary(t, base, result)
 		})
@@ -350,7 +365,7 @@ func TestRunTurnTerminalCleanupTimeoutIsPersistenceNotCallerCancellation(t *test
 		t.Fatal(err)
 	}
 	base := newTurnMemoryStore(t)
-	store := &blockingTerminalCleanupStore{EventStore: base}
+	store := &blockingTerminalCleanupStore{EventStoreV2: base}
 	config := application.DefaultConfig()
 	config.TerminalCommitTimeout = time.Millisecond
 	service := newTurnServiceWithConfig(t, store, testkit.NewSequenceIDs(), model, config)
@@ -365,7 +380,7 @@ func TestRunTurnTerminalCleanupTimeoutIsPersistenceNotCallerCancellation(t *test
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		result, runErr := service.RunTurn(ctx, application.RunTurnRequest{SessionID: created.SessionID, Input: "inspect", Sink: &testkit.RecordingSink{}})
+		result, runErr := service.RunTurn(ctx, application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-race-cancel", Input: "inspect", Sink: &testkit.RecordingSink{}})
 		done <- outcome{result, runErr}
 	}()
 	<-entered
@@ -386,13 +401,13 @@ func TestRunTurnCompletedAppendCancellationFallsBackOnceToInterrupted(t *testing
 	base := newTurnMemoryStore(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	appendCause := errors.New("success append canceled")
-	store := &cancelCompletedAppendStore{EventStore: base, cancel: cancel, failure: appendCause}
+	store := &cancelCompletedAppendStore{EventStoreV2: base, cancel: cancel, failure: appendCause}
 	service := newTurnService(t, store, testkit.NewSequenceIDs(), &repeatingSuccessModel{text: "done"})
 	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := service.RunTurn(ctx, application.RunTurnRequest{SessionID: created.SessionID, Input: "inspect", Sink: &testkit.RecordingSink{}})
+	result, err := service.RunTurn(ctx, application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-completed-cancel", Input: "inspect", Sink: &testkit.RecordingSink{}})
 	assertRunTurnError(t, err, application.CategoryCanceled, "canceled", true)
 	if !errors.Is(err, appendCause) || !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v, want append and cancellation causes", err)
@@ -407,13 +422,13 @@ func TestRunTurnCompletedPersistenceFailureDoesNotInventSecondOutcome(t *testing
 	for _, failure := range []error{errors.New("terminal unavailable"), &application.VersionConflictError{SessionID: "session-1", ExpectedVersion: 3, ActualVersion: 4}} {
 		t.Run(failure.Error(), func(t *testing.T) {
 			base := newTurnMemoryStore(t)
-			store := &failTerminalStore{EventStore: base, failure: failure}
+			store := &failTerminalStore{EventStoreV2: base, failure: failure}
 			service := newTurnService(t, store, testkit.NewSequenceIDs(), &repeatingSuccessModel{text: "done"})
 			created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, Input: "inspect", Sink: &testkit.RecordingSink{}})
+			result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-completed-persist", Input: "inspect", Sink: &testkit.RecordingSink{}})
 			category, code := application.CategoryPersistence, "append_failed"
 			if application.IsVersionConflict(failure) {
 				category, code = application.CategoryConflict, "version_conflict"
@@ -430,7 +445,7 @@ func TestRunTurnCompletedPersistenceFailureDoesNotInventSecondOutcome(t *testing
 func TestRunTurnCancellationImmediatelyAfterAdmissionUsesBoundedDetachedCleanup(t *testing.T) {
 	base := newTurnMemoryStore(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	store := &cancelAfterAdmissionStore{EventStore: base, cancel: cancel}
+	store := &cancelAfterAdmissionStore{EventStoreV2: base, cancel: cancel}
 	config := application.DefaultConfig()
 	config.TerminalCommitTimeout = 2 * time.Second
 	model := &repeatingSuccessModel{text: "unused"}
@@ -440,7 +455,7 @@ func TestRunTurnCancellationImmediatelyAfterAdmissionUsesBoundedDetachedCleanup(
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := service.RunTurn(ctx, application.RunTurnRequest{SessionID: created.SessionID, Input: "inspect", Sink: sink})
+	result, err := service.RunTurn(ctx, application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-after-admission", Input: "inspect", Sink: sink})
 	assertRunTurnError(t, err, application.CategoryCanceled, "canceled", true)
 	assertInterruptedPair(t, base, result, domain.InterruptionCallerCanceled)
 	if !store.SawDetachedBoundedContext() {
@@ -455,16 +470,16 @@ func TestRunTurnCancellationAtCompletedTerminalEntryCommitsOnlyInterruption(t *t
 	base := newTurnMemoryStore(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cause := errors.New("completed append did not commit")
-	store := &cancelCompletedAppendStore{EventStore: base, cancel: cancel, failure: cause}
+	store := &cancelCompletedAppendStore{EventStoreV2: base, cancel: cancel, failure: cause}
 	service := newTurnService(t, store, testkit.NewSequenceIDs(), &repeatingSuccessModel{text: "done"})
 	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := service.RunTurn(ctx, application.RunTurnRequest{SessionID: created.SessionID, Input: "inspect", Sink: &testkit.RecordingSink{}})
+	result, err := service.RunTurn(ctx, application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-terminal-entry", Input: "inspect", Sink: &testkit.RecordingSink{}})
 	assertRunTurnError(t, err, application.CategoryCanceled, "canceled", true)
 	assertInterruptedPair(t, base, result, domain.InterruptionCallerCanceled)
-	durable, loadErr := base.Load(context.Background(), created.SessionID)
+	durable, loadErr := application.ReadWholeStreamPinned(context.Background(), base, created.SessionID, 256)
 	if loadErr != nil {
 		t.Fatal(loadErr)
 	}
@@ -497,6 +512,7 @@ func TestRunTurnFailureTerminalDeliveryWarningKeepsPrimaryCategory(t *testing.T)
 	}
 	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{
 		SessionID: created.SessionID,
+		RequestID: "request-malformed-admission",
 		Input:     "inspect",
 		Sink:      &testkit.RecordingSink{FailOrdinal: 1, Failure: sinkCause},
 	})
@@ -509,18 +525,16 @@ func TestRunTurnFailureTerminalDeliveryWarningKeepsPrimaryCategory(t *testing.T)
 
 func TestRunTurnRejectsMalformedAdmissionAppendBeforeModel(t *testing.T) {
 	base := newTurnMemoryStore(t)
-	serviceForSeed := newTurnService(t, base, testkit.NewSequenceIDs(), &repeatingSuccessModel{})
+	ids := testkit.NewSequenceIDs()
+	serviceForSeed := newTurnService(t, base, ids, &repeatingSuccessModel{})
 	created, err := serviceForSeed.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := &mutateRunAppendStore{EventStore: base, targetType: domain.EventTurnStarted, mutate: func(records []domain.RecordedEvent) []domain.RecordedEvent {
-		records[1].Sequence++
-		return records
-	}}
+	store := &corruptAdmissionReceiptStore{EventStoreV2: base}
 	model := &repeatingSuccessModel{text: "unused"}
-	service := newTurnService(t, store, testkit.NewSequenceIDs(), model)
-	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, Input: "inspect", Sink: &testkit.RecordingSink{}})
+	service := newTurnService(t, store, ids, model)
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-malformed-terminal", Input: "inspect", Sink: &testkit.RecordingSink{}})
 	assertRunTurnError(t, err, application.CategoryInternal, "store_contract_violation", false)
 	if !reflect.DeepEqual(result, application.RunTurnResult{}) || len(model.Calls()) != 0 {
 		t.Fatalf("malformed admission result = %#v, model calls = %#v", result, model.Calls())
@@ -530,66 +544,26 @@ func TestRunTurnRejectsMalformedAdmissionAppendBeforeModel(t *testing.T) {
 func TestRunTurnRejectsMalformedTerminalAppendReturnsWithoutSuccessSignal(t *testing.T) {
 	tests := []struct {
 		name   string
-		mutate func([]domain.RecordedEvent) []domain.RecordedEvent
+		mutate func(*application.CommitReceipt)
 	}{
-		{name: "count", mutate: func(records []domain.RecordedEvent) []domain.RecordedEvent { return records[:1] }},
-		{name: "sequence gap", mutate: func(records []domain.RecordedEvent) []domain.RecordedEvent { records[1].Sequence++; return records }},
-		{name: "wrong session", mutate: func(records []domain.RecordedEvent) []domain.RecordedEvent {
-			records[0].SessionID = "session-other"
-			return records
-		}},
-		{name: "wrong command", mutate: func(records []domain.RecordedEvent) []domain.RecordedEvent {
-			records[0].CommandID = "command-other"
-			return records
-		}},
-		{name: "schema", mutate: func(records []domain.RecordedEvent) []domain.RecordedEvent {
-			records[0].SchemaVersion = 2
-			return records
-		}},
-		{name: "event ID", mutate: func(records []domain.RecordedEvent) []domain.RecordedEvent {
-			records[0].ID = " invalid"
-			return records
-		}},
-		{name: "non UTC", mutate: func(records []domain.RecordedEvent) []domain.RecordedEvent {
-			records[0].OccurredAt = records[0].OccurredAt.In(time.FixedZone("offset", 3600))
-			return records
-		}},
-		{name: "timestamp mismatch", mutate: func(records []domain.RecordedEvent) []domain.RecordedEvent {
-			records[1].OccurredAt = records[1].OccurredAt.Add(time.Nanosecond)
-			return records
-		}},
-		{name: "changed type", mutate: func(records []domain.RecordedEvent) []domain.RecordedEvent {
-			records[0].Event = domain.SessionClosed{}
-			return records
-		}},
-		{name: "changed payload", mutate: func(records []domain.RecordedEvent) []domain.RecordedEvent {
-			event := records[0].Event.(domain.AssistantMessageCompleted)
-			event.Text = "changed"
-			records[0].Event = event
-			return records
-		}},
-		{name: "changed order", mutate: func(records []domain.RecordedEvent) []domain.RecordedEvent {
-			records[0].Event, records[1].Event = records[1].Event, records[0].Event
-			return records
-		}},
-		{name: "apply failure", mutate: func(records []domain.RecordedEvent) []domain.RecordedEvent {
-			occurredAt := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
-			records[0].OccurredAt, records[1].OccurredAt = occurredAt, occurredAt
-			return records
-		}},
+		{name: "wrong append id", mutate: func(receipt *application.CommitReceipt) { receipt.AppendID = "append-other" }},
+		{name: "zero position", mutate: func(receipt *application.CommitReceipt) { receipt.CommitPosition = 0 }},
+		{name: "wrong first sequence", mutate: func(receipt *application.CommitReceipt) { receipt.FirstSequence++ }},
+		{name: "wrong last sequence", mutate: func(receipt *application.CommitReceipt) { receipt.LastSequence-- }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			base := newTurnMemoryStore(t)
-			seed := newTurnService(t, base, testkit.NewSequenceIDs(), &repeatingSuccessModel{})
+			ids := testkit.NewSequenceIDs()
+			seed := newTurnService(t, base, ids, &repeatingSuccessModel{})
 			created, err := seed.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
 			if err != nil {
 				t.Fatal(err)
 			}
-			store := &mutateRunAppendStore{EventStore: base, targetType: domain.EventAssistantMessageCompleted, mutate: test.mutate}
+			store := &corruptTerminalReceiptStore{EventStoreV2: base, mutate: test.mutate}
 			sink := &testkit.RecordingSink{}
-			service := newTurnService(t, store, testkit.NewSequenceIDs(), &repeatingSuccessModel{text: "done"})
-			result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, Input: "inspect", Sink: sink})
+			service := newTurnService(t, store, ids, &repeatingSuccessModel{text: "done"})
+			result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-concurrent-session", Input: "inspect", Sink: sink})
 			assertRunTurnError(t, err, application.CategoryInternal, "store_contract_violation", false)
 			if result.Status != domain.TurnStatusRunning || result.TerminalCommitted || len(result.Records) != 2 {
 				t.Fatalf("result = %#v", result)
@@ -597,23 +571,40 @@ func TestRunTurnRejectsMalformedTerminalAppendReturnsWithoutSuccessSignal(t *tes
 			if got := runtimeEventTypes(sink.Attempts()); !reflect.DeepEqual(got, []engine.RuntimeEventType{engine.RuntimeModelStreamStarted, engine.RuntimeModelTextDelta}) {
 				t.Fatalf("runtime attempts = %v, want no terminal success signal", got)
 			}
-			if store.TargetCalls() != 1 {
-				t.Fatalf("terminal append calls = %d, want no retry", store.TargetCalls())
+			if store.calls != 1 {
+				t.Fatalf("terminal append calls = %d, want no retry", store.calls)
 			}
 		})
 	}
 }
 
+type corruptTerminalReceiptStore struct {
+	application.EventStoreV2
+	mutate func(*application.CommitReceipt)
+	calls  int
+}
+
+func (store *corruptTerminalReceiptStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
+	receipt, err := store.EventStoreV2.Append(ctx, request)
+	if err != nil || len(request.Events) == 0 || request.Events[0].Event.EventType() != domain.EventAssistantMessageCompleted {
+		return receipt, err
+	}
+	store.calls++
+	store.mutate(&receipt)
+	return receipt, nil
+}
+
 func TestRunTurnConcurrentSameSessionHasOneAdmissionWinner(t *testing.T) {
 	base := newTurnMemoryStore(t)
-	seed := newTurnService(t, base, testkit.NewSequenceIDs(), &repeatingSuccessModel{})
+	ids := testkit.NewSequenceIDs()
+	seed := newTurnService(t, base, ids, &repeatingSuccessModel{})
 	created, err := seed.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	store := newTwoLoadBarrierStore(base, created.SessionID)
 	model := &repeatingSuccessModel{text: "done"}
-	service := newTurnService(t, store, testkit.NewSequenceIDs(), model)
+	service := newTurnService(t, store, ids, model)
 	type outcome struct {
 		result application.RunTurnResult
 		err    error
@@ -622,7 +613,7 @@ func TestRunTurnConcurrentSameSessionHasOneAdmissionWinner(t *testing.T) {
 	for _, input := range []string{"first", "second"} {
 		input := input
 		go func() {
-			result, runErr := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, Input: input, Sink: &testkit.RecordingSink{}})
+			result, runErr := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: domain.RunTurnRequestID("request-" + input), Input: input, Sink: &testkit.RecordingSink{}})
 			outcomes <- outcome{result, runErr}
 		}()
 	}
@@ -656,7 +647,7 @@ func TestRunTurnModelCompletionRacingCallerCancelCommitsExactlyOneTerminalPair(t
 			t.Fatal(err)
 		}
 		base := newTurnMemoryStore(t)
-		store := &turnRecordingStore{EventStore: base}
+		store := &turnRecordingStore{EventStoreV2: base}
 		service := newTurnService(t, store, testkit.NewSequenceIDs(), model)
 		created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
 		if err != nil {
@@ -670,7 +661,7 @@ func TestRunTurnModelCompletionRacingCallerCancelCommitsExactlyOneTerminalPair(t
 		}
 		done := make(chan outcome, 1)
 		go func() {
-			result, runErr := service.RunTurn(ctx, application.RunTurnRequest{SessionID: created.SessionID, Input: "inspect", Sink: sink})
+			result, runErr := service.RunTurn(ctx, application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-cleanup-timeout", Input: "inspect", Sink: sink})
 			done <- outcome{result, runErr}
 		}()
 		<-entered
@@ -682,7 +673,7 @@ func TestRunTurnModelCompletionRacingCallerCancelCommitsExactlyOneTerminalPair(t
 		<-released
 		<-released
 		got := <-done
-		durable, loadErr := base.Load(context.Background(), created.SessionID)
+		durable, loadErr := application.ReadWholeStreamPinned(context.Background(), base, created.SessionID, 256)
 		if loadErr != nil {
 			t.Fatal(loadErr)
 		}
@@ -711,7 +702,7 @@ func TestRunTurnModelCompletionRacingCallerCancelCommitsExactlyOneTerminalPair(t
 		}
 		terminalAttempts := make([]string, 0, 2)
 		for _, request := range requests[2:] {
-			terminalAttempts = append(terminalAttempts, request.Events[0].EventType())
+			terminalAttempts = append(terminalAttempts, request.Events[0].Event.EventType())
 		}
 		if len(terminalAttempts) == 2 && !reflect.DeepEqual(terminalAttempts, []string{domain.EventAssistantMessageCompleted, domain.EventAssistantMessageInterrupted}) {
 			t.Fatalf("iteration %d: terminal attempts=%v, want only authorized completed-to-interrupted fallback", iteration, terminalAttempts)
@@ -741,14 +732,15 @@ func TestRunTurnModelCompletionRacingCallerCancelCommitsExactlyOneTerminalPair(t
 
 func TestRunTurnAndCloseSessionRaceHasOneCASWinner(t *testing.T) {
 	base := newTurnMemoryStore(t)
-	seed := newTurnService(t, base, testkit.NewSequenceIDs(), &repeatingSuccessModel{})
+	ids := testkit.NewSequenceIDs()
+	seed := newTurnService(t, base, ids, &repeatingSuccessModel{})
 	created, err := seed.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	store := newTwoLoadBarrierStore(base, created.SessionID)
 	model := &repeatingSuccessModel{text: "done"}
-	service := newTurnService(t, store, testkit.NewSequenceIDs(), model)
+	service := newTurnService(t, store, ids, model)
 	type runOutcome struct {
 		result application.RunTurnResult
 		err    error
@@ -760,7 +752,7 @@ func TestRunTurnAndCloseSessionRaceHasOneCASWinner(t *testing.T) {
 	runDone := make(chan runOutcome, 1)
 	closeDone := make(chan closeOutcome, 1)
 	go func() {
-		result, runErr := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, Input: "inspect", Sink: &testkit.RecordingSink{}})
+		result, runErr := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-close-race", Input: "inspect", Sink: &testkit.RecordingSink{}})
 		runDone <- runOutcome{result, runErr}
 	}()
 	go func() {
@@ -812,7 +804,7 @@ func TestRunTurnDifferentSessionsExecuteConcurrently(t *testing.T) {
 	for _, sessionID := range []domain.SessionID{first.SessionID, second.SessionID} {
 		sessionID := sessionID
 		go func() {
-			result, runErr := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: sessionID, Input: "inspect", Sink: &testkit.RecordingSink{}})
+			result, runErr := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: sessionID, RequestID: domain.RunTurnRequestID(fmt.Sprintf("request-%s", sessionID)), Input: "inspect", Sink: &testkit.RecordingSink{}})
 			done <- outcome{result, runErr}
 		}()
 	}
@@ -826,7 +818,7 @@ func TestRunTurnDifferentSessionsExecuteConcurrently(t *testing.T) {
 	}
 }
 
-func assertFailedPair(t *testing.T, store application.EventStore, result application.RunTurnResult, code, message string) {
+func assertFailedPair(t *testing.T, store application.EventStoreV2, result application.RunTurnResult, code, message string) {
 	t.Helper()
 	if len(result.Records) != 4 {
 		t.Fatalf("records = %#v", result.Records)
@@ -840,7 +832,7 @@ func assertFailedPair(t *testing.T, store application.EventStore, result applica
 	assertExactTurnRecords(t, store, result, want)
 }
 
-func assertInterruptedPair(t *testing.T, store application.EventStore, result application.RunTurnResult, code string) {
+func assertInterruptedPair(t *testing.T, store application.EventStoreV2, result application.RunTurnResult, code string) {
 	t.Helper()
 	if result.Status != domain.TurnStatusInterrupted || result.Text != "" || !result.TerminalCommitted || len(result.Records) != 4 {
 		t.Fatalf("result = %#v", result)
@@ -854,7 +846,7 @@ func assertInterruptedPair(t *testing.T, store application.EventStore, result ap
 	assertExactTurnRecords(t, store, result, want)
 }
 
-func assertExactTurnRecords(t *testing.T, store application.EventStore, result application.RunTurnResult, want []domain.Event) {
+func assertExactTurnRecords(t *testing.T, store application.EventStoreV2, result application.RunTurnResult, want []domain.Event) {
 	t.Helper()
 	commandID := result.Records[0].CommandID
 	for index, event := range want {
@@ -862,7 +854,7 @@ func assertExactTurnRecords(t *testing.T, store application.EventStore, result a
 			t.Fatalf("record[%d] = %#v, want %#v", index, result.Records[index], event)
 		}
 	}
-	durable, err := store.Load(context.Background(), result.SessionID)
+	durable, err := application.ReadWholeStreamPinned(context.Background(), store, result.SessionID, 256)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -879,12 +871,12 @@ func assertExactTurnRecords(t *testing.T, store application.EventStore, result a
 	}
 }
 
-func assertRunningBoundary(t *testing.T, store application.EventStore, result application.RunTurnResult) {
+func assertRunningBoundary(t *testing.T, store application.EventStoreV2, result application.RunTurnResult) {
 	t.Helper()
 	if result.Status != domain.TurnStatusRunning || result.TerminalCommitted || len(result.Records) != 2 || result.DeliveryWarning != nil {
 		t.Fatalf("running result = %#v", result)
 	}
-	durable, err := store.Load(context.Background(), result.SessionID)
+	durable, err := application.ReadWholeStreamPinned(context.Background(), store, result.SessionID, 256)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -897,13 +889,13 @@ func assertRunningBoundary(t *testing.T, store application.EventStore, result ap
 	}
 }
 
-func newTurnServiceWithConfig(t *testing.T, store application.EventStore, ids application.IDGenerator, model engine.Model, config application.Config) *application.Service {
+func newTurnServiceWithConfig(t *testing.T, store application.EventStoreV2, ids application.IDGenerator, model engine.Model, config application.Config) *application.Service {
 	t.Helper()
 	runner, err := engine.NewTurnRunner(model)
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := application.NewService(store, ids, runner, config)
+	service, err := application.NewService(store, ids, testkit.FixedClock{Time: time.Date(2026, 8, 12, 6, 7, 8, 9, time.UTC)}, runner, v2Authority, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -911,23 +903,23 @@ func newTurnServiceWithConfig(t *testing.T, store application.EventStore, ids ap
 }
 
 type failTerminalStore struct {
-	application.EventStore
+	application.EventStoreV2
 	mu            sync.Mutex
 	failure       error
 	terminalCalls int
 }
 
-func (store *failTerminalStore) Append(ctx context.Context, request application.AppendRequest) ([]domain.RecordedEvent, error) {
+func (store *failTerminalStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
 	if len(request.Events) > 0 {
-		switch request.Events[0].EventType() {
+		switch request.Events[0].Event.EventType() {
 		case domain.EventAssistantMessageCompleted, domain.EventAssistantMessageFailed, domain.EventAssistantMessageInterrupted:
 			store.mu.Lock()
 			store.terminalCalls++
 			store.mu.Unlock()
-			return nil, store.failure
+			return application.CommitReceipt{}, store.failure
 		}
 	}
-	return store.EventStore.Append(ctx, request)
+	return store.EventStoreV2.Append(ctx, request)
 }
 
 func (store *failTerminalStore) TerminalCalls() int {
@@ -937,45 +929,35 @@ func (store *failTerminalStore) TerminalCalls() int {
 }
 
 type invalidTerminalReturnStore struct {
-	application.EventStore
+	application.EventStoreV2
 }
 
-func (store *invalidTerminalReturnStore) Append(ctx context.Context, request application.AppendRequest) ([]domain.RecordedEvent, error) {
-	if len(request.Events) == 0 || request.Events[0].EventType() != domain.EventAssistantMessageFailed {
-		return store.EventStore.Append(ctx, request)
+func (store *invalidTerminalReturnStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
+	receipt, err := store.EventStoreV2.Append(ctx, request)
+	if err != nil || len(request.Events) == 0 || request.Events[0].Event.EventType() != domain.EventAssistantMessageFailed {
+		return receipt, err
 	}
-	occurredAt := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
-	records := make([]domain.RecordedEvent, len(request.Events))
-	for index, event := range request.Events {
-		records[index] = domain.RecordedEvent{
-			SchemaVersion: 1,
-			ID:            domain.EventID("event-invalid-terminal-" + string(rune('1'+index))),
-			CommandID:     request.CommandID,
-			SessionID:     request.SessionID,
-			Sequence:      request.ExpectedVersion + uint64(index) + 1,
-			OccurredAt:    occurredAt,
-			Event:         event,
-		}
-	}
-	return records, nil
+	receipt.FirstSequence++
+	receipt.LastSequence++
+	return receipt, nil
 }
 
 type blockingTerminalCleanupStore struct {
-	application.EventStore
+	application.EventStoreV2
 	mu             sync.Mutex
 	sawLiveBounded bool
 }
 
-func (store *blockingTerminalCleanupStore) Append(ctx context.Context, request application.AppendRequest) ([]domain.RecordedEvent, error) {
-	if len(request.Events) == 0 || (request.Events[0].EventType() != domain.EventAssistantMessageFailed && request.Events[0].EventType() != domain.EventAssistantMessageInterrupted) {
-		return store.EventStore.Append(ctx, request)
+func (store *blockingTerminalCleanupStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
+	if len(request.Events) == 0 || (request.Events[0].Event.EventType() != domain.EventAssistantMessageFailed && request.Events[0].Event.EventType() != domain.EventAssistantMessageInterrupted) {
+		return store.EventStoreV2.Append(ctx, request)
 	}
 	_, bounded := ctx.Deadline()
 	store.mu.Lock()
 	store.sawLiveBounded = ctx.Err() == nil && bounded
 	store.mu.Unlock()
 	<-ctx.Done()
-	return nil, ctx.Err()
+	return application.CommitReceipt{}, ctx.Err()
 }
 
 func (store *blockingTerminalCleanupStore) SawLiveBoundedContext() bool {
@@ -986,7 +968,7 @@ func (store *blockingTerminalCleanupStore) SawLiveBoundedContext() bool {
 
 type durableObservingSink struct {
 	testkit.RecordingSink
-	store     application.EventStore
+	store     application.EventStoreV2
 	sessionID domain.SessionID
 
 	mu       sync.Mutex
@@ -996,7 +978,7 @@ type durableObservingSink struct {
 
 func (sink *durableObservingSink) Emit(ctx context.Context, event engine.RuntimeEvent) error {
 	if event.Type == engine.RuntimeAppendCompleted || event.Type == engine.RuntimeModelStreamInterrupted {
-		records, err := sink.store.Load(context.Background(), sink.sessionID)
+		records, err := application.ReadWholeStreamPinned(context.Background(), sink.store, sink.sessionID, 256)
 		types := turnEventTypes(records)
 		valid := err == nil && len(types) == 5 && reflect.DeepEqual(types[3:], []string{domain.EventAssistantMessageInterrupted, domain.EventTurnInterrupted})
 		sink.mu.Lock()
@@ -1017,7 +999,7 @@ func (sink *durableObservingSink) ObservedDurableTerminalBeforeSignals() bool {
 }
 
 type cancelCompletedAppendStore struct {
-	application.EventStore
+	application.EventStoreV2
 	mu               sync.Mutex
 	cancel           context.CancelFunc
 	failure          error
@@ -1025,20 +1007,20 @@ type cancelCompletedAppendStore struct {
 	interruptedCalls int
 }
 
-func (store *cancelCompletedAppendStore) Append(ctx context.Context, request application.AppendRequest) ([]domain.RecordedEvent, error) {
-	if len(request.Events) > 0 && request.Events[0].EventType() == domain.EventAssistantMessageCompleted {
+func (store *cancelCompletedAppendStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
+	if len(request.Events) > 0 && request.Events[0].Event.EventType() == domain.EventAssistantMessageCompleted {
 		store.mu.Lock()
 		store.completedCalls++
 		store.mu.Unlock()
 		store.cancel()
-		return nil, store.failure
+		return application.CommitReceipt{}, store.failure
 	}
-	if len(request.Events) > 0 && request.Events[0].EventType() == domain.EventAssistantMessageInterrupted {
+	if len(request.Events) > 0 && request.Events[0].Event.EventType() == domain.EventAssistantMessageInterrupted {
 		store.mu.Lock()
 		store.interruptedCalls++
 		store.mu.Unlock()
 	}
-	return store.EventStore.Append(ctx, request)
+	return store.EventStoreV2.Append(ctx, request)
 }
 
 func (store *cancelCompletedAppendStore) CompletedCalls() int {
@@ -1053,18 +1035,18 @@ func (store *cancelCompletedAppendStore) InterruptedCalls() int {
 }
 
 type cancelAfterAdmissionStore struct {
-	application.EventStore
+	application.EventStoreV2
 	mu                 sync.Mutex
 	cancel             context.CancelFunc
 	sawDetachedBounded bool
 }
 
-func (store *cancelAfterAdmissionStore) Append(ctx context.Context, request application.AppendRequest) ([]domain.RecordedEvent, error) {
-	records, err := store.EventStore.Append(ctx, request)
+func (store *cancelAfterAdmissionStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
+	records, err := store.EventStoreV2.Append(ctx, request)
 	if err != nil || len(request.Events) == 0 {
 		return records, err
 	}
-	switch request.Events[0].EventType() {
+	switch request.Events[0].Event.EventType() {
 	case domain.EventTurnStarted:
 		store.cancel()
 	case domain.EventAssistantMessageInterrupted:
@@ -1082,57 +1064,53 @@ func (store *cancelAfterAdmissionStore) SawDetachedBoundedContext() bool {
 	return store.sawDetachedBounded
 }
 
-type mutateRunAppendStore struct {
-	application.EventStore
+type corruptAdmissionReceiptStore struct {
+	application.EventStoreV2
 	mu          sync.Mutex
-	targetType  string
-	mutate      func([]domain.RecordedEvent) []domain.RecordedEvent
 	targetCalls int
 }
 
-func (store *mutateRunAppendStore) Append(ctx context.Context, request application.AppendRequest) ([]domain.RecordedEvent, error) {
-	records, err := store.EventStore.Append(ctx, request)
-	if err != nil || len(request.Events) == 0 || request.Events[0].EventType() != store.targetType {
+func (store *corruptAdmissionReceiptStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
+	records, err := store.EventStoreV2.Append(ctx, request)
+	if err != nil || len(request.Events) == 0 || request.Events[0].Event.EventType() != domain.EventTurnStarted {
 		return records, err
 	}
 	store.mu.Lock()
 	store.targetCalls++
 	store.mu.Unlock()
-	cloned, cloneErr := domain.CloneRecordedEvents(records)
-	if cloneErr != nil {
-		return nil, cloneErr
-	}
-	return store.mutate(cloned), nil
+	records.FirstSequence++
+	records.LastSequence++
+	return records, nil
 }
 
-func (store *mutateRunAppendStore) TargetCalls() int {
+func (store *corruptAdmissionReceiptStore) TargetCalls() int {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	return store.targetCalls
 }
 
 type twoLoadBarrierStore struct {
-	application.EventStore
+	application.EventStoreV2
 	sessionID domain.SessionID
 	entered   chan struct{}
 	release   chan struct{}
 }
 
-func newTwoLoadBarrierStore(store application.EventStore, sessionID domain.SessionID) *twoLoadBarrierStore {
-	return &twoLoadBarrierStore{EventStore: store, sessionID: sessionID, entered: make(chan struct{}, 2), release: make(chan struct{})}
+func newTwoLoadBarrierStore(store application.EventStoreV2, sessionID domain.SessionID) *twoLoadBarrierStore {
+	return &twoLoadBarrierStore{EventStoreV2: store, sessionID: sessionID, entered: make(chan struct{}, 2), release: make(chan struct{})}
 }
 
-func (store *twoLoadBarrierStore) Load(ctx context.Context, sessionID domain.SessionID) ([]domain.RecordedEvent, error) {
-	records, err := store.EventStore.Load(ctx, sessionID)
-	if err != nil || sessionID != store.sessionID {
-		return records, err
+func (store *twoLoadBarrierStore) ReadStream(ctx context.Context, request application.ReadStreamRequest) (application.StreamPage, error) {
+	page, err := store.EventStoreV2.ReadStream(ctx, request)
+	if err != nil || request.SessionID != store.sessionID || request.AfterSequence != 0 {
+		return page, err
 	}
 	store.entered <- struct{}{}
 	select {
 	case <-store.release:
-		return records, nil
+		return page, nil
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return application.StreamPage{}, ctx.Err()
 	}
 }
 

@@ -70,3 +70,41 @@ func TestParseItemIDRejectsBlankPaddedAndInvalidUTF8(t *testing.T) {
 		}
 	}
 }
+
+func TestParseAppendAndRunTurnRequestIDs(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		parse func(string) error
+	}{
+		{"append", func(v string) error { _, err := ParseAppendID(v); return err }},
+		{"request", func(v string) error { _, err := ParseRunTurnRequestID(v); return err }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.parse(test.name + "-1"); err != nil {
+				t.Fatal(err)
+			}
+			if err := test.parse(" " + test.name); !IsCode(err, CodeInvalidID) {
+				t.Fatalf("error = %v, want %q", err, CodeInvalidID)
+			}
+		})
+	}
+}
+
+func TestAppendAndRunTurnRequestIDParsersRejectInvalidValues(t *testing.T) {
+	invalidUTF8 := "identifier-\xff"
+	for _, test := range []struct {
+		name  string
+		parse func(string) error
+	}{
+		{"append", func(value string) error { _, err := ParseAppendID(value); return err }},
+		{"request", func(value string) error { _, err := ParseRunTurnRequestID(value); return err }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, input := range []string{"", "   ", " id", "id ", invalidUTF8} {
+				if err := test.parse(input); !IsCode(err, CodeInvalidID) {
+					t.Fatalf("parse(%q) error = %v, want code %q", input, err, CodeInvalidID)
+				}
+			}
+		})
+	}
+}

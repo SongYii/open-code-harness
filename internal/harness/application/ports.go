@@ -56,5 +56,6 @@ type IDGenerator interface {
 	NewTurnID() (domain.TurnID, error)
 	NewItemID() (domain.ItemID, error)
 	NewCommandID() (domain.CommandID, error)
+	NewAppendID() (domain.AppendID, error)
 	NewEventID() (domain.EventID, error)
 }

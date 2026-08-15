@@ -1129,11 +1129,14 @@ independent review, and completion evidence:
 6. **TypeScript TUI** — official SDK, view state, approval UX, transcript-driven
    tests, packaging.
 
-Each later subsystem gate re-verifies the then-public Pi, Grok Build, Codex,
-Kimi, Maka, and Reasonix implementations that are directly relevant to that
-slice, together with subsystem-specific authoritative systems. Evidence from
-this gate does not replace that re-verification and never bypasses local
-contracts, tests, license review, or architecture review.
+Each later subsystem gate re-verifies the then-public Pi, Kimi Code, Grok
+Build, Codex, Maka, and official DeepSeek Harness implementations that are
+directly relevant to that slice, together with subsystem-specific
+authoritative systems. DeepSeek-Reasonix remains community context only.
+Evidence from this gate does not replace that re-verification and never
+bypasses local contracts, tests, license review, or architecture review.
+Completing Slice 1 does not obligate immediately implementing slices 2–6;
+see the [DeepSeek Harness comparison and delivery sequencing](../../research/architecture-gates/2026-08-15-deepseek-harness-and-roadmap.md).
 
 ## 20. Completion criteria
 

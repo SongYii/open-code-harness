@@ -31,6 +31,7 @@ func (testIDs) NewSessionID() (domain.SessionID, error) { return "", nil }
 func (testIDs) NewTurnID() (domain.TurnID, error)       { return "", nil }
 func (testIDs) NewItemID() (domain.ItemID, error)       { return "", nil }
 func (testIDs) NewCommandID() (domain.CommandID, error) { return "", nil }
+func (testIDs) NewAppendID() (domain.AppendID, error)   { return "", nil }
 func (testIDs) NewEventID() (domain.EventID, error)     { return "", nil }
 
 func TestApplicationPortsHaveConsumerOwnedSignatures(t *testing.T) {

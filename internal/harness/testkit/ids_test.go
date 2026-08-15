@@ -36,6 +36,9 @@ func TestSequenceIDsAreTypedAndIndependent(t *testing.T) {
 	if got, err := ids.NewCommandID(); err != nil || got != domain.CommandID("command-1") {
 		t.Fatalf("command ID = %q, %v", got, err)
 	}
+	if got, err := ids.NewAppendID(); err != nil || got != domain.AppendID("append-1") {
+		t.Fatalf("append ID = %q, %v", got, err)
+	}
 	if got, err := ids.NewEventID(); err != nil || got != domain.EventID("event-1") {
 		t.Fatalf("event ID = %q, %v", got, err)
 	}
@@ -45,6 +48,9 @@ func TestSequenceIDsAreTypedAndIndependent(t *testing.T) {
 	}
 	if got, _ := ids.NewEventID(); got != "event-2" {
 		t.Fatalf("second event ID = %q", got)
+	}
+	if got, _ := ids.NewAppendID(); got != "append-2" {
+		t.Fatalf("second append ID = %q", got)
 	}
 }
 
@@ -115,6 +121,12 @@ func TestSequenceIDsAreConcurrentSafe(t *testing.T) {
 	t.Run("event", func(t *testing.T) {
 		assertUnique(t, "event", func() (string, error) {
 			value, err := ids.NewEventID()
+			return string(value), err
+		})
+	})
+	t.Run("append", func(t *testing.T) {
+		assertUnique(t, "append", func() (string, error) {
+			value, err := ids.NewAppendID()
 			return string(value), err
 		})
 	})

@@ -25,6 +25,10 @@ correctness contract.
 | System | Primary evidence | Observed design | Adopt | Do not infer or copy |
 | --- | --- | --- | --- | --- |
 | OpenAI Codex | [thread-store README](https://github.com/openai/codex/blob/main/codex-rs/thread-store/README.md), [live writer](https://github.com/openai/codex/blob/main/codex-rs/thread-store/src/local/live_writer.rs), [writer lock](https://github.com/openai/codex/blob/main/codex-rs/thread-store/src/local/writer_lock.rs), [state migrations](https://github.com/openai/codex/blob/main/codex-rs/state/src/migrations.rs) | Canonical rollout JSONL is written and flushed before a rebuildable SQLite metadata view; per-thread cross-process locks, backfill, and migration checksums support that choice. | Keep human-readable lossless history, explicit writer ownership, checksummed migrations, and rebuildable projections. | JSONL authority is not automatically the best greenfield choice for exact CAS, lost-ACK retries, and three-OS behavior. Its lock, scan, drift, and repair machinery is part of the cost. |
+| OpenCode | [session schema](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/session.sql.ts), [CLI database and session commands](https://opencode.ai/docs/cli/) | SQLite stores normalized Session, Message, Part, Todo, Session Message, and Permission records and is the durable recovery source behind session listing, export, and database inspection. Runtime bus and SSE events notify consumers but are not themselves the durable history. | Explicit database tooling, normalized product projections, server-owned durable state, and separate transient delivery events. | Mutable message/part rows and notification events do not establish an immutable domain-event authority, exact append receipt, fencing, or lost-ack recovery contract. The fast-moving `dev` schema must be re-verified before implementation reuse. |
+| Goose | [session manager and SQLite storage](https://github.com/aaif-goose/goose/blob/main/crates/goose/src/session/session_manager.rs) | `SessionManager` routes session, conversation, and usage-ledger reads and writes through SQLite. Schema initialization uses `BEGIN IMMEDIATE` to serialize concurrent first-run writers, and legacy sessions are imported into the database. | Serialized writer admission, bounded database waiting, WAL-oriented operation, transactional message/session updates, explicit migrations, and one-way legacy import. | `replace_conversation` and mutable transcript CRUD are product persistence semantics, not an append-only audit or domain-event contract. |
+| Crush | [repository architecture](https://github.com/charmbracelet/crush/blob/main/AGENTS.md), [session service](https://github.com/charmbracelet/crush/blob/main/internal/session/session.go) | Go services perform Session CRUD against SQLite through sqlc and migrations; session reads come from the database and multi-table deletion uses a transaction. Explicit UI-only estimated usage remains in memory rather than competing as a durable fact. | Go/sqlc repository boundaries, migration discipline, transaction-scoped multi-table changes, and a clear distinction between durable facts and ephemeral UI state. | Mutable Session CRUD, internal pub/sub, and transactional deletion do not provide immutable event replay, expected-version append, or uncertain-effect reconciliation. |
+| Hermes Agent | [session persistence documentation](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/sessions.md) | SQLite stores full session metadata and message history, and the documentation explicitly names it the canonical store for gateway messages. JSONL is an export format; legacy mirrors are compatibility artifacts rather than a second authority. | State the authority boundary in product documentation, keep exports subordinate to the database, and combine resume, routing continuity, and FTS-backed history around one canonical store. | Canonical transcript storage does not by itself prove immutable batch events, expected-version CAS, AppendID receipts, writer fencing, or no-replay recovery for uncertain external effects. |
 | Kimi Code | [data locations](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/configuration/data-locations.md), [package map](https://github.com/MoonshotAI/kimi-code/blob/main/AGENTS.md) | `wire.jsonl` is a complete replay/resume record; application/server, engine, provider, execution environment, and transcript packages are separated. | Consumer-owned protocol projections, recorded-order replay, and explicit package boundaries. | Transcript idempotence does not establish atomic EventStore CAS or exact commit retry. |
 | Maka | [architecture](https://github.com/maka-agent/maka-agent/blob/main/ARCHITECTURE.md), [runtime core draft](https://github.com/maka-agent/maka-agent/blob/main/docs/architecture/runtime-core-architecture-draft.md), [resume architecture](https://github.com/maka-agent/maka-agent/blob/main/docs/architecture/runtime-resume-architecture.md) | A semantic runtime event log is fact authority; UI, context, and recovery are projections. Recovery separates repair, continuation, and retry and rejects blind replay under uncertainty. | Immutable facts, short durable commits around external effects, terminal facts before projections/signals, and no automatic retry of uncertain effects. | The public design does not prove our SQLite CAS, AppendID, or cross-platform file contract. |
 | DeepSeek-Reasonix | [v2 specification](https://github.com/esengine/DeepSeek-Reasonix/blob/main-v2/docs/SPEC.md) | Go, CGO-free distribution, append-only transcript, and complete JSONL session persistence. | Pure-Go portability, full saved sessions, and testable transcript behavior. | A transcript format alone is not a transactional multi-process EventStore. This is community project evidence, not a normative standard. |
@@ -35,6 +39,38 @@ correctness contract.
 | SQLite | [atomic commit](https://sqlite.org/atomiccommit.html), [WAL](https://sqlite.org/wal.html), [backup API](https://sqlite.org/backup.html) | Local transactions provide atomic commit and WAL recovery; the Online Backup API produces consistent copies. WAL is database recovery machinery, not a domain event log, and has filesystem constraints. | SQLite transaction as the sole commit point, local-filesystem-only operation, WAL with deliberate durability settings, and Online Backup for primary backups. | A SQLite WAL file is not a public audit log and must not be exposed as one. Live databases on NFS/SMB/synchronization folders are unsupported. |
 | modernc SQLite | [Go package documentation](https://pkg.go.dev/modernc.org/sqlite) | A database/sql SQLite driver implemented in C translated to Go supports a CGO-free build path across the target operating systems. | Use it as the default production driver and verify every target in CI. | Driver portability does not by itself prove our transaction, pragma, backup, or filesystem behavior; those remain adapter contracts. |
 | Transactional outbox | [Debezium outbox documentation](https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html) | Business state and an outbound publication record are committed in one database transaction; publication is asynchronous and idempotent. | Register every JSONL export batch in the same SQLite transaction as its events. | Synchronous SQLite-plus-file dual write cannot provide one portable atomic commit. |
+
+## SQLite authority assessment
+
+The term "SQLite authority" covers two materially different contracts. OpenCode,
+Goose, Crush, and Hermes demonstrate **session/transcript authority**: after a
+restart, durable Session and Message facts are read from SQLite rather than from
+an in-memory bus, UI state, search index, or export. This is strong evidence
+that a local coding agent can make SQLite its product recovery source without
+creating an unusual operational model.
+
+Open Code Harness requires the stricter **runtime domain authority** contract.
+The immutable event stream must decide every accepted lifecycle fact, while
+mutable heads, transcript rows, snapshots, and JSONL remain derived. Among the
+public implementations reviewed here, none documents the full combination of
+atomic multi-event append, expected-version CAS, caller-stable `AppendID` plus
+request digest, post-commit receipt resolution, runtime fencing, transactional
+audit outbox, and no-replay recovery for uncertain effects. Absence of public
+evidence is not proof that an unlisted internal mechanism does not exist; it
+means those guarantees cannot be inherited from the comparison.
+
+The comparison therefore strengthens, rather than changes, the selected
+architecture. Goose supplies concrete SQLite operational mechanics; Crush is
+the closest Go implementation reference; Hermes supplies the clearest
+canonical-store product language; and OpenCode supplies a rich normalized
+session schema and database operations surface. Their mutable transcript models
+remain references for projections and tooling, not replacements for the
+canonical immutable EventStore.
+
+Codex is the useful counterexample: its source explicitly treats SQLite as a
+rebuildable view that may lag but never lead canonical JSONL. Merely finding a
+SQLite database in an agent is therefore insufficient evidence of SQLite
+authority; recovery ordering and write precedence decide the classification.
 
 ## Pi assessment
 
@@ -138,7 +174,8 @@ SQLite records, and internal runtime signals do not become public ACP types.
    remain experimental and outside the compatibility promise.
 9. Every implementation milestone repeats a focused primary-source architecture
    gate and re-verifies the then-public implementations directly relevant to
-   that slice, including Pi and Grok Build when applicable.
+   that slice, including Pi, Grok Build, OpenCode, Goose, Crush, and Hermes when
+   applicable.
 
 ## Evidence limitations
 
@@ -150,5 +187,7 @@ SQLite records, and internal runtime signals do not become public ACP types.
   the public tree is evidence here.
 - Pi's repository/package identity has changed over time; links above identify
   the source path used for this review.
+- OpenCode's public `dev` branch changes quickly; the linked schema is dated
+  evidence, not a promise that every released version has the same tables.
 - No referenced project is treated as a code donor. License and provenance
   review remains mandatory before any implementation reuse.

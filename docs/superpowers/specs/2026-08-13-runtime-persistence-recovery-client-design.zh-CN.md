@@ -639,7 +639,7 @@ CI 使用 `CGO_ENABLED=0` 构建并测试 Linux、macOS、Windows；在支持的
 5. **ACP v1 Adapter**：stdio、Capability Negotiation、Mapping、Cancellation、Backpressure、Conformance。
 6. **TypeScript TUI**：官方 SDK、View State、Approval UX、Transcript-Driven Test、Packaging。
 
-后续每个子系统 Architecture Gate 都必须重新核验当时仍公开、且与该 Slice 直接相关的 Pi、Grok Build、Codex、Kimi、Maka、Reasonix 实现及对应权威系统；本次证据不能替代该核验。参考证据指导决策，但绝不绕过本地 Contract、Test、License Review 或 Architecture Review。
+后续每个子系统 Architecture Gate 都必须重新核验当时仍公开、且与该 Slice 直接相关的 Pi、Kimi Code、Grok Build、Codex、Maka 与官方 DeepSeek Harness 实现及对应权威系统。DeepSeek-Reasonix 只作为社区上下文。本次证据不能替代该核验。参考证据指导决策，但绝不绕过本地 Contract、Test、License Review 或 Architecture Review。完成 Slice 1 并不强制立刻实现 Slice 2–6；见 [DeepSeek Harness 对照与交付顺序](../../research/architecture-gates/2026-08-15-deepseek-harness-and-roadmap.zh-CN.md)。
 
 ## 20. 完成标准
 

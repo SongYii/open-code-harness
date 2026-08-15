@@ -72,7 +72,7 @@ type Scenario struct {
 // RuntimeDelivered includes only calls accepted by the sink.
 type Harness struct {
 	Service          *application.Service
-	Store            application.EventStore
+	Store            application.EventStoreV2
 	Sink             engine.RuntimeSink
 	RuntimeAttempts  func() []engine.RuntimeEvent
 	RuntimeDelivered func() []engine.RuntimeEvent
@@ -252,7 +252,7 @@ func runScenario(t *testing.T, factory Factory, scenario Scenario) {
 		done := make(chan outcome, 1)
 		go func() {
 			result, runErr := harness.Service.RunTurn(ctx, application.RunTurnRequest{
-				SessionID: created.SessionID, Input: scenario.Input, Sink: harness.Sink,
+				SessionID: created.SessionID, RequestID: domain.RunTurnRequestID("request-" + scenario.Name), Input: scenario.Input, Sink: harness.Sink,
 			})
 			done <- outcome{result: result, err: runErr}
 		}()
@@ -261,7 +261,7 @@ func runScenario(t *testing.T, factory Factory, scenario Scenario) {
 		got = <-done
 	} else {
 		got.result, got.err = harness.Service.RunTurn(ctx, application.RunTurnRequest{
-			SessionID: created.SessionID, Input: scenario.Input, Sink: harness.Sink,
+			SessionID: created.SessionID, RequestID: domain.RunTurnRequestID("request-" + scenario.Name), Input: scenario.Input, Sink: harness.Sink,
 		})
 	}
 
@@ -270,7 +270,7 @@ func runScenario(t *testing.T, factory Factory, scenario Scenario) {
 		t.Fatalf("RunTurn() result = %#v, want status=%s text=%q terminal=true", got.result, scenario.WantStatus, scenario.WantText)
 	}
 
-	records, err := harness.Store.Load(context.Background(), created.SessionID)
+	records, err := application.ReadWholeStreamPinned(context.Background(), harness.Store, created.SessionID, 256)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}

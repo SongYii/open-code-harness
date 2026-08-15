@@ -9,6 +9,8 @@ type SessionID string
 type TurnID string
 type ItemID string
 type CommandID string
+type AppendID string
+type RunTurnRequestID string
 type EventID string
 
 func ParseSessionID(value string) (SessionID, error) {
@@ -37,6 +39,20 @@ func ParseCommandID(value string) (CommandID, error) {
 		return "", err
 	}
 	return CommandID(value), nil
+}
+
+func ParseAppendID(value string) (AppendID, error) {
+	if err := validateID(value); err != nil {
+		return "", err
+	}
+	return AppendID(value), nil
+}
+
+func ParseRunTurnRequestID(value string) (RunTurnRequestID, error) {
+	if err := validateID(value); err != nil {
+		return "", err
+	}
+	return RunTurnRequestID(value), nil
 }
 
 func ParseEventID(value string) (EventID, error) {
