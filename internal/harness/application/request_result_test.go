@@ -26,9 +26,18 @@ func TestDurableRequestTerminalErrorPreservesFailureAndInterruptionCode(t *testi
 	}{
 		{name: "failed", event: domain.AssistantMessageFailed{TurnID: "turn-1", ItemID: "item-1", Code: "model_stream"}, category: CategoryModel, code: "model_stream"},
 		{name: "interrupted", event: domain.AssistantMessageInterrupted{TurnID: "turn-1", ItemID: "item-1", Code: "caller_canceled"}, category: CategoryCanceled, code: "caller_canceled"},
+		{name: "provider auth after usage", event: domain.AssistantMessageFailed{TurnID: "turn-1", ItemID: "item-1", Code: "provider_auth"}, category: CategoryModel, code: "provider_auth"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			result := RunTurnResult{TerminalCommitted: true, Records: []domain.RecordedEvent{{Event: test.event}, {}}}
+			records := []domain.RecordedEvent{{Event: test.event}, {}}
+			if test.name == "provider auth after usage" {
+				records = []domain.RecordedEvent{
+					{Event: domain.ModelUsageRecorded{TurnID: "turn-1", ItemID: "item-1", LatencyMs: 4}},
+					{Event: test.event},
+					{Event: domain.TurnFailed{TurnID: "turn-1", Code: "provider_auth"}},
+				}
+			}
+			result := RunTurnResult{TerminalCommitted: true, Records: records}
 			var appErr *Error
 			if err := durableRequestTerminalError(result); !errors.As(err, &appErr) || appErr.Category != test.category || appErr.Code != test.code || !appErr.TerminalCommitted {
 				t.Fatalf("durable terminal error = %#v", err)

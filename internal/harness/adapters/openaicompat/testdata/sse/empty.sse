@@ -1,0 +1,3 @@
+data: {"id":"chatcmpl-empty","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":"stop"}]}
+
+data: [DONE]

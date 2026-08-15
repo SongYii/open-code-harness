@@ -2,6 +2,7 @@ package engine
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -22,6 +23,28 @@ func TestIsCodeTraversesJoinedTreesAndTypedNilBranches(t *testing.T) {
 	}
 	if got := (&Error{Code: CodeModelStream, Cause: errors.New("secret")}).Error(); got != "engine/model_stream" {
 		t.Fatalf("Error() = %q, want stable code without cause text", got)
+	}
+}
+
+func TestProviderFailureErrorNeverRendersSecrets(t *testing.T) {
+	var typedNil *ProviderFailure
+	if got := typedNil.Error(); got != "<nil>" {
+		t.Fatalf("typed nil Error() = %q, want <nil>", got)
+	}
+	failure := &ProviderFailure{
+		Class:       FailureClassAuth,
+		Code:        "provider_auth",
+		SafeMessage: "Authorization: Bearer sk-secret body",
+		RequestID:   "req-1",
+	}
+	got := failure.Error()
+	if got != "provider_auth" {
+		t.Fatalf("Error() = %q, want durable code only", got)
+	}
+	for _, part := range []string{"Authorization", "Bearer", "sk-secret", "body"} {
+		if strings.Contains(got, part) {
+			t.Fatalf("Error() leaked %q: %q", part, got)
+		}
 	}
 }
 

@@ -3,7 +3,41 @@ package engine
 import (
 	"errors"
 	"fmt"
+	"time"
 )
+
+type FailureClass string
+
+const (
+	FailureClassAuth      FailureClass = "auth"
+	FailureClassQuota     FailureClass = "quota"
+	FailureClassRateLimit FailureClass = "rate_limit"
+	FailureClassTransient FailureClass = "transient"
+	FailureClassPermanent FailureClass = "permanent"
+	FailureClassCanceled  FailureClass = "canceled"
+)
+
+// ProviderFailure is the classified cause of a model Error.
+// Code is the durable Application code persisted on AssistantMessageFailed.
+type ProviderFailure struct {
+	Class       FailureClass
+	Retryable   bool
+	RetryAfter  time.Duration
+	Code        string
+	HTTPStatus  int
+	RequestID   string
+	SafeMessage string
+}
+
+func (e *ProviderFailure) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	if e.Code != "" {
+		return e.Code
+	}
+	return "provider_failure"
+}
 
 type ErrorCode string
 

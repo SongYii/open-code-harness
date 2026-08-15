@@ -238,7 +238,9 @@ func validateTerminalTurn(event domain.Event, record CommandRequestRecord, code 
 
 func allowedFailureCode(code string) bool {
 	switch code {
-	case string(engine.CodeModelStartup), string(engine.CodeModelStream), string(engine.CodeOutputLimit), string(engine.CodeInvalidStream), "model_failure":
+	case string(engine.CodeModelStartup), string(engine.CodeModelStream), string(engine.CodeOutputLimit), string(engine.CodeInvalidStream), "model_failure",
+		"provider_auth", "provider_quota", "provider_rate_limit", "provider_transient", "provider_permanent",
+		"capability_mismatch", "context_overflow", "empty_response":
 		return true
 	default:
 		return false

@@ -1,0 +1,5 @@
+data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"content_filter"}]}
+
+data: [DONE]

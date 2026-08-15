@@ -19,6 +19,7 @@ type Config struct {
 	TerminalCommitTimeout         time.Duration
 	AppendResolutionTimeout       time.Duration
 	AppendResolutionMaxOperations uint32
+	RequestIdentity               *engine.RequestIdentity
 }
 
 func DefaultConfig() Config {
@@ -51,6 +52,13 @@ func NewService(store EventStore, ids IDGenerator, clock Clock, runner *engine.T
 	}
 	if isNilValue(store) || isNilValue(ids) || isNilValue(clock) || runner == nil || authority.Validate() != nil || config.MaxAssistantBytes <= 0 || config.TerminalCommitTimeout <= 0 || config.AppendResolutionTimeout <= 0 || config.AppendResolutionMaxOperations == 0 {
 		return nil, applicationError(CategoryValidation, "invalid_configuration", false, nil)
+	}
+	if config.RequestIdentity != nil {
+		copied := *config.RequestIdentity
+		if err := copied.Validate(); err != nil {
+			return nil, applicationError(CategoryValidation, "invalid_configuration", false, err)
+		}
+		config.RequestIdentity = &copied
 	}
 	return &Service{store: store, ids: ids, clock: clock, runner: runner, authority: authority, config: config, executions: newExecutionRegistry()}, nil
 }

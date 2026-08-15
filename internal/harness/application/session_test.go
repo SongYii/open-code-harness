@@ -318,6 +318,13 @@ func TestNewServiceValidatesDependenciesAndConfiguration(t *testing.T) {
 		{name: "typed nil runner", store: validStore, ids: validIDs, runner: typedNilRunner, config: application.DefaultConfig()},
 		{name: "output limit", store: validStore, ids: validIDs, runner: validRunner, config: application.Config{TerminalCommitTimeout: time.Second}},
 		{name: "terminal timeout", store: validStore, ids: validIDs, runner: validRunner, config: application.Config{MaxAssistantBytes: 1}},
+		{name: "invalid request identity", store: validStore, ids: validIDs, runner: validRunner, config: func() application.Config {
+			config := application.DefaultConfig()
+			identity := validTurnRequestIdentity()
+			identity.AdapterFamily = "OpenAI"
+			config.RequestIdentity = &identity
+			return config
+		}()},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -332,6 +339,29 @@ func TestNewServiceValidatesDependenciesAndConfiguration(t *testing.T) {
 	service, err := application.NewService(validStore, validIDs, testkit.FixedClock{Time: validSessionTime()}, validRunner, v2Authority, application.DefaultConfig())
 	if err != nil || service == nil {
 		t.Fatalf("NewService(valid) = (%#v, %v)", service, err)
+	}
+	identity := validTurnRequestIdentity()
+	withIdentity := application.DefaultConfig()
+	withIdentity.RequestIdentity = &identity
+	service, err = application.NewService(validStore, validIDs, testkit.FixedClock{Time: validSessionTime()}, validRunner, v2Authority, withIdentity)
+	if err != nil || service == nil {
+		t.Fatalf("NewService(valid identity) = (%#v, %v)", service, err)
+	}
+}
+
+func validTurnRequestIdentity() engine.RequestIdentity {
+	return engine.RequestIdentity{
+		AdapterFamily: "openai_compat",
+		ModelID:       "test-model",
+		EndpointID:    "api.example.com",
+		Profile: engine.CapabilityProfile{
+			NativeTools:      engine.CapabilityUnsupported,
+			Images:           engine.CapabilityUnsupported,
+			StructuredOutput: engine.CapabilityUnsupported,
+			ReasoningFields:  engine.CapabilityUnsupported,
+			PromptCache:      engine.CapabilityUnsupported,
+		},
+		IncludeUsage: true,
 	}
 }
 
