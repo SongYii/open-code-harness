@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -147,11 +148,13 @@ func TestFoundRunningAttachesLocalWaiterAndCancellationIsIsolated(t *testing.T) 
 	canceledDone := make(chan outcome, 1)
 	go func() { result, err := service.RunTurn(waiterCtx, request); canceledDone <- outcome{result, err} }()
 	await(t, observer.found, "cancelable waiter found-running lookup")
+	awaitRegistryLeases(t, service, request.RequestID, 2, "cancelable waiter attach")
 	cancelWaiter()
 	canceled := awaitOutcome(t, canceledDone, "cancelable waiter result")
 	if !application.IsCategory(canceled.err, application.CategoryCanceled) {
 		t.Fatalf("canceled waiter=%#v", canceled)
 	}
+	awaitRegistryLeases(t, service, request.RequestID, 1, "canceled waiter detach")
 	select {
 	case owner := <-ownerDone:
 		t.Fatalf("owner returned before release: %#v", owner)
@@ -163,6 +166,7 @@ func TestFoundRunningAttachesLocalWaiterAndCancellationIsIsolated(t *testing.T) 
 		attachedDone <- outcome{result, err}
 	}()
 	await(t, observer.found, "attached waiter found-running lookup")
+	awaitRegistryLeases(t, service, request.RequestID, 2, "attached waiter lease")
 	model.releaseOnce()
 	owner := awaitOutcome(t, ownerDone, "owner terminal result")
 	attached := awaitOutcome(t, attachedDone, "attached waiter terminal result")
@@ -172,6 +176,20 @@ func TestFoundRunningAttachesLocalWaiterAndCancellationIsIsolated(t *testing.T) 
 	if records, err := application.ReadWholeStreamPinned(context.Background(), base, created.SessionID, 256); err != nil || len(records) != 5 {
 		t.Fatalf("records=%#v err=%v", records, err)
 	}
+}
+
+func awaitRegistryLeases(t *testing.T, service *application.Service, requestID domain.RunTurnRequestID, want uint32, description string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		snapshot := application.ExecutionRegistrySnapshotForTest(service, requestID)
+		if snapshot.Present && snapshot.Leases == want {
+			return
+		}
+		runtime.Gosched()
+	}
+	snapshot := application.ExecutionRegistrySnapshotForTest(service, requestID)
+	t.Fatalf("timed out waiting for %s: snapshot=%#v want leases=%d", description, snapshot, want)
 }
 
 type foundLookupObserver struct {

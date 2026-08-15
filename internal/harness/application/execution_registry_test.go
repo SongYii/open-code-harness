@@ -9,6 +9,23 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 )
 
+// ExecutionRegistryTestSnapshot is a test-only, immutable observation of a
+// live registry entry. It exists so external application_test scenarios can
+// wait for lease attach/detach without mutating production state.
+type ExecutionRegistryTestSnapshot struct {
+	Present bool
+	Leases  uint32
+	Phase   string
+}
+
+func ExecutionRegistrySnapshotForTest(service *Service, requestID domain.RunTurnRequestID) ExecutionRegistryTestSnapshot {
+	if service == nil || service.executions == nil {
+		return ExecutionRegistryTestSnapshot{}
+	}
+	snapshot, ok := service.executions.snapshot(requestID)
+	return ExecutionRegistryTestSnapshot{Present: ok, Leases: snapshot.Leases, Phase: string(snapshot.Phase)}
+}
+
 func TestExecutionRegistryElectsOwnerAndCleansAfterDetach(t *testing.T) {
 	registry := newExecutionRegistry()
 	digest := Digest{1}
