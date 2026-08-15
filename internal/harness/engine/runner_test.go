@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -514,6 +515,12 @@ func TestTurnRunnerRejectsInvalidEventsAndBoundsBeforeDelivery(t *testing.T) {
 		{"tool call with text", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventToolCall, Text: "no", ToolCall: &ToolCall{ID: "call-1", Name: "read_file"}}}}, 16, CodeInvalidStream, 1, 1},
 		{"usage on tool call", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventToolCall, Usage: &TokenUsage{OutputTokens: 1}, ToolCall: &ToolCall{ID: "call-1", Name: "read_file"}}}}, 16, CodeInvalidStream, 1, 1},
 		{"empty tool id", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventToolCall, ToolCall: &ToolCall{Name: "read_file"}}}}, 16, CodeInvalidStream, 1, 1},
+		{"empty tool name", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventToolCall, ToolCall: &ToolCall{ID: "call-1"}}}}, 16, CodeInvalidStream, 1, 1},
+		{"whitespace tool name", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventToolCall, ToolCall: &ToolCall{ID: "call-1", Name: " \t"}}}}, 16, CodeInvalidStream, 1, 1},
+		{"tool id 129 bytes", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventToolCall, ToolCall: &ToolCall{ID: strings.Repeat("c", 129), Name: "read_file"}}}}, 16, CodeInvalidStream, 1, 1},
+		{"invalid utf8 tool id", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventToolCall, ToolCall: &ToolCall{ID: invalidUTF8, Name: "read_file"}}}}, 16, CodeInvalidStream, 1, 1},
+		{"invalid utf8 tool name", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventToolCall, ToolCall: &ToolCall{ID: "call-1", Name: invalidUTF8}}}}, 16, CodeInvalidStream, 1, 1},
+		{"invalid utf8 arguments", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventToolCall, ToolCall: &ToolCall{ID: "call-1", Name: "read_file", Arguments: invalidUTF8}}}}, 16, CodeInvalidStream, 1, 1},
 		{"oversized arguments", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventToolCall, ToolCall: &ToolCall{ID: "call-1", Name: "read_file", Arguments: string(make([]byte, 32*1024+1))}}}}, 16, CodeInvalidStream, 1, 1},
 		{"delta after first tool", []testkit.ScriptedStep{
 			{Event: StreamEvent{Type: StreamEventToolCall, ToolCall: &ToolCall{ID: "call-1", Name: "read_file", Arguments: `{}`}}},

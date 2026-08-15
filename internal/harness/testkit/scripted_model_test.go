@@ -106,6 +106,48 @@ func TestScriptedModelSupportsEveryStartupPairAndDefensiveSnapshots(t *testing.T
 	if got := model.Calls(); !reflect.DeepEqual(got, []engine.ModelRequest{expected}) {
 		t.Fatalf("Calls() defensive snapshot = %#v, want %#v", got, []engine.ModelRequest{expected})
 	}
+
+	withSlices := engine.ModelRequest{
+		SessionID: "session",
+		TurnID:    "turn",
+		ItemID:    "item",
+		Input:     "input",
+		Messages: []domain.ModelPromptMessage{{
+			Role:      domain.PromptRoleAssistant,
+			Text:      "calling",
+			ToolCalls: []domain.ToolCallOffer{{ID: "call-1", Name: "read_file", Arguments: `{}`}},
+		}},
+		Tools: []domain.ToolSchema{{Name: "read_file", Description: "read", InputSchema: []byte(`{"type":"object"}`)}},
+	}
+	want := engine.ModelRequest{
+		SessionID: "session",
+		TurnID:    "turn",
+		ItemID:    "item",
+		Input:     "input",
+		Messages: []domain.ModelPromptMessage{{
+			Role:      domain.PromptRoleAssistant,
+			Text:      "calling",
+			ToolCalls: []domain.ToolCallOffer{{ID: "call-1", Name: "read_file", Arguments: `{}`}},
+		}},
+		Tools: []domain.ToolSchema{{Name: "read_file", Description: "read", InputSchema: []byte(`{"type":"object"}`)}},
+	}
+	sliced, err := testkit.NewScriptedModel(withSlices, testkit.ScriptedModelConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sliced.Stream(context.Background(), withSlices); err != nil {
+		t.Fatal(err)
+	}
+	withSlices.Messages[0].ToolCalls[0].Name = "changed"
+	withSlices.Tools[0].Name = "changed"
+	withSlices.Tools[0].InputSchema[0] = 'x'
+	snapshot := sliced.Calls()
+	snapshot[0].Messages[0].ToolCalls[0].Name = "mutated"
+	snapshot[0].Tools[0].Name = "mutated"
+	snapshot[0].Tools[0].InputSchema[0] = 'y'
+	if got := sliced.Calls(); !reflect.DeepEqual(got, []engine.ModelRequest{want}) {
+		t.Fatalf("Calls() Messages/Tools snapshot = %#v, want %#v", got, []engine.ModelRequest{want})
+	}
 }
 
 func TestScriptedModelStepSignalsBeforeReleaseAndCancellation(t *testing.T) {
