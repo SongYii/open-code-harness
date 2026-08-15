@@ -159,42 +159,6 @@ func validateRequestCompanions(records []domain.RecordedEvent, record CommandReq
 	return nil
 }
 
-func referencesRequestIdentity(event domain.Event, record CommandRequestRecord) bool {
-	switch value := event.(type) {
-	case domain.TurnStarted:
-		return value.TurnID == record.TurnID
-	case domain.TurnCompleted:
-		return value.TurnID == record.TurnID
-	case domain.TurnFailed:
-		return value.TurnID == record.TurnID
-	case domain.TurnInterrupted:
-		return value.TurnID == record.TurnID
-	case domain.AssistantMessageStarted:
-		return value.TurnID == record.TurnID || value.ItemID == record.ItemID
-	case domain.AssistantMessageCompleted:
-		return value.TurnID == record.TurnID || value.ItemID == record.ItemID
-	case domain.AssistantMessageFailed:
-		return value.TurnID == record.TurnID || value.ItemID == record.ItemID
-	case domain.AssistantMessageInterrupted:
-		return value.TurnID == record.TurnID || value.ItemID == record.ItemID
-	default:
-		return false
-	}
-}
-
-func relevantRequestTerminal(event domain.Event, record CommandRequestRecord) bool {
-	switch terminal := event.(type) {
-	case domain.AssistantMessageCompleted:
-		return terminal.TurnID == record.TurnID || terminal.ItemID == record.ItemID
-	case domain.AssistantMessageFailed:
-		return terminal.TurnID == record.TurnID || terminal.ItemID == record.ItemID
-	case domain.AssistantMessageInterrupted:
-		return terminal.TurnID == record.TurnID || terminal.ItemID == record.ItemID
-	default:
-		return false
-	}
-}
-
 func validateCommandRequestRecord(record CommandRequestRecord) error {
 	if _, err := domain.ParseRunTurnRequestID(string(record.RunTurnRequestID)); err != nil {
 		return err
