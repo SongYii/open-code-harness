@@ -52,6 +52,8 @@ test-only production branches for the capabilities it does deliver.
 | Complete | Reading copy | [Runtime 持久化、恢复与客户端架构门中文阅读版](research/architecture-gates/2026-08-13-runtime-persistence-recovery-client.zh-CN.md) | 与 Runtime 持久化、恢复和客户端边界架构门完整同步的中文证据记录 |
 | Complete | Research evidence | [EventStore v2 contract architecture gate](research/architecture-gates/2026-08-13-eventstore-v2-contract.md) | Focused primary-source evidence for exact append, authority, pinned reads, admission, and unknown-outcome semantics |
 | Complete | Reading copy | [EventStore v2 Contract 架构门中文阅读版](research/architecture-gates/2026-08-13-eventstore-v2-contract.zh-CN.md) | 与 EventStore v2 Contract 聚焦架构门完整同步的中文证据记录 |
+| Complete | Research evidence | [DeepSeek Harness comparison and delivery sequencing](research/architecture-gates/2026-08-15-deepseek-harness-and-roadmap.md) | Official DeepSeek Harness adopt/reject boundary, required comparison set, and post-Slice-1 sequencing |
+| Complete | Reading copy | [DeepSeek Harness 对照与交付顺序](research/architecture-gates/2026-08-15-deepseek-harness-and-roadmap.zh-CN.md) | 与 DeepSeek Harness 对照及交付顺序结论完整同步的中文证据记录 |
 | Complete | Plan | [Domain implementation plan](superpowers/plans/2026-08-11-domain-events-state-machine.md) | Completed Task 1–8 implementation sequence |
 | Complete | Reading copy | [领域实施计划中文阅读版](superpowers/plans/2026-08-11-domain-events-state-machine.zh-CN.md) | Chinese synchronized reading copy of the completed plan |
 
@@ -59,14 +61,15 @@ test-only production branches for the capabilities it does deliver.
 
 1. **Harness domain, events, Session/Turn state machine** — implemented.
 2. **Industrial Go Engine executable vertical slice** — implemented and verified.
-3. **Provider contract and first real provider** — not designed yet.
-4. **Tool Runtime, Policy, and minimal workspace tools** — not designed yet.
-5. **ACP v1 adapter and conformance** — cross-cutting boundary accepted; focused implementation specification not written yet.
-6. **TypeScript TUI client** — cross-cutting boundary accepted; focused implementation specification not written yet.
-7. **Context Engine, checkpoint, and recovery** — production persistence and crash-recovery boundary accepted; Context Engine and focused implementation specifications not written yet.
-8. **MCP client adapter** — not designed yet.
-9. **Scenario evaluation, benchmarks, and OpenTelemetry** — not designed yet.
-10. **Open-source release, governance, and ecosystem documentation** — not designed yet.
+3. **EventStore v2 contract migration** — implementation in progress; required before a SQLite adapter, not a replacement for Provider/Tool.
+4. **Provider contract and first real provider** — not designed yet; next product design after EventStore v2 Slice 1.
+5. **Tool Runtime, Policy, and minimal workspace tools** — not designed yet; next product design after EventStore v2 Slice 1.
+6. **ACP v1 adapter and conformance** — cross-cutting boundary accepted; focused implementation specification not written yet.
+7. **TypeScript TUI client** — cross-cutting boundary accepted; focused implementation specification not written yet.
+8. **Context Engine, checkpoint, and recovery** — production persistence and crash-recovery boundary accepted; Context Engine and focused implementation specifications not written yet.
+9. **MCP client adapter** — not designed yet.
+10. **Scenario evaluation, benchmarks, and OpenTelemetry** — not designed yet.
+11. **Open-source release, governance, and ecosystem documentation** — not designed yet.
 
 ## Documentation rules
 
@@ -82,3 +85,7 @@ test-only production branches for the capabilities it does deliver.
 6. Research projects are cited by official repositories or primary technical
    documents; unavailable implementation details are recorded as unknown, not
    inferred from product marketing.
+7. Later subsystem architecture gates re-verify the then-public official
+   sources that are directly relevant to the slice: Pi, Kimi Code, Grok Build,
+   Codex, Maka, and DeepSeek Harness. Community projects such as
+   DeepSeek-Reasonix are non-authoritative context only.

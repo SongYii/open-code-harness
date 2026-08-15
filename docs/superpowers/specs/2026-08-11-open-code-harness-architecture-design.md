@@ -314,12 +314,14 @@ Session、Turn、Item、ModelAttempt、ToolExecution 和 Approval 都必须有�
 - OpenAI Codex app-server: <https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md>
 - Pi agent core: <https://github.com/badlogic/pi-mono/tree/main/packages/agent>
 - MiniMax Mini-Agent: <https://github.com/MiniMax-AI/Mini-Agent>
-- DeepSeek-Reasonix: <https://github.com/esengine/DeepSeek-Reasonix>
+- DeepSeek Harness: <https://github.com/deepseek-ai/deepseek-harness>
+- DeepSeek-Reasonix（社区、非权威上下文）: <https://github.com/esengine/DeepSeek-Reasonix>
 - Kimi Code: <https://github.com/MoonshotAI/kimi-code>
+- Grok Build: <https://github.com/xai-org/grok-build>
 - Maka: <https://github.com/maka-agent/maka-agent>
 - A2A Specification: <https://github.com/a2aproject/A2A/blob/main/docs/specification.md>
 
-参考项目用于比较设计和形成评测，不构成本项目的代码继承关系。
+参考项目用于比较设计和形成评测，不构成本项目的代码继承关系。后续子系统 Architecture Gate 必须重新核验当时仍公开的 Pi、Kimi Code、Grok Build、Codex、Maka 与官方 DeepSeek Harness；DeepSeek-Reasonix 只作为社区上下文。采用/拒绝边界见 [DeepSeek Harness 对照与交付顺序](../../research/architecture-gates/2026-08-15-deepseek-harness-and-roadmap.zh-CN.md)。
 
 ## 13. 后续规格拆分
 
@@ -327,14 +329,15 @@ Session、Turn、Item、ModelAttempt、ToolExecution 和 Approval 都必须有�
 
 1. Harness domain、事件模型与 session/turn 状态机；
 2. Go Engine 工业级最小可执行纵切与确定性 replay；
-3. Provider contract 与首个模型适配；
-4. Tool Runtime、Policy 与最小 workspace tools；
-5. ACP v1 adapter 与 conformance；
-6. TypeScript TUI 最小客户端；
-7. Context Engine、checkpoint 和恢复；
-8. MCP client adapter；
-9. Scenario eval、基准与 OpenTelemetry；
-10. 开源发布、治理与生态文档。
+3. EventStore v2 合同迁移（已接受 Runtime 设计的 Slice 1；完成后再设计 Provider/Tool，不自动连做 SQLite/ACP/TUI）；
+4. Provider contract 与首个模型适配；
+5. Tool Runtime、Policy 与最小 workspace tools；
+6. ACP v1 adapter 与 conformance；
+7. TypeScript TUI 最小客户端；
+8. Context Engine、checkpoint 和恢复；
+9. MCP client adapter；
+10. Scenario eval、基准与 OpenTelemetry；
+11. 开源发布、治理与生态文档。
 
 每个子项目都必须形成独立 spec 和实施计划。基础架构不以一次“大爆炸”实现交付，也不把任何子项目降格为 Demo。里程碑可以暂不提供某项生产能力，但已经提供的能力必须遵守其书面契约和工业级质量门。
 
