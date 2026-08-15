@@ -34,6 +34,101 @@ func TestCompactDecisionsMatchFullStateForFixturePrefixes(t *testing.T) {
 	}
 }
 
+func TestCompactDecisionsMatchFullStateForModelFacts(t *testing.T) {
+	created := RecordedEvent{SchemaVersion: schemaVersion, ID: "model-fact-1", CommandID: "model-fact-1", SessionID: "model-fact-session", Sequence: 1, OccurredAt: time.Date(2026, 8, 15, 0, 0, 1, 0, time.UTC), Event: SessionCreated{WorkspaceRoot: "/workspace"}}
+	full, err := HistoricalApply(HistoricalSession{}, created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compact, err := Apply(Session{}, created)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	command := StartAssistantTurn{SessionID: "model-fact-session", TurnID: "turn-1", ItemID: "item-1", Input: "inspect", Request: validModelRequestSpec("inspect")}
+	assertDecisionEquivalent(t, full, compact, command)
+	events, err := Decide(compact, command)
+	if err != nil || len(events) != 3 {
+		t.Fatalf("Decide() = (%#v, %v)", events, err)
+	}
+	when := time.Date(2026, 8, 15, 0, 0, 2, 0, time.UTC)
+	for index, event := range events {
+		record := RecordedEvent{
+			SchemaVersion: schemaVersion,
+			ID:            EventID(fmt.Sprintf("model-fact-%d", index+2)),
+			CommandID:     "model-fact-admit",
+			SessionID:     "model-fact-session",
+			Sequence:      uint64(index + 2),
+			OccurredAt:    when,
+			Event:         event.Event,
+		}
+		full, err = HistoricalApply(full, record)
+		if err != nil {
+			t.Fatalf("HistoricalApply(%d) error = %v", index, err)
+		}
+		compact, err = Apply(compact, record)
+		if err != nil {
+			t.Fatalf("Apply(%d) error = %v", index, err)
+		}
+	}
+
+	usage := RecordModelUsage{SessionID: "model-fact-session", ModelUsageRecorded: validModelUsageRecorded("turn-1", "item-1")}
+	assertDecisionEquivalent(t, full, compact, usage)
+	usageEvents, err := Decide(compact, usage)
+	if err != nil || len(usageEvents) != 1 {
+		t.Fatalf("Decide(usage) = (%#v, %v)", usageEvents, err)
+	}
+	usageRecord := RecordedEvent{
+		SchemaVersion: schemaVersion,
+		ID:            "model-fact-usage",
+		CommandID:     "model-fact-usage",
+		SessionID:     "model-fact-session",
+		Sequence:      5,
+		OccurredAt:    when,
+		Event:         usageEvents[0].Event,
+	}
+	full, err = HistoricalApply(full, usageRecord)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compact, err = Apply(compact, usageRecord)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, next := range freshCommandsForPrefix(full, 99) {
+		assertDecisionEquivalent(t, full, compact, next)
+	}
+
+	complete := CompleteAssistantTurn{SessionID: "model-fact-session", TurnID: "turn-1", ItemID: "item-1", Text: "done"}
+	assertDecisionEquivalent(t, full, compact, complete)
+	completeEvents, err := Decide(compact, complete)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, event := range completeEvents {
+		record := RecordedEvent{
+			SchemaVersion: schemaVersion,
+			ID:            EventID(fmt.Sprintf("model-fact-term-%d", index)),
+			CommandID:     "model-fact-term",
+			SessionID:     "model-fact-session",
+			Sequence:      uint64(6 + index),
+			OccurredAt:    when,
+			Event:         event.Event,
+		}
+		full, err = HistoricalApply(full, record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		compact, err = Apply(compact, record)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, next := range freshCommandsForPrefix(full, 100) {
+		assertDecisionEquivalent(t, full, compact, next)
+	}
+}
+
 func TestCompactHistoricalDuplicateRequiresStoreIdentityIndex(t *testing.T) {
 	records := fixtureRecords(t, "testdata/assistant_lifecycle.jsonl")
 	full, err := HistoricalReplay(records[:5])
@@ -178,6 +273,8 @@ func freshCommandsForPrefix(state HistoricalSession, prefix int) []Command {
 		CreateSession{SessionID: "session-fresh", WorkspaceRoot: "/fresh"},
 		StartTurn{SessionID: sessionID, TurnID: TurnID(fmt.Sprintf("turn-fresh-%d", prefix)), Input: "fresh"},
 		StartAssistantTurn{SessionID: sessionID, TurnID: TurnID(fmt.Sprintf("assistant-turn-fresh-%d", prefix)), ItemID: ItemID(fmt.Sprintf("assistant-item-fresh-%d", prefix)), Input: "fresh"},
+		StartAssistantTurn{SessionID: sessionID, TurnID: TurnID(fmt.Sprintf("assistant-turn-request-%d", prefix)), ItemID: ItemID(fmt.Sprintf("assistant-item-request-%d", prefix)), Input: "fresh", Request: validModelRequestSpec("fresh")},
+		RecordModelUsage{SessionID: sessionID, ModelUsageRecorded: ModelUsageRecorded{TurnID: turnID, ItemID: itemID, FinishReason: FinishReasonStop}},
 		CompleteTurn{SessionID: sessionID, TurnID: turnID},
 		FailTurn{SessionID: sessionID, TurnID: turnID, Code: "failed", Message: "failed"},
 		InterruptTurn{SessionID: sessionID, TurnID: turnID, Reason: "interrupted"},

@@ -48,11 +48,39 @@ func startTurnEvents(turnID TurnID, input string) []UncommittedEvent {
 	return []UncommittedEvent{{Event: TurnStarted{TurnID: turnID, Input: input}}}
 }
 
-func startAssistantTurnEvents(turnID TurnID, itemID ItemID, input string) []UncommittedEvent {
-	return []UncommittedEvent{
+func startAssistantTurnEvents(turnID TurnID, itemID ItemID, input string, request *ModelRequestSpec) []UncommittedEvent {
+	events := []UncommittedEvent{
 		{Event: TurnStarted{TurnID: turnID, Input: input}},
 		{Event: AssistantMessageStarted{TurnID: turnID, ItemID: itemID}},
 	}
+	if request != nil {
+		events = append(events, UncommittedEvent{Event: modelRequestRecordedFromSpec(turnID, itemID, *request)})
+	}
+	return events
+}
+
+func modelRequestRecordedFromSpec(turnID TurnID, itemID ItemID, spec ModelRequestSpec) ModelRequestRecorded {
+	return ModelRequestRecorded{
+		TurnID:              turnID,
+		ItemID:              itemID,
+		AdapterFamily:       spec.AdapterFamily,
+		ModelID:             spec.ModelID,
+		EndpointID:          spec.EndpointID,
+		NativeTools:         spec.NativeTools,
+		Images:              spec.Images,
+		StructuredOutput:    spec.StructuredOutput,
+		ReasoningFields:     spec.ReasoningFields,
+		PromptCache:         spec.PromptCache,
+		ContextWindowTokens: spec.ContextWindowTokens,
+		MaxOutputTokens:     spec.MaxOutputTokens,
+		IncludeUsage:        spec.IncludeUsage,
+		MaxTokensField:      spec.MaxTokensField,
+		Messages:            cloneModelPromptMessages(spec.Messages),
+	}
+}
+
+func recordModelUsageEvents(event ModelUsageRecorded) []UncommittedEvent {
+	return []UncommittedEvent{{Event: event}}
 }
 
 func completeTurnEvents(turnID TurnID) []UncommittedEvent {
@@ -135,6 +163,8 @@ func Decide(state Session, command Command) ([]UncommittedEvent, error) {
 		return decideFailAssistantTurn(state, command)
 	case InterruptAssistantTurn:
 		return decideInterruptAssistantTurn(state, command)
+	case RecordModelUsage:
+		return decideRecordModelUsage(state, command)
 	case CloseSession:
 		return decideCloseSession(state, command)
 	default:
@@ -214,7 +244,33 @@ func decideStartAssistantTurn(state Session, command StartAssistantTurn) ([]Unco
 	if err := validateCommandText(command.Input, "turn input is required"); err != nil {
 		return nil, err
 	}
-	return startAssistantTurnEvents(command.TurnID, command.ItemID, command.Input), nil
+	if err := validateStartAssistantTurnRequest(command); err != nil {
+		return nil, err
+	}
+	return startAssistantTurnEvents(command.TurnID, command.ItemID, command.Input, command.Request), nil
+}
+
+func decideRecordModelUsage(state Session, command RecordModelUsage) ([]UncommittedEvent, error) {
+	if _, err := requireRunningItemForCommand(state, command.SessionID, command.TurnID, command.ItemID); err != nil {
+		return nil, err
+	}
+	if err := validateModelUsagePayload(command.ModelUsageRecorded, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	return recordModelUsageEvents(command.ModelUsageRecorded), nil
+}
+
+func validateStartAssistantTurnRequest(command StartAssistantTurn) error {
+	if command.Request == nil {
+		return nil
+	}
+	if err := validateModelRequestSpec(*command.Request); err != nil {
+		return err
+	}
+	if len(command.Request.Messages) != 1 || command.Request.Messages[0].Role != PromptRoleUser || command.Request.Messages[0].Text != command.Input {
+		return domainError(CodeInvalidCommand, "model request messages must equal the turn input")
+	}
+	return nil
 }
 
 func decideCompleteTurn(state Session, command CompleteTurn) ([]UncommittedEvent, error) {

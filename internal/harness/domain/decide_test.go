@@ -124,6 +124,187 @@ func TestDecideStartAssistantTurnReturnsAtomicOrderedBatch(t *testing.T) {
 	}
 }
 
+func TestDecideStartAssistantTurnWithRequestReturnsThreeEvents(t *testing.T) {
+	t.Parallel()
+
+	state := activeSessionForTest(t)
+	input := "inspect repository"
+	events, err := HistoricalDecide(state, StartAssistantTurn{
+		SessionID: state.ID,
+		TurnID:    "turn-atomic",
+		ItemID:    "item-atomic",
+		Input:     input,
+		Request:   validModelRequestSpec(input),
+	})
+	if err != nil {
+		t.Fatalf("Decide() error = %v", err)
+	}
+	want := []UncommittedEvent{
+		{Event: TurnStarted{TurnID: "turn-atomic", Input: input}},
+		{Event: AssistantMessageStarted{TurnID: "turn-atomic", ItemID: "item-atomic"}},
+		{Event: validModelRequestRecorded("turn-atomic", "item-atomic", input)},
+	}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("Decide() = %#v, want %#v", events, want)
+	}
+
+	now := time.Date(2026, 8, 12, 2, 3, 4, 0, time.UTC)
+	before := state.Clone()
+	for index, event := range events {
+		state, err = HistoricalApply(state, RecordedEvent{
+			SchemaVersion: 1,
+			ID:            EventID("event-request-" + string(rune('1'+index))),
+			CommandID:     "command-request",
+			SessionID:     state.ID,
+			Sequence:      state.Version + 1,
+			OccurredAt:    now,
+			Event:         event.Event,
+		})
+		if err != nil {
+			t.Fatalf("HistoricalApply(event %d) error = %v", index, err)
+		}
+	}
+	if state.Version != before.Version+3 || state.ActiveTurnID != "turn-atomic" {
+		t.Fatalf("state after request batch = %#v", state)
+	}
+	turn := state.Turns["turn-atomic"]
+	if turn.ActiveItemID != "item-atomic" || len(turn.Items) != 1 || turn.Items["item-atomic"].Status != ItemStatusRunning {
+		t.Fatalf("turn after request batch = %#v", turn)
+	}
+}
+
+func TestDecideStartAssistantTurnRejectsRequestMessages(t *testing.T) {
+	t.Parallel()
+
+	state := activeSessionForTest(t)
+	input := "inspect repository"
+	tests := []struct {
+		name    string
+		request *ModelRequestSpec
+	}{
+		{name: "zero messages", request: func() *ModelRequestSpec {
+			spec := validModelRequestSpec(input)
+			spec.Messages = nil
+			return spec
+		}()},
+		{name: "system role", request: func() *ModelRequestSpec {
+			spec := validModelRequestSpec(input)
+			spec.Messages = []ModelPromptMessage{{Role: PromptRoleSystem, Text: input}}
+			return spec
+		}()},
+		{name: "assistant role", request: func() *ModelRequestSpec {
+			spec := validModelRequestSpec(input)
+			spec.Messages = []ModelPromptMessage{{Role: PromptRoleAssistant, Text: input}}
+			return spec
+		}()},
+		{name: "text differs from input", request: func() *ModelRequestSpec {
+			spec := validModelRequestSpec("other")
+			return spec
+		}()},
+		{name: "extra message", request: func() *ModelRequestSpec {
+			spec := validModelRequestSpec(input)
+			spec.Messages = []ModelPromptMessage{
+				{Role: PromptRoleUser, Text: input},
+				{Role: PromptRoleAssistant, Text: "later"},
+			}
+			return spec
+		}()},
+		{name: "invalid role", request: func() *ModelRequestSpec {
+			spec := validModelRequestSpec(input)
+			spec.Messages = []ModelPromptMessage{{Role: "tool", Text: input}}
+			return spec
+		}()},
+		{name: "invalid UTF-8 text", request: func() *ModelRequestSpec {
+			spec := validModelRequestSpec(input)
+			spec.Messages = []ModelPromptMessage{{Role: PromptRoleUser, Text: string([]byte{0xff})}}
+			return spec
+		}()},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			events, err := HistoricalDecide(state, StartAssistantTurn{
+				SessionID: state.ID, TurnID: "turn-1", ItemID: "item-1", Input: input, Request: test.request,
+			})
+			if events != nil || !IsCode(err, CodeInvalidCommand) {
+				t.Fatalf("Decide() = (%#v, %v), want invalid command", events, err)
+			}
+		})
+	}
+}
+
+func TestDecideRecordModelUsageIsVersionOnly(t *testing.T) {
+	t.Parallel()
+
+	state := runningAssistantItemForTest(t)
+	before := state.Clone()
+	usage := validModelUsageRecorded("turn-1", "item-1")
+	events, err := HistoricalDecide(state, RecordModelUsage{SessionID: state.ID, ModelUsageRecorded: usage})
+	if err != nil {
+		t.Fatalf("Decide() error = %v", err)
+	}
+	want := []UncommittedEvent{{Event: usage}}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("Decide() = %#v, want %#v", events, want)
+	}
+	if !reflect.DeepEqual(state, before) {
+		t.Fatal("Decide() mutated state")
+	}
+
+	next, err := HistoricalApply(state, recordedForTest(state, usage))
+	if err != nil {
+		t.Fatalf("HistoricalApply() error = %v", err)
+	}
+	if next.Version != state.Version+1 {
+		t.Fatalf("version = %d, want %d", next.Version, state.Version+1)
+	}
+	next.Version = state.Version
+	if !reflect.DeepEqual(next, state) {
+		t.Fatalf("usage apply changed non-version state: got %#v want %#v", next, state)
+	}
+}
+
+func TestDecideRecordModelUsageRejectsInvalidState(t *testing.T) {
+	t.Parallel()
+
+	running := runningAssistantItemForTest(t)
+	idle := activeSessionForTest(t)
+	tests := []struct {
+		name  string
+		state HistoricalSession
+		cmd   RecordModelUsage
+		code  ErrorCode
+	}{
+		{
+			name:  "no turn",
+			state: idle,
+			cmd:   RecordModelUsage{SessionID: idle.ID, ModelUsageRecorded: validModelUsageRecorded("turn-1", "item-1")},
+			code:  CodeTurnNotRunning,
+		},
+		{
+			name:  "wrong item",
+			state: running,
+			cmd:   RecordModelUsage{SessionID: running.ID, ModelUsageRecorded: validModelUsageRecorded("turn-1", "item-2")},
+			code:  CodeItemMismatch,
+		},
+		{
+			name:  "invalid finish reason",
+			state: running,
+			cmd: RecordModelUsage{SessionID: running.ID, ModelUsageRecorded: ModelUsageRecorded{
+				TurnID: "turn-1", ItemID: "item-1", FinishReason: "content_filter",
+			}},
+			code: CodeInvalidCommand,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			events, err := HistoricalDecide(test.state, test.cmd)
+			if events != nil || !IsCode(err, test.code) {
+				t.Fatalf("Decide() = (%#v, %v), want code %q", events, err, test.code)
+			}
+		})
+	}
+}
+
 func TestDecideStartAssistantTurnRejectsInvalidCommandFields(t *testing.T) {
 	t.Parallel()
 
@@ -492,6 +673,7 @@ func TestDecideAssistantCommandsExposeStableMetadata(t *testing.T) {
 		{command: CompleteAssistantTurn{SessionID: "session-1"}, name: "assistant.turn.complete"},
 		{command: FailAssistantTurn{SessionID: "session-1"}, name: "assistant.turn.fail"},
 		{command: InterruptAssistantTurn{SessionID: "session-1"}, name: "assistant.turn.interrupt"},
+		{command: RecordModelUsage{SessionID: "session-1"}, name: "model.usage.record"},
 	}
 
 	for _, test := range tests {

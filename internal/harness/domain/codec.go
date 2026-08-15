@@ -172,6 +172,16 @@ func marshalEvent(event Event) (json.RawMessage, string, error) {
 			return nil, "", err
 		}
 		return marshalEventData(event, EventAssistantMessageInterrupted)
+	case ModelRequestRecorded:
+		if err := validateModelRequestPayload(event, CodeInvalidEvent); err != nil {
+			return nil, "", err
+		}
+		return marshalEventData(event, EventModelRequestRecorded)
+	case ModelUsageRecorded:
+		if err := validateModelUsagePayload(event, CodeInvalidEvent); err != nil {
+			return nil, "", err
+		}
+		return marshalEventData(event, EventModelUsageRecorded)
 	default:
 		return nil, "", invalidEventError("unsupported event type")
 	}
@@ -219,6 +229,12 @@ func unmarshalEvent(eventType string, data json.RawMessage) (Event, error) {
 	case EventAssistantMessageInterrupted:
 		event = AssistantMessageInterrupted{}
 		keys = []string{"turnID", "itemID", "code", "message"}
+	case EventModelRequestRecorded:
+		event = ModelRequestRecorded{}
+		keys = modelRequestRecordedKeys()
+	case EventModelUsageRecorded:
+		event = ModelUsageRecorded{}
+		keys = modelUsageRecordedKeys()
 	default:
 		return nil, invalidEventError("unsupported event type")
 	}
@@ -275,6 +291,19 @@ func unmarshalEvent(eventType string, data json.RawMessage) (Event, error) {
 		}
 		event = target
 	case AssistantMessageInterrupted:
+		if err := decoder.Decode(&target); err != nil {
+			return nil, invalidEventError("invalid event data")
+		}
+		event = target
+	case ModelRequestRecorded:
+		if err := validateModelRequestMessagesJSON(data); err != nil {
+			return nil, err
+		}
+		if err := decoder.Decode(&target); err != nil {
+			return nil, invalidEventError("invalid event data")
+		}
+		event = target
+	case ModelUsageRecorded:
 		if err := decoder.Decode(&target); err != nil {
 			return nil, invalidEventError("invalid event data")
 		}
@@ -529,6 +558,111 @@ func validateAssistantMessageIDs(turnID TurnID, itemID ItemID) error {
 	}
 	if _, err := ParseItemID(string(itemID)); err != nil {
 		return invalidEventError("item ID is invalid")
+	}
+	return nil
+}
+
+func modelRequestRecordedKeys() []string {
+	return []string{
+		"turnID", "itemID", "adapterFamily", "modelID", "endpointID",
+		"nativeTools", "images", "structuredOutput", "reasoningFields", "promptCache",
+		"contextWindowTokens", "maxOutputTokens", "includeUsage", "maxTokensField", "messages",
+	}
+}
+
+func modelUsageRecordedKeys() []string {
+	return []string{
+		"turnID", "itemID", "inputTokens", "outputTokens", "cachedInputTokens",
+		"latencyMs", "finishReason", "providerRequestID",
+	}
+}
+
+func validateModelRequestSpec(spec ModelRequestSpec) error {
+	return validateModelRequestBody(
+		spec.AdapterFamily, spec.ModelID, spec.EndpointID,
+		spec.NativeTools, spec.Images, spec.StructuredOutput,
+		spec.ReasoningFields, spec.PromptCache, spec.MaxTokensField,
+		spec.Messages, CodeInvalidCommand,
+	)
+}
+
+func validateModelRequestPayload(event ModelRequestRecorded, code ErrorCode) error {
+	if err := validateAssistantMessageIDs(event.TurnID, event.ItemID); err != nil {
+		if code == CodeInvalidCommand {
+			return domainError(CodeInvalidCommand, "turn ID is invalid")
+		}
+		return err
+	}
+	return validateModelRequestBody(
+		event.AdapterFamily, event.ModelID, event.EndpointID,
+		event.NativeTools, event.Images, event.StructuredOutput,
+		event.ReasoningFields, event.PromptCache, event.MaxTokensField,
+		event.Messages, code,
+	)
+}
+
+func validateModelRequestBody(
+	adapterFamily, modelID, endpointID, nativeTools, images, structuredOutput, reasoningFields, promptCache, maxTokensField string,
+	messages []ModelPromptMessage,
+	code ErrorCode,
+) error {
+	for _, value := range []string{adapterFamily, modelID, endpointID, nativeTools, images, structuredOutput, reasoningFields, promptCache, maxTokensField} {
+		if !utf8.ValidString(value) {
+			return domainError(code, "model request field must be valid UTF-8")
+		}
+	}
+	return validateModelPromptMessages(messages, code)
+}
+
+func validateModelPromptMessages(messages []ModelPromptMessage, code ErrorCode) error {
+	if len(messages) == 0 {
+		return domainError(code, "model request messages are required")
+	}
+	for _, message := range messages {
+		switch message.Role {
+		case PromptRoleSystem, PromptRoleUser, PromptRoleAssistant:
+		default:
+			return domainError(code, "model prompt role is invalid")
+		}
+		if !utf8.ValidString(message.Text) {
+			return domainError(code, "model prompt text must be valid UTF-8")
+		}
+	}
+	return nil
+}
+
+func validateModelUsagePayload(event ModelUsageRecorded, code ErrorCode) error {
+	if err := validateAssistantMessageIDs(event.TurnID, event.ItemID); err != nil {
+		if code == CodeInvalidCommand {
+			return domainError(CodeInvalidCommand, "turn ID is invalid")
+		}
+		return err
+	}
+	switch event.FinishReason {
+	case "", FinishReasonStop, FinishReasonLength, FinishReasonUnknown:
+	default:
+		return domainError(code, "finish reason is invalid")
+	}
+	if !utf8.ValidString(event.FinishReason) || !utf8.ValidString(event.ProviderRequestID) {
+		return domainError(code, "model usage field must be valid UTF-8")
+	}
+	return nil
+}
+
+func validateModelRequestMessagesJSON(data json.RawMessage) error {
+	var parent struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(data, &parent); err != nil {
+		return invalidEventError("invalid event data")
+	}
+	if len(parent.Messages) == 0 {
+		return invalidEventError("model request messages are required")
+	}
+	for _, message := range parent.Messages {
+		if err := validateStrictJSONObject(message, "role", "text"); err != nil {
+			return err
+		}
 	}
 	return nil
 }

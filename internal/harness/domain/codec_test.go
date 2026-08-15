@@ -60,6 +60,8 @@ func TestMarshalEventPayloadIsCanonical(t *testing.T) {
 		{"assistant completed", AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "你好"}, EventAssistantMessageCompleted, `{"turnID":"turn-1","itemID":"item-1","text":"你好"}`},
 		{"assistant failed", AssistantMessageFailed{TurnID: "turn-1", ItemID: "item-1", Code: "provider_error", Message: "failed"}, EventAssistantMessageFailed, `{"turnID":"turn-1","itemID":"item-1","code":"provider_error","message":"failed"}`},
 		{"assistant interrupted", AssistantMessageInterrupted{TurnID: "turn-1", ItemID: "item-1", Code: "canceled", Message: ""}, EventAssistantMessageInterrupted, `{"turnID":"turn-1","itemID":"item-1","code":"canceled","message":""}`},
+		{"model request", validModelRequestRecorded("turn-1", "item-1", "hello"), EventModelRequestRecorded, `{"turnID":"turn-1","itemID":"item-1","adapterFamily":"openai_compat","modelID":"test-model","endpointID":"api.example.com","nativeTools":"unsupported","images":"unsupported","structuredOutput":"unsupported","reasoningFields":"unsupported","promptCache":"unsupported","contextWindowTokens":0,"maxOutputTokens":0,"includeUsage":true,"maxTokensField":"","messages":[{"role":"user","text":"hello"}]}`},
+		{"model usage", validModelUsageRecorded("turn-1", "item-1"), EventModelUsageRecorded, `{"turnID":"turn-1","itemID":"item-1","inputTokens":3,"outputTokens":5,"cachedInputTokens":1,"latencyMs":12,"finishReason":"stop","providerRequestID":"req-1"}`},
 	}
 
 	for _, test := range tests {
@@ -113,6 +115,21 @@ func TestMarshalEventPayloadRejectsInvalidUTF8(t *testing.T) {
 		{"assistant interrupted item ID", AssistantMessageInterrupted{TurnID: "turn-1", ItemID: ItemID(invalid), Code: "code", Message: "message"}},
 		{"assistant interrupted code", AssistantMessageInterrupted{TurnID: "turn-1", ItemID: "item-1", Code: invalid, Message: "message"}},
 		{"assistant interrupted message", AssistantMessageInterrupted{TurnID: "turn-1", ItemID: "item-1", Code: "code", Message: invalid}},
+		{"model request adapter family", func() Event {
+			event := validModelRequestRecorded("turn-1", "item-1", "hello")
+			event.AdapterFamily = invalid
+			return event
+		}()},
+		{"model request message text", func() Event {
+			event := validModelRequestRecorded("turn-1", "item-1", "hello")
+			event.Messages[0].Text = invalid
+			return event
+		}()},
+		{"model usage provider request id", func() Event {
+			event := validModelUsageRecorded("turn-1", "item-1")
+			event.ProviderRequestID = invalid
+			return event
+		}()},
 		// SessionClosed has no text or identifier field to make invalid.
 	}
 	for _, test := range tests {
@@ -618,6 +635,62 @@ func TestAssistantMessageEventJSONRejectsInvalidValues(t *testing.T) {
 			t.Fatalf("MarshalRecordedEvent(%T) error = %v, want code %q", event, err, CodeInvalidEvent)
 		}
 	}
+}
+
+func TestModelFactEventJSONRejectsNonStrictPayloads(t *testing.T) {
+	t.Parallel()
+
+	prefix := `{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-11T01:02:03Z","type":"`
+	validRequestData := `{"turnID":"turn-1","itemID":"item-1","adapterFamily":"openai_compat","modelID":"test-model","endpointID":"api.example.com","nativeTools":"unsupported","images":"unsupported","structuredOutput":"unsupported","reasoningFields":"unsupported","promptCache":"unsupported","contextWindowTokens":0,"maxOutputTokens":0,"includeUsage":true,"maxTokensField":"","messages":[{"role":"user","text":"hello"}]}`
+	validUsageData := `{"turnID":"turn-1","itemID":"item-1","inputTokens":0,"outputTokens":0,"cachedInputTokens":0,"latencyMs":0,"finishReason":"","providerRequestID":""}`
+	tests := []struct {
+		name      string
+		eventType string
+		data      string
+	}{
+		{name: "request unknown", eventType: EventModelRequestRecorded, data: `{"turnID":"turn-1","itemID":"item-1","adapterFamily":"","modelID":"","endpointID":"","nativeTools":"","images":"","structuredOutput":"","reasoningFields":"","promptCache":"","contextWindowTokens":0,"maxOutputTokens":0,"includeUsage":false,"maxTokensField":"","messages":[{"role":"user","text":"hello"}],"extra":true}`},
+		{name: "request missing messages", eventType: EventModelRequestRecorded, data: `{"turnID":"turn-1","itemID":"item-1","adapterFamily":"","modelID":"","endpointID":"","nativeTools":"","images":"","structuredOutput":"","reasoningFields":"","promptCache":"","contextWindowTokens":0,"maxOutputTokens":0,"includeUsage":false,"maxTokensField":""}`},
+		{name: "request empty messages", eventType: EventModelRequestRecorded, data: `{"turnID":"turn-1","itemID":"item-1","adapterFamily":"","modelID":"","endpointID":"","nativeTools":"","images":"","structuredOutput":"","reasoningFields":"","promptCache":"","contextWindowTokens":0,"maxOutputTokens":0,"includeUsage":false,"maxTokensField":"","messages":[]}`},
+		{name: "request message missing text", eventType: EventModelRequestRecorded, data: `{"turnID":"turn-1","itemID":"item-1","adapterFamily":"","modelID":"","endpointID":"","nativeTools":"","images":"","structuredOutput":"","reasoningFields":"","promptCache":"","contextWindowTokens":0,"maxOutputTokens":0,"includeUsage":false,"maxTokensField":"","messages":[{"role":"user"}]}`},
+		{name: "request message extra key", eventType: EventModelRequestRecorded, data: `{"turnID":"turn-1","itemID":"item-1","adapterFamily":"","modelID":"","endpointID":"","nativeTools":"","images":"","structuredOutput":"","reasoningFields":"","promptCache":"","contextWindowTokens":0,"maxOutputTokens":0,"includeUsage":false,"maxTokensField":"","messages":[{"role":"user","text":"hello","extra":true}]}`},
+		{name: "request invalid role", eventType: EventModelRequestRecorded, data: `{"turnID":"turn-1","itemID":"item-1","adapterFamily":"","modelID":"","endpointID":"","nativeTools":"","images":"","structuredOutput":"","reasoningFields":"","promptCache":"","contextWindowTokens":0,"maxOutputTokens":0,"includeUsage":false,"maxTokensField":"","messages":[{"role":"tool","text":"hello"}]}`},
+		{name: "request messages null", eventType: EventModelRequestRecorded, data: `{"turnID":"turn-1","itemID":"item-1","adapterFamily":"","modelID":"","endpointID":"","nativeTools":"","images":"","structuredOutput":"","reasoningFields":"","promptCache":"","contextWindowTokens":0,"maxOutputTokens":0,"includeUsage":false,"maxTokensField":"","messages":null}`},
+		{name: "usage unknown", eventType: EventModelUsageRecorded, data: `{"turnID":"turn-1","itemID":"item-1","inputTokens":0,"outputTokens":0,"cachedInputTokens":0,"latencyMs":0,"finishReason":"","providerRequestID":"","extra":true}`},
+		{name: "usage missing finishReason", eventType: EventModelUsageRecorded, data: `{"turnID":"turn-1","itemID":"item-1","inputTokens":0,"outputTokens":0,"cachedInputTokens":0,"latencyMs":0,"providerRequestID":""}`},
+		{name: "usage invalid finishReason", eventType: EventModelUsageRecorded, data: `{"turnID":"turn-1","itemID":"item-1","inputTokens":0,"outputTokens":0,"cachedInputTokens":0,"latencyMs":0,"finishReason":"content_filter","providerRequestID":""}`},
+		{name: "usage wrong type", eventType: EventModelUsageRecorded, data: `{"turnID":"turn-1","itemID":"item-1","inputTokens":"0","outputTokens":0,"cachedInputTokens":0,"latencyMs":0,"finishReason":"","providerRequestID":""}`},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			input := prefix + test.eventType + `","data":` + test.data + `}`
+			_, err := UnmarshalRecordedEvent([]byte(input))
+			if !IsCode(err, CodeInvalidEvent) {
+				t.Fatalf("UnmarshalRecordedEvent() error = %v, want code %q", err, CodeInvalidEvent)
+			}
+		})
+	}
+
+	t.Run("request legal empty strings", func(t *testing.T) {
+		input := prefix + EventModelRequestRecorded + `","data":` + validRequestData + `}`
+		record, err := UnmarshalRecordedEvent([]byte(input))
+		if err != nil {
+			t.Fatalf("UnmarshalRecordedEvent() error = %v", err)
+		}
+		if record.Event.(ModelRequestRecorded).Messages[0].Text != "hello" {
+			t.Fatalf("decoded = %#v", record.Event)
+		}
+	})
+	t.Run("usage legal zeros", func(t *testing.T) {
+		input := prefix + EventModelUsageRecorded + `","data":` + validUsageData + `}`
+		record, err := UnmarshalRecordedEvent([]byte(input))
+		if err != nil {
+			t.Fatalf("UnmarshalRecordedEvent() error = %v", err)
+		}
+		if record.Event.(ModelUsageRecorded).FinishReason != "" || record.Event.(ModelUsageRecorded).InputTokens != 0 {
+			t.Fatalf("decoded = %#v", record.Event)
+		}
+	})
 }
 
 func codecTestRecord(event Event) RecordedEvent {

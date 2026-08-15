@@ -18,6 +18,7 @@ const (
 	CommandCompleteAssistantTurn  = "assistant.turn.complete"
 	CommandFailAssistantTurn      = "assistant.turn.fail"
 	CommandInterruptAssistantTurn = "assistant.turn.interrupt"
+	CommandRecordModelUsage       = "model.usage.record"
 	InterruptionCallerCanceled    = "caller_canceled"
 	InterruptionDeliveryFailed    = "runtime_delivery_failed"
 	InterruptionRequestAbandoned  = "request_abandoned"
@@ -78,7 +79,32 @@ type StartAssistantTurn struct {
 	TurnID    TurnID
 	ItemID    ItemID
 	Input     string
+	Request   *ModelRequestSpec
 }
+
+type ModelRequestSpec struct {
+	AdapterFamily       string
+	ModelID             string
+	EndpointID          string
+	NativeTools         string
+	Images              string
+	StructuredOutput    string
+	ReasoningFields     string
+	PromptCache         string
+	ContextWindowTokens uint32
+	MaxOutputTokens     uint32
+	IncludeUsage        bool
+	MaxTokensField      string
+	Messages            []ModelPromptMessage
+}
+
+type RecordModelUsage struct {
+	SessionID SessionID
+	ModelUsageRecorded
+}
+
+func (RecordModelUsage) CommandType() string          { return CommandRecordModelUsage }
+func (c RecordModelUsage) TargetSessionID() SessionID { return c.SessionID }
 
 func (StartAssistantTurn) CommandType() string          { return CommandStartAssistantTurn }
 func (c StartAssistantTurn) TargetSessionID() SessionID { return c.SessionID }

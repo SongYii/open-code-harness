@@ -17,32 +17,36 @@ func ReconstructRequestResult(record CommandRequestRecord, records []domain.Reco
 	if err := validateRequestView(record.SessionID, records); err != nil {
 		return RunTurnResult{}, corruptRequestResult(err.Error())
 	}
-	relevant := make([]int, 0, 4)
-	for index, candidate := range records {
-		if candidate.CommandID == record.CommandID || referencesRequestIdentity(candidate.Event, record) {
-			relevant = append(relevant, index)
+	matching := make([]domain.RecordedEvent, 0, 6)
+	for _, candidate := range records {
+		if candidate.CommandID == record.CommandID {
+			matching = append(matching, candidate)
 		}
 	}
-	if len(relevant) != 2 && len(relevant) != 4 || len(relevant) >= 2 && relevant[1] != relevant[0]+1 || len(relevant) == 4 && relevant[3] != relevant[2]+1 {
-		return RunTurnResult{}, corruptRequestResult("relevant records do not form ordered adjacent pairs")
+	if err := validateRequestCompanions(matching, record); err != nil {
+		return RunTurnResult{}, corruptRequestResult(err.Error())
 	}
-	start, itemStart := records[relevant[0]], records[relevant[1]]
+	shape, ok := requestResultShape(matching)
+	if !ok {
+		return RunTurnResult{}, corruptRequestResult("relevant records do not match an admitted request shape")
+	}
+	start, itemStart := matching[0], matching[1]
 	turn, turnOK := start.Event.(domain.TurnStarted)
 	item, itemOK := itemStart.Event.(domain.AssistantMessageStarted)
-	if !turnOK || !itemOK || start.CommandID != record.CommandID || itemStart.CommandID != record.CommandID || turn.TurnID != record.TurnID || item.TurnID != record.TurnID || item.ItemID != record.ItemID {
+	if !turnOK || !itemOK || turn.TurnID != record.TurnID || item.TurnID != record.TurnID || item.ItemID != record.ItemID {
 		return RunTurnResult{}, corruptRequestResult("admission pair is malformed")
 	}
 	digest, err := DigestRunTurnRequestV1(record.SessionID, turn.Input)
 	if err != nil || digest != record.RequestDigest {
 		return RunTurnResult{}, corruptRequestResult("admission input digest mismatches record")
 	}
-	result := RunTurnResult{SessionID: record.SessionID, TurnID: record.TurnID, ItemID: record.ItemID, Status: domain.TurnStatusRunning, Records: []domain.RecordedEvent{start, itemStart}}
-	if len(relevant) == 2 {
+	result := RunTurnResult{SessionID: record.SessionID, TurnID: record.TurnID, ItemID: record.ItemID, Status: domain.TurnStatusRunning, Records: matching}
+	if !shape.terminal {
 		return cloneRunTurnResult(result), nil
 	}
-	terminalRecord, turnRecord := records[relevant[2]], records[relevant[3]]
+	terminalRecord, turnRecord := matching[shape.itemTerminal], matching[shape.turnTerminal]
 	terminal, ok, status, text, stableCode := requestTerminal(terminalRecord.Event, record)
-	if !ok || terminalRecord.CommandID != record.CommandID || turnRecord.CommandID != record.CommandID {
+	if !ok {
 		return RunTurnResult{}, corruptRequestResult("terminal pair is malformed")
 	}
 	if err := validateTerminalTurn(turnRecord.Event, record, stableCode); err != nil {
@@ -54,44 +58,105 @@ func ReconstructRequestResult(record CommandRequestRecord, records []domain.Reco
 		}
 	}
 	result.Status, result.Text, result.TerminalCommitted = status, text, true
-	result.Records = append(result.Records, terminalRecord, turnRecord)
 	return cloneRunTurnResult(result), nil
 }
 
-func referencesRequestIdentity(event domain.Event, record CommandRequestRecord) bool {
-	switch value := event.(type) {
-	case domain.TurnStarted:
-		return value.TurnID == record.TurnID
-	case domain.TurnCompleted:
-		return value.TurnID == record.TurnID
-	case domain.TurnFailed:
-		return value.TurnID == record.TurnID
-	case domain.TurnInterrupted:
-		return value.TurnID == record.TurnID
-	case domain.AssistantMessageStarted:
-		return value.TurnID == record.TurnID || value.ItemID == record.ItemID
-	case domain.AssistantMessageCompleted:
-		return value.TurnID == record.TurnID || value.ItemID == record.ItemID
-	case domain.AssistantMessageFailed:
-		return value.TurnID == record.TurnID || value.ItemID == record.ItemID
-	case domain.AssistantMessageInterrupted:
-		return value.TurnID == record.TurnID || value.ItemID == record.ItemID
+type requestShape struct {
+	terminal     bool
+	itemTerminal int
+	turnTerminal int
+}
+
+func requestResultShape(records []domain.RecordedEvent) (requestShape, bool) {
+	if len(records) < 2 {
+		return requestShape{}, false
+	}
+	if _, ok := records[0].Event.(domain.TurnStarted); !ok {
+		return requestShape{}, false
+	}
+	if _, ok := records[1].Event.(domain.AssistantMessageStarted); !ok {
+		return requestShape{}, false
+	}
+	switch len(records) {
+	case 2:
+		return requestShape{}, true
+	case 3:
+		_, ok := records[2].Event.(domain.ModelRequestRecorded)
+		return requestShape{}, ok
+	case 4:
+		if !isRequestItemTerminal(records[2].Event) || !isRequestTurnTerminal(records[3].Event) {
+			return requestShape{}, false
+		}
+		return requestShape{terminal: true, itemTerminal: 2, turnTerminal: 3}, true
+	case 5:
+		if _, ok := records[2].Event.(domain.ModelRequestRecorded); !ok {
+			return requestShape{}, false
+		}
+		if !isRequestItemTerminal(records[3].Event) || !isRequestTurnTerminal(records[4].Event) {
+			return requestShape{}, false
+		}
+		return requestShape{terminal: true, itemTerminal: 3, turnTerminal: 4}, true
+	case 6:
+		if _, ok := records[2].Event.(domain.ModelRequestRecorded); !ok {
+			return requestShape{}, false
+		}
+		if _, ok := records[3].Event.(domain.ModelUsageRecorded); !ok {
+			return requestShape{}, false
+		}
+		if !isRequestItemTerminal(records[4].Event) || !isRequestTurnTerminal(records[5].Event) {
+			return requestShape{}, false
+		}
+		return requestShape{terminal: true, itemTerminal: 4, turnTerminal: 5}, true
+	default:
+		return requestShape{}, false
+	}
+}
+
+func isRequestItemTerminal(event domain.Event) bool {
+	switch event.(type) {
+	case domain.AssistantMessageCompleted, domain.AssistantMessageFailed, domain.AssistantMessageInterrupted:
+		return true
 	default:
 		return false
 	}
 }
 
-func relevantRequestTerminal(event domain.Event, record CommandRequestRecord) bool {
-	switch terminal := event.(type) {
-	case domain.AssistantMessageCompleted:
-		return terminal.TurnID == record.TurnID || terminal.ItemID == record.ItemID
-	case domain.AssistantMessageFailed:
-		return terminal.TurnID == record.TurnID || terminal.ItemID == record.ItemID
-	case domain.AssistantMessageInterrupted:
-		return terminal.TurnID == record.TurnID || terminal.ItemID == record.ItemID
+func isRequestTurnTerminal(event domain.Event) bool {
+	switch event.(type) {
+	case domain.TurnCompleted, domain.TurnFailed, domain.TurnInterrupted:
+		return true
 	default:
 		return false
 	}
+}
+
+func validateRequestCompanions(records []domain.RecordedEvent, record CommandRequestRecord) error {
+	var seenRequest, seenUsage bool
+	for _, candidate := range records {
+		switch event := candidate.Event.(type) {
+		case domain.TurnStarted, domain.TurnCompleted, domain.TurnFailed, domain.TurnInterrupted,
+			domain.AssistantMessageStarted, domain.AssistantMessageCompleted, domain.AssistantMessageFailed, domain.AssistantMessageInterrupted:
+		case domain.ModelRequestRecorded:
+			if seenRequest {
+				return fmt.Errorf("duplicate model request fact")
+			}
+			if event.TurnID != record.TurnID || event.ItemID != record.ItemID {
+				return fmt.Errorf("model request identity does not match record")
+			}
+			seenRequest = true
+		case domain.ModelUsageRecorded:
+			if seenUsage {
+				return fmt.Errorf("duplicate model usage fact")
+			}
+			if event.TurnID != record.TurnID || event.ItemID != record.ItemID {
+				return fmt.Errorf("model usage identity does not match record")
+			}
+			seenUsage = true
+		default:
+			return fmt.Errorf("unknown same-command event type")
+		}
+	}
+	return nil
 }
 
 func validateCommandRequestRecord(record CommandRequestRecord) error {
