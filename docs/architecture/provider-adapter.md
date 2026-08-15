@@ -29,8 +29,8 @@ no live key and opens no vendor socket.
 
 Native tool send/assemble is implemented when `NativeTools` is `supported`
 or `required`. MCP, SQLite, ACP, TUI, a plugin kernel, and vendor SDKs are
-not implemented. The Application step loop and tool-runtime contract are
-specified in the [tool-runtime policy design](../superpowers/specs/2026-08-16-tool-runtime-policy-design.md).
+not implemented. The Application step loop is recorded in the
+[implemented tool-runtime contract](tool-runtime.md).
 
 ## Package authority and dependency direction
 
@@ -404,8 +404,8 @@ with `DisallowUnknownFields` and the required key lists
 (`TestModelFactEventJSONRejectsNonStrictPayloads`,
 `TestRecordedEventJSONUsesCanonicalEncodingForAllPayloads`).
 `finishReason` is `stop`, `length`, `unknown`, `tool_calls`, or `""`. See the
-[tool-runtime policy design](../superpowers/specs/2026-08-16-tool-runtime-policy-design.md)
-for the Application loop that consumes assembled `tool_call` events.
+[implemented tool-runtime contract](tool-runtime.md) for the Application
+loop that consumes assembled `tool_call` events.
 
 `DigestRunTurnRequestV1` still covers Session ID and exact UTF-8 input only
 (`TestDigestRunTurnRequestV1FramesSessionAndInput`). Identity is not folded

@@ -34,9 +34,12 @@ test-only production branches for the capabilities it does deliver.
 | Implemented | Reading copy | [已实现 EventStore v2 合同](architecture/eventstore-v2.zh-CN.md) | 与已实现 EventStore v2 合同同步的中文语义阅读版 |
 | Implemented | Implemented contract | [Provider adapter](architecture/provider-adapter.md) | Current `engine.Model` HTTP adapter, Chat Completions SSE, capability profiles, classified `ProviderFailure`, reconstructable request/usage facts, and exclusions |
 | Implemented | Reading copy | [已实现 Provider Adapter 合同](architecture/provider-adapter.zh-CN.md) | 与已实现 Provider Adapter 合同同步的中文语义阅读版 |
+| Implemented | Implemented contract | [Tool runtime](architecture/tool-runtime.md) | Current Application-owned Step loop, Policy Decide table, four builtin workspace tools, mid-loop ResolveAppend, workspace jail, and exclusions |
+| Implemented | Reading copy | [已实现 Tool Runtime 合同](architecture/tool-runtime.zh-CN.md) | 与已实现 Tool Runtime 合同同步的中文语义阅读版 |
 | Complete | Evidence ledger | [EventStore v2 completion evidence / EventStore v2 完成证据](architecture/eventstore-v2-evidence.md) | Auditable Task 1–9 commits, verification commands, benchmark sample, and deferred blockers |
 | Complete | Evidence ledger | [Engine vertical slice completion evidence / Engine 纵切完成证据](architecture/engine-vertical-slice-evidence.md) | Auditable Task 1–10 commits, architecture gates, verification commands, and deferred GA blockers |
 | Complete | Evidence ledger | [Provider adapter completion evidence / Provider Adapter 完成证据](architecture/provider-adapter-evidence.md) | Auditable PR 1–5 commits, keyless verification commands, and deferred GA blockers |
+| Complete | Evidence ledger | [Tool runtime completion evidence / Tool Runtime 完成证据](architecture/tool-runtime-evidence.md) | Auditable execute-plan PRs 1–9, keyless verification commands, and deferred GA blockers |
 | Accepted | Normative design | [Industrial Engine vertical slice](superpowers/specs/2026-08-12-engine-vertical-slice-design.md) | Application/Engine boundary, formal ports, deterministic adapters, atomic event flow, failure semantics, and acceptance criteria |
 | Accepted | Reading copy | [工业级 Engine 最小纵切](superpowers/specs/2026-08-12-engine-vertical-slice-design.zh-CN.md) | Chinese synchronized reading copy of the Engine design |
 | Accepted | Normative design | [Production Runtime persistence, recovery, and client boundary](superpowers/specs/2026-08-13-runtime-persistence-recovery-client-design.md) | SQLite canonical events, exact append retry, audit replica, fencing, crash recovery, ACP boundary, resource limits, and staged delivery |
@@ -73,7 +76,7 @@ test-only production branches for the capabilities it does deliver.
 2. **Industrial Go Engine executable vertical slice** — implemented and verified.
 3. **EventStore v2 contract migration** — implemented and verified; required before a SQLite adapter, not a replacement for Provider/Tool.
 4. **Provider contract and first real provider** — designed and implemented; not GA. First adapter is a thin OpenAI-compatible Chat Completions SSE client behind `engine.Model`, not a vendor SDK or plugin kernel.
-5. **Tool Runtime, Policy, and minimal workspace tools** — designed; implementation not started. Application-owned Step loop behind ports, not a plugin kernel.
+5. **Tool Runtime, Policy, and minimal workspace tools** — designed, implemented, and verified; not GA. Application-owned Step loop, pure Policy Decide, and four builtin workspace tools behind ports; not a plugin kernel.
 6. **ACP v1 adapter and conformance** — cross-cutting boundary accepted; focused implementation specification not written yet.
 7. **TypeScript TUI client** — cross-cutting boundary accepted; focused implementation specification not written yet.
 8. **Context Engine, checkpoint, and recovery** — production persistence and crash-recovery boundary accepted; Context Engine and focused implementation specifications not written yet.
