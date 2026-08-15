@@ -36,6 +36,8 @@ func TestClassifyProductionDirectory(t *testing.T) {
 		{name: "openaicompat production subpackage", directory: "internal/harness/adapters/openaicompat/sse", want: ownerOpenAICompat, inspect: true, hasOwner: true},
 		{name: "policy root", directory: "internal/harness/policy", want: ownerPolicy, inspect: true, hasOwner: true},
 		{name: "policy production subpackage", directory: "internal/harness/policy/rules", want: ownerPolicy, inspect: true, hasOwner: true},
+		{name: "tools root", directory: "internal/harness/tools", want: ownerTools, inspect: true, hasOwner: true},
+		{name: "tools production subpackage", directory: "internal/harness/tools/catalog", want: ownerTools, inspect: true, hasOwner: true},
 		{name: "scenario test support", directory: "internal/harness/application/enginescenariotest", want: ownerApplication, inspect: false, hasOwner: true},
 		{name: "scenario nested test support", directory: "internal/harness/application/enginescenariotest/internal", want: ownerApplication, inspect: false, hasOwner: true},
 		{name: "similarly named production child", directory: "internal/harness/application/enginescenariotestkit", want: ownerApplication, inspect: true, hasOwner: true},
@@ -152,6 +154,18 @@ func TestForbiddenImport(t *testing.T) {
 		{name: "policy cannot import net/http", owner: ownerPolicy, importPath: "net/http", forbidden: true},
 		{name: "policy may import domain", owner: ownerPolicy, importPath: modulePath + "/internal/harness/domain", forbidden: false},
 		{name: "policy may import strings", owner: ownerPolicy, importPath: "strings", forbidden: false},
+		{name: "tools may import domain", owner: ownerTools, importPath: modulePath + "/internal/harness/domain", forbidden: false},
+		{name: "tools may import path/filepath", owner: ownerTools, importPath: "path/filepath", forbidden: false},
+		{name: "tools cannot import policy", owner: ownerTools, importPath: modulePath + "/internal/harness/policy", forbidden: true},
+		{name: "tools cannot import application", owner: ownerTools, importPath: modulePath + "/internal/harness/application", forbidden: true},
+		{name: "tools cannot import adapters", owner: ownerTools, importPath: modulePath + "/internal/harness/adapters/workspacefs", forbidden: true},
+		{name: "tools cannot import testkit", owner: ownerTools, importPath: modulePath + "/internal/harness/testkit", forbidden: true},
+		{name: "tools cannot import engine", owner: ownerTools, importPath: modulePath + "/internal/harness/engine", forbidden: true},
+		{name: "tools cannot import os", owner: ownerTools, importPath: "os", forbidden: true},
+		{name: "tools cannot import os/exec", owner: ownerTools, importPath: "os/exec", forbidden: true},
+		{name: "tools cannot import net", owner: ownerTools, importPath: "net", forbidden: true},
+		{name: "tools cannot import net/http", owner: ownerTools, importPath: "net/http", forbidden: true},
+		{name: "domain cannot import tools", owner: ownerDomain, importPath: modulePath + "/internal/harness/tools", forbidden: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -245,6 +259,7 @@ const (
 	ownerMemory       packageOwner = "memory"
 	ownerOpenAICompat packageOwner = "openaicompat"
 	ownerPolicy       packageOwner = "policy"
+	ownerTools        packageOwner = "tools"
 )
 
 var excludedTestSupportDirectories = []string{
@@ -275,6 +290,7 @@ func packageOwnership(directory string) (packageOwner, bool) {
 		{root: "internal/harness/adapters/memory", owner: ownerMemory},
 		{root: "internal/harness/adapters/openaicompat", owner: ownerOpenAICompat},
 		{root: "internal/harness/policy", owner: ownerPolicy},
+		{root: "internal/harness/tools", owner: ownerTools},
 	} {
 		if directoryWithin(directory, candidate.root) {
 			return candidate.owner, true
@@ -297,12 +313,24 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/engine",
 			modulePath+"/internal/harness/adapters",
 			modulePath+"/internal/harness/testkit",
+			modulePath+"/internal/harness/tools",
+			modulePath+"/internal/harness/policy",
 		)
 	case ownerEngine:
 		forbidden = append(forbidden,
 			modulePath+"/internal/harness/application",
 			modulePath+"/internal/harness/adapters",
 			modulePath+"/internal/harness/testkit",
+			modulePath+"/internal/harness/tools",
+			modulePath+"/internal/harness/policy",
+		)
+	case ownerTools:
+		forbidden = append(forbidden,
+			modulePath+"/internal/harness/policy",
+			modulePath+"/internal/harness/application",
+			modulePath+"/internal/harness/adapters",
+			modulePath+"/internal/harness/testkit",
+			modulePath+"/internal/harness/engine",
 		)
 	case ownerApplication:
 		forbidden = append(forbidden,
@@ -338,7 +366,7 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			}
 		}
 	}
-	if owner == ownerDomain || owner == ownerApplication || owner == ownerEngine || owner == ownerMemory || owner == ownerPolicy {
+	if owner == ownerDomain || owner == ownerApplication || owner == ownerEngine || owner == ownerMemory || owner == ownerPolicy || owner == ownerTools {
 		switch importPath {
 		case "os", "os/exec", "net", "net/http":
 			return "forbidden host/network dependency"
