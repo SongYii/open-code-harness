@@ -76,6 +76,9 @@ func Run(t *testing.T, factory Factory) {
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("events = %#v, want %#v", got, want)
 		}
+		if got[2].Usage != nil {
+			t.Fatalf("scripted completed Usage = %#v, want nil default", got[2].Usage)
+		}
 		if gotCalls := probe.Calls(); !reflect.DeepEqual(gotCalls, []engine.ModelRequest{expected}) {
 			t.Fatalf("Calls() = %#v, want %#v", gotCalls, []engine.ModelRequest{expected})
 		}

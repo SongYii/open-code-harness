@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -89,6 +90,81 @@ func TestRunTurnModelOutputFailureCommitsStableFailedPair(t *testing.T) {
 				t.Fatalf("runtime types = %v, want %v", got, wantRuntime)
 			}
 		})
+	}
+}
+
+func TestRunTurnProviderAuthPersistsClassifiedFailureCode(t *testing.T) {
+	store := newTurnMemoryStore(t)
+	failure := &engine.ProviderFailure{Class: engine.FailureClassAuth, Code: "provider_auth", SafeMessage: "Authorization: Bearer sk-secret"}
+	model, err := testkit.NewScriptedModel(
+		engine.ModelRequest{SessionID: "session-1", TurnID: "turn-1", ItemID: "item-1", Input: "inspect"},
+		testkit.ScriptedModelConfig{StartupError: &engine.Error{Code: engine.CodeModelStartup, Cause: failure}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := newTurnService(t, store, testkit.NewSequenceIDs(), model)
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-provider-auth", Input: "inspect", Sink: &testkit.RecordingSink{}})
+	assertRunTurnError(t, err, application.CategoryModel, string(engine.CodeModelStartup), true)
+	var classified *engine.ProviderFailure
+	if !errors.As(err, &classified) || classified.Code != "provider_auth" {
+		t.Fatalf("error = %v, want ProviderFailure provider_auth", err)
+	}
+	if strings.Contains(err.Error(), "Authorization") || strings.Contains(err.Error(), "sk-secret") {
+		t.Fatalf("returned error rendered secret text: %v", err)
+	}
+	assertFailedPair(t, store, result, "provider_auth", "provider rejected credentials")
+}
+
+func TestRunTurnContentFilterPersistsPermanentUsageWithoutFinishReason(t *testing.T) {
+	store := newTurnMemoryStore(t)
+	failure := &engine.ProviderFailure{Class: engine.FailureClassPermanent, Code: "provider_permanent"}
+	inner, err := testkit.NewScriptedModel(
+		engine.ModelRequest{SessionID: "session-1", TurnID: "turn-1", ItemID: "item-1", Input: "inspect"},
+		testkit.ScriptedModelConfig{Steps: []testkit.ScriptedStep{{Err: &engine.Error{Code: engine.CodeModelStream, Cause: failure}}}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := &observingModel{inner: inner, stats: engine.AttemptStats{
+		Usage:        &engine.TokenUsage{InputTokens: 8, OutputTokens: 0},
+		FinishReason: "",
+		LatencyMs:    33,
+	}}
+	identity := validTurnRequestIdentity()
+	config := application.DefaultConfig()
+	config.RequestIdentity = &identity
+	service := newTurnServiceWithConfig(t, store, testkit.NewSequenceIDs(), model, config)
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-content-filter", Input: "inspect", Sink: &testkit.RecordingSink{}})
+	assertRunTurnError(t, err, application.CategoryModel, string(engine.CodeModelStream), true)
+	if result.Status != domain.TurnStatusFailed || result.Text != "" || !result.TerminalCommitted {
+		t.Fatalf("result = %#v", result)
+	}
+	if got, want := turnEventTypes(result.Records), []string{
+		domain.EventTurnStarted,
+		domain.EventAssistantMessageStarted,
+		domain.EventModelRequestRecorded,
+		domain.EventModelUsageRecorded,
+		domain.EventAssistantMessageFailed,
+		domain.EventTurnFailed,
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("result record types = %v, want %v", got, want)
+	}
+	usage, ok := result.Records[3].Event.(domain.ModelUsageRecorded)
+	if !ok || usage.FinishReason != "" || usage.LatencyMs != 33 || usage.InputTokens != 8 {
+		t.Fatalf("usage = %#v, want latency with empty finish reason", result.Records[3].Event)
+	}
+	failed, ok := itemTerminalRecord(result.Records).Event.(domain.AssistantMessageFailed)
+	if !ok || failed.Code != "provider_permanent" || failed.Message != "provider rejected the request" {
+		t.Fatalf("item terminal = %#v, want provider_permanent by type", itemTerminalRecord(result.Records))
 	}
 }
 
