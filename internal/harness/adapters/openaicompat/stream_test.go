@@ -325,6 +325,48 @@ func TestStreamIdleTimeoutIsTransient(t *testing.T) {
 	}
 }
 
+func TestStreamIdleCloseDoesNotRaceBodyPointer(t *testing.T) {
+	var closed atomic.Int32
+	transport := &scriptedTransport{roundTrip: func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       &ctxWaitBody{ctx: req.Context(), closed: &closed},
+		}, nil
+	}}
+	cfg := validConfig(transport)
+	cfg.IdleTimeout = 20 * time.Millisecond
+	model := newTestModel(t, cfg)
+	stream, err := model.Stream(context.Background(), modelRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, nextErr := stream.Next(context.Background())
+		closeErr := stream.Close()
+		if nextErr == nil {
+			nextErr = closeErr
+		} else if closeErr != nil {
+			nextErr = errors.Join(nextErr, closeErr)
+		}
+		done <- nextErr
+	}()
+	var nextErr error
+	select {
+	case nextErr = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Next/Close did not return after idle cancel")
+	}
+	requireProviderFailure(t, nextErr, engine.CodeModelStream, "provider_transient")
+	if errors.Is(nextErr, io.EOF) {
+		t.Fatalf("unwrap chain contains io.EOF: %v", nextErr)
+	}
+	if closed.Load() == 0 {
+		t.Fatal("response body was not closed")
+	}
+}
+
 func TestStreamConnectionDropHasNoEOF(t *testing.T) {
 	payload := "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"
 	transport := &scriptedTransport{roundTrip: func(*http.Request) (*http.Response, error) {

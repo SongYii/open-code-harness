@@ -58,6 +58,28 @@ func (b *stallBody) Close() error {
 	return nil
 }
 
+// ctxWaitBody unblocks Read when ctx is canceled, not when Close is called.
+// That matches a net/http body after request-context cancel.
+type ctxWaitBody struct {
+	ctx    context.Context
+	closed *atomic.Int32
+}
+
+func (b *ctxWaitBody) Read([]byte) (int, error) {
+	if b == nil || b.ctx == nil {
+		return 0, io.ErrClosedPipe
+	}
+	<-b.ctx.Done()
+	return 0, b.ctx.Err()
+}
+
+func (b *ctxWaitBody) Close() error {
+	if b.closed != nil {
+		b.closed.Add(1)
+	}
+	return nil
+}
+
 type errAfterReader struct {
 	data []byte
 	err  error

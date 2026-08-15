@@ -27,7 +27,7 @@ var (
 
 type chatStream struct {
 	mu          sync.Mutex
-	body        io.ReadCloser
+	body        *onceCloser
 	scanner     *bufio.Scanner
 	cancel      context.CancelFunc
 	started     time.Time
@@ -120,12 +120,10 @@ func (s *chatStream) Close() error {
 	if s.cancel != nil {
 		s.cancel()
 	}
-	if s.body != nil {
-		err := s.body.Close()
-		s.body = nil
-		return err
+	if s.body == nil {
+		return nil
 	}
-	return nil
+	return s.body.Close()
 }
 
 func (s *chatStream) Snapshot() engine.AttemptStats {
