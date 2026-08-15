@@ -27,6 +27,8 @@ func TestDurableRequestTerminalErrorPreservesFailureAndInterruptionCode(t *testi
 		{name: "failed", event: domain.AssistantMessageFailed{TurnID: "turn-1", ItemID: "item-1", Code: "model_stream"}, category: CategoryModel, code: "model_stream"},
 		{name: "interrupted", event: domain.AssistantMessageInterrupted{TurnID: "turn-1", ItemID: "item-1", Code: "caller_canceled"}, category: CategoryCanceled, code: "caller_canceled"},
 		{name: "provider auth after usage", event: domain.AssistantMessageFailed{TurnID: "turn-1", ItemID: "item-1", Code: "provider_auth"}, category: CategoryModel, code: "provider_auth"},
+		{name: "tool cancel by turn", event: domain.TurnInterrupted{TurnID: "turn-1", Reason: "caller_canceled"}, category: CategoryCanceled, code: "caller_canceled"},
+		{name: "step limit by turn", event: domain.TurnFailed{TurnID: "turn-1", Code: CodeStepLimit, Message: "step limit"}, category: CategoryModel, code: CodeStepLimit},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			records := []domain.RecordedEvent{{Event: test.event}, {}}
@@ -120,7 +122,6 @@ func TestReconstructRequestResultRejectsEveryRelevantLifecycleCorruption(t *test
 			r[2].Event = domain.AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-wrong"}
 			return r
 		}},
-		{name: "dangling assistant terminal", mutate: func(r []domain.RecordedEvent) []domain.RecordedEvent { return r[:4] }},
 		{name: "lone turn terminal", mutate: func(r []domain.RecordedEvent) []domain.RecordedEvent {
 			r[3].Event = domain.TurnCompleted{TurnID: "turn-1"}
 			return r
@@ -172,6 +173,7 @@ func TestReconstructRequestResultAcceptsExactRequestShapes(t *testing.T) {
 	}{
 		{name: "running scripted", status: domain.TurnStatusRunning, wantLen: 2},
 		{name: "running HTTP", request: true, status: domain.TurnStatusRunning, wantLen: 3},
+		{name: "running HTTP with usage", request: true, usage: true, status: domain.TurnStatusRunning, wantLen: 4},
 		{name: "terminal scripted", terminal: domain.AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "done"}, turn: domain.TurnCompleted{TurnID: "turn-1"}, status: domain.TurnStatusCompleted, text: "done", wantLen: 4},
 		{name: "terminal HTTP without usage", request: true, terminal: domain.AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "done"}, turn: domain.TurnCompleted{TurnID: "turn-1"}, status: domain.TurnStatusCompleted, text: "done", wantLen: 5},
 		{name: "terminal HTTP with usage", request: true, usage: true, terminal: domain.AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "done"}, turn: domain.TurnCompleted{TurnID: "turn-1"}, status: domain.TurnStatusCompleted, text: "done", wantLen: 6},
@@ -214,9 +216,6 @@ func TestReconstructRequestResultRejectsMisplacedCompanions(t *testing.T) {
 			r[3].Event = event
 			return r
 		}},
-		{name: "usage on running request", mutate: func(r []domain.RecordedEvent) []domain.RecordedEvent {
-			return r[:5]
-		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			record, records := requestViewWithCompanions(t, true, true, domain.AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "done"}, domain.TurnCompleted{TurnID: "turn-1"})
@@ -224,6 +223,122 @@ func TestReconstructRequestResultRejectsMisplacedCompanions(t *testing.T) {
 				t.Fatalf("error=%v", err)
 			}
 		})
+	}
+}
+
+func TestReconstructRequestResultAcceptsItemOnlyCompleteAsRunning(t *testing.T) {
+	record, records := requestViewFromEvents(t, []domain.Event{
+		domain.TurnStarted{TurnID: "turn-1", Input: "input"},
+		domain.AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"},
+		domain.AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "done"},
+	})
+	got, err := ReconstructRequestResult(record, records)
+	if err != nil || got.Status != domain.TurnStatusRunning || got.Text != "done" || got.TerminalCommitted {
+		t.Fatalf("result=%#v err=%v", got, err)
+	}
+}
+
+func TestReconstructRequestResultAcceptsTwoStepSuccess(t *testing.T) {
+	offer := domain.ToolCallOffer{ID: "call-1", Name: "read_file", Arguments: `{"path":"README.md"}`}
+	record, records := requestViewFromEvents(t, []domain.Event{
+		domain.TurnStarted{TurnID: "turn-1", Input: "input"},
+		domain.AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"},
+		modelRequestRecordedForTest("item-1", []domain.ModelPromptMessage{{Role: domain.PromptRoleUser, Text: "input"}}),
+		domain.AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "reading", ToolCalls: []domain.ToolCallOffer{offer}},
+		domain.ToolCallStarted{TurnID: "turn-1", ItemID: "item-tool", CallID: "call-1", Name: "read_file", Arguments: `{"path":"README.md"}`, StepIndex: 1},
+		domain.PolicyDecisionRecorded{TurnID: "turn-1", ItemID: "item-tool", CallID: "call-1", Name: "read_file", Effect: domain.PolicyEffectAllow, RuleID: "default.read", Reason: "in_workspace"},
+		domain.ToolCallCompleted{TurnID: "turn-1", ItemID: "item-tool", CallID: "call-1", Content: "file body"},
+		domain.AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-2"},
+		modelRequestRecordedForTest("item-2", []domain.ModelPromptMessage{
+			{Role: domain.PromptRoleAssistant, Text: "reading", ToolCalls: []domain.ToolCallOffer{offer}},
+			{Role: domain.PromptRoleTool, Text: "file body", ToolCallID: "call-1", Name: "read_file"},
+		}),
+		domain.AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-2", Text: "done"},
+		domain.TurnCompleted{TurnID: "turn-1"},
+	})
+	got, err := ReconstructRequestResult(record, records)
+	if err != nil || got.Status != domain.TurnStatusCompleted || got.Text != "done" || !got.TerminalCommitted || got.ItemID != "item-1" || len(got.Records) != 11 {
+		t.Fatalf("result=%#v err=%v", got, err)
+	}
+}
+
+func TestReconstructRequestResultAcceptsInterruptToolTurn(t *testing.T) {
+	offer := domain.ToolCallOffer{ID: "call-1", Name: "read_file", Arguments: `{"path":"README.md"}`}
+	record, records := requestViewFromEvents(t, []domain.Event{
+		domain.TurnStarted{TurnID: "turn-1", Input: "input"},
+		domain.AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"},
+		domain.AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "reading", ToolCalls: []domain.ToolCallOffer{offer}},
+		domain.ToolCallStarted{TurnID: "turn-1", ItemID: "item-tool", CallID: "call-1", Name: "read_file", Arguments: `{"path":"README.md"}`, StepIndex: 1},
+		domain.ToolCallInterrupted{TurnID: "turn-1", ItemID: "item-tool", CallID: "call-1", Code: domain.InterruptionCallerCanceled},
+		domain.TurnInterrupted{TurnID: "turn-1", Reason: domain.InterruptionCallerCanceled},
+	})
+	got, err := ReconstructRequestResult(record, records)
+	if err != nil || got.Status != domain.TurnStatusInterrupted || got.Text != "" || !got.TerminalCommitted || got.ItemID != "item-1" {
+		t.Fatalf("result=%#v err=%v", got, err)
+	}
+	var appErr *Error
+	if err := durableRequestTerminalError(got); !errors.As(err, &appErr) || appErr.Category != CategoryCanceled || appErr.Code != domain.InterruptionCallerCanceled || !appErr.TerminalCommitted {
+		t.Fatalf("durable terminal error = %#v", err)
+	}
+}
+
+func TestReconstructRequestResultAcceptsStepLimitFromIdleAfterTools(t *testing.T) {
+	offer := domain.ToolCallOffer{ID: "call-1", Name: "read_file", Arguments: `{"path":"README.md"}`}
+	record, records := requestViewFromEvents(t, []domain.Event{
+		domain.TurnStarted{TurnID: "turn-1", Input: "input"},
+		domain.AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"},
+		domain.AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "reading", ToolCalls: []domain.ToolCallOffer{offer}},
+		domain.ToolCallStarted{TurnID: "turn-1", ItemID: "item-tool", CallID: "call-1", Name: "read_file", Arguments: `{"path":"README.md"}`, StepIndex: 1},
+		domain.ToolCallCompleted{TurnID: "turn-1", ItemID: "item-tool", CallID: "call-1", Content: "file body"},
+		domain.TurnFailed{TurnID: "turn-1", Code: CodeStepLimit, Message: "step limit exceeded"},
+	})
+	got, err := ReconstructRequestResult(record, records)
+	if err != nil || got.Status != domain.TurnStatusFailed || got.Text != "" || !got.TerminalCommitted {
+		t.Fatalf("result=%#v err=%v", got, err)
+	}
+}
+
+func TestReconstructRequestResultRejectsToolStartWithoutItemOnlyComplete(t *testing.T) {
+	record, records := requestViewFromEvents(t, []domain.Event{
+		domain.TurnStarted{TurnID: "turn-1", Input: "input"},
+		domain.AssistantMessageStarted{TurnID: "turn-1", ItemID: "item-1"},
+		domain.ToolCallStarted{TurnID: "turn-1", ItemID: "item-tool", CallID: "call-1", Name: "read_file", Arguments: `{"path":"README.md"}`, StepIndex: 1},
+	})
+	if _, err := ReconstructRequestResult(record, records); !IsStoreCode(err, StoreCodeCorrupt) {
+		t.Fatalf("error=%v, want store corrupt", err)
+	}
+}
+
+func requestViewFromEvents(t *testing.T, events []domain.Event) (CommandRequestRecord, []domain.RecordedEvent) {
+	t.Helper()
+	when := time.Date(2026, 8, 14, 0, 0, 0, 0, time.UTC)
+	digest, err := DigestRunTurnRequestV1("session-1", "input")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := CommandRequestRecord{RunTurnRequestID: "request-1", RequestDigest: digest, SessionID: "session-1", CommandID: "command-1", TurnID: "turn-1", ItemID: "item-1", AdmissionAppendID: "append-1"}
+	records := []domain.RecordedEvent{
+		{SchemaVersion: 1, ID: "event-1", CommandID: "command-0", SessionID: "session-1", Sequence: 1, OccurredAt: when, Event: domain.SessionCreated{WorkspaceRoot: "/workspace"}},
+	}
+	for index, event := range events {
+		records = append(records, domain.RecordedEvent{
+			SchemaVersion: 1,
+			ID:            domain.EventID("event-" + strconv.Itoa(index+2)),
+			CommandID:     "command-1",
+			SessionID:     "session-1",
+			Sequence:      uint64(index + 2),
+			OccurredAt:    when,
+			Event:         event,
+		})
+	}
+	return record, records
+}
+
+func modelRequestRecordedForTest(itemID domain.ItemID, messages []domain.ModelPromptMessage) domain.ModelRequestRecorded {
+	return domain.ModelRequestRecorded{
+		TurnID: "turn-1", ItemID: itemID, AdapterFamily: "openai_compat", ModelID: "test-model", EndpointID: "api.example.com",
+		NativeTools: "unsupported", Images: "unsupported", StructuredOutput: "unsupported", ReasoningFields: "unsupported", PromptCache: "unsupported",
+		IncludeUsage: true, Messages: messages,
 	}
 }
 

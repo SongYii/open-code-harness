@@ -23,6 +23,8 @@ const (
 const (
 	CodeCommandIdentityMismatch = "command_identity_mismatch"
 	CodeReconciliationRequired  = "reconciliation_required"
+	CodeStepLimit               = "step_limit"
+	CodeEnvelopeLimit           = "envelope_limit"
 )
 
 // Error is a stable application-facing failure. Cause remains available for

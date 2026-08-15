@@ -222,7 +222,13 @@ func durableRequestTerminalError(result RunTurnResult) error {
 	if !result.TerminalCommitted {
 		return nil
 	}
-	switch event := itemTerminalEvent(result.Records).(type) {
+	// Classify by the turn event so cancel-during-tool and idle_in_turn
+	// failures (step_limit / envelope_limit) do not require an assistant terminal.
+	switch event := requestOutcomeEvent(result.Records).(type) {
+	case domain.TurnFailed:
+		return applicationError(CategoryModel, event.Code, true, nil)
+	case domain.TurnInterrupted:
+		return applicationError(CategoryCanceled, event.Reason, true, nil)
 	case domain.AssistantMessageFailed:
 		return applicationError(CategoryModel, event.Code, true, nil)
 	case domain.AssistantMessageInterrupted:
