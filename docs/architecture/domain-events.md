@@ -67,8 +67,9 @@ The three terminal composite commands terminalize the active assistant Item
 and its owning Turn as one ordered decision batch. `InterruptAssistantTurn`
 copies its stable `Code` into
 `TurnInterrupted.Reason`; the existing Turn event encoding therefore remains
-schema-compatible. The initial interruption codes are `caller_canceled` and
-`runtime_delivery_failed`.
+schema-compatible. The implemented interruption codes are `caller_canceled`,
+`runtime_delivery_failed`, and `request_abandoned`. `process_crash` remains
+reserved for later crash-recovery work.
 
 `StartTurn` and `StartAssistantMessage` remain available as lower-level domain
 compatibility commands. Application orchestration must not use them as two
@@ -113,11 +114,13 @@ than matching error-message prose.
 
 - A session has at most one running turn. Starting a second turn while one is
   running fails, and a session cannot close while a turn is running.
-- A running Turn has at most one running Item. Every Item belongs to exactly one
-  Turn, appears exactly once in that Turn's order, and the active Item ID must
-  identify the sole running Item. Starting a duplicate Item, starting a second
-  Item, or terminalizing a different Item is rejected with a stable Item error
-  code.
+- Production write-side `Session` is compact: it retains at most one active
+  Turn and at most one active Item. Completed transcript is not part of the
+  command aggregate. Historical Turn/Item uniqueness is enforced by the Store
+  identity index, not by retaining completed collections in write state.
+- A running Turn has at most one running Item. Starting a duplicate Item,
+  starting a second Item, or terminalizing a different Item is rejected with a
+  stable Item error code.
 - A Turn cannot become terminal while an Item remains running. The plain
   `CompleteTurn`, `FailTurn`, and `InterruptTurn` commands reject that state;
   applying or replaying a Turn terminal event rejects it as `invalid_event`.

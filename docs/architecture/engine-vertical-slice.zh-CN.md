@@ -51,19 +51,14 @@ internal/harness/testkit          ----实现----> application/engine ports
 
 ## 已导出的内部接口
 
-Application 持久化边界：
+Application 持久化边界是 [已实现 EventStore v2 合同](eventstore-v2.zh-CN.md)：
 
 ```go
 type EventStore interface {
-    Load(context.Context, domain.SessionID) ([]domain.RecordedEvent, error)
-    Append(context.Context, AppendRequest) ([]domain.RecordedEvent, error)
-}
-
-type AppendRequest struct {
-    SessionID       domain.SessionID
-    ExpectedVersion uint64
-    CommandID       domain.CommandID
-    Events          []domain.Event
+    ReadStream(context.Context, ReadStreamRequest) (StreamPage, error)
+    Append(context.Context, AppendRequest) (CommitReceipt, error)
+    ResolveAppend(context.Context, ResolveAppendRequest) (AppendResolution, error)
+    FindCommandRequest(context.Context, FindCommandRequestRequest) (CommandRequestLookup, error)
 }
 
 type Clock interface { Now() time.Time }
@@ -73,20 +68,25 @@ type IDGenerator interface {
     NewTurnID() (domain.TurnID, error)
     NewItemID() (domain.ItemID, error)
     NewCommandID() (domain.CommandID, error)
+    NewAppendID() (domain.AppendID, error)
     NewEventID() (domain.EventID, error)
 }
 ```
+
+`Load` 以及返回 `[]domain.RecordedEvent` 的 v1 `Append` 已不存在。
 
 Application Service：
 
 ```go
 type Config struct {
-    MaxAssistantBytes     int
-    TerminalCommitTimeout time.Duration
+    MaxAssistantBytes             int
+    TerminalCommitTimeout         time.Duration
+    AppendResolutionTimeout       time.Duration
+    AppendResolutionMaxOperations uint32
 }
 
 func DefaultConfig() Config
-func NewService(EventStore, IDGenerator, *engine.TurnRunner, Config) (*Service, error)
+func NewService(EventStore, IDGenerator, Clock, *engine.TurnRunner, WriterAuthority, Config) (*Service, error)
 
 func (*Service) CreateSession(context.Context, CreateSessionRequest) (CreateSessionResult, error)
 func (*Service) LoadSession(context.Context, domain.SessionID) (domain.Session, error)
@@ -111,6 +111,7 @@ type CloseSessionResult struct {
 
 type RunTurnRequest struct {
     SessionID domain.SessionID
+    RequestID domain.RunTurnRequestID
     Input     string
     Sink      engine.RuntimeSink
 }

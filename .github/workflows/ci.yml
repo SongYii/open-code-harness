@@ -21,5 +21,9 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - name: Vet
         run: go vet ./...
+      - name: Architecture surface guard
+        run: go test ./internal/harness/architecture -count=1
+      - name: Digest and fixture gates
+        run: go test ./internal/harness/application ./internal/harness/domain -run 'TestDigest|TestRecordedEvent|TestReplay|TestCompact' -count=1
       - name: Test with race detector
         run: go test -race ./... -count=1
