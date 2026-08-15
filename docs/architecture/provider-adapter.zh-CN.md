@@ -262,11 +262,11 @@ EndpointID、profile 和两个 wire hint（`TestIdentityCopiesProfileAndHints`�
 Usage 字段优先级由成功与备选字段 fixture 钉住：`InputTokens` 先
 `prompt_tokens` 再 `input_tokens`；`OutputTokens` 先 `completion_tokens` 再
 `output_tokens`；`CachedInputTokens` 先 `prompt_tokens_details.cached_tokens`
-再 `prompt_cache_hit_tokens`。出现的 `x-request-id` 或 `x-ds-request-id` 会
-拷到 `AttemptStats.ProviderRequestID`
-（`TestStreamSuccessEmitsDeltasCompletedAndUsage`、`TestClassifyHTTPErrors`）。
-Latency 是适配器 HTTP 跨度；取消后 `Snapshot` 仍保留
-（`TestStreamCancelKeepsLatencyAndUsage`）。
+再 `prompt_cache_hit_tokens`。出现的 `x-request-id` 会拷到 `AttemptStats.ProviderRequestID`
+（`TestStreamSuccessEmitsDeltasCompletedAndUsage`）。预流失败上出现的
+`x-ds-request-id` 会拷到 `ProviderFailure.RequestID`
+（`TestClassifyHTTPErrors`）。Latency 是适配器 HTTP 跨度；取消后
+`Snapshot` 仍保留（`TestStreamCancelKeepsLatencyAndUsage`）。
 
 成功 `completed` fixture 钉住 `AttemptStats.FinishReason=stop`。失败和取消
 路径钉住 `""`。`content_filter` 和 `tool_calls` 让 `FinishReason` 保持空。

@@ -269,9 +269,10 @@ Usage field preference, pinned by the success and alternate-field fixtures:
 `InputTokens` from `prompt_tokens` then `input_tokens`; `OutputTokens` from
 `completion_tokens` then `output_tokens`; `CachedInputTokens` from
 `prompt_tokens_details.cached_tokens` then `prompt_cache_hit_tokens`. A
-present `x-request-id` or `x-ds-request-id` is copied onto
-`AttemptStats.ProviderRequestID` (`TestStreamSuccessEmitsDeltasCompletedAndUsage`,
-`TestClassifyHTTPErrors`). Latency is the adapter HTTP span; `Snapshot` keeps
+present `x-request-id` is copied onto `AttemptStats.ProviderRequestID`
+(`TestStreamSuccessEmitsDeltasCompletedAndUsage`). A present `x-ds-request-id`
+on a pre-stream failure is copied onto `ProviderFailure.RequestID`
+(`TestClassifyHTTPErrors`). Latency is the adapter HTTP span; `Snapshot` keeps
 it after cancel (`TestStreamCancelKeepsLatencyAndUsage`).
 
 Successful `completed` fixtures pin `AttemptStats.FinishReason=stop`. Fail and
