@@ -27,7 +27,10 @@ identity. Application and Engine have no vendor-name branches. Default `go
 test` uses a scripted `http.RoundTripper` and recorded SSE fixtures; it needs
 no live key and opens no vendor socket.
 
-Tools, SQLite, ACP, TUI, a plugin kernel, and vendor SDKs are not implemented.
+Native tool send/assemble is implemented when `NativeTools` is `supported`
+or `required`. MCP, SQLite, ACP, TUI, a plugin kernel, and vendor SDKs are
+not implemented. The Application step loop and tool-runtime contract are
+specified in the [tool-runtime policy design](../superpowers/specs/2026-08-16-tool-runtime-policy-design.md).
 
 ## Package authority and dependency direction
 
@@ -63,8 +66,9 @@ enforces these directions (`TestProductionDependencyBoundaries`,
 ## Consumption port
 
 `engine.Model` / `engine.ModelStream` method signatures are unchanged. The
-stream grammar stays `text_delta* → completed`. This slice adds optional usage
-on `completed` and attempt stats on every `Run` exit:
+stream grammar is `text_delta* tool_call* completed`. This slice adds optional
+usage on `completed`, assembled `tool_call` events when native tools are
+supported, and attempt stats on every `Run` exit:
 
 ```go
 type Model interface {
@@ -77,9 +81,10 @@ type ModelStream interface {
 }
 
 type StreamEvent struct {
-    Type  StreamEventType
-    Text  string
-    Usage *TokenUsage // nil except optionally on completed
+    Type     StreamEventType
+    Text     string
+    Usage    *TokenUsage // nil except optionally on completed
+    ToolCall *ToolCall   // non-nil iff Type == tool_call
 }
 
 type TokenUsage struct {
@@ -94,8 +99,9 @@ type AttemptStats struct {
 }
 
 type RunResult struct {
-    Text  string
-    Stats AttemptStats
+    Text      string
+    ToolCalls []ToolCall
+    Stats     AttemptStats
 }
 
 type AttemptObserver interface {
@@ -257,7 +263,10 @@ case-insensitively after `mime.ParseMediaType`
 | fractional usage number | `CodeInvalidStream` + `invalid_stream` | `TestStreamRejectsFractionalUsage` |
 | `finish_reason=stop` | `completed`, `FinishReason=stop` | `TestStreamSuccessEmitsDeltasCompletedAndUsage` |
 | `finish_reason=content_filter` | `CodeModelStream` + `provider_permanent`; `FinishReason=""` | `TestStreamContentFilterAndToolCallsLeaveFinishReasonEmpty` |
-| `finish_reason=tool_calls` or `delta.tool_calls` | `CodeInvalidStream` + `capability_mismatch`; `FinishReason=""` | `TestStreamContentFilterAndToolCallsLeaveFinishReasonEmpty` |
+| `finish_reason=tool_calls` or `delta.tool_calls` with `NativeTools=unsupported` | `CodeInvalidStream` + `capability_mismatch`; `FinishReason=""` | `TestStreamContentFilterAndToolCallsLeaveFinishReasonEmpty`, `TestRunTurnHTTPProfileTextOnlyToolCallsLeaveFinishReasonEmpty` |
+| assembled `tool_calls` with `NativeTools=supported\|required` | buffer by `index`; emit `text_delta*` then `tool_call*` then `completed`; `FinishReason=tool_calls` | `TestStreamAssemblesSupportedToolCalls` |
+| `finish_reason=stop` plus assembled tool call | `CodeInvalidStream` + `invalid_stream` | `TestStreamStopWithAssembledToolsInvalid` |
+| trailing partial / missing id+name / non-UTF-8 / arguments > 32 KiB | `CodeInvalidStream` + `invalid_stream` | `TestStreamTrailingPartialCallInvalid`, `TestStreamAssembledCallRejectsBounds` |
 | empty completion | `CodeInvalidStream` + `empty_response` | `TestStreamEmptyCompletion`, `TestRunTurnHTTPEmptyCompletion` |
 | non-string `content`, non-JSON `data:`, multiple `choices`, line over bound | `CodeInvalidStream` + `invalid_stream` | `TestStreamRejectsNonStringContentAndOversizeLine` |
 | HTTP 200 whose type is not `text/event-stream`; HTTP 201 / 204 | `CodeModelStartup` + `provider_permanent` | `TestStreamNonSSEAndNon200TwoXXFailClosed` |
@@ -275,8 +284,9 @@ on a pre-stream failure is copied onto `ProviderFailure.RequestID`
 (`TestClassifyHTTPErrors`). Latency is the adapter HTTP span; `Snapshot` keeps
 it after cancel (`TestStreamCancelKeepsLatencyAndUsage`).
 
-Successful `completed` fixtures pin `AttemptStats.FinishReason=stop`. Fail and
-cancel paths pin `""`. `content_filter` and `tool_calls` leave `FinishReason`
+Successful `completed` fixtures pin `AttemptStats.FinishReason=stop`. Assembled
+tool-call success pins `tool_calls`. Fail and cancel paths pin `""`.
+`content_filter` and `ProfileTextOnly` `tool_calls` leave `FinishReason`
 empty. `length` and `unknown` are codec-legal on `model.usage.recorded`; they
 are not pinned by an adapter stream case.
 
@@ -377,7 +387,9 @@ identity do not persist usage (`TestRunTurnObservedStatsWithoutIdentityDoNotPers
 with `DisallowUnknownFields` and the required key lists
 (`TestModelFactEventJSONRejectsNonStrictPayloads`,
 `TestRecordedEventJSONUsesCanonicalEncodingForAllPayloads`).
-`finishReason` is `stop`, `length`, `unknown`, or `""`.
+`finishReason` is `stop`, `length`, `unknown`, `tool_calls`, or `""`. See the
+[tool-runtime policy design](../superpowers/specs/2026-08-16-tool-runtime-policy-design.md)
+for the Application loop that consumes assembled `tool_call` events.
 
 `DigestRunTurnRequestV1` still covers Session ID and exact UTF-8 input only
 (`TestDigestRunTurnRequestV1FramesSessionAndInput`). Identity is not folded
@@ -420,6 +432,8 @@ HTTP `RunTurn` through fixtures
 | reasoning fixture | completed `Visible`; no leaked reasoning | `TestRunTurnHTTPReasoningIsolation` |
 | secret 401 body | redacted; persisted sentence only | `TestRunTurnHTTPSecretRedaction` |
 | replay same Request ID | `FindCommandRequest` found; no second Stream | `TestRunTurnHTTPFindCommandRequestPreventsSecondStream` |
+| tools-supported `read_file` then complete | first usage `finishReason=tool_calls`; second Stream sees tool message; text `Hello world` | `TestRunTurnHTTPReadFileThenCompletes` |
+| `ProfileTextOnly` vendor `tool_calls` | `capability_mismatch`; usage `finishReason=""` | `TestRunTurnHTTPProfileTextOnlyToolCallsLeaveFinishReasonEmpty` |
 
 A content-filter style fail with observed latency persists
 `provider_permanent` plus usage with `finishReason=""`

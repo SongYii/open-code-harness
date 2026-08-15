@@ -2,12 +2,15 @@ package openaicompat
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
 )
 
@@ -29,8 +32,11 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 			cfg.BaseURL = "http://example.com/v1"
 			cfg.AllowInsecureLoopback = true
 		}},
-		{name: "native tools required", mutate: func(cfg *Config) { cfg.Profile.NativeTools = engine.CapabilityRequired }},
 		{name: "empty profile tri-state", mutate: func(cfg *Config) { cfg.Profile.Images = "" }},
+		{name: "tools below request floor", mutate: func(cfg *Config) {
+			cfg.Profile = ProfileToolsSupported(8192, 0)
+			cfg.MaxRequestBytes = minToolMaxRequestBytes - 1
+		}},
 		{name: "invalid max tokens field", mutate: func(cfg *Config) { cfg.Hints.MaxTokensField = "tokens" }},
 		{name: "negative idle", mutate: func(cfg *Config) { cfg.IdleTimeout = -1 }},
 		{name: "ftp scheme", mutate: func(cfg *Config) { cfg.BaseURL = "ftp://api.example.com/v1" }},
@@ -46,6 +52,24 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 				t.Fatal("New() error = nil, want invalid config")
 			}
 		})
+	}
+}
+
+func TestNewAcceptsNativeToolsSupportedAndRequired(t *testing.T) {
+	for _, profile := range []engine.CapabilityProfile{
+		ProfileToolsSupported(8192, 16),
+		func() engine.CapabilityProfile {
+			profile := ProfileToolsSupported(8192, 16)
+			profile.NativeTools = engine.CapabilityRequired
+			return profile
+		}(),
+	} {
+		cfg := validConfig(nil)
+		cfg.HTTPClient = nil
+		cfg.Profile = profile
+		if _, err := New(cfg); err != nil {
+			t.Fatalf("New(NativeTools=%s) error = %v", profile.NativeTools, err)
+		}
 	}
 }
 
@@ -200,6 +224,139 @@ func TestStreamRequestMapping(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStreamSendsToolsAndMessages(t *testing.T) {
+	var seen *http.Request
+	transport := &scriptedTransport{roundTrip: func(req *http.Request) (*http.Response, error) {
+		seen = req
+		return sseResponse(http.StatusOK, loadSSE(t, "success.sse"), nil), nil
+	}}
+	model := newTestModel(t, validToolsConfig(transport))
+	req := modelRequest()
+	req.Messages = []domain.ModelPromptMessage{
+		{Role: domain.PromptRoleUser, Text: "inspect"},
+		{Role: domain.PromptRoleAssistant, Text: "calling", ToolCalls: []domain.ToolCallOffer{
+			{ID: "call_read", Name: "read_file", Arguments: `{"path":"README.md"}`},
+		}},
+		{Role: domain.PromptRoleTool, Text: "file body", ToolCallID: "call_read", Name: "read_file"},
+	}
+	req.Tools = []domain.ToolSchema{sampleToolSchema()}
+	stream, err := model.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stream.Close() })
+	if seen == nil {
+		t.Fatal("no request")
+	}
+	payload := decodeRequestBody(t, seen)
+	if _, ok := payload["tool_choice"]; ok {
+		t.Fatalf("tool_choice present: %#v", payload)
+	}
+	tools, ok := payload["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools = %#v", payload["tools"])
+	}
+	tool, _ := tools[0].(map[string]any)
+	fn, _ := tool["function"].(map[string]any)
+	if tool["type"] != "function" || fn["name"] != "read_file" || fn["description"] != "read" {
+		t.Fatalf("tool = %#v", tools[0])
+	}
+	params, _ := fn["parameters"].(map[string]any)
+	if params["type"] != "object" {
+		t.Fatalf("parameters = %#v", fn["parameters"])
+	}
+	messages, ok := payload["messages"].([]any)
+	if !ok || len(messages) != 3 {
+		t.Fatalf("messages = %#v", payload["messages"])
+	}
+	user, _ := messages[0].(map[string]any)
+	assistant, _ := messages[1].(map[string]any)
+	toolMsg, _ := messages[2].(map[string]any)
+	if user["role"] != "user" || user["content"] != "inspect" {
+		t.Fatalf("user = %#v", messages[0])
+	}
+	calls, _ := assistant["tool_calls"].([]any)
+	if assistant["role"] != "assistant" || assistant["content"] != "calling" || len(calls) != 1 {
+		t.Fatalf("assistant = %#v", messages[1])
+	}
+	call, _ := calls[0].(map[string]any)
+	callFn, _ := call["function"].(map[string]any)
+	if call["id"] != "call_read" || call["type"] != "function" || callFn["name"] != "read_file" || callFn["arguments"] != `{"path":"README.md"}` {
+		t.Fatalf("tool_calls = %#v", calls)
+	}
+	if toolMsg["role"] != "tool" || toolMsg["content"] != "file body" || toolMsg["tool_call_id"] != "call_read" || toolMsg["name"] != "read_file" {
+		t.Fatalf("tool message = %#v", messages[2])
+	}
+}
+
+func TestStreamRequiredEmptyToolsFailClosed(t *testing.T) {
+	transport := &scriptedTransport{roundTrip: func(*http.Request) (*http.Response, error) {
+		t.Fatal("required empty tools must not send HTTP")
+		return nil, nil
+	}}
+	cfg := validToolsConfig(transport)
+	cfg.Profile.NativeTools = engine.CapabilityRequired
+	model := newTestModel(t, cfg)
+	_, err := model.Stream(context.Background(), modelRequest())
+	requireProviderFailure(t, err, engine.CodeModelStartup, "provider_permanent")
+}
+
+func TestStreamJustUnder4MiBProjectionAccepted(t *testing.T) {
+	var gotLen int
+	transport := &scriptedTransport{roundTrip: func(req *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotLen = len(body)
+		return sseResponse(http.StatusOK, loadSSE(t, "success.sse"), nil), nil
+	}}
+	cfg := validToolsConfig(transport)
+	cfg.MaxRequestBytes = minToolMaxRequestBytes
+	model := newTestModel(t, cfg)
+	req := modelRequest()
+	req.Tools = []domain.ToolSchema{sampleToolSchema()}
+	req.Messages = justUnderProjectionMessages(t, req.Tools)
+	stream, err := model.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	t.Cleanup(func() { _ = stream.Close() })
+	if gotLen == 0 || gotLen > minToolMaxRequestBytes {
+		t.Fatalf("wire body = %d, want (0, %d]", gotLen, minToolMaxRequestBytes)
+	}
+}
+
+func justUnderProjectionMessages(t *testing.T, tools []domain.ToolSchema) []domain.ModelPromptMessage {
+	t.Helper()
+	const projectionCap = 4 << 20
+	text := strings.Repeat("x", projectionCap)
+	messages := []domain.ModelPromptMessage{{Role: domain.PromptRoleUser, Text: text}}
+	for {
+		size := projectionBytes(t, messages, tools)
+		if size < projectionCap {
+			return messages
+		}
+		trim := size - projectionCap + 1
+		if trim >= len(messages[0].Text) {
+			t.Fatalf("cannot shrink projection below cap: size=%d", size)
+		}
+		messages[0].Text = messages[0].Text[:len(messages[0].Text)-trim]
+	}
+}
+
+func projectionBytes(t *testing.T, messages []domain.ModelPromptMessage, tools []domain.ToolSchema) int {
+	t.Helper()
+	payload, err := json.Marshal(struct {
+		Messages []domain.ModelPromptMessage `json:"messages"`
+		Tools    []domain.ToolSchema         `json:"tools"`
+	}{Messages: messages, Tools: tools})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(payload)
 }
 
 func TestStreamMissingAPIKeyIsAuth(t *testing.T) {

@@ -137,6 +137,178 @@ func TestStreamContentFilterAndToolCallsLeaveFinishReasonEmpty(t *testing.T) {
 	}
 }
 
+func TestStreamAssemblesSupportedToolCalls(t *testing.T) {
+	tests := []struct {
+		name     string
+		fixture  string
+		wantText []string
+		wantCall engine.ToolCall
+	}{
+		{
+			name:     "content then tools",
+			fixture:  "content_then_tools.sse",
+			wantText: []string{"calling ", "now"},
+			wantCall: engine.ToolCall{ID: "call_1", Name: "search", Arguments: "{}"},
+		},
+		{
+			name:     "incremental arguments",
+			fixture:  "tools_incremental_args.sse",
+			wantCall: engine.ToolCall{ID: "call_1", Name: "read_file", Arguments: `{"path":"README.md"}`},
+		},
+		{
+			name:     "name only then arguments",
+			fixture:  "tools_name_only_then_args.sse",
+			wantCall: engine.ToolCall{ID: "call_1", Name: "search", Arguments: "{}"},
+		},
+		{
+			name:     "interleaved content after tool index",
+			fixture:  "tools_interleaved_content.sse",
+			wantText: []string{"hold on"},
+			wantCall: engine.ToolCall{ID: "call_1", Name: "search", Arguments: "{}"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			transport := &scriptedTransport{roundTrip: func(*http.Request) (*http.Response, error) {
+				return sseResponse(http.StatusOK, loadSSE(t, test.fixture), nil), nil
+			}}
+			model := newTestModel(t, validToolsConfig(transport))
+			stream, err := model.Stream(context.Background(), modelRequest())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = stream.Close() })
+			events, err := collectStream(t, stream)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertAssembledToolStream(t, events, test.wantText, test.wantCall)
+			if got := stream.(engine.AttemptObserver).Snapshot().FinishReason; got != "tool_calls" {
+				t.Fatalf("FinishReason = %q, want tool_calls", got)
+			}
+		})
+	}
+}
+
+func TestStreamTrailingPartialCallInvalid(t *testing.T) {
+	transport := &scriptedTransport{roundTrip: func(*http.Request) (*http.Response, error) {
+		return sseResponse(http.StatusOK, loadSSE(t, "tools_trailing_partial.sse"), nil), nil
+	}}
+	model := newTestModel(t, validToolsConfig(transport))
+	stream, err := model.Stream(context.Background(), modelRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stream.Close() })
+	_, err = collectStream(t, stream)
+	requireProviderFailure(t, err, engine.CodeInvalidStream, "invalid_stream")
+	if got := stream.(engine.AttemptObserver).Snapshot().FinishReason; got != "" {
+		t.Fatalf("FinishReason = %q, want empty", got)
+	}
+}
+
+func TestStreamStopWithAssembledToolsInvalid(t *testing.T) {
+	body := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"search\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n"
+	transport := &scriptedTransport{roundTrip: func(*http.Request) (*http.Response, error) {
+		return sseResponse(http.StatusOK, body, nil), nil
+	}}
+	model := newTestModel(t, validToolsConfig(transport))
+	stream, err := model.Stream(context.Background(), modelRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stream.Close() })
+	_, err = collectStream(t, stream)
+	requireProviderFailure(t, err, engine.CodeInvalidStream, "invalid_stream")
+}
+
+func TestStreamAssembledEmptyArgumentsBecomeObject(t *testing.T) {
+	body := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"search\",\"arguments\":\"\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n"
+	transport := &scriptedTransport{roundTrip: func(*http.Request) (*http.Response, error) {
+		return sseResponse(http.StatusOK, body, nil), nil
+	}}
+	model := newTestModel(t, validToolsConfig(transport))
+	stream, err := model.Stream(context.Background(), modelRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stream.Close() })
+	events, err := collectStream(t, stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertAssembledToolStream(t, events, nil, engine.ToolCall{ID: "call_1", Name: "search", Arguments: "{}"})
+}
+
+func TestStreamAssembledCallRejectsBounds(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		maxLine int
+	}{
+		{name: "conflicting name", body: "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"search\"}}]}}]}\n\ndata: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"other\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n"},
+		{name: "missing id", body: "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"search\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n"},
+		{name: "oversized arguments", body: "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"search\",\"arguments\":\"" + strings.Repeat("a", 32*1024+1) + "\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n", maxLine: 40 * 1024},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			transport := &scriptedTransport{roundTrip: func(*http.Request) (*http.Response, error) {
+				return sseResponse(http.StatusOK, test.body, nil), nil
+			}}
+			cfg := validToolsConfig(transport)
+			if test.maxLine > 0 {
+				cfg.MaxSSELineBytes = test.maxLine
+			}
+			model := newTestModel(t, cfg)
+			stream, err := model.Stream(context.Background(), modelRequest())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = stream.Close() })
+			_, err = collectStream(t, stream)
+			requireProviderFailure(t, err, engine.CodeInvalidStream, "invalid_stream")
+		})
+	}
+}
+
+func TestAssembledCallRejectsNonUTF8Arguments(t *testing.T) {
+	stream := &chatStream{
+		nativeTools: engine.CapabilitySupported,
+		finish:      "tool_calls",
+		calls: map[int]*assembledCall{
+			0: {id: "call_1", name: "search", arguments: "{\xff}"},
+		},
+	}
+	err := stream.emitAssembled()
+	requireProviderFailure(t, err, engine.CodeInvalidStream, "invalid_stream")
+	if len(stream.pending) != 0 {
+		t.Fatalf("pending = %#v, want empty after invalid arguments", stream.pending)
+	}
+}
+
+func assertAssembledToolStream(t *testing.T, events []engine.StreamEvent, wantText []string, wantCall engine.ToolCall) {
+	t.Helper()
+	if len(events) != len(wantText)+2 {
+		t.Fatalf("events = %#v", events)
+	}
+	for i, text := range wantText {
+		if events[i] != (engine.StreamEvent{Type: engine.StreamEventTextDelta, Text: text}) {
+			t.Fatalf("delta[%d] = %#v, want %q", i, events[i], text)
+		}
+	}
+	callEvent := events[len(wantText)]
+	if callEvent.Type != engine.StreamEventToolCall || callEvent.Text != "" || callEvent.Usage != nil || callEvent.ToolCall == nil {
+		t.Fatalf("tool_call = %#v", callEvent)
+	}
+	if *callEvent.ToolCall != wantCall {
+		t.Fatalf("tool_call = %#v, want %#v", *callEvent.ToolCall, wantCall)
+	}
+	completed := events[len(events)-1]
+	if completed.Type != engine.StreamEventCompleted || completed.Text != "" || completed.ToolCall != nil {
+		t.Fatalf("completed = %#v", completed)
+	}
+}
+
 func TestStreamUsageAlternateFields(t *testing.T) {
 	transport := &scriptedTransport{roundTrip: func(*http.Request) (*http.Response, error) {
 		return sseResponse(http.StatusOK, loadSSE(t, "usage_alt_fields.sse"), nil), nil

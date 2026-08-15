@@ -107,6 +107,21 @@ func validConfig(rt http.RoundTripper) Config {
 	}
 }
 
+func validToolsConfig(rt http.RoundTripper) Config {
+	cfg := validConfig(rt)
+	cfg.Profile = ProfileToolsSupported(8192, 0)
+	cfg.MaxRequestBytes = minToolMaxRequestBytes
+	return cfg
+}
+
+func sampleToolSchema() domain.ToolSchema {
+	return domain.ToolSchema{
+		Name:        "read_file",
+		Description: "read",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+	}
+}
+
 func newTestModel(t *testing.T, cfg Config) *Model {
 	t.Helper()
 	model, err := New(cfg)

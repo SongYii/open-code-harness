@@ -2,6 +2,7 @@ package openaicompat_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
 	"github.com/SongYii/open-code-harness/internal/harness/testkit"
+	"github.com/SongYii/open-code-harness/internal/harness/tools"
 )
 
 func TestRunTurnHTTPSuccessRecordsRequestUsageAndReplay(t *testing.T) {
@@ -296,6 +298,133 @@ func TestRunTurnHTTPSecretRedaction(t *testing.T) {
 	if !strings.Contains(vendorBody, "Authorization") || !strings.Contains(vendorBody, "Bearer ") || !strings.Contains(vendorBody, "sk-") {
 		t.Fatal("fixture input no longer contains secrets to redact")
 	}
+}
+
+func TestRunTurnHTTPReadFileThenCompletes(t *testing.T) {
+	const fileBody = "fixture file body"
+	var bodies []map[string]any
+	transport := &countingTransport{roundTrip: func(req *http.Request) (*http.Response, error) {
+		payload := decodeExternalRequestBody(t, req)
+		bodies = append(bodies, payload)
+		header := make(http.Header)
+		header.Set("x-request-id", fmt.Sprintf("req-tool-%d", len(bodies)))
+		if len(bodies) == 1 {
+			return sseResponse(http.StatusOK, loadSSE(t, "tools_read_file.sse"), header), nil
+		}
+		return sseResponse(http.StatusOK, loadSSE(t, "success.sse"), header), nil
+	}}
+	store := newMemoryStore(t)
+	fs := testkit.NewMemFS("/workspace")
+	fs.AddFile("README.md", []byte(fileBody))
+	service, _ := MustComposeHTTPTools(t, store, fixtureToolsConfig(transport), fs)
+	sessionID := createSession(t, service)
+
+	result, err := runTurn(t, service, sessionID, "request-tools", "inspect")
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if result.Status != domain.TurnStatusCompleted || result.Text != "Hello world" || !result.TerminalCommitted {
+		t.Fatalf("RunTurn() result = %#v", result)
+	}
+	if transport.requests.Load() != 2 {
+		t.Fatalf("streams = %d, want 2", transport.requests.Load())
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("captured bodies = %d", len(bodies))
+	}
+	assertSentReadFileTool(t, bodies[0])
+	assertSecondStreamSeesToolMessage(t, bodies[1], fileBody)
+
+	usageReasons := usageFinishReasons(result.Records)
+	if len(usageReasons) < 2 || usageReasons[0] != domain.FinishReasonToolCalls || usageReasons[len(usageReasons)-1] != "stop" {
+		t.Fatalf("usage finishReason = %v, want tool_calls then stop", usageReasons)
+	}
+
+	second, replayErr := runTurn(t, service, sessionID, "request-tools", "inspect")
+	if replayErr != nil || second.Text != result.Text || transport.requests.Load() != 2 {
+		t.Fatalf("replay streamed again: result=%#v err=%v streams=%d", second, replayErr, transport.requests.Load())
+	}
+}
+
+func TestRunTurnHTTPProfileTextOnlyToolCallsLeaveFinishReasonEmpty(t *testing.T) {
+	transport := &countingTransport{roundTrip: func(*http.Request) (*http.Response, error) {
+		return sseResponse(http.StatusOK, loadSSE(t, "tool_calls.sse"), nil), nil
+	}}
+	store := newMemoryStore(t)
+	service, _ := MustComposeHTTP(t, store, fixtureConfig(transport))
+	sessionID := createSession(t, service)
+	result, err := runTurn(t, service, sessionID, "request-mismatch", "inspect")
+	assertApplicationError(t, err, application.CategoryModel, string(engine.CodeInvalidStream), true)
+	assertFailedTerminal(t, result, "capability_mismatch", "provider returned an unsupported capability")
+	for _, record := range result.Records {
+		if usage, ok := record.Event.(domain.ModelUsageRecorded); ok && usage.FinishReason != "" {
+			t.Fatalf("mismatch usage finishReason = %q, want empty", usage.FinishReason)
+		}
+	}
+}
+
+func assertSentReadFileTool(t *testing.T, payload map[string]any) {
+	t.Helper()
+	if _, ok := payload["tool_choice"]; ok {
+		t.Fatalf("tool_choice present: %#v", payload)
+	}
+	toolsRaw, ok := payload["tools"].([]any)
+	if !ok || len(toolsRaw) == 0 {
+		t.Fatalf("tools = %#v", payload["tools"])
+	}
+	found := false
+	for _, raw := range toolsRaw {
+		tool, _ := raw.(map[string]any)
+		fn, _ := tool["function"].(map[string]any)
+		if tool["type"] == "function" && fn["name"] == tools.NameReadFile {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("read_file not sent: %#v", toolsRaw)
+	}
+}
+
+func assertSecondStreamSeesToolMessage(t *testing.T, payload map[string]any, wantBody string) {
+	t.Helper()
+	messages, ok := payload["messages"].([]any)
+	if !ok {
+		t.Fatalf("messages = %#v", payload["messages"])
+	}
+	var sawTool bool
+	for _, raw := range messages {
+		message, _ := raw.(map[string]any)
+		if message["role"] == "tool" && message["tool_call_id"] == "call_read" && message["content"] == wantBody {
+			sawTool = true
+		}
+	}
+	if !sawTool {
+		t.Fatalf("second stream missing tool message %q: %#v", wantBody, messages)
+	}
+}
+
+func usageFinishReasons(records []domain.RecordedEvent) []string {
+	var reasons []string
+	for _, record := range records {
+		if usage, ok := record.Event.(domain.ModelUsageRecorded); ok {
+			reasons = append(reasons, usage.FinishReason)
+		}
+	}
+	return reasons
+}
+
+func decodeExternalRequestBody(t *testing.T, req *http.Request) map[string]any {
+	t.Helper()
+	data, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copied := append([]byte(nil), data...)
+	var payload map[string]any
+	if err := json.Unmarshal(copied, &payload); err != nil {
+		t.Fatal(err)
+	}
+	return payload
 }
 
 func TestRunTurnHTTPFindCommandRequestPreventsSecondStream(t *testing.T) {
