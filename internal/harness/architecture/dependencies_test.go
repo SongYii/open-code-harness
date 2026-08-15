@@ -58,6 +58,42 @@ func TestClassifyProductionDirectory(t *testing.T) {
 	}
 }
 
+func TestAllowAllConstructorDeclKeyedOnPolicyPath(t *testing.T) {
+	source := "package policy\nfunc AllowAll() {}\n"
+	fileSet := token.NewFileSet()
+	parsed, err := parser.ParseFile(fileSet, "allowall.go", source, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ident *ast.Ident
+	for _, decl := range parsed.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name != nil && fn.Name.Name == "AllowAll" {
+			ident = fn.Name
+			break
+		}
+	}
+	if ident == nil {
+		t.Fatal("fixture missing func AllowAll")
+	}
+	tests := []struct {
+		name     string
+		relative string
+		allowed  bool
+	}{
+		{name: "policy root constructor", relative: "internal/harness/policy/engine.go", allowed: true},
+		{name: "policy nested constructor", relative: "internal/harness/policy/rules/allowall.go", allowed: true},
+		{name: "unowned package policy", relative: "internal/harness/adapters/other/allowall.go"},
+		{name: "application package policy", relative: "internal/harness/application/service.go"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := allowAllConstructorDecl(test.relative, parsed, ident); got != test.allowed {
+				t.Fatalf("allowAllConstructorDecl(%q) = %t, want %t", test.relative, got, test.allowed)
+			}
+		})
+	}
+}
+
 func TestAllowAllProductionException(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -355,7 +391,7 @@ func appendAllowAllViolations(fileSet *token.FileSet, path, relative string, par
 		if !ok || ident.Name != "AllowAll" {
 			return true
 		}
-		if allowAllConstructorDecl(parsed, ident) {
+		if allowAllConstructorDecl(relative, parsed, ident) {
 			return true
 		}
 		position := fileSet.Position(ident.Pos())
@@ -372,8 +408,12 @@ func allowAllProductionException(relative string) bool {
 	return directoryWithin(directory, "internal/harness/testkit")
 }
 
-func allowAllConstructorDecl(parsed *ast.File, ident *ast.Ident) bool {
-	if parsed == nil || parsed.Name == nil || parsed.Name.Name != "policy" {
+func allowAllConstructorDecl(relative string, parsed *ast.File, ident *ast.Ident) bool {
+	directory := filepath.ToSlash(filepath.Dir(relative))
+	if !directoryWithin(directory, "internal/harness/policy") {
+		return false
+	}
+	if parsed == nil {
 		return false
 	}
 	for _, decl := range parsed.Decls {

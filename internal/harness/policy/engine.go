@@ -55,10 +55,10 @@ const (
 type Input struct {
 	Name        string
 	Risk        domain.RiskClass
-	Mutates     bool
+	Mutates     bool // unused; table is Risk × workspace × mode
 	WorkspaceIn bool
 	Network     bool
-	PathLiteral string
+	PathLiteral string // audit-only; not used to re-do I/O
 }
 
 type Decision struct {
