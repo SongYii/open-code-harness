@@ -538,3 +538,7 @@ func (ids *sessionIDs) NewEventID() (domain.EventID, error) {
 	ids.events++
 	return domain.EventID(fmt.Sprintf("event-%d", ids.events)), nil
 }
+func (ids *sessionIDs) NewApprovalID() (domain.ApprovalID, error) {
+	ids.calls++
+	return "approval-1", nil
+}

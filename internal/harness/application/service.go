@@ -4,7 +4,10 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
+	"github.com/SongYii/open-code-harness/internal/harness/policy"
+	"github.com/SongYii/open-code-harness/internal/harness/tools"
 )
 
 const (
@@ -12,6 +15,14 @@ const (
 	DefaultTerminalCommitTimeout         = 5 * time.Second
 	DefaultAppendResolutionTimeout       = 5 * time.Second
 	DefaultAppendResolutionMaxOperations = 4
+	DefaultMaxSteps                      = 8
+	DefaultMaxToolCallsPerStep           = 8
+	DefaultApprovalTimeout               = 30 * time.Second
+	DefaultExecTimeout                   = 30 * time.Second
+	MaxExecTimeout                       = 120 * time.Second
+	MaxProjectionBytes                   = 4 << 20
+	MaxToolResultBytes                   = 64 << 10
+	loggedEnvelopeToolSchemaSlack        = 64 << 10
 )
 
 type Config struct {
@@ -20,6 +31,14 @@ type Config struct {
 	AppendResolutionTimeout       time.Duration
 	AppendResolutionMaxOperations uint32
 	RequestIdentity               *engine.RequestIdentity
+	MaxSteps                      int
+	MaxToolCallsPerStep           int
+	ApprovalTimeout               time.Duration
+	PolicyMode                    policy.Mode
+	Catalog                       *tools.Catalog
+	Files                         tools.FileSystem
+	Commands                      tools.CommandRunner
+	Approver                      tools.Approver
 }
 
 func DefaultConfig() Config {
@@ -28,6 +47,10 @@ func DefaultConfig() Config {
 		TerminalCommitTimeout:         DefaultTerminalCommitTimeout,
 		AppendResolutionTimeout:       DefaultAppendResolutionTimeout,
 		AppendResolutionMaxOperations: DefaultAppendResolutionMaxOperations,
+		MaxSteps:                      DefaultMaxSteps,
+		MaxToolCallsPerStep:           DefaultMaxToolCallsPerStep,
+		ApprovalTimeout:               DefaultApprovalTimeout,
+		PolicyMode:                    policy.ModeDefault,
 	}
 }
 
@@ -41,6 +64,11 @@ type Service struct {
 	authority  WriterAuthority
 	config     Config
 	executions *executionRegistry
+	policy     policy.Engine
+	catalog    *tools.Catalog
+	files      tools.FileSystem
+	commands   tools.CommandRunner
+	approver   tools.Approver
 }
 
 func NewService(store EventStore, ids IDGenerator, clock Clock, runner *engine.TurnRunner, authority WriterAuthority, config Config) (*Service, error) {
@@ -50,7 +78,19 @@ func NewService(store EventStore, ids IDGenerator, clock Clock, runner *engine.T
 	if config.AppendResolutionMaxOperations == 0 {
 		config.AppendResolutionMaxOperations = DefaultAppendResolutionMaxOperations
 	}
-	if isNilValue(store) || isNilValue(ids) || isNilValue(clock) || runner == nil || authority.Validate() != nil || config.MaxAssistantBytes <= 0 || config.TerminalCommitTimeout <= 0 || config.AppendResolutionTimeout <= 0 || config.AppendResolutionMaxOperations == 0 {
+	if config.MaxSteps == 0 {
+		config.MaxSteps = DefaultMaxSteps
+	}
+	if config.MaxToolCallsPerStep == 0 {
+		config.MaxToolCallsPerStep = DefaultMaxToolCallsPerStep
+	}
+	if config.ApprovalTimeout == 0 {
+		config.ApprovalTimeout = DefaultApprovalTimeout
+	}
+	if config.PolicyMode == "" {
+		config.PolicyMode = policy.ModeDefault
+	}
+	if isNilValue(store) || isNilValue(ids) || isNilValue(clock) || runner == nil || authority.Validate() != nil || config.MaxAssistantBytes <= 0 || config.TerminalCommitTimeout <= 0 || config.AppendResolutionTimeout <= 0 || config.AppendResolutionMaxOperations == 0 || config.MaxSteps < 1 || config.MaxToolCallsPerStep < 1 {
 		return nil, applicationError(CategoryValidation, "invalid_configuration", false, nil)
 	}
 	if config.RequestIdentity != nil {
@@ -60,7 +100,73 @@ func NewService(store EventStore, ids IDGenerator, clock Clock, runner *engine.T
 		}
 		config.RequestIdentity = &copied
 	}
-	return &Service{store: store, ids: ids, clock: clock, runner: runner, authority: authority, config: config, executions: newExecutionRegistry()}, nil
+	policyEngine, err := policy.New(config.PolicyMode)
+	if err != nil {
+		return nil, applicationError(CategoryValidation, "invalid_configuration", false, err)
+	}
+	catalogEnabled := catalogHasSpecs(config.Catalog)
+	if err := validateToolComposition(config, catalogEnabled); err != nil {
+		return nil, err
+	}
+	approver := config.Approver
+	if isNilValue(approver) {
+		approver = tools.DenyApprover{}
+	}
+	service := &Service{
+		store: store, ids: ids, clock: clock, runner: runner, authority: authority,
+		config: config, executions: newExecutionRegistry(), policy: policyEngine,
+		approver: approver,
+	}
+	if catalogEnabled {
+		service.catalog = config.Catalog
+		service.files = config.Files
+		service.commands = config.Commands
+	}
+	return service, nil
+}
+
+func catalogHasSpecs(catalog *tools.Catalog) bool {
+	return catalog != nil && len(catalog.Specs()) > 0
+}
+
+func validateToolComposition(config Config, catalogEnabled bool) error {
+	nativeTools := engine.CapabilityUnsupported
+	if config.RequestIdentity != nil {
+		nativeTools = config.RequestIdentity.Profile.NativeTools
+	}
+	if nativeTools == engine.CapabilityRequired && !catalogEnabled {
+		return applicationError(CategoryPolicy, "invalid_configuration", false, nil)
+	}
+	if !catalogEnabled {
+		return nil
+	}
+	if config.RequestIdentity == nil {
+		return applicationError(CategoryPolicy, "invalid_configuration", false, nil)
+	}
+	if nativeTools != engine.CapabilitySupported && nativeTools != engine.CapabilityRequired {
+		return applicationError(CategoryPolicy, "invalid_configuration", false, nil)
+	}
+	needsFiles, needsCommands := catalogPortNeeds(config.Catalog.Specs())
+	if needsFiles && isNilValue(config.Files) {
+		return applicationError(CategoryPolicy, "invalid_configuration", false, nil)
+	}
+	if needsCommands && isNilValue(config.Commands) {
+		return applicationError(CategoryPolicy, "invalid_configuration", false, nil)
+	}
+	return nil
+}
+
+func catalogPortNeeds(specs []domain.ToolSpec) (needsFiles, needsCommands bool) {
+	for _, spec := range specs {
+		switch spec.Risk {
+		case domain.RiskRead, domain.RiskWrite:
+			needsFiles = true
+		case domain.RiskExec:
+			needsFiles = true
+			needsCommands = true
+		}
+	}
+	return needsFiles, needsCommands
 }
 
 func (service *Service) appendResolutionConfig() AppendResolutionConfig {

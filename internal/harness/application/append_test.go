@@ -179,10 +179,11 @@ type intentIDs struct {
 	appendErr                           error
 }
 
-func (*intentIDs) NewSessionID() (domain.SessionID, error) { return "session-1", nil }
-func (*intentIDs) NewTurnID() (domain.TurnID, error)       { return "turn-1", nil }
-func (*intentIDs) NewItemID() (domain.ItemID, error)       { return "item-1", nil }
-func (*intentIDs) NewCommandID() (domain.CommandID, error) { return "command-1", nil }
+func (*intentIDs) NewSessionID() (domain.SessionID, error)   { return "session-1", nil }
+func (*intentIDs) NewTurnID() (domain.TurnID, error)         { return "turn-1", nil }
+func (*intentIDs) NewItemID() (domain.ItemID, error)         { return "item-1", nil }
+func (*intentIDs) NewCommandID() (domain.CommandID, error)   { return "command-1", nil }
+func (*intentIDs) NewApprovalID() (domain.ApprovalID, error) { return "approval-1", nil }
 func (ids *intentIDs) NewAppendID() (domain.AppendID, error) {
 	ids.appendCalls++
 	return "append-1", ids.appendErr

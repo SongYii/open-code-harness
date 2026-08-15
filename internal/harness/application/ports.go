@@ -21,4 +21,5 @@ type IDGenerator interface {
 	NewCommandID() (domain.CommandID, error)
 	NewAppendID() (domain.AppendID, error)
 	NewEventID() (domain.EventID, error)
+	NewApprovalID() (domain.ApprovalID, error)
 }

@@ -1068,6 +1068,12 @@ func (ids *turnIDs) NewEventID() (domain.EventID, error) {
 	ids.totalCalls++
 	return domain.EventID(fmt.Sprintf("event-%d", ids.events)), nil
 }
+func (ids *turnIDs) NewApprovalID() (domain.ApprovalID, error) {
+	ids.mu.Lock()
+	defer ids.mu.Unlock()
+	ids.totalCalls++
+	return "approval-1", nil
+}
 
 func (ids *turnIDs) Calls() []string {
 	ids.mu.Lock()
