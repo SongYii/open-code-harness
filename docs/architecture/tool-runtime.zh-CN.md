@@ -191,8 +191,11 @@ deny。未知 risk deny。网络 risk 或 `Network=true` 即使在
 
 `list_dir.depth` 为 0 或 3、小数或字符串都是 `invalid_args`
 （`TestValidateArgsDefaultWorkspaceSpecs`）。`exec` 拒绝模型 `timeout`
-字段和 shell `command` 字符串。写入 `content` 的 `maxLength` 是 32 KiB。
-目录重名和不受支持的 schema 关键字在 `NewCatalog` 时失败
+字段和 shell `command` 字符串。写入 `content` 的 `maxLength` 是 32 KiB
+（若跑到 `ValidateArgs` 则是 `invalid_args`）。32 KiB 的 `content` 加上
+JSON 包装已经超过 Engine 的 32 KiB 参数帽，所以该 schema 格经
+`TurnRunner` 到不了。目录重名和不受支持的 schema 关键字在 `NewCatalog`
+时失败
 （`TestNewCatalogRejectsDuplicateNames`、
 `TestNewCatalogRejectsUnsupportedSchemaKeywords`）。允许的关键字是
 `tools/schema.go` 里的封闭集合：`type`、`properties`、`required`、
@@ -244,10 +247,12 @@ argv0 同样做 scope；指向工作区外的符号链接永不执行
 | 词法越权 | 否 | `scope_denied` | `path is outside the workspace` |
 | Resolve 逃逸 | 否 | `scope_denied` | `path is outside the workspace` |
 | exec 墙钟超时 | 否 | `exec_timeout` | `command timed out` |
-| 因体积中途杀掉 | 否 | `output_limit` | `tool output exceeded the size limit` |
 
-测试比较这些精确 UTF-8 字符串。截断标记是六个字符 `\n` + `[truncated]`。
-拒绝短句不含路径、参数或环境。
+测试比较这些精确 UTF-8 字符串。中途因体积杀掉的 `exec` 不是
+`output_limit`。`localexec` 返回 `Truncated=true`；管线把该工具记为成功，
+并带上前缀 + `\n[truncated]`（`TestOutputCapKillsAndTruncates`）。
+`CodeToolOutputLimit` / `ToolTextOutputLimit` 未使用。截断标记是精确字符串
+`\n[truncated]`。拒绝短句不含路径、参数或环境。
 
 ## 循环中途 `step_append_*` 与 ResolveAppend（表 A2）
 
@@ -313,11 +318,11 @@ Step 1 记录 `[{user, Input}]`（目录开启时加上 tools）。Step k≥2 �
 | ---: | ---: | --- |
 | 每 Turn 的 Step | 8 | `step_limit`；不再 Stream |
 | 每 Step 的工具调用 | 8 | `n > 8` ⇒ `invalid_stream`；零 started |
-| 工具参数 JSON | 32 KiB UTF-8 | `invalid_args` |
-| 工具结果 / `read_file` / `exec` 输出 | 64 KiB | 前缀 + `\n[truncated]` |
-| `write_file` content | 32 KiB | `invalid_args` |
+| 工具参数 JSON | 32 KiB UTF-8 | `invalid_stream`；零 `tool.call.started`；Turn 失败（`TestTurnRunnerRejectsInvalidEventsAndBoundsBeforeDelivery`） |
+| 工具结果 / `read_file` / `exec` 输出 | 64 KiB | 工具成功；前缀 + `\n[truncated]`（`truncated=true`） |
+| `write_file` content | 32 KiB schema `maxLength` | 若跑到 `ValidateArgs` 则是 `invalid_args`；JSON 包装超过 32 KiB 时经 Engine 到不了 |
 | `list_dir` 条目 | 256 | `truncated=true` + 词序前 256 条 |
-| `exec` 墙钟 | 默认 30 s，最大 120 s | `exec_timeout` |
+| `exec` 墙钟 | 30 s（`DefaultExecTimeout`；Application 始终传这个值） | `exec_timeout` |
 | 审批等待 | 默认 30 s | `approval_timeout` |
 | 助手 UTF-8 | 1 MiB | 现有 `output_limit` |
 | 流投影 | 4 MiB | `envelope_limit`；零 Stream |

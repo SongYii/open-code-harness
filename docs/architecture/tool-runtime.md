@@ -198,7 +198,10 @@ type. There is no MCP client.
 `list_dir.depth` 0 or 3, a fractional depth, or a string depth is
 `invalid_args` (`TestValidateArgsDefaultWorkspaceSpecs`). `exec` rejects a
 model `timeout` field and a shell `command` string. Write `content`
-`maxLength` is 32 KiB. Catalog uniqueness and unsupported schema keywords
+`maxLength` is 32 KiB (`invalid_args` if `ValidateArgs` runs). A 32 KiB
+`content` plus JSON wrapping already exceeds the Engine 32 KiB argument
+cap, so that schema cell is unreachable through `TurnRunner`. Catalog
+uniqueness and unsupported schema keywords
 fail at `NewCatalog` (`TestNewCatalogRejectsDuplicateNames`,
 `TestNewCatalogRejectsUnsupportedSchemaKeywords`). Allowed keywords are
 the closed set in `tools/schema.go`: `type`, `properties`, `required`,
@@ -251,11 +254,14 @@ the next model sees the frozen tool text
 | lexical out of workspace | no | `scope_denied` | `path is outside the workspace` |
 | Resolve escape | no | `scope_denied` | `path is outside the workspace` |
 | exec wall timeout | no | `exec_timeout` | `command timed out` |
-| killed for size mid-run | no | `output_limit` | `tool output exceeded the size limit` |
 
-Tests compare those exact UTF-8 strings. The truncation marker is the six
-characters `\n` + `[truncated]`. Denial sentences never include path,
-args, or env.
+Tests compare those exact UTF-8 strings. A mid-run `exec` size kill is
+not `output_limit`. `localexec` returns `Truncated=true`; the pipeline
+completes the tool with prefix + `\n[truncated]`
+(`TestOutputCapKillsAndTruncates`). `CodeToolOutputLimit` /
+`ToolTextOutputLimit` are unused. The truncation marker is the exact
+string `\n[truncated]`. Denial sentences never include path, args, or
+env.
 
 ## Mid-loop `step_append_*` and ResolveAppend (table A2)
 
@@ -325,11 +331,11 @@ Other pinned bounds:
 | ---: | ---: | --- |
 | Steps per Turn | 8 | `step_limit`; no further Stream |
 | Tool calls per Step | 8 | `n > 8` ⇒ `invalid_stream`; zero started |
-| Tool argument JSON | 32 KiB UTF-8 | `invalid_args` |
-| Tool result / `read_file` / `exec` output | 64 KiB | prefix + `\n[truncated]` |
-| `write_file` content | 32 KiB | `invalid_args` |
+| Tool argument JSON | 32 KiB UTF-8 | `invalid_stream`; zero `tool.call.started`; Turn fails (`TestTurnRunnerRejectsInvalidEventsAndBoundsBeforeDelivery`) |
+| Tool result / `read_file` / `exec` output | 64 KiB | completed tool; prefix + `\n[truncated]` (`truncated=true`) |
+| `write_file` content | 32 KiB schema `maxLength` | `invalid_args` if `ValidateArgs` runs; unreachable via Engine once the JSON wrapper exceeds 32 KiB |
 | `list_dir` entries | 256 | `truncated=true` + first 256 lexical paths |
-| `exec` wall time | 30 s default, max 120 s | `exec_timeout` |
+| `exec` wall time | 30 s (`DefaultExecTimeout`; Application always passes this) | `exec_timeout` |
 | Approval wait | 30 s default | `approval_timeout` |
 | Assistant UTF-8 | 1 MiB | existing `output_limit` |
 | Stream projection | 4 MiB | `envelope_limit`; zero Stream |
