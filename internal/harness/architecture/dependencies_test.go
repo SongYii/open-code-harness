@@ -34,6 +34,8 @@ func TestClassifyProductionDirectory(t *testing.T) {
 		{name: "memory production subpackage", directory: "internal/harness/adapters/memory/index", want: ownerMemory, inspect: true, hasOwner: true},
 		{name: "openaicompat root", directory: "internal/harness/adapters/openaicompat", want: ownerOpenAICompat, inspect: true, hasOwner: true},
 		{name: "openaicompat production subpackage", directory: "internal/harness/adapters/openaicompat/sse", want: ownerOpenAICompat, inspect: true, hasOwner: true},
+		{name: "policy root", directory: "internal/harness/policy", want: ownerPolicy, inspect: true, hasOwner: true},
+		{name: "policy production subpackage", directory: "internal/harness/policy/rules", want: ownerPolicy, inspect: true, hasOwner: true},
 		{name: "scenario test support", directory: "internal/harness/application/enginescenariotest", want: ownerApplication, inspect: false, hasOwner: true},
 		{name: "scenario nested test support", directory: "internal/harness/application/enginescenariotest/internal", want: ownerApplication, inspect: false, hasOwner: true},
 		{name: "similarly named production child", directory: "internal/harness/application/enginescenariotestkit", want: ownerApplication, inspect: true, hasOwner: true},
@@ -51,6 +53,27 @@ func TestClassifyProductionDirectory(t *testing.T) {
 			got, hasOwner := packageOwnership(test.directory)
 			if got != test.want || hasOwner != test.hasOwner {
 				t.Errorf("packageOwnership(%q) = (%q, %t), want (%q, %t)", test.directory, got, hasOwner, test.want, test.hasOwner)
+			}
+		})
+	}
+}
+
+func TestAllowAllProductionException(t *testing.T) {
+	tests := []struct {
+		name      string
+		relative  string
+		exception bool
+	}{
+		{name: "testkit root", relative: "internal/harness/testkit/policy.go", exception: true},
+		{name: "testkit nested", relative: "internal/harness/testkit/internal/policy.go", exception: true},
+		{name: "application production", relative: "internal/harness/application/service.go"},
+		{name: "policy production use", relative: "internal/harness/policy/engine.go"},
+		{name: "adapters production", relative: "internal/harness/adapters/memory/event_store.go"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := allowAllProductionException(test.relative); got != test.exception {
+				t.Fatalf("allowAllProductionException(%q) = %t, want %t", test.relative, got, test.exception)
 			}
 		})
 	}
@@ -82,6 +105,17 @@ func TestForbiddenImport(t *testing.T) {
 		{name: "openaicompat cannot import application", owner: ownerOpenAICompat, importPath: modulePath + "/internal/harness/application", forbidden: true},
 		{name: "openaicompat cannot import testkit", owner: ownerOpenAICompat, importPath: modulePath + "/internal/harness/testkit", forbidden: true},
 		{name: "openaicompat cannot import memory adapter", owner: ownerOpenAICompat, importPath: modulePath + "/internal/harness/adapters/memory", forbidden: true},
+		{name: "policy cannot import application", owner: ownerPolicy, importPath: modulePath + "/internal/harness/application", forbidden: true},
+		{name: "policy cannot import engine", owner: ownerPolicy, importPath: modulePath + "/internal/harness/engine", forbidden: true},
+		{name: "policy cannot import tools", owner: ownerPolicy, importPath: modulePath + "/internal/harness/tools", forbidden: true},
+		{name: "policy cannot import adapters", owner: ownerPolicy, importPath: modulePath + "/internal/harness/adapters/memory", forbidden: true},
+		{name: "policy cannot import testkit", owner: ownerPolicy, importPath: modulePath + "/internal/harness/testkit", forbidden: true},
+		{name: "policy cannot import os", owner: ownerPolicy, importPath: "os", forbidden: true},
+		{name: "policy cannot import os/exec", owner: ownerPolicy, importPath: "os/exec", forbidden: true},
+		{name: "policy cannot import net", owner: ownerPolicy, importPath: "net", forbidden: true},
+		{name: "policy cannot import net/http", owner: ownerPolicy, importPath: "net/http", forbidden: true},
+		{name: "policy may import domain", owner: ownerPolicy, importPath: modulePath + "/internal/harness/domain", forbidden: false},
+		{name: "policy may import strings", owner: ownerPolicy, importPath: "strings", forbidden: false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -136,6 +170,7 @@ func assertProductionDependencyBoundaries(t *testing.T) {
 				}
 			}
 		}
+		appendAllowAllViolations(fileSet, path, relative, parsed, &violations)
 		ast.Inspect(parsed, func(node ast.Node) bool {
 			switch node := node.(type) {
 			case *ast.IfStmt:
@@ -173,6 +208,7 @@ const (
 	ownerApplication  packageOwner = "application"
 	ownerMemory       packageOwner = "memory"
 	ownerOpenAICompat packageOwner = "openaicompat"
+	ownerPolicy       packageOwner = "policy"
 )
 
 var excludedTestSupportDirectories = []string{
@@ -202,6 +238,7 @@ func packageOwnership(directory string) (packageOwner, bool) {
 		{root: "internal/harness/application", owner: ownerApplication},
 		{root: "internal/harness/adapters/memory", owner: ownerMemory},
 		{root: "internal/harness/adapters/openaicompat", owner: ownerOpenAICompat},
+		{root: "internal/harness/policy", owner: ownerPolicy},
 	} {
 		if directoryWithin(directory, candidate.root) {
 			return candidate.owner, true
@@ -241,6 +278,14 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/application",
 			modulePath+"/internal/harness/testkit",
 		)
+	case ownerPolicy:
+		forbidden = append(forbidden,
+			modulePath+"/internal/harness/application",
+			modulePath+"/internal/harness/engine",
+			modulePath+"/internal/harness/tools",
+			modulePath+"/internal/harness/adapters",
+			modulePath+"/internal/harness/testkit",
+		)
 	}
 	for _, prefix := range forbidden {
 		if importPath == prefix || strings.HasPrefix(importPath, prefix+"/") {
@@ -257,7 +302,7 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			}
 		}
 	}
-	if owner == ownerDomain || owner == ownerApplication || owner == ownerEngine || owner == ownerMemory {
+	if owner == ownerDomain || owner == ownerApplication || owner == ownerEngine || owner == ownerMemory || owner == ownerPolicy {
 		switch importPath {
 		case "os", "os/exec", "net", "net/http":
 			return "forbidden host/network dependency"
@@ -299,6 +344,45 @@ func appendScriptedViolation(fileSet *token.FileSet, path string, node ast.Node,
 		position.Filename = path
 	}
 	*violations = append(*violations, position.String()+": "+context)
+}
+
+func appendAllowAllViolations(fileSet *token.FileSet, path, relative string, parsed *ast.File, violations *[]string) {
+	if allowAllProductionException(relative) {
+		return
+	}
+	ast.Inspect(parsed, func(node ast.Node) bool {
+		ident, ok := node.(*ast.Ident)
+		if !ok || ident.Name != "AllowAll" {
+			return true
+		}
+		if allowAllConstructorDecl(parsed, ident) {
+			return true
+		}
+		position := fileSet.Position(ident.Pos())
+		if position.Filename == "" {
+			position.Filename = path
+		}
+		*violations = append(*violations, position.String()+": AllowAll is test-only")
+		return true
+	})
+}
+
+func allowAllProductionException(relative string) bool {
+	directory := filepath.ToSlash(filepath.Dir(relative))
+	return directoryWithin(directory, "internal/harness/testkit")
+}
+
+func allowAllConstructorDecl(parsed *ast.File, ident *ast.Ident) bool {
+	if parsed == nil || parsed.Name == nil || parsed.Name.Name != "policy" {
+		return false
+	}
+	for _, decl := range parsed.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if ok && fn.Name == ident && fn.Recv == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func containsScriptedModel(node ast.Node) bool {
