@@ -38,6 +38,13 @@ func TestClassifyProductionDirectory(t *testing.T) {
 		{name: "policy production subpackage", directory: "internal/harness/policy/rules", want: ownerPolicy, inspect: true, hasOwner: true},
 		{name: "tools root", directory: "internal/harness/tools", want: ownerTools, inspect: true, hasOwner: true},
 		{name: "tools production subpackage", directory: "internal/harness/tools/catalog", want: ownerTools, inspect: true, hasOwner: true},
+		{name: "tools port test support", directory: "internal/harness/tools/porttest", want: ownerTools, inspect: false, hasOwner: true},
+		{name: "tools port nested test support", directory: "internal/harness/tools/porttest/internal", want: ownerTools, inspect: false, hasOwner: true},
+		{name: "similarly named tools port child", directory: "internal/harness/tools/porttestkit", want: ownerTools, inspect: true, hasOwner: true},
+		{name: "workspacefs root", directory: "internal/harness/adapters/workspacefs", want: ownerWorkspaceFS, inspect: true, hasOwner: true},
+		{name: "workspacefs production subpackage", directory: "internal/harness/adapters/workspacefs/internal", want: ownerWorkspaceFS, inspect: true, hasOwner: true},
+		{name: "localexec root", directory: "internal/harness/adapters/localexec", want: ownerLocalExec, inspect: true, hasOwner: true},
+		{name: "localexec production subpackage", directory: "internal/harness/adapters/localexec/internal", want: ownerLocalExec, inspect: true, hasOwner: true},
 		{name: "scenario test support", directory: "internal/harness/application/enginescenariotest", want: ownerApplication, inspect: false, hasOwner: true},
 		{name: "scenario nested test support", directory: "internal/harness/application/enginescenariotest/internal", want: ownerApplication, inspect: false, hasOwner: true},
 		{name: "similarly named production child", directory: "internal/harness/application/enginescenariotestkit", want: ownerApplication, inspect: true, hasOwner: true},
@@ -167,6 +174,35 @@ func TestForbiddenImport(t *testing.T) {
 		{name: "tools cannot import net", owner: ownerTools, importPath: "net", forbidden: true},
 		{name: "tools cannot import net/http", owner: ownerTools, importPath: "net/http", forbidden: true},
 		{name: "domain cannot import tools", owner: ownerDomain, importPath: modulePath + "/internal/harness/tools", forbidden: true},
+		{name: "workspacefs may import tools", owner: ownerWorkspaceFS, importPath: modulePath + "/internal/harness/tools", forbidden: false},
+		{name: "workspacefs may import domain", owner: ownerWorkspaceFS, importPath: modulePath + "/internal/harness/domain", forbidden: false},
+		{name: "workspacefs may import os", owner: ownerWorkspaceFS, importPath: "os", forbidden: false},
+		{name: "workspacefs may import path/filepath", owner: ownerWorkspaceFS, importPath: "path/filepath", forbidden: false},
+		{name: "workspacefs cannot import application", owner: ownerWorkspaceFS, importPath: modulePath + "/internal/harness/application", forbidden: true},
+		{name: "workspacefs cannot import testkit", owner: ownerWorkspaceFS, importPath: modulePath + "/internal/harness/testkit", forbidden: true},
+		{name: "workspacefs cannot import os/exec", owner: ownerWorkspaceFS, importPath: "os/exec", forbidden: true},
+		{name: "workspacefs cannot import net", owner: ownerWorkspaceFS, importPath: "net", forbidden: true},
+		{name: "workspacefs cannot import net/http", owner: ownerWorkspaceFS, importPath: "net/http", forbidden: true},
+		{name: "workspacefs cannot import localexec", owner: ownerWorkspaceFS, importPath: modulePath + "/internal/harness/adapters/localexec", forbidden: true},
+		{name: "workspacefs cannot import memory", owner: ownerWorkspaceFS, importPath: modulePath + "/internal/harness/adapters/memory", forbidden: true},
+		{name: "workspacefs cannot import openaicompat", owner: ownerWorkspaceFS, importPath: modulePath + "/internal/harness/adapters/openaicompat", forbidden: true},
+		{name: "workspacefs cannot import adapters root", owner: ownerWorkspaceFS, importPath: modulePath + "/internal/harness/adapters", forbidden: true},
+		{name: "localexec may import tools", owner: ownerLocalExec, importPath: modulePath + "/internal/harness/tools", forbidden: false},
+		{name: "localexec may import domain", owner: ownerLocalExec, importPath: modulePath + "/internal/harness/domain", forbidden: false},
+		{name: "localexec may import os", owner: ownerLocalExec, importPath: "os", forbidden: false},
+		{name: "localexec may import os/exec", owner: ownerLocalExec, importPath: "os/exec", forbidden: false},
+		{name: "localexec cannot import application", owner: ownerLocalExec, importPath: modulePath + "/internal/harness/application", forbidden: true},
+		{name: "localexec cannot import testkit", owner: ownerLocalExec, importPath: modulePath + "/internal/harness/testkit", forbidden: true},
+		{name: "localexec cannot import net", owner: ownerLocalExec, importPath: "net", forbidden: true},
+		{name: "localexec cannot import net/http", owner: ownerLocalExec, importPath: "net/http", forbidden: true},
+		{name: "localexec cannot import workspacefs", owner: ownerLocalExec, importPath: modulePath + "/internal/harness/adapters/workspacefs", forbidden: true},
+		{name: "localexec cannot import memory", owner: ownerLocalExec, importPath: modulePath + "/internal/harness/adapters/memory", forbidden: true},
+		{name: "localexec cannot import openaicompat", owner: ownerLocalExec, importPath: modulePath + "/internal/harness/adapters/openaicompat", forbidden: true},
+		{name: "localexec cannot import adapters root", owner: ownerLocalExec, importPath: modulePath + "/internal/harness/adapters", forbidden: true},
+		{name: "memory cannot import workspacefs", owner: ownerMemory, importPath: modulePath + "/internal/harness/adapters/workspacefs", forbidden: true},
+		{name: "memory cannot import localexec", owner: ownerMemory, importPath: modulePath + "/internal/harness/adapters/localexec", forbidden: true},
+		{name: "openaicompat cannot import workspacefs", owner: ownerOpenAICompat, importPath: modulePath + "/internal/harness/adapters/workspacefs", forbidden: true},
+		{name: "openaicompat cannot import localexec", owner: ownerOpenAICompat, importPath: modulePath + "/internal/harness/adapters/localexec", forbidden: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -261,12 +297,15 @@ const (
 	ownerOpenAICompat packageOwner = "openaicompat"
 	ownerPolicy       packageOwner = "policy"
 	ownerTools        packageOwner = "tools"
+	ownerWorkspaceFS  packageOwner = "workspacefs"
+	ownerLocalExec    packageOwner = "localexec"
 )
 
 var excludedTestSupportDirectories = []string{
 	"internal/harness/application/enginescenariotest",
 	"internal/harness/application/eventstoretest",
 	"internal/harness/engine/modeltest",
+	"internal/harness/tools/porttest",
 }
 
 func shouldInspectProductionDirectory(directory string) bool {
@@ -291,6 +330,8 @@ func packageOwnership(directory string) (packageOwner, bool) {
 		{root: "internal/harness/adapters/memory", owner: ownerMemory},
 		{root: "internal/harness/adapters/openaicompat", owner: ownerOpenAICompat},
 		{root: "internal/harness/policy", owner: ownerPolicy},
+		{root: "internal/harness/adapters/workspacefs", owner: ownerWorkspaceFS},
+		{root: "internal/harness/adapters/localexec", owner: ownerLocalExec},
 		{root: "internal/harness/tools", owner: ownerTools},
 	} {
 		if directoryWithin(directory, candidate.root) {
@@ -352,13 +393,20 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/adapters",
 			modulePath+"/internal/harness/testkit",
 		)
+	case ownerWorkspaceFS, ownerLocalExec:
+		forbidden = append(forbidden,
+			modulePath+"/internal/harness/application",
+			modulePath+"/internal/harness/testkit",
+			modulePath+"/internal/harness/policy",
+			modulePath+"/internal/harness/engine",
+		)
 	}
 	for _, prefix := range forbidden {
 		if importPath == prefix || strings.HasPrefix(importPath, prefix+"/") {
 			return "forbidden package dependency"
 		}
 	}
-	if owner == ownerOpenAICompat && otherAdapterImport(importPath) {
+	if selfRoot, ok := adapterOwnerRoot(owner); ok && otherAdapterImport(importPath, selfRoot) {
 		return "forbidden package dependency"
 	}
 	if owner == ownerDomain || owner == ownerEngine {
@@ -377,12 +425,39 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 	if owner == ownerOpenAICompat && importPath == "os/exec" {
 		return "forbidden host/network dependency"
 	}
+	if owner == ownerWorkspaceFS {
+		switch importPath {
+		case "os/exec", "net", "net/http":
+			return "forbidden host/network dependency"
+		}
+	}
+	if owner == ownerLocalExec {
+		switch importPath {
+		case "net", "net/http":
+			return "forbidden host/network dependency"
+		}
+	}
 	return ""
 }
 
-func otherAdapterImport(importPath string) bool {
+func adapterOwnerRoot(owner packageOwner) (string, bool) {
 	adaptersRoot := modulePath + "/internal/harness/adapters"
-	selfRoot := adaptersRoot + "/openaicompat"
+	switch owner {
+	case ownerMemory:
+		return adaptersRoot + "/memory", true
+	case ownerOpenAICompat:
+		return adaptersRoot + "/openaicompat", true
+	case ownerWorkspaceFS:
+		return adaptersRoot + "/workspacefs", true
+	case ownerLocalExec:
+		return adaptersRoot + "/localexec", true
+	default:
+		return "", false
+	}
+}
+
+func otherAdapterImport(importPath, selfRoot string) bool {
+	adaptersRoot := modulePath + "/internal/harness/adapters"
 	if importPath == adaptersRoot {
 		return true
 	}
@@ -399,6 +474,59 @@ func hasPathSegment(path, wanted string) bool {
 		}
 	}
 	return false
+}
+
+func TestOsExecOnlyInLocalExec(t *testing.T) {
+	_, sourceFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot locate dependency test source")
+	}
+	repositoryRoot := filepath.Clean(filepath.Join(filepath.Dir(sourceFile), "..", "..", ".."))
+	harnessRoot := filepath.Join(repositoryRoot, "internal", "harness")
+	fileSet := token.NewFileSet()
+	var violations []string
+	localExecRoot := filepath.Join(harnessRoot, "adapters", "localexec")
+
+	err := filepath.WalkDir(harnessRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		relative, err := filepath.Rel(repositoryRoot, path)
+		if err != nil {
+			return err
+		}
+		directory := filepath.ToSlash(filepath.Dir(relative))
+		if !shouldInspectProductionDirectory(directory) {
+			return nil
+		}
+		parsed, err := parser.ParseFile(fileSet, path, nil, 0)
+		if err != nil {
+			return err
+		}
+		for _, spec := range parsed.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				return err
+			}
+			if importPath != "os/exec" {
+				continue
+			}
+			if !directoryWithin(filepath.ToSlash(filepath.Dir(path)), filepath.ToSlash(localExecRoot)) {
+				position := fileSet.Position(spec.Pos())
+				violations = append(violations, position.String()+": os/exec is only allowed in adapters/localexec")
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) > 0 {
+		t.Fatalf("os/exec import violations:\n%s", strings.Join(violations, "\n"))
+	}
 }
 
 func appendScriptedViolation(fileSet *token.FileSet, path string, node ast.Node, context string, violations *[]string) {
