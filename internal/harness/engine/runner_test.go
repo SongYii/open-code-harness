@@ -33,8 +33,8 @@ func TestTurnRunnerPreservesBoundedUTF8Output(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if got.Text != "你好\n" {
-		t.Fatalf("Text = %q, want %q", got.Text, "你好\n")
+	if got.Text != "你好\n" || got.Stats != (AttemptStats{}) {
+		t.Fatalf("Run() = %#v, want text and zero stats", got)
 	}
 	assertRunnerCounts(t, model, 3, 1)
 	assertRuntimeEvents(t, sink.Attempts(), []RuntimeEvent{
@@ -150,17 +150,14 @@ func TestTurnRunnerStreamPairsAndPullFailures(t *testing.T) {
 	}
 }
 
-func TestTurnRunnerDoesNotNestDependencyEngineErrors(t *testing.T) {
+func TestTurnRunnerKeepsClassifiedNextEngineError(t *testing.T) {
 	providerCause := errors.New("provider cause")
 	model, _ := testkit.NewScriptedModel(runnerRequest().ModelRequest, testkit.ScriptedModelConfig{Steps: []testkit.ScriptedStep{{Err: &Error{Code: CodeDelivery, Cause: providerCause}}}})
 	sink := &testkit.RecordingSink{}
 	emitter, _ := NewEmitter(sink, validRunnerCorrelation())
 	runner, _ := NewTurnRunner(model)
 	got, err := runner.Run(context.Background(), runnerRequest(), emitter)
-	assertRunFailure(t, got, err, CodeModelStream)
-	if IsCode(err, CodeDelivery) {
-		t.Fatalf("Run() error = %v, must retain only the model_stream Engine code", err)
-	}
+	assertRunFailure(t, got, err, CodeDelivery)
 	if !errors.Is(err, providerCause) {
 		t.Fatalf("Run() error = %v, does not retain provider cause", err)
 	}
@@ -183,10 +180,7 @@ func TestTurnRunnerNormalizesJoinedEngineErrorsAlongsideClose(t *testing.T) {
 	emitter, _ := NewEmitter(sink, validRunnerCorrelation())
 	runner, _ := NewTurnRunner(model)
 	got, err := runner.Run(context.Background(), runnerRequest(), emitter)
-	assertRunFailure(t, got, err, CodeModelStream)
-	if IsCode(err, CodeDelivery) {
-		t.Fatalf("Run() error = %v, must not retain nested delivery Engine code", err)
-	}
+	assertRunFailure(t, got, err, CodeDelivery)
 	if !errors.Is(err, rawCause) || !errors.Is(err, closeCause) {
 		t.Fatalf("Run() error = %v, want raw and close causes", err)
 	}
@@ -221,7 +215,7 @@ func TestTurnRunnerCleanupCancellationOrdering(t *testing.T) {
 		}
 	})
 
-	t.Run("success closes while derived context is live then cancels", func(t *testing.T) {
+	t.Run("success snapshots then cancels derived context before close", func(t *testing.T) {
 		var streamCtx context.Context
 		closeObserved := make(chan bool, 1)
 		stream := &controlledStream{
@@ -230,7 +224,7 @@ func TestTurnRunnerCleanupCancellationOrdering(t *testing.T) {
 				return StreamEvent{Type: StreamEventCompleted}, nil
 			},
 			close: func() error {
-				closeObserved <- streamCtx.Err() == nil
+				closeObserved <- streamCtx.Err() != nil
 				return nil
 			},
 		}
@@ -241,7 +235,7 @@ func TestTurnRunnerCleanupCancellationOrdering(t *testing.T) {
 			t.Fatalf("Run() = (%#v, %v), want empty success", got, err)
 		}
 		if !<-closeObserved {
-			t.Fatal("Close() did not observe a live derived context on success")
+			t.Fatal("Close() observed a live derived context on success")
 		}
 		select {
 		case <-streamCtx.Done():
@@ -371,7 +365,7 @@ func TestTurnRunnerNormalizesJoinedTypedNilUnwrappersSafely(t *testing.T) {
 	}{
 		{"typed nil before eof", errors.Join(typedNilMulti, io.EOF), nil, CodeInvalidStream, nil},
 		{"typed nil before ordinary cause", errors.Join(typedNilSingle, rawCause), nil, CodeModelStream, rawCause},
-		{"typed nil before engine cause with cleanup", errors.Join(typedNilMulti, &Error{Code: CodeDelivery, Cause: rawCause}), closeCause, CodeModelStream, rawCause},
+		{"typed nil before engine cause with cleanup", errors.Join(typedNilMulti, &Error{Code: CodeDelivery, Cause: rawCause}), closeCause, CodeDelivery, rawCause},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -388,9 +382,6 @@ func TestTurnRunnerNormalizesJoinedTypedNilUnwrappersSafely(t *testing.T) {
 			}
 			if tc.closeErr != nil && !errors.Is(err, tc.closeErr) {
 				t.Fatalf("Run() error = %v, does not retain close cause", err)
-			}
-			if IsCode(err, CodeDelivery) {
-				t.Fatalf("Run() error = %v, retains nested delivery Engine code", err)
 			}
 			assertRunnerCounts(t, model, 1, 1)
 		})
@@ -516,6 +507,7 @@ func TestTurnRunnerRejectsInvalidEventsAndBoundsBeforeDelivery(t *testing.T) {
 	}{
 		{"unknown event", []testkit.ScriptedStep{{Event: StreamEvent{Type: "unknown"}}}, 16, CodeInvalidStream, 1, 1},
 		{"empty delta", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventTextDelta}}}, 16, CodeInvalidStream, 1, 1},
+		{"usage on delta", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventTextDelta, Text: "ok", Usage: &TokenUsage{OutputTokens: 1}}}}, 16, CodeInvalidStream, 1, 1},
 		{"completed with text", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventCompleted, Text: "not allowed"}}}, 16, CodeInvalidStream, 1, 1},
 		{"invalid utf8 delta", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventTextDelta, Text: invalidUTF8}}}, 16, CodeInvalidStream, 1, 1},
 		{"one byte over", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventTextDelta, Text: "abc"}}}, 2, CodeOutputLimit, 1, 1},
@@ -710,6 +702,169 @@ func TestTurnRunnerRetainsPrimaryAndCloseCauses(t *testing.T) {
 	})
 }
 
+func TestTurnRunnerPreservesClassifiedInvalidStreamFromNext(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		code string
+	}{
+		{name: "empty_response", code: "empty_response"},
+		{name: "capability_mismatch", code: "capability_mismatch"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			failure := &ProviderFailure{Class: FailureClassPermanent, Code: test.code, SafeMessage: "classified"}
+			nextErr := &Error{Code: CodeInvalidStream, Cause: failure}
+			model, _ := testkit.NewScriptedModel(runnerRequest().ModelRequest, testkit.ScriptedModelConfig{Steps: []testkit.ScriptedStep{{Err: nextErr}}})
+			emitter, _ := NewEmitter(&testkit.RecordingSink{}, validRunnerCorrelation())
+			runner, _ := NewTurnRunner(model)
+			got, err := runner.Run(context.Background(), runnerRequest(), emitter)
+			assertRunFailure(t, got, err, CodeInvalidStream)
+			var classified *ProviderFailure
+			if !errors.As(err, &classified) || classified.Code != test.code {
+				t.Fatalf("Run() error = %v, want ProviderFailure %q", err, test.code)
+			}
+			if errors.Is(err, io.EOF) {
+				t.Fatalf("Run() error = %v, must not treat classified invalid_stream as EOF", err)
+			}
+		})
+	}
+}
+
+func TestTurnRunnerDoesNotRemapClassifiedTransientAsEOF(t *testing.T) {
+	failure := &ProviderFailure{Class: FailureClassTransient, Code: "provider_transient", Retryable: true, SafeMessage: "connection dropped"}
+	nextErr := &Error{Code: CodeModelStream, Cause: failure}
+	if errors.Is(nextErr, io.EOF) {
+		t.Fatal("classified unexpected-EOF fixture must not contain io.EOF")
+	}
+	model, _ := testkit.NewScriptedModel(runnerRequest().ModelRequest, testkit.ScriptedModelConfig{Steps: []testkit.ScriptedStep{{Err: nextErr}}})
+	emitter, _ := NewEmitter(&testkit.RecordingSink{}, validRunnerCorrelation())
+	runner, _ := NewTurnRunner(model)
+	got, err := runner.Run(context.Background(), runnerRequest(), emitter)
+	assertRunFailure(t, got, err, CodeModelStream)
+	var classified *ProviderFailure
+	if !errors.As(err, &classified) || classified.Code != "provider_transient" {
+		t.Fatalf("Run() error = %v, want provider_transient", err)
+	}
+	if errors.Is(err, io.EOF) {
+		t.Fatalf("Run() error = %v, remapped classified transient through isEOF", err)
+	}
+}
+
+func TestTurnRunnerKeepsClassifiedEngineErrorJoinedWithEOF(t *testing.T) {
+	failure := &ProviderFailure{Class: FailureClassTransient, Code: "provider_transient", SafeMessage: "connection dropped"}
+	nextErr := errors.Join(&Error{Code: CodeModelStream, Cause: failure}, io.EOF)
+	model, _ := testkit.NewScriptedModel(runnerRequest().ModelRequest, testkit.ScriptedModelConfig{Steps: []testkit.ScriptedStep{{Err: nextErr}}})
+	emitter, _ := NewEmitter(&testkit.RecordingSink{}, validRunnerCorrelation())
+	runner, _ := NewTurnRunner(model)
+	got, err := runner.Run(context.Background(), runnerRequest(), emitter)
+	assertRunFailure(t, got, err, CodeModelStream)
+	var classified *ProviderFailure
+	if !errors.As(err, &classified) || classified.Code != "provider_transient" {
+		t.Fatalf("Run() error = %v, want provider_transient beside io.EOF", err)
+	}
+}
+
+func TestTurnRunnerCopiesCompletedUsageAndObserverStats(t *testing.T) {
+	usage := &TokenUsage{InputTokens: 3, OutputTokens: 5, CachedInputTokens: 1}
+	stream := &observingStream{
+		controlledStream: controlledStream{
+			next: func(context.Context) (StreamEvent, error) {
+				return StreamEvent{Type: StreamEventCompleted, Usage: usage}, nil
+			},
+			close: func() error { return nil },
+		},
+		stats: AttemptStats{FinishReason: "stop", ProviderRequestID: "req-1", LatencyMs: 12},
+	}
+	runner, _ := NewTurnRunner(&controlledModel{stream: func(context.Context, ModelRequest) (ModelStream, error) { return stream, nil }})
+	emitter, _ := NewEmitter(&controlledSink{}, validRunnerCorrelation())
+	got, err := runner.Run(context.Background(), runnerRequest(), emitter)
+	if err != nil || got.Text != "" {
+		t.Fatalf("Run() = (%#v, %v), want success", got, err)
+	}
+	if got.Stats.Usage == nil || *got.Stats.Usage != *usage {
+		t.Fatalf("Stats.Usage = %#v, want copy of completed usage", got.Stats.Usage)
+	}
+	if got.Stats.Usage == usage {
+		t.Fatal("Stats.Usage aliases the completed event pointer")
+	}
+	if got.Stats.FinishReason != "stop" || got.Stats.ProviderRequestID != "req-1" || got.Stats.LatencyMs != 12 {
+		t.Fatalf("Stats = %#v, want observer finish metadata", got.Stats)
+	}
+}
+
+func TestTurnRunnerSnapshotsBeforeCancelOnFailAndCancel(t *testing.T) {
+	stats := AttemptStats{Usage: &TokenUsage{InputTokens: 2}, FinishReason: "stop", ProviderRequestID: "req-fail", LatencyMs: 40}
+	t.Run("fail", func(t *testing.T) {
+		failure := &ProviderFailure{Class: FailureClassPermanent, Code: "provider_permanent"}
+		closeCause := errors.New("close cause")
+		stream := &observingStream{
+			controlledStream: controlledStream{
+				next: func(context.Context) (StreamEvent, error) {
+					return StreamEvent{}, &Error{Code: CodeModelStream, Cause: failure}
+				},
+				close: func() error { return closeCause },
+			},
+			stats: stats,
+		}
+		runner, _ := NewTurnRunner(&controlledModel{stream: func(_ context.Context, _ ModelRequest) (ModelStream, error) { return stream, nil }})
+		emitter, _ := NewEmitter(&controlledSink{}, validRunnerCorrelation())
+		got, err := runner.Run(context.Background(), runnerRequest(), emitter)
+		assertRunFailure(t, got, err, CodeModelStream)
+		if stream.snapshotCalls != 1 || stream.snapshotSawCancel {
+			t.Fatalf("snapshot calls=%d sawCancel=%t, want Snapshot before cancel", stream.snapshotCalls, stream.snapshotSawCancel)
+		}
+		if got.Stats.Usage == nil || *got.Stats.Usage != *stats.Usage || got.Stats.LatencyMs != 40 || got.Stats.ProviderRequestID != "req-fail" {
+			t.Fatalf("fail Stats = %#v, want snapshot without finish reason", got.Stats)
+		}
+		if got.Stats.FinishReason != "" {
+			t.Fatalf("fail FinishReason = %q, want empty", got.Stats.FinishReason)
+		}
+		var classified *ProviderFailure
+		if !errors.As(err, &classified) || classified.Code != "provider_permanent" {
+			t.Fatalf("Run() error = %v, lost ProviderFailure after Close join", err)
+		}
+		if !errors.Is(err, closeCause) {
+			t.Fatalf("Run() error = %v, does not retain close cause", err)
+		}
+	})
+
+	t.Run("canceled succeed", func(t *testing.T) {
+		closeEntered := make(chan struct{})
+		releaseClose := make(chan struct{})
+		stream := &observingStream{
+			controlledStream: controlledStream{
+				next: func(context.Context) (StreamEvent, error) {
+					return StreamEvent{Type: StreamEventCompleted, Usage: &TokenUsage{OutputTokens: 1}}, nil
+				},
+				close: func() error {
+					close(closeEntered)
+					<-releaseClose
+					return nil
+				},
+			},
+			stats: AttemptStats{FinishReason: "stop", LatencyMs: 9, ProviderRequestID: "req-cancel"},
+		}
+		runner, _ := NewTurnRunner(&controlledModel{stream: func(context.Context, ModelRequest) (ModelStream, error) { return stream, nil }})
+		emitter, _ := NewEmitter(&controlledSink{}, validRunnerCorrelation())
+		ctx, cancel := context.WithCancel(context.Background())
+		result := make(chan runOutcome, 1)
+		go func() { result <- runRunner(runner, ctx, emitter) }()
+		awaitSignal(t, closeEntered, "Close() entry")
+		cancel()
+		close(releaseClose)
+		outcome := awaitOutcome(t, result)
+		assertRunFailure(t, outcome.result, outcome.err, CodeCanceled)
+		if outcome.result.Stats.FinishReason != "" || outcome.result.Text != "" {
+			t.Fatalf("canceled-succeed = %#v, want empty text and finish reason", outcome.result)
+		}
+		if outcome.result.Stats.LatencyMs != 9 || outcome.result.Stats.ProviderRequestID != "req-cancel" {
+			t.Fatalf("canceled-succeed Stats = %#v, want snapshotted metadata", outcome.result.Stats)
+		}
+		if stream.snapshotCalls != 1 || stream.snapshotSawCancel {
+			t.Fatalf("snapshot calls=%d sawCancel=%t, want Snapshot before cancel", stream.snapshotCalls, stream.snapshotSawCancel)
+		}
+	})
+}
+
 func scriptedModel(t *testing.T, deltas []string) *testkit.ScriptedModel {
 	t.Helper()
 	steps := make([]testkit.ScriptedStep, 0, len(deltas)+1)
@@ -741,8 +896,8 @@ func assertRunFailure(t *testing.T, got RunResult, err error, want ErrorCode) {
 	if !errors.As(err, &engineErr) || engineErr.Code != want {
 		t.Fatalf("Run() outer error = %#v, want code %q", engineErr, want)
 	}
-	if got != (RunResult{}) {
-		t.Fatalf("Run() result = %#v, want zero result", got)
+	if got.Text != "" {
+		t.Fatalf("Run() result text = %q, want empty", got.Text)
 	}
 }
 
@@ -800,6 +955,26 @@ func (stream *controlledStream) Next(ctx context.Context) (StreamEvent, error) {
 func (stream *controlledStream) Close() error {
 	stream.closeCalls++
 	return stream.close()
+}
+
+type observingStream struct {
+	controlledStream
+	stats             AttemptStats
+	streamCtx         context.Context
+	snapshotCalls     int
+	snapshotSawCancel bool
+}
+
+func (stream *observingStream) Next(ctx context.Context) (StreamEvent, error) {
+	stream.streamCtx = ctx
+	stream.nextCalls++
+	return stream.next(ctx)
+}
+
+func (stream *observingStream) Snapshot() AttemptStats {
+	stream.snapshotCalls++
+	stream.snapshotSawCancel = stream.streamCtx != nil && stream.streamCtx.Err() != nil
+	return stream.stats
 }
 
 type controlledSink struct {

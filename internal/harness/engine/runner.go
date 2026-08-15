@@ -18,8 +18,10 @@ type RunRequest struct {
 }
 
 // RunResult is the exactly concatenated assistant output from a completed run.
+// Stats is copied on success, fail, and cancel.
 type RunResult struct {
-	Text string
+	Text  string
+	Stats AttemptStats
 }
 
 // TurnRunner synchronously consumes one ModelStream at a time per Run call.
@@ -82,6 +84,9 @@ func (runner *TurnRunner) Run(ctx context.Context, request RunRequest, emitter *
 			if cause := ctx.Err(); cause != nil {
 				return runner.fail(cancel, stream, engineError(CodeCanceled, cause))
 			}
+			if engineErr := classifiedEngineError(err); engineErr != nil {
+				return runner.fail(cancel, stream, &Error{Code: engineErr.Code, Cause: engineErr.Cause})
+			}
 			if isEOF(err) {
 				return runner.fail(cancel, stream, engineError(CodeInvalidStream, nil))
 			}
@@ -93,7 +98,7 @@ func (runner *TurnRunner) Run(ctx context.Context, request RunRequest, emitter *
 
 		switch event.Type {
 		case StreamEventTextDelta:
-			if event.Text == "" || !utf8.ValidString(event.Text) {
+			if event.Text == "" || !utf8.ValidString(event.Text) || event.Usage != nil {
 				return runner.fail(cancel, stream, engineError(CodeInvalidStream, nil))
 			}
 			if len(event.Text) > request.MaxAssistantBytes-builder.Len() {
@@ -110,7 +115,7 @@ func (runner *TurnRunner) Run(ctx context.Context, request RunRequest, emitter *
 			if event.Text != "" {
 				return runner.fail(cancel, stream, engineError(CodeInvalidStream, nil))
 			}
-			return runner.succeed(ctx, cancel, stream, RunResult{Text: builder.String()})
+			return runner.succeed(ctx, cancel, stream, RunResult{Text: builder.String(), Stats: AttemptStats{Usage: copyTokenUsage(event.Usage)}})
 		default:
 			return runner.fail(cancel, stream, engineError(CodeInvalidStream, nil))
 		}
@@ -118,28 +123,84 @@ func (runner *TurnRunner) Run(ctx context.Context, request RunRequest, emitter *
 }
 
 func (runner *TurnRunner) fail(cancel context.CancelFunc, stream ModelStream, primary *Error) (RunResult, error) {
+	stats := snapshotAttempt(stream)
+	stats.FinishReason = ""
 	cancel()
 	if closeErr := stream.Close(); closeErr != nil {
-		return RunResult{}, &Error{Code: primary.Code, Cause: errors.Join(primary.Cause, errorCause(closeErr, CodeModelStream))}
+		return RunResult{Stats: stats}, &Error{Code: primary.Code, Cause: errors.Join(primary.Cause, errorCause(closeErr, CodeModelStream))}
 	}
-	return RunResult{}, primary
+	return RunResult{Stats: stats}, primary
 }
 
 func (runner *TurnRunner) succeed(ctx context.Context, cancel context.CancelFunc, stream ModelStream, result RunResult) (RunResult, error) {
-	closeErr := stream.Close()
-	if cause := ctx.Err(); cause != nil {
-		cancel()
-		primary := engineError(CodeCanceled, cause)
-		if closeErr != nil {
-			return RunResult{}, &Error{Code: primary.Code, Cause: errors.Join(primary.Cause, errorCause(closeErr, CodeModelStream))}
-		}
-		return RunResult{}, primary
+	stats := snapshotAttempt(stream)
+	if result.Stats.Usage != nil {
+		stats.Usage = result.Stats.Usage
 	}
 	cancel()
-	if closeErr != nil {
-		return RunResult{}, engineError(CodeModelStream, errorCause(closeErr, CodeModelStream))
+	closeErr := stream.Close()
+	if cause := ctx.Err(); cause != nil {
+		stats.FinishReason = ""
+		primary := engineError(CodeCanceled, cause)
+		if closeErr != nil {
+			return RunResult{Stats: stats}, &Error{Code: primary.Code, Cause: errors.Join(primary.Cause, errorCause(closeErr, CodeModelStream))}
+		}
+		return RunResult{Stats: stats}, primary
 	}
-	return result, nil
+	if closeErr != nil {
+		stats.FinishReason = ""
+		return RunResult{Stats: stats}, engineError(CodeModelStream, errorCause(closeErr, CodeModelStream))
+	}
+	return RunResult{Text: result.Text, Stats: stats}, nil
+}
+
+func classifiedEngineError(err error) *Error {
+	if isNil(err) {
+		return nil
+	}
+	if engineErr, ok := err.(*Error); ok {
+		if engineErr != nil && validErrorCode(engineErr.Code) {
+			return engineErr
+		}
+		if engineErr == nil {
+			return nil
+		}
+		return classifiedEngineError(engineErr.Cause)
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		if isNil(joined) {
+			return nil
+		}
+		for _, cause := range joined.Unwrap() {
+			if found := classifiedEngineError(cause); found != nil {
+				return found
+			}
+		}
+		return nil
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		if isNil(wrapped) {
+			return nil
+		}
+		return classifiedEngineError(wrapped.Unwrap())
+	}
+	return nil
+}
+
+func snapshotAttempt(stream ModelStream) AttemptStats {
+	observer, ok := stream.(AttemptObserver)
+	if !ok || isNil(observer) {
+		return AttemptStats{}
+	}
+	return observer.Snapshot()
+}
+
+func copyTokenUsage(usage *TokenUsage) *TokenUsage {
+	if usage == nil {
+		return nil
+	}
+	copied := *usage
+	return &copied
 }
 
 func validRunRequest(request RunRequest) bool {

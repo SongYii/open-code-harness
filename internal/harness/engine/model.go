@@ -21,11 +21,31 @@ const (
 	StreamEventCompleted StreamEventType = "completed"
 )
 
+type TokenUsage struct {
+	InputTokens       uint64
+	OutputTokens      uint64
+	CachedInputTokens uint64
+}
+
+type AttemptStats struct {
+	Usage             *TokenUsage
+	FinishReason      string
+	ProviderRequestID string
+	LatencyMs         uint64
+}
+
 // StreamEvent is a provider-neutral model event. Streams emit zero or more
 // non-empty UTF-8 text deltas followed by one completed event.
 type StreamEvent struct {
-	Type StreamEventType
-	Text string
+	Type  StreamEventType
+	Text  string
+	Usage *TokenUsage // nil except optionally on completed
+}
+
+// AttemptObserver is optional. HTTP streams report finish, request id, and
+// latency here; scripted adapters omit it.
+type AttemptObserver interface {
+	Snapshot() AttemptStats
 }
 
 // Model may receive concurrent Stream calls for independent turns. Each

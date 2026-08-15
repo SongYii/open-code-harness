@@ -124,6 +124,88 @@ func TestRunTurnPersistsExactAssistantMessage(t *testing.T) {
 	}
 }
 
+func TestRunTurnRequestIdentityAdmitsThreeEvents(t *testing.T) {
+	store := newTurnMemoryStore(t)
+	recordingStore := &turnRecordingStore{EventStore: store}
+	model := &repeatingSuccessModel{text: "done"}
+	identity := validTurnRequestIdentity()
+	config := application.DefaultConfig()
+	config.RequestIdentity = &identity
+	service := newTurnServiceWithConfig(t, recordingStore, testkit.NewSequenceIDs(), model, config)
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-identity", Input: "inspect", Sink: &testkit.RecordingSink{}})
+	if err != nil || result.Status != domain.TurnStatusCompleted || result.Text != "done" || !result.TerminalCommitted {
+		t.Fatalf("result = %#v, err = %v", result, err)
+	}
+	if got, want := turnEventTypes(result.Records), []string{
+		domain.EventTurnStarted,
+		domain.EventAssistantMessageStarted,
+		domain.EventModelRequestRecorded,
+		domain.EventAssistantMessageCompleted,
+		domain.EventTurnCompleted,
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("result record types = %v, want %v", got, want)
+	}
+	recorded, ok := result.Records[2].Event.(domain.ModelRequestRecorded)
+	if !ok || recorded.AdapterFamily != identity.AdapterFamily || recorded.ModelID != identity.ModelID || recorded.EndpointID != identity.EndpointID {
+		t.Fatalf("request recorded = %#v", result.Records[2].Event)
+	}
+	if !reflect.DeepEqual(recorded.Messages, []domain.ModelPromptMessage{{Role: domain.PromptRoleUser, Text: "inspect"}}) {
+		t.Fatalf("request messages = %#v", recorded.Messages)
+	}
+	requests := recordingStore.AppendRequests()
+	if len(requests) != 3 || len(requests[1].Events) != 3 || len(requests[2].Events) != 2 {
+		t.Fatalf("append requests = %#v, want create plus 3-event admission and 2-event terminal", requests)
+	}
+}
+
+func TestRunTurnPrependsObservedUsageBeforeTerminal(t *testing.T) {
+	store := newTurnMemoryStore(t)
+	recordingStore := &turnRecordingStore{EventStore: store}
+	inner := &repeatingSuccessModel{text: "done"}
+	usage := &engine.TokenUsage{InputTokens: 4, OutputTokens: 6, CachedInputTokens: 1}
+	model := &observingModel{inner: inner, stats: engine.AttemptStats{Usage: usage, FinishReason: "stop", ProviderRequestID: "req-usage", LatencyMs: 21}}
+	identity := validTurnRequestIdentity()
+	config := application.DefaultConfig()
+	config.RequestIdentity = &identity
+	service := newTurnServiceWithConfig(t, recordingStore, testkit.NewSequenceIDs(), model, config)
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-usage", Input: "inspect", Sink: &testkit.RecordingSink{}})
+	if err != nil || result.Status != domain.TurnStatusCompleted || result.Text != "done" {
+		t.Fatalf("result = %#v, err = %v", result, err)
+	}
+	if got, want := turnEventTypes(result.Records), []string{
+		domain.EventTurnStarted,
+		domain.EventAssistantMessageStarted,
+		domain.EventModelRequestRecorded,
+		domain.EventModelUsageRecorded,
+		domain.EventAssistantMessageCompleted,
+		domain.EventTurnCompleted,
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("result record types = %v, want %v", got, want)
+	}
+	if _, ok := itemTerminalRecord(result.Records).Event.(domain.AssistantMessageCompleted); !ok {
+		t.Fatalf("item terminal = %#v, want completed by type", itemTerminalRecord(result.Records))
+	}
+	gotUsage, ok := result.Records[3].Event.(domain.ModelUsageRecorded)
+	if !ok || gotUsage.InputTokens != 4 || gotUsage.OutputTokens != 6 || gotUsage.CachedInputTokens != 1 || gotUsage.FinishReason != "stop" || gotUsage.ProviderRequestID != "req-usage" || gotUsage.LatencyMs != 21 {
+		t.Fatalf("usage = %#v", result.Records[3].Event)
+	}
+	requests := recordingStore.AppendRequests()
+	if len(requests) != 3 || len(requests[1].Events) != 3 || len(requests[2].Events) != 3 {
+		t.Fatalf("append requests = %#v, want usage prepended onto the terminal batch", requests)
+	}
+	if requests[2].Events[0].Event.EventType() != domain.EventModelUsageRecorded {
+		t.Fatalf("terminal batch[0] = %#v, want usage", requests[2].Events[0])
+	}
+}
+
 func TestRunTurnSequentialTurnsHaveDistinctIdentityAndOrder(t *testing.T) {
 	store := newTurnMemoryStore(t)
 	model := &repeatingSuccessModel{text: "answer"}
@@ -586,6 +668,38 @@ func newTurnMemoryStore(t *testing.T) *memory.EventStore {
 		t.Fatal(err)
 	}
 	return store
+}
+
+type observingModel struct {
+	inner engine.Model
+	stats engine.AttemptStats
+}
+
+func (model *observingModel) Stream(ctx context.Context, request engine.ModelRequest) (engine.ModelStream, error) {
+	stream, err := model.inner.Stream(ctx, request)
+	if stream == nil {
+		return nil, err
+	}
+	return &observingModelStream{ModelStream: stream, stats: model.stats}, err
+}
+
+type observingModelStream struct {
+	engine.ModelStream
+	stats engine.AttemptStats
+}
+
+func (stream *observingModelStream) Snapshot() engine.AttemptStats {
+	return stream.stats
+}
+
+func itemTerminalRecord(records []domain.RecordedEvent) domain.RecordedEvent {
+	for _, record := range records {
+		switch record.Event.(type) {
+		case domain.AssistantMessageCompleted, domain.AssistantMessageFailed, domain.AssistantMessageInterrupted:
+			return record
+		}
+	}
+	return domain.RecordedEvent{}
 }
 
 func newTurnService(t *testing.T, store application.EventStore, ids application.IDGenerator, model engine.Model) *application.Service {
