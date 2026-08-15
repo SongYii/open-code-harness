@@ -391,15 +391,26 @@ func assertSecondStreamSeesToolMessage(t *testing.T, payload map[string]any, wan
 	if !ok {
 		t.Fatalf("messages = %#v", payload["messages"])
 	}
-	var sawTool bool
+	var sawAssistant, sawTool bool
 	for _, raw := range messages {
 		message, _ := raw.(map[string]any)
+		if message["role"] == "assistant" {
+			calls, _ := message["tool_calls"].([]any)
+			if len(calls) == 0 {
+				continue
+			}
+			call, _ := calls[0].(map[string]any)
+			fn, _ := call["function"].(map[string]any)
+			if call["id"] == "call_read" && fn["name"] == tools.NameReadFile && fn["arguments"] == `{"path":"README.md"}` {
+				sawAssistant = true
+			}
+		}
 		if message["role"] == "tool" && message["tool_call_id"] == "call_read" && message["content"] == wantBody {
 			sawTool = true
 		}
 	}
-	if !sawTool {
-		t.Fatalf("second stream missing tool message %q: %#v", wantBody, messages)
+	if !sawAssistant || !sawTool {
+		t.Fatalf("second stream missing assistant tool_calls or tool message %q: %#v", wantBody, messages)
 	}
 }
 

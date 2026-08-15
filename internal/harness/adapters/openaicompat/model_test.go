@@ -291,6 +291,36 @@ func TestStreamSendsToolsAndMessages(t *testing.T) {
 	}
 }
 
+func TestStreamRejectsInvalidRequestMapping(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*engine.ModelRequest)
+	}{
+		{name: "unknown role", mutate: func(req *engine.ModelRequest) {
+			req.Messages = []domain.ModelPromptMessage{{Role: "system_alias", Text: "inspect"}}
+		}},
+		{name: "non object schema", mutate: func(req *engine.ModelRequest) {
+			req.Tools = []domain.ToolSchema{{Name: "read_file", Description: "read", InputSchema: json.RawMessage(`["not-object"]`)}}
+		}},
+		{name: "non json schema", mutate: func(req *engine.ModelRequest) {
+			req.Tools = []domain.ToolSchema{{Name: "read_file", Description: "read", InputSchema: json.RawMessage(`not-json`)}}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			transport := &scriptedTransport{roundTrip: func(*http.Request) (*http.Response, error) {
+				t.Fatal("invalid request mapping must not send HTTP")
+				return nil, nil
+			}}
+			model := newTestModel(t, validToolsConfig(transport))
+			req := modelRequest()
+			test.mutate(&req)
+			_, err := model.Stream(context.Background(), req)
+			requireProviderFailure(t, err, engine.CodeModelStartup, "provider_permanent")
+		})
+	}
+}
+
 func TestStreamRequiredEmptyToolsFailClosed(t *testing.T) {
 	transport := &scriptedTransport{roundTrip: func(*http.Request) (*http.Response, error) {
 		t.Fatal("required empty tools must not send HTTP")
