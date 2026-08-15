@@ -182,7 +182,7 @@ func allowedFailureCode(code string) bool {
 
 func allowedInterruptionCode(code string) bool {
 	switch code {
-	case domain.InterruptionCallerCanceled, domain.InterruptionDeliveryFailed:
+	case domain.InterruptionCallerCanceled, domain.InterruptionDeliveryFailed, domain.InterruptionRequestAbandoned:
 		return true
 	default:
 		return false

@@ -8,7 +8,10 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 )
 
-var errExecutionIdentityMismatch = errors.New("execution request identity mismatch")
+var (
+	errExecutionIdentityMismatch = errors.New("execution request identity mismatch")
+	errSessionUnresolved         = errors.New("session has an unresolved append")
+)
 
 type executionPhase string
 
@@ -16,6 +19,7 @@ const (
 	executionPhaseAdmissionInFlight executionPhase = "admission_in_flight"
 	executionPhaseAdmissionUnknown  executionPhase = "admission_unknown"
 	executionPhaseRunning           executionPhase = "running"
+	executionPhaseCancelWon         executionPhase = "cancel_won"
 	executionPhaseTerminalInFlight  executionPhase = "terminal_append_in_flight"
 	executionPhaseTerminalUnknown   executionPhase = "terminal_unknown"
 	executionPhaseTerminalCommitted executionPhase = "terminal_committed"
@@ -72,6 +76,9 @@ func (registry *executionRegistry) acquire(requestID domain.RunTurnRequestID, se
 		entry.leases++
 		return &executionLease{registry: registry, entry: entry}, false, nil
 	}
+	if registry.hasRetainedUnknownLocked(sessionID) {
+		return nil, false, errSessionUnresolved
+	}
 	entry := &executionEntry{requestID: requestID, sessionID: sessionID, digest: digest, done: make(chan struct{}), phase: executionPhaseAdmissionInFlight, leases: 1, ownerToken: 1, ownerActive: true}
 	registry.entries[requestID] = entry
 	registry.unresolved[sessionID]++
@@ -87,6 +94,15 @@ func (registry *executionRegistry) attachExisting(requestID domain.RunTurnReques
 	}
 	entry.leases++
 	return &executionLease{registry: registry, entry: entry}, true
+}
+
+func (registry *executionRegistry) hasRetainedUnknownLocked(sessionID domain.SessionID) bool {
+	for _, entry := range registry.entries {
+		if entry.sessionID == sessionID && entry.retained && !entry.terminal {
+			return true
+		}
+	}
+	return false
 }
 
 func (registry *executionRegistry) unresolvedForSession(sessionID domain.SessionID) uint32 {
@@ -122,7 +138,10 @@ func (lease *executionLease) setPhase(phase executionPhase) error {
 	}
 	lease.registry.mu.Lock()
 	defer lease.registry.mu.Unlock()
-	if phase == executionPhaseAdmissionUnknown || phase == executionPhaseTerminalUnknown || !lease.ownsLocked() {
+	if phase == executionPhaseAdmissionUnknown || phase == executionPhaseTerminalUnknown {
+		return errors.New("execution owner capability rejected")
+	}
+	if !lease.ownsLocked() && !(lease.entry != nil && lease.entry.retained && !lease.entry.terminal && lease.ownerToken != 0 && lease.entry.ownerToken == lease.ownerToken) {
 		return errors.New("execution owner capability rejected")
 	}
 	if !validExecutionTransition(lease.entry.phase, phase) {
@@ -142,11 +161,15 @@ func (lease *executionLease) retainIntent(intent AppendIntent) error {
 	}
 	lease.registry.mu.Lock()
 	defer lease.registry.mu.Unlock()
-	if !lease.ownsLocked() {
+	if !lease.ownsLocked() && !lease.canResolveLocked() {
 		return errors.New("execution owner capability rejected")
 	}
 	lease.entry.intent = &cloned
 	return nil
+}
+
+func (lease *executionLease) canResolveLocked() bool {
+	return lease != nil && !lease.released && lease.ownerToken != 0 && lease.entry != nil && lease.entry.ownerToken == lease.ownerToken && lease.entry.retained && !lease.entry.terminal
 }
 
 func (lease *executionLease) retainUnknown(phase executionPhase) error {
@@ -158,7 +181,7 @@ func (lease *executionLease) retainUnknown(phase executionPhase) error {
 	}
 	lease.registry.mu.Lock()
 	defer lease.registry.mu.Unlock()
-	if !lease.ownsLocked() || lease.entry.intent == nil || !validExecutionTransition(lease.entry.phase, phase) {
+	if (!lease.ownsLocked() && !lease.canResolveLocked()) || lease.entry.intent == nil || !validExecutionTransition(lease.entry.phase, phase) {
 		return errors.New("execution owner capability rejected")
 	}
 	lease.entry.phase = phase
@@ -171,13 +194,53 @@ func validExecutionTransition(from, to executionPhase) bool {
 	switch from {
 	case executionPhaseAdmissionInFlight:
 		return to == executionPhaseRunning || to == executionPhaseAdmissionUnknown
+	case executionPhaseAdmissionUnknown:
+		return to == executionPhaseRunning || to == executionPhaseCancelWon || to == executionPhaseTerminalInFlight
 	case executionPhaseRunning:
-		return to == executionPhaseTerminalInFlight
+		return to == executionPhaseTerminalInFlight || to == executionPhaseCancelWon
+	case executionPhaseCancelWon:
+		return to == executionPhaseTerminalInFlight || to == executionPhaseTerminalUnknown
 	case executionPhaseTerminalInFlight:
 		return to == executionPhaseTerminalInFlight || to == executionPhaseTerminalUnknown
+	case executionPhaseTerminalUnknown:
+		return to == executionPhaseTerminalInFlight
 	default:
 		return false
 	}
+}
+
+func (lease *executionLease) resumeAfterResolvedAdmission() error {
+	if lease == nil || lease.registry == nil {
+		return errors.New("invalid execution owner")
+	}
+	lease.registry.mu.Lock()
+	defer lease.registry.mu.Unlock()
+	if lease.released || lease.ownerToken == 0 || lease.entry == nil || lease.entry.ownerToken != lease.ownerToken || !lease.entry.retained || lease.entry.terminal || lease.entry.phase != executionPhaseAdmissionUnknown {
+		return errors.New("execution owner capability rejected")
+	}
+	lease.entry.phase = executionPhaseRunning
+	lease.entry.retained = false
+	lease.entry.ownerActive = true
+	return nil
+}
+
+func (lease *executionLease) publishRetained(result RunTurnResult, err error) error {
+	if lease == nil || lease.registry == nil {
+		return errors.New("invalid execution owner")
+	}
+	lease.registry.mu.Lock()
+	defer lease.registry.mu.Unlock()
+	if lease.released || lease.ownerToken == 0 || lease.entry == nil || lease.entry.ownerToken != lease.ownerToken || lease.entry.terminal || !lease.entry.retained {
+		return errors.New("execution owner capability rejected")
+	}
+	lease.entry.result = cloneRunTurnResult(result)
+	lease.entry.err = err
+	lease.entry.terminal = true
+	lease.entry.retained = false
+	lease.entry.phase = executionPhaseTerminalCommitted
+	close(lease.entry.done)
+	lease.registry.cleanupLocked(lease.entry)
+	return nil
 }
 
 func (lease *executionLease) publish(result RunTurnResult, err error) error {

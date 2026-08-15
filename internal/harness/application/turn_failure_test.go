@@ -196,6 +196,39 @@ func TestRunTurnCancellationDuringScriptedStepCommitsInterruptedPair(t *testing.
 	assertInterruptedPair(t, store, got.result, domain.InterruptionCallerCanceled)
 }
 
+func TestCancellationWinnerCompletedBeatsLateCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	base := newTurnMemoryStore(t)
+	ids := testkit.NewSequenceIDs()
+	created, err := newTurnService(t, base, ids, &repeatingSuccessModel{text: "seed"}).CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &cancelOnCompletedAppendStore{EventStoreV2: base, cancel: cancel}
+	model := &repeatingSuccessModel{text: "done"}
+	service := newTurnService(t, store, ids, model)
+	result, runErr := service.RunTurn(ctx, application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-late-cancel", Input: "inspect", Sink: &testkit.RecordingSink{}})
+	if result.Status != domain.TurnStatusCompleted || !result.TerminalCommitted || len(model.Calls()) != 1 {
+		t.Fatalf("result=%#v err=%v calls=%d", result, runErr, len(model.Calls()))
+	}
+	records, err := application.ReadWholeStreamPinned(context.Background(), base, created.SessionID, 256)
+	if err != nil || turnEventTypes(records)[len(turnEventTypes(records))-2] != domain.EventAssistantMessageCompleted {
+		t.Fatalf("records=%v err=%v", turnEventTypes(records), err)
+	}
+}
+
+type cancelOnCompletedAppendStore struct {
+	application.EventStoreV2
+	cancel context.CancelFunc
+}
+
+func (store *cancelOnCompletedAppendStore) Append(ctx context.Context, request application.AppendRequestV2) (application.CommitReceipt, error) {
+	if len(request.Events) > 0 && request.Events[0].Event.EventType() == domain.EventAssistantMessageCompleted {
+		store.cancel()
+	}
+	return store.EventStoreV2.Append(ctx, request)
+}
+
 func TestRunTurnDeliveryFailureBeforeTerminalCommitIsDurablyInterrupted(t *testing.T) {
 	for _, ordinal := range []uint64{1, 2} {
 		t.Run(map[uint64]string{1: "started", 2: "delta"}[ordinal], func(t *testing.T) {
@@ -397,7 +430,7 @@ func TestRunTurnTerminalCleanupTimeoutIsPersistenceNotCallerCancellation(t *test
 	assertRunningBoundary(t, base, got.result)
 }
 
-func TestRunTurnCompletedAppendCancellationFallsBackOnceToInterrupted(t *testing.T) {
+func TestRunTurnCompletedAppendCancellationDoesNotInventInterruption(t *testing.T) {
 	base := newTurnMemoryStore(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	appendCause := errors.New("success append canceled")
@@ -408,14 +441,13 @@ func TestRunTurnCompletedAppendCancellationFallsBackOnceToInterrupted(t *testing
 		t.Fatal(err)
 	}
 	result, err := service.RunTurn(ctx, application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-completed-cancel", Input: "inspect", Sink: &testkit.RecordingSink{}})
-	assertRunTurnError(t, err, application.CategoryCanceled, "canceled", true)
-	if !errors.Is(err, appendCause) || !errors.Is(err, context.Canceled) {
-		t.Fatalf("error = %v, want append and cancellation causes", err)
+	if store.InterruptedCalls() != 0 {
+		t.Fatalf("late cancel invented interruption: completed/interrupted=%d/%d err=%v", store.CompletedCalls(), store.InterruptedCalls(), err)
 	}
-	if store.CompletedCalls() != 1 || store.InterruptedCalls() != 1 {
-		t.Fatalf("completed/interrupted calls = %d/%d", store.CompletedCalls(), store.InterruptedCalls())
+	if result.Status != domain.TurnStatusRunning || result.TerminalCommitted {
+		t.Fatalf("result=%#v", result)
 	}
-	assertInterruptedPair(t, base, result, domain.InterruptionCallerCanceled)
+	assertRunningBoundary(t, base, result)
 }
 
 func TestRunTurnCompletedPersistenceFailureDoesNotInventSecondOutcome(t *testing.T) {
@@ -466,7 +498,7 @@ func TestRunTurnCancellationImmediatelyAfterAdmissionUsesBoundedDetachedCleanup(
 	}
 }
 
-func TestRunTurnCancellationAtCompletedTerminalEntryCommitsOnlyInterruption(t *testing.T) {
+func TestRunTurnCancellationAtCompletedTerminalEntryDoesNotInventInterruption(t *testing.T) {
 	base := newTurnMemoryStore(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cause := errors.New("completed append did not commit")
@@ -477,8 +509,10 @@ func TestRunTurnCancellationAtCompletedTerminalEntryCommitsOnlyInterruption(t *t
 		t.Fatal(err)
 	}
 	result, err := service.RunTurn(ctx, application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-terminal-entry", Input: "inspect", Sink: &testkit.RecordingSink{}})
-	assertRunTurnError(t, err, application.CategoryCanceled, "canceled", true)
-	assertInterruptedPair(t, base, result, domain.InterruptionCallerCanceled)
+	if store.InterruptedCalls() != 0 {
+		t.Fatalf("late cancel invented interruption err=%v", err)
+	}
+	assertRunningBoundary(t, base, result)
 	durable, loadErr := application.ReadWholeStreamPinned(context.Background(), base, created.SessionID, 256)
 	if loadErr != nil {
 		t.Fatal(loadErr)
@@ -487,8 +521,6 @@ func TestRunTurnCancellationAtCompletedTerminalEntryCommitsOnlyInterruption(t *t
 		domain.EventSessionCreated,
 		domain.EventTurnStarted,
 		domain.EventAssistantMessageStarted,
-		domain.EventAssistantMessageInterrupted,
-		domain.EventTurnInterrupted,
 	}) {
 		t.Fatalf("durable terminal race types = %v", got)
 	}

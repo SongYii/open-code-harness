@@ -416,6 +416,50 @@ func TestDecideFailAssistantTurnReturnsAtomicBatch(t *testing.T) {
 	}
 }
 
+func TestDecideRequestAbandonedInterruptsRunningAssistantTurn(t *testing.T) {
+	t.Parallel()
+
+	state := runningAssistantItemForTest(t)
+	events, err := Decide(state, InterruptAssistantTurn{
+		SessionID: "session-1", TurnID: "turn-1", ItemID: "item-1",
+		Code: InterruptionRequestAbandoned, Message: "",
+	})
+	if err != nil {
+		t.Fatalf("Decide() error = %v", err)
+	}
+	want := []UncommittedEvent{
+		{Event: AssistantMessageInterrupted{TurnID: "turn-1", ItemID: "item-1", Code: InterruptionRequestAbandoned, Message: ""}},
+		{Event: TurnInterrupted{TurnID: "turn-1", Reason: InterruptionRequestAbandoned}},
+	}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("Decide() = %#v, want %#v", events, want)
+	}
+}
+
+func TestDecideRequestAbandonedRejectedAfterModelTerminal(t *testing.T) {
+	t.Parallel()
+
+	_, err := Decide(terminalAssistantItemForTest(t), InterruptAssistantTurn{
+		SessionID: "session-1", TurnID: "turn-1", ItemID: "item-1",
+		Code: InterruptionRequestAbandoned, Message: "",
+	})
+	if !IsCode(err, CodeItemNotRunning) {
+		t.Fatalf("error = %v, want %q", err, CodeItemNotRunning)
+	}
+}
+
+func TestDecideProcessCrashInterruptionIsRejected(t *testing.T) {
+	t.Parallel()
+
+	_, err := Decide(runningAssistantItemForTest(t), InterruptAssistantTurn{
+		SessionID: "session-1", TurnID: "turn-1", ItemID: "item-1",
+		Code: "process_crash", Message: "",
+	})
+	if !IsCode(err, CodeInvalidCommand) {
+		t.Fatalf("error = %v, want %q", err, CodeInvalidCommand)
+	}
+}
+
 func TestDecideInterruptAssistantTurnReturnsAtomicBatch(t *testing.T) {
 	t.Parallel()
 

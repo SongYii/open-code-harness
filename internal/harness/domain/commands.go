@@ -20,6 +20,7 @@ const (
 	CommandInterruptAssistantTurn = "assistant.turn.interrupt"
 	InterruptionCallerCanceled    = "caller_canceled"
 	InterruptionDeliveryFailed    = "runtime_delivery_failed"
+	InterruptionRequestAbandoned  = "request_abandoned"
 )
 
 type CreateSession struct {

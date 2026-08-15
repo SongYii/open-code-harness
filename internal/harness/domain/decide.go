@@ -458,13 +458,25 @@ func decideInterruptAssistantTurn(state Session, command InterruptAssistantTurn)
 	if _, err := requireRunningItem(state, command.SessionID, command.TurnID, command.ItemID); err != nil {
 		return nil, err
 	}
-	if err := validateCommandText(command.Code, "interruption code is required"); err != nil {
+	if err := validateAssistantInterruptionCode(command.Code); err != nil {
 		return nil, err
 	}
 	if err := validateCommandUTF8(command.Message, "interruption message must be valid UTF-8"); err != nil {
 		return nil, err
 	}
 	return interruptAssistantTurnEvents(command.TurnID, command.ItemID, command.Code, command.Message), nil
+}
+
+func validateAssistantInterruptionCode(code string) error {
+	if err := validateCommandText(code, "interruption code is required"); err != nil {
+		return err
+	}
+	switch code {
+	case InterruptionCallerCanceled, InterruptionDeliveryFailed, InterruptionRequestAbandoned:
+		return nil
+	default:
+		return domainError(CodeInvalidCommand, "interruption code is not allowed")
+	}
 }
 
 func rejectRunningItem(turn Turn) error {

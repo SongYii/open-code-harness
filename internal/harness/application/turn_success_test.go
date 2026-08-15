@@ -292,12 +292,15 @@ func TestRunTurnTerminalUnknownDoesNotFallbackAfterCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := &terminalUnknownStore{EventStoreV2: base, cancel: cancel}
-	service := newTurnService(t, store, ids, &repeatingSuccessModel{text: "done"})
+	model := &repeatingSuccessModel{text: "done"}
+	service := newTurnService(t, store, ids, model)
 	result, err := service.RunTurn(ctx, application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-terminal-unknown", Input: "inspect", Sink: &testkit.RecordingSink{}})
-	assertRunTurnError(t, err, application.CategoryPersistence, "append_outcome_unknown", false)
+	if result.Status != domain.TurnStatusCompleted || !result.TerminalCommitted || len(model.Calls()) != 1 {
+		t.Fatalf("late cancel replaced completed winner: result=%#v err=%v calls=%d", result, err, len(model.Calls()))
+	}
 	requests := store.AppendRequests()
-	if result.Status != domain.TurnStatusRunning || result.TerminalCommitted || len(result.Records) != 2 || store.terminalCalls != 1 || len(requests) != 2 {
-		t.Fatalf("unknown result=%#v terminal calls=%d requests=%#v", result, store.terminalCalls, requests)
+	if store.terminalCalls != 1 || len(requests) < 2 {
+		t.Fatalf("terminal calls=%d requests=%#v", store.terminalCalls, requests)
 	}
 	admission, terminal := requests[0], requests[1]
 	if len(admission.Events) != 2 || len(terminal.Events) != 2 || admission.CommandID != terminal.CommandID || terminal.AppendID == "" || terminal.AppendID != store.terminalAppendID || !reflect.DeepEqual(terminal.Events, store.terminalEvents) {

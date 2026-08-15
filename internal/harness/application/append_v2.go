@@ -90,8 +90,23 @@ func CommitAppendIntent(ctx context.Context, store EventStoreV2, state domain.Co
 	if !isNilValue(err) {
 		return domain.CompactSession{}, nil, mapV2StoreError(ctx, err, "append")
 	}
-	if receipt.AppendID != owned.Request.AppendID || receipt.CommitPosition == 0 || receipt.FirstSequence != owned.Request.ExpectedVersion+1 || receipt.LastSequence != owned.Request.ExpectedVersion+uint64(len(owned.Request.Events)) {
-		return domain.CompactSession{}, nil, storeContractViolation(fmt.Errorf("invalid append receipt"))
+	return ApplyCommittedIntent(state, owned, receipt)
+}
+
+func validateCommitReceipt(intent AppendIntent, receipt CommitReceipt) error {
+	if receipt.AppendID != intent.Request.AppendID || receipt.CommitPosition == 0 || receipt.FirstSequence != intent.Request.ExpectedVersion+1 || receipt.LastSequence != intent.Request.ExpectedVersion+uint64(len(intent.Request.Events)) {
+		return fmt.Errorf("invalid append receipt")
+	}
+	return nil
+}
+
+func ApplyCommittedIntent(state domain.CompactSession, intent AppendIntent, receipt CommitReceipt) (domain.CompactSession, []domain.RecordedEvent, error) {
+	owned, err := cloneAppendIntent(intent)
+	if err != nil {
+		return domain.CompactSession{}, nil, storeContractViolation(err)
+	}
+	if err := validateCommitReceipt(owned, receipt); err != nil {
+		return domain.CompactSession{}, nil, storeContractViolation(err)
 	}
 	records := make([]domain.RecordedEvent, len(owned.Request.Events))
 	next := state.Clone()
