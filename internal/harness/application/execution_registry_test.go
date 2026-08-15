@@ -55,6 +55,29 @@ func TestExecutionRegistryElectsOwnerAndCleansAfterDetach(t *testing.T) {
 	}
 }
 
+func TestExecutionRegistryRejectsDifferentAdmissionWhileUnknown(t *testing.T) {
+	registry := newExecutionRegistry()
+	owner, first, err := registry.acquire("request-1", "session-1", Digest{1})
+	if err != nil || !first {
+		t.Fatal(err)
+	}
+	if err := owner.retainIntent(AppendIntent{Request: AppendRequestV2{AppendID: "append-1", SessionID: "session-1", CommandID: "command-1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.retainUnknown(executionPhaseAdmissionUnknown); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := registry.acquire("request-2", "session-1", Digest{2}); !errors.Is(err, errSessionUnresolved) {
+		t.Fatalf("second admission = %v", err)
+	}
+	waiter, ownerTwo, err := registry.acquire("request-1", "session-1", Digest{1})
+	if err != nil || ownerTwo {
+		t.Fatalf("same request waiter = %#v %t %v", waiter, ownerTwo, err)
+	}
+	waiter.release()
+	owner.release()
+}
+
 func TestExecutionRegistryRejectsMismatchedIdentityAndWaiterCancellation(t *testing.T) {
 	registry := newExecutionRegistry()
 	owner, first, err := registry.acquire("request-1", "session-1", Digest{1})

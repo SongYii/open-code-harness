@@ -460,6 +460,7 @@ func TestApplyAssistantMessageTerminalRejectsTimestampBeforeItemStart(t *testing
 		{name: "completed", event: AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "done"}},
 		{name: "failed", event: AssistantMessageFailed{TurnID: "turn-1", ItemID: "item-1", Code: "provider_error", Message: "safe"}},
 		{name: "interrupted", event: AssistantMessageInterrupted{TurnID: "turn-1", ItemID: "item-1", Code: "caller_canceled", Message: ""}},
+		{name: "request abandoned", event: AssistantMessageInterrupted{TurnID: "turn-1", ItemID: "item-1", Code: InterruptionRequestAbandoned, Message: ""}},
 	}
 
 	for _, test := range tests {
@@ -527,6 +528,7 @@ func TestApplyAssistantMessageTerminalEvents(t *testing.T) {
 	}{
 		{name: "failed", event: AssistantMessageFailed{TurnID: "turn-1", ItemID: "item-1", Code: "provider_error", Message: "safe display"}, status: ItemStatusFailed, terminalCode: "provider_error", message: "safe display"},
 		{name: "interrupted", event: AssistantMessageInterrupted{TurnID: "turn-1", ItemID: "item-1", Code: "caller_canceled", Message: ""}, status: ItemStatusInterrupted, terminalCode: "caller_canceled"},
+		{name: "request abandoned", event: AssistantMessageInterrupted{TurnID: "turn-1", ItemID: "item-1", Code: InterruptionRequestAbandoned, Message: ""}, status: ItemStatusInterrupted, terminalCode: InterruptionRequestAbandoned},
 	}
 
 	for _, test := range tests {

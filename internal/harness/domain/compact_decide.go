@@ -188,7 +188,7 @@ func decideCompactInterruptAssistantTurn(state CompactSession, command Interrupt
 	if _, err := requireCompactRunningItemForCommand(state, command.SessionID, command.TurnID, command.ItemID); err != nil {
 		return nil, err
 	}
-	if err := validateCommandText(command.Code, "interruption code is required"); err != nil {
+	if err := validateAssistantInterruptionCode(command.Code); err != nil {
 		return nil, err
 	}
 	if err := validateCommandUTF8(command.Message, "interruption message must be valid UTF-8"); err != nil {

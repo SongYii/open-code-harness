@@ -51,6 +51,9 @@ func (service *Service) RunTurn(ctx context.Context, request RunTurnRequest) (re
 	}
 	lease, owner, acquireErr := service.executions.acquire(request.RequestID, request.SessionID, requestDigest)
 	if acquireErr != nil {
+		if errors.Is(acquireErr, errSessionUnresolved) {
+			return RunTurnResult{}, appendOutcomeUnknown(acquireErr)
+		}
 		return RunTurnResult{}, applicationError(CategoryConflict, CodeCommandIdentityMismatch, false, acquireErr)
 	}
 	if !owner {
@@ -118,7 +121,7 @@ func (service *Service) runTurnOwned(ctx context.Context, request RunTurnRequest
 			if retainErr := lease.retainUnknown(executionPhaseAdmissionUnknown); retainErr != nil {
 				return RunTurnResult{}, storeContractViolation(retainErr)
 			}
-			return RunTurnResult{}, err
+			return service.resolveAdmissionUnknown(ctx, request, requestDigest, lease, state, admissionIntent, commandID, emitter)
 		}
 		if IsStoreCode(err, StoreCodeCommandRequestConflict) {
 			lookup, lookupErr := service.store.FindCommandRequest(ctx, FindCommandRequestRequest{RunTurnRequestID: request.RequestID, SessionID: request.SessionID, RequestDigest: requestDigest})
@@ -165,18 +168,17 @@ func (service *Service) runTurnOwned(ctx context.Context, request RunTurnRequest
 	}
 	_, terminalRecords, err := CommitAppendIntent(ctx, service.store, runningState, terminalIntent)
 	if err != nil {
-		if isAppendOutcomeUnknown(err) {
+		if isAppendOutcomeUnknown(err) || ctx.Err() != nil {
 			if retainErr := lease.retainUnknown(executionPhaseTerminalUnknown); retainErr != nil {
 				return cloneRunTurnResult(runningResult), storeContractViolation(retainErr)
 			}
-			return cloneRunTurnResult(runningResult), err
+			return service.resolveTerminalUnknown(ctx, lease, runningState, runningResult, terminalIntent, admissionRecords, emitter)
 		}
-		if ctx.Err() != nil && !isAppendOutcomeUnknown(err) {
-			cleanupBase := context.WithoutCancel(ctx)
-			cleanupCtx, cancel := context.WithTimeout(cleanupBase, service.config.TerminalCommitTimeout)
-			defer cancel()
-			primary := applicationError(CategoryCanceled, "canceled", false, errors.Join(ctx.Err(), err))
-			return service.terminalizeExecutionFailure(cleanupCtx, ctx, runningState, runningResult, commandID, emitter, lease, primary, primary)
+		if IsVersionConflict(err) || IsStoreCode(err, StoreCodeVersionConflict) {
+			if winner, winnerErr := service.reloadDurableWinner(ctx, request, requestDigest); winnerErr == nil && winner.TerminalCommitted {
+				return winner, durableRequestTerminalError(winner)
+			}
+			return cloneRunTurnResult(runningResult), err
 		}
 		return cloneRunTurnResult(runningResult), err
 	}
@@ -231,6 +233,175 @@ func durableRequestTerminalError(result RunTurnResult) error {
 	}
 }
 
+func (service *Service) resolveAdmissionUnknown(ctx context.Context, request RunTurnRequest, requestDigest Digest, lease *executionLease, state domain.CompactSession, intent AppendIntent, commandID domain.CommandID, emitter *engine.Emitter) (RunTurnResult, error) {
+	resolveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), service.config.AppendResolutionTimeout)
+	defer cancel()
+	receipt, err := ResolveAppendIntent(resolveCtx, service.store, intent, service.appendResolutionConfig())
+	if err != nil {
+		return RunTurnResult{}, err
+	}
+	runningState, admissionRecords, err := ApplyCommittedIntent(state, intent, receipt)
+	if err != nil {
+		return RunTurnResult{}, err
+	}
+	admission := intent.Request.Admission
+	if admission == nil {
+		return RunTurnResult{}, storeContractViolation(errors.New("resolved admission missing record"))
+	}
+	runningResult := RunTurnResult{SessionID: request.SessionID, TurnID: admission.TurnID, ItemID: admission.ItemID, Status: domain.TurnStatusRunning, Records: admissionRecords}
+	if ctx.Err() != nil {
+		return service.abandonAdmittedTurn(ctx, lease, runningState, runningResult, commandID, emitter)
+	}
+	if err := lease.resumeAfterResolvedAdmission(); err != nil {
+		return RunTurnResult{}, storeContractViolation(err)
+	}
+	runResult, runErr := service.runner.Run(ctx, engine.RunRequest{ModelRequest: engine.ModelRequest{SessionID: request.SessionID, TurnID: admission.TurnID, ItemID: admission.ItemID, Input: request.Input}, MaxAssistantBytes: service.config.MaxAssistantBytes}, emitter)
+	if runErr != nil {
+		cleanupBase := context.WithoutCancel(ctx)
+		cleanupCtx, cleanupCancel := context.WithTimeout(cleanupBase, service.config.TerminalCommitTimeout)
+		defer cleanupCancel()
+		return service.terminalizeExecutionFailure(cleanupCtx, ctx, runningState, runningResult, commandID, emitter, lease, mapRunError(runErr), runErr)
+	}
+	decided, err := domain.DecideCompact(runningState, domain.CompleteAssistantTurn{SessionID: request.SessionID, TurnID: admission.TurnID, ItemID: admission.ItemID, Text: runResult.Text})
+	if err != nil {
+		return cloneRunTurnResult(runningResult), applicationError(CategoryInternal, "domain_transition_failed", false, err)
+	}
+	if err := lease.setPhase(executionPhaseTerminalInFlight); err != nil {
+		return cloneRunTurnResult(runningResult), storeContractViolation(err)
+	}
+	terminalIntent, err := BuildAppendIntent(service.clock, service.ids, service.authority, request.SessionID, runningState.Version, commandID, nil, decided)
+	if err != nil {
+		return cloneRunTurnResult(runningResult), err
+	}
+	if err := lease.retainIntent(terminalIntent); err != nil {
+		return cloneRunTurnResult(runningResult), storeContractViolation(err)
+	}
+	_, terminalRecords, err := CommitAppendIntent(ctx, service.store, runningState, terminalIntent)
+	if err != nil {
+		if isAppendOutcomeUnknown(err) || ctx.Err() != nil {
+			if retainErr := lease.retainUnknown(executionPhaseTerminalUnknown); retainErr != nil {
+				return cloneRunTurnResult(runningResult), storeContractViolation(retainErr)
+			}
+			return service.resolveTerminalUnknown(ctx, lease, runningState, runningResult, terminalIntent, admissionRecords, emitter)
+		}
+		return cloneRunTurnResult(runningResult), err
+	}
+	completedResult := RunTurnResult{SessionID: request.SessionID, TurnID: admission.TurnID, ItemID: admission.ItemID, Status: domain.TurnStatusCompleted, Text: runResult.Text, TerminalCommitted: true, Records: concatenateRunTurnRecords(admissionRecords, terminalRecords)}
+	if err := emitter.Emit(ctx, engine.RuntimePayload{Type: engine.RuntimeAppendCompleted}); err != nil {
+		return runTurnDeliveryFailure(completedResult, err)
+	}
+	if err := emitter.Emit(ctx, engine.RuntimePayload{Type: engine.RuntimeModelStreamCompleted}); err != nil {
+		return runTurnDeliveryFailure(completedResult, err)
+	}
+	return cloneRunTurnResult(completedResult), nil
+}
+
+func (service *Service) abandonAdmittedTurn(ctx context.Context, lease *executionLease, state domain.CompactSession, runningResult RunTurnResult, commandID domain.CommandID, emitter *engine.Emitter) (RunTurnResult, error) {
+	if err := lease.setPhase(executionPhaseCancelWon); err != nil {
+		return cloneRunTurnResult(runningResult), storeContractViolation(err)
+	}
+	decided, err := domain.DecideCompact(state, domain.InterruptAssistantTurn{
+		SessionID: runningResult.SessionID, TurnID: runningResult.TurnID, ItemID: runningResult.ItemID,
+		Code: domain.InterruptionRequestAbandoned, Message: "",
+	})
+	if err != nil {
+		return cloneRunTurnResult(runningResult), applicationError(CategoryInternal, "domain_transition_failed", false, err)
+	}
+	if err := lease.setPhase(executionPhaseTerminalInFlight); err != nil {
+		return cloneRunTurnResult(runningResult), storeContractViolation(err)
+	}
+	intent, err := BuildAppendIntent(service.clock, service.ids, service.authority, runningResult.SessionID, state.Version, commandID, nil, decided)
+	if err != nil {
+		return cloneRunTurnResult(runningResult), err
+	}
+	if err := lease.retainIntent(intent); err != nil {
+		return cloneRunTurnResult(runningResult), storeContractViolation(err)
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), service.config.TerminalCommitTimeout)
+	defer cancel()
+	_, terminalRecords, err := CommitAppendIntent(cleanupCtx, service.store, state, intent)
+	if err != nil {
+		if isAppendOutcomeUnknown(err) || cleanupCtx.Err() != nil {
+			if retainErr := lease.retainUnknown(executionPhaseTerminalUnknown); retainErr != nil {
+				return cloneRunTurnResult(runningResult), storeContractViolation(retainErr)
+			}
+			return service.resolveTerminalUnknown(ctx, lease, state, runningResult, intent, runningResult.Records, emitter)
+		}
+		return cloneRunTurnResult(runningResult), err
+	}
+	result := runningResult
+	result.Status = domain.TurnStatusInterrupted
+	result.TerminalCommitted = true
+	result.Records = concatenateRunTurnRecords(runningResult.Records, terminalRecords)
+	committed := applicationError(CategoryCanceled, domain.InterruptionRequestAbandoned, true, ctx.Err())
+	if err := lease.publishRetained(result, committed); err != nil {
+		_ = lease.publish(result, committed)
+	}
+	return cloneRunTurnResult(result), committed
+}
+
+func (service *Service) resolveTerminalUnknown(ctx context.Context, lease *executionLease, state domain.CompactSession, runningResult RunTurnResult, intent AppendIntent, prior []domain.RecordedEvent, emitter *engine.Emitter) (RunTurnResult, error) {
+	resolveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), service.config.AppendResolutionTimeout)
+	defer cancel()
+	receipt, err := ResolveAppendIntent(resolveCtx, service.store, intent, service.appendResolutionConfig())
+	if err != nil {
+		return cloneRunTurnResult(runningResult), err
+	}
+	_, terminalRecords, err := ApplyCommittedIntent(state, intent, receipt)
+	if err != nil {
+		return cloneRunTurnResult(runningResult), err
+	}
+	result := runningResult
+	result.Records = concatenateRunTurnRecords(prior, terminalRecords)
+	result.TerminalCommitted = true
+	result.Text = ""
+	if completed, ok := intent.Request.Events[len(intent.Request.Events)-2].Event.(domain.AssistantMessageCompleted); ok {
+		result.Status = domain.TurnStatusCompleted
+		result.Text = completed.Text
+		if err := lease.publishRetained(result, nil); err != nil {
+			_ = lease.publish(result, nil)
+		}
+		if emitErr := emitter.Emit(ctx, engine.RuntimePayload{Type: engine.RuntimeAppendCompleted}); emitErr != nil {
+			return runTurnDeliveryFailure(result, emitErr)
+		}
+		if emitErr := emitter.Emit(ctx, engine.RuntimePayload{Type: engine.RuntimeModelStreamCompleted}); emitErr != nil {
+			return runTurnDeliveryFailure(result, emitErr)
+		}
+		return cloneRunTurnResult(result), nil
+	}
+	if failed, ok := intent.Request.Events[0].Event.(domain.AssistantMessageFailed); ok {
+		result.Status = domain.TurnStatusFailed
+		committed := applicationError(CategoryModel, failed.Code, true, nil)
+		if err := lease.publishRetained(result, committed); err != nil {
+			_ = lease.publish(result, committed)
+		}
+		return cloneRunTurnResult(result), committed
+	}
+	if interrupted, ok := intent.Request.Events[0].Event.(domain.AssistantMessageInterrupted); ok {
+		result.Status = domain.TurnStatusInterrupted
+		committed := applicationError(CategoryCanceled, interrupted.Code, true, nil)
+		if err := lease.publishRetained(result, committed); err != nil {
+			_ = lease.publish(result, committed)
+		}
+		return cloneRunTurnResult(result), committed
+	}
+	return cloneRunTurnResult(result), storeContractViolation(errors.New("resolved terminal intent has no terminal event"))
+}
+
+func (service *Service) reloadDurableWinner(ctx context.Context, request RunTurnRequest, digest Digest) (RunTurnResult, error) {
+	lookup, err := service.store.FindCommandRequest(ctx, FindCommandRequestRequest{RunTurnRequestID: request.RequestID, SessionID: request.SessionID, RequestDigest: digest})
+	if !isNilValue(err) {
+		return RunTurnResult{}, mapV2StoreError(ctx, err, "read")
+	}
+	if err := lookup.Validate(); err != nil {
+		return RunTurnResult{}, storeContractViolation(err)
+	}
+	if lookup.Kind != CommandRequestLookupFound {
+		return RunTurnResult{}, storeContractViolation(errors.New("cas loser could not reload durable winner"))
+	}
+	return service.runTurnFound(ctx, request, digest, *lookup.Record, false)
+}
+
 func isAppendOutcomeUnknown(err error) bool {
 	var applicationErr *Error
 	return errors.As(err, &applicationErr) && applicationErr != nil && applicationErr.Code == "append_outcome_unknown"
@@ -258,7 +429,7 @@ func (service *Service) terminalizeExecutionFailure(cleanupCtx context.Context, 
 			if retainErr := lease.retainUnknown(executionPhaseTerminalUnknown); retainErr != nil {
 				return cloneRunTurnResult(runningResult), storeContractViolation(retainErr)
 			}
-			return cloneRunTurnResult(runningResult), err
+			return service.resolveTerminalUnknown(deliveryCtx, lease, runningState, runningResult, terminalIntent, runningResult.Records, emitter)
 		}
 		if cleanupCtx.Err() != nil && IsCategory(err, CategoryCanceled) {
 			err = applicationError(CategoryPersistence, "append_failed", false, err)
