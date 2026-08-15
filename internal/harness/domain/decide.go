@@ -76,6 +76,7 @@ func modelRequestRecordedFromSpec(turnID TurnID, itemID ItemID, spec ModelReques
 		IncludeUsage:        spec.IncludeUsage,
 		MaxTokensField:      spec.MaxTokensField,
 		Messages:            cloneModelPromptMessages(spec.Messages),
+		Tools:               cloneToolSchemas(spec.Tools),
 	}
 }
 
@@ -99,11 +100,64 @@ func startAssistantMessageEvents(turnID TurnID, itemID ItemID) []UncommittedEven
 	return []UncommittedEvent{{Event: AssistantMessageStarted{TurnID: turnID, ItemID: itemID}}}
 }
 
+func completeAssistantMessageEvents(turnID TurnID, itemID ItemID, text string, toolCalls []ToolCallOffer) []UncommittedEvent {
+	return []UncommittedEvent{{Event: AssistantMessageCompleted{
+		TurnID: turnID, ItemID: itemID, Text: text, ToolCalls: cloneToolCallOffers(toolCalls),
+	}}}
+}
+
 func completeAssistantTurnEvents(turnID TurnID, itemID ItemID, text string) []UncommittedEvent {
 	return []UncommittedEvent{
 		{Event: AssistantMessageCompleted{TurnID: turnID, ItemID: itemID, Text: text}},
 		{Event: TurnCompleted{TurnID: turnID}},
 	}
+}
+
+func startToolCallEvents(event ToolCallStarted) []UncommittedEvent {
+	return []UncommittedEvent{{Event: event}}
+}
+
+func completeToolCallEvents(event ToolCallCompleted) []UncommittedEvent {
+	return []UncommittedEvent{{Event: event}}
+}
+
+func failToolCallEvents(event ToolCallFailed) []UncommittedEvent {
+	return []UncommittedEvent{{Event: event}}
+}
+
+func interruptToolTurnEvents(event ToolCallInterrupted, approval *ApprovalResolved) []UncommittedEvent {
+	events := make([]UncommittedEvent, 0, 3)
+	if approval != nil {
+		events = append(events, UncommittedEvent{Event: *approval})
+	}
+	events = append(events,
+		UncommittedEvent{Event: event},
+		UncommittedEvent{Event: TurnInterrupted{TurnID: event.TurnID, Reason: event.Code}},
+	)
+	return events
+}
+
+func failToolTurnEvents(event ToolCallFailed) []UncommittedEvent {
+	return []UncommittedEvent{
+		{Event: event},
+		{Event: TurnFailed{TurnID: event.TurnID, Code: event.Code, Message: event.Message}},
+	}
+}
+
+func recordPolicyDecisionEvents(event PolicyDecisionRecorded) []UncommittedEvent {
+	return []UncommittedEvent{{Event: event}}
+}
+
+func requestApprovalEvents(event ApprovalRequested) []UncommittedEvent {
+	return []UncommittedEvent{{Event: event}}
+}
+
+func resolveApprovalEvents(event ApprovalResolved) []UncommittedEvent {
+	return []UncommittedEvent{{Event: event}}
+}
+
+func recordModelRequestEvents(event ModelRequestRecorded) []UncommittedEvent {
+	return []UncommittedEvent{{Event: event}}
 }
 
 func failAssistantTurnEvents(turnID TurnID, itemID ItemID, code, message string) []UncommittedEvent {
@@ -157,6 +211,8 @@ func Decide(state Session, command Command) ([]UncommittedEvent, error) {
 		return decideInterruptTurn(state, command)
 	case StartAssistantMessage:
 		return decideStartAssistantMessage(state, command)
+	case CompleteAssistantMessage:
+		return decideCompleteAssistantMessage(state, command)
 	case CompleteAssistantTurn:
 		return decideCompleteAssistantTurn(state, command)
 	case FailAssistantTurn:
@@ -165,6 +221,24 @@ func Decide(state Session, command Command) ([]UncommittedEvent, error) {
 		return decideInterruptAssistantTurn(state, command)
 	case RecordModelUsage:
 		return decideRecordModelUsage(state, command)
+	case RecordModelRequest:
+		return decideRecordModelRequest(state, command)
+	case StartToolCall:
+		return decideStartToolCall(state, command)
+	case CompleteToolCall:
+		return decideCompleteToolCall(state, command)
+	case FailToolCall:
+		return decideFailToolCall(state, command)
+	case InterruptToolTurn:
+		return decideInterruptToolTurn(state, command)
+	case FailToolTurn:
+		return decideFailToolTurn(state, command)
+	case RecordPolicyDecision:
+		return decideRecordPolicyDecision(state, command)
+	case RequestApproval:
+		return decideRequestApproval(state, command)
+	case ResolveApproval:
+		return decideResolveApproval(state, command)
 	case CloseSession:
 		return decideCloseSession(state, command)
 	default:
@@ -251,13 +325,23 @@ func decideStartAssistantTurn(state Session, command StartAssistantTurn) ([]Unco
 }
 
 func decideRecordModelUsage(state Session, command RecordModelUsage) ([]UncommittedEvent, error) {
-	if _, err := requireRunningItemForCommand(state, command.SessionID, command.TurnID, command.ItemID); err != nil {
+	if _, err := requireRunningItemKindForCommand(state, command.SessionID, command.TurnID, command.ItemID, ItemKindAssistantMessage); err != nil {
 		return nil, err
 	}
 	if err := validateModelUsagePayload(command.ModelUsageRecorded, CodeInvalidCommand); err != nil {
 		return nil, err
 	}
 	return recordModelUsageEvents(command.ModelUsageRecorded), nil
+}
+
+func decideRecordModelRequest(state Session, command RecordModelRequest) ([]UncommittedEvent, error) {
+	if _, err := requireRunningItemKindForCommand(state, command.SessionID, command.TurnID, command.ItemID, ItemKindAssistantMessage); err != nil {
+		return nil, err
+	}
+	if err := validateModelRequestPayload(command.ModelRequestRecorded, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	return recordModelRequestEvents(command.ModelRequestRecorded), nil
 }
 
 func validateStartAssistantTurnRequest(command StartAssistantTurn) error {
@@ -329,8 +413,21 @@ func decideStartAssistantMessage(state Session, command StartAssistantMessage) (
 	return startAssistantMessageEvents(command.TurnID, command.ItemID), nil
 }
 
+func decideCompleteAssistantMessage(state Session, command CompleteAssistantMessage) ([]UncommittedEvent, error) {
+	if _, err := requireRunningItemKindForCommand(state, command.SessionID, command.TurnID, command.ItemID, ItemKindAssistantMessage); err != nil {
+		return nil, err
+	}
+	if err := validateCommandUTF8(command.Text, "assistant message text must be valid UTF-8"); err != nil {
+		return nil, err
+	}
+	if err := validateToolCallOffers(command.ToolCalls, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	return completeAssistantMessageEvents(command.TurnID, command.ItemID, command.Text, command.ToolCalls), nil
+}
+
 func decideCompleteAssistantTurn(state Session, command CompleteAssistantTurn) ([]UncommittedEvent, error) {
-	if _, err := requireRunningItemForCommand(state, command.SessionID, command.TurnID, command.ItemID); err != nil {
+	if _, err := requireRunningItemKindForCommand(state, command.SessionID, command.TurnID, command.ItemID, ItemKindAssistantMessage); err != nil {
 		return nil, err
 	}
 	if err := validateCommandUTF8(command.Text, "assistant message text must be valid UTF-8"); err != nil {
@@ -340,7 +437,7 @@ func decideCompleteAssistantTurn(state Session, command CompleteAssistantTurn) (
 }
 
 func decideFailAssistantTurn(state Session, command FailAssistantTurn) ([]UncommittedEvent, error) {
-	if _, err := requireRunningItemForCommand(state, command.SessionID, command.TurnID, command.ItemID); err != nil {
+	if _, err := requireRunningItemKindForCommand(state, command.SessionID, command.TurnID, command.ItemID, ItemKindAssistantMessage); err != nil {
 		return nil, err
 	}
 	if err := validateCommandText(command.Code, "failure code is required"); err != nil {
@@ -353,7 +450,7 @@ func decideFailAssistantTurn(state Session, command FailAssistantTurn) ([]Uncomm
 }
 
 func decideInterruptAssistantTurn(state Session, command InterruptAssistantTurn) ([]UncommittedEvent, error) {
-	if _, err := requireRunningItemForCommand(state, command.SessionID, command.TurnID, command.ItemID); err != nil {
+	if _, err := requireRunningItemKindForCommand(state, command.SessionID, command.TurnID, command.ItemID, ItemKindAssistantMessage); err != nil {
 		return nil, err
 	}
 	if err := validateAssistantInterruptionCode(command.Code); err != nil {
@@ -363,6 +460,142 @@ func decideInterruptAssistantTurn(state Session, command InterruptAssistantTurn)
 		return nil, err
 	}
 	return interruptAssistantTurnEvents(command.TurnID, command.ItemID, command.Code, command.Message), nil
+}
+
+func decideStartToolCall(state Session, command StartToolCall) ([]UncommittedEvent, error) {
+	turn, err := requireRunningTurnForCommand(state, command.SessionID, command.TurnID)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateCommandItemID(command.ItemID); err != nil {
+		return nil, err
+	}
+	if turn.ActiveItem != nil {
+		return nil, domainError(CodeItemAlreadyRunning, "an item is already running")
+	}
+	event := ToolCallStarted{
+		TurnID: command.TurnID, ItemID: command.ItemID, CallID: command.CallID,
+		Name: command.Name, Arguments: command.Arguments, StepIndex: command.StepIndex,
+	}
+	if err := validateToolCallStartedPayload(event, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	return startToolCallEvents(event), nil
+}
+
+func decideCompleteToolCall(state Session, command CompleteToolCall) ([]UncommittedEvent, error) {
+	if _, err := requireRunningItemKindForCommand(state, command.SessionID, command.TurnID, command.ItemID, ItemKindToolCall); err != nil {
+		return nil, err
+	}
+	event := ToolCallCompleted{
+		TurnID: command.TurnID, ItemID: command.ItemID, CallID: command.CallID,
+		Content: command.Content, Truncated: command.Truncated,
+	}
+	if err := validateToolCallCompletedPayload(event, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	return completeToolCallEvents(event), nil
+}
+
+func decideFailToolCall(state Session, command FailToolCall) ([]UncommittedEvent, error) {
+	if _, err := requireRunningItemKindForCommand(state, command.SessionID, command.TurnID, command.ItemID, ItemKindToolCall); err != nil {
+		return nil, err
+	}
+	event := ToolCallFailed{
+		TurnID: command.TurnID, ItemID: command.ItemID, CallID: command.CallID,
+		Code: command.Code, Message: command.Message,
+	}
+	if err := validateToolCallFailedPayload(event, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	return failToolCallEvents(event), nil
+}
+
+func decideInterruptToolTurn(state Session, command InterruptToolTurn) ([]UncommittedEvent, error) {
+	if _, err := requireRunningItemKindForCommand(state, command.SessionID, command.TurnID, command.ItemID, ItemKindToolCall); err != nil {
+		return nil, err
+	}
+	if err := validateAssistantInterruptionCode(command.Code); err != nil {
+		return nil, err
+	}
+	if err := validateCommandUTF8(command.Message, "interruption message must be valid UTF-8"); err != nil {
+		return nil, err
+	}
+	event := ToolCallInterrupted{
+		TurnID: command.TurnID, ItemID: command.ItemID, CallID: command.CallID,
+		Code: command.Code, Message: command.Message,
+	}
+	if err := validateToolCallInterruptedPayload(event, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	var approval *ApprovalResolved
+	if command.ApprovalID != "" {
+		resolved := ApprovalResolved{
+			TurnID: command.TurnID, ItemID: command.ItemID,
+			ApprovalID: command.ApprovalID, Decision: ApprovalDecisionCanceled,
+		}
+		if err := validateApprovalResolvedPayload(resolved, CodeInvalidCommand); err != nil {
+			return nil, err
+		}
+		approval = &resolved
+	}
+	return interruptToolTurnEvents(event, approval), nil
+}
+
+func decideFailToolTurn(state Session, command FailToolTurn) ([]UncommittedEvent, error) {
+	if _, err := requireRunningItemKindForCommand(state, command.SessionID, command.TurnID, command.ItemID, ItemKindToolCall); err != nil {
+		return nil, err
+	}
+	event := ToolCallFailed{
+		TurnID: command.TurnID, ItemID: command.ItemID, CallID: command.CallID,
+		Code: command.Code, Message: command.Message,
+	}
+	if err := validateToolCallFailedPayload(event, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	return failToolTurnEvents(event), nil
+}
+
+func decideRecordPolicyDecision(state Session, command RecordPolicyDecision) ([]UncommittedEvent, error) {
+	if _, err := requireRunningItemKindForCommand(state, command.SessionID, command.TurnID, command.ItemID, ItemKindToolCall); err != nil {
+		return nil, err
+	}
+	event := PolicyDecisionRecorded{
+		TurnID: command.TurnID, ItemID: command.ItemID, CallID: command.CallID,
+		Name: command.Name, Effect: command.Effect, RuleID: command.RuleID, Reason: command.Reason,
+	}
+	if err := validatePolicyDecisionPayload(event, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	return recordPolicyDecisionEvents(event), nil
+}
+
+func decideRequestApproval(state Session, command RequestApproval) ([]UncommittedEvent, error) {
+	if _, err := requireRunningItemKindForCommand(state, command.SessionID, command.TurnID, command.ItemID, ItemKindToolCall); err != nil {
+		return nil, err
+	}
+	event := ApprovalRequested{
+		TurnID: command.TurnID, ItemID: command.ItemID, ApprovalID: command.ApprovalID,
+		CallID: command.CallID, Name: command.Name, Reason: command.Reason,
+	}
+	if err := validateApprovalRequestedPayload(event, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	return requestApprovalEvents(event), nil
+}
+
+func decideResolveApproval(state Session, command ResolveApproval) ([]UncommittedEvent, error) {
+	if _, err := requireRunningItemKindForCommand(state, command.SessionID, command.TurnID, command.ItemID, ItemKindToolCall); err != nil {
+		return nil, err
+	}
+	event := ApprovalResolved{
+		TurnID: command.TurnID, ItemID: command.ItemID,
+		ApprovalID: command.ApprovalID, Decision: command.Decision,
+	}
+	if err := validateApprovalResolvedPayload(event, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	return resolveApprovalEvents(event), nil
 }
 
 func decideCloseSession(state Session, command CloseSession) ([]UncommittedEvent, error) {
@@ -427,6 +660,17 @@ func requireRunningItemForCommand(state Session, sessionID SessionID, turnID Tur
 	return *turn.ActiveItem, nil
 }
 
+func requireRunningItemKindForCommand(state Session, sessionID SessionID, turnID TurnID, itemID ItemID, kind ItemKind) (Item, error) {
+	item, err := requireRunningItemForCommand(state, sessionID, turnID, itemID)
+	if err != nil {
+		return Item{}, err
+	}
+	if item.Kind != kind {
+		return Item{}, domainError(CodeInvalidCommand, "active item kind does not match command")
+	}
+	return item, nil
+}
+
 func validateSession(state Session) error {
 	if _, err := ParseSessionID(string(state.ID)); err != nil || state.Version == 0 || !hasRequiredText(state.WorkspaceRoot) {
 		return domainError(CodeInvalidCommand, "session structure is invalid")
@@ -448,7 +692,7 @@ func validateSession(state Session) error {
 		return nil
 	}
 	item := turn.ActiveItem
-	if item.ID == "" || item.TurnID != turn.ID || item.Kind != ItemKindAssistantMessage || !validStateTimestamp(item.StartedAt) || item.StartedAt.Before(turn.LastTransitionAt) {
+	if item.ID == "" || item.TurnID != turn.ID || !validItemKind(item.Kind) || !validStateTimestamp(item.StartedAt) || item.StartedAt.Before(turn.LastTransitionAt) {
 		return domainError(CodeInvalidCommand, "active item structure is invalid")
 	}
 	if _, err := ParseItemID(string(item.ID)); err != nil {
