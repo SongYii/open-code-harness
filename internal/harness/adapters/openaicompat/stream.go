@@ -10,6 +10,7 @@ import (
 	"math"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
@@ -30,6 +31,8 @@ type chatStream struct {
 	scanner     *bufio.Scanner
 	cancel      context.CancelFunc
 	started     time.Time
+	idleTimeout time.Duration
+	idleExpired atomic.Bool
 	stats       engine.AttemptStats
 	pending     []engine.StreamEvent
 	dataLines   []string
@@ -41,17 +44,18 @@ type chatStream struct {
 	terminalErr error
 }
 
-func newChatStream(ctx context.Context, body io.ReadCloser, cancel context.CancelFunc, started time.Time, requestID string, idle time.Duration, maxLine int) *chatStream {
-	reader := &idleReader{ctx: ctx, r: body, timeout: idle}
-	scanner := bufio.NewScanner(reader)
+func newChatStream(_ context.Context, body io.ReadCloser, cancel context.CancelFunc, started time.Time, requestID string, idle time.Duration, maxLine int) *chatStream {
+	wrapped := &onceCloser{c: body}
+	scanner := bufio.NewScanner(wrapped)
 	scanner.Buffer(make([]byte, 64*1024), maxLine+1)
 	scanner.Split(scanSSELines(maxLine))
 	return &chatStream{
-		body:    body,
-		scanner: scanner,
-		cancel:  cancel,
-		started: started,
-		stats:   engine.AttemptStats{ProviderRequestID: requestID},
+		body:        wrapped,
+		scanner:     scanner,
+		cancel:      cancel,
+		started:     started,
+		idleTimeout: idle,
+		stats:       engine.AttemptStats{ProviderRequestID: requestID},
 	}
 }
 
@@ -83,7 +87,10 @@ func (s *chatStream) Next(ctx context.Context) (engine.StreamEvent, error) {
 		if ev, ok := s.popPending(); ok {
 			return ev, nil
 		}
-		if !s.scanner.Scan() {
+		stopIdle := s.armIdle()
+		scanned := s.scanner.Scan()
+		stopIdle()
+		if !scanned {
 			err := s.finishScan(ctx)
 			if ev, ok := s.popPending(); ok {
 				return ev, nil
@@ -181,6 +188,9 @@ func (s *chatStream) dispatchEvent() error {
 func (s *chatStream) finishScan(ctx context.Context) error {
 	if err := s.dispatchEvent(); err != nil {
 		return err
+	}
+	if s.idleExpired.Load() {
+		return s.mapReadError(ctx, errIdleTimeout)
 	}
 	if err := s.scanner.Err(); err != nil {
 		return s.mapReadError(ctx, err)
@@ -338,11 +348,11 @@ func (s *chatStream) mapReadError(ctx context.Context, err error) *engine.Error 
 	if ctx != nil && ctx.Err() != nil {
 		return canceledError(ctx.Err())
 	}
+	if s.idleExpired.Load() || errors.Is(err, errIdleTimeout) {
+		return streamFailure(engine.CodeModelStream, engine.FailureClassTransient, "provider_transient", httpStatusOK, s.stats.ProviderRequestID, "provider temporarily unavailable")
+	}
 	if s.closed || isCanceled(err) {
 		return canceledError(err)
-	}
-	if errors.Is(err, errIdleTimeout) {
-		return streamFailure(engine.CodeModelStream, engine.FailureClassTransient, "provider_transient", httpStatusOK, s.stats.ProviderRequestID, "provider temporarily unavailable")
 	}
 	if errors.Is(err, errSSELineTooLong) {
 		return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "invalid_stream", httpStatusOK, s.stats.ProviderRequestID, "invalid stream")
@@ -476,40 +486,41 @@ func scanSSELines(max int) bufio.SplitFunc {
 
 const httpStatusOK = 200
 
-type idleReader struct {
-	ctx     context.Context
-	r       io.Reader
-	timeout time.Duration
+func (s *chatStream) armIdle() func() {
+	if s == nil || s.idleTimeout <= 0 {
+		return func() {}
+	}
+	timer := time.AfterFunc(s.idleTimeout, s.expireIdle)
+	return func() { timer.Stop() }
 }
 
-func (r *idleReader) Read(p []byte) (int, error) {
-	if r.timeout <= 0 {
-		return r.r.Read(p)
+func (s *chatStream) expireIdle() {
+	if !s.idleExpired.CompareAndSwap(false, true) {
+		return
 	}
-	type outcome struct {
-		n   int
-		err error
+	if s.cancel != nil {
+		s.cancel()
 	}
-	done := make(chan outcome, 1)
-	go func() {
-		n, err := r.r.Read(p)
-		done <- outcome{n, err}
-	}()
-	timer := time.NewTimer(r.timeout)
-	defer timer.Stop()
-	var cancel <-chan struct{}
-	if r.ctx != nil {
-		cancel = r.ctx.Done()
+	if s.body != nil {
+		_ = s.body.Close()
 	}
-	select {
-	case out := <-done:
-		return out.n, out.err
-	case <-timer.C:
-		return 0, errIdleTimeout
-	case <-cancel:
-		if r.ctx != nil && r.ctx.Err() != nil {
-			return 0, r.ctx.Err()
+}
+
+type onceCloser struct {
+	once sync.Once
+	c    io.ReadCloser
+	err  error
+}
+
+func (c *onceCloser) Read(p []byte) (int, error) {
+	return c.c.Read(p)
+}
+
+func (c *onceCloser) Close() error {
+	c.once.Do(func() {
+		if c.c != nil {
+			c.err = c.c.Close()
 		}
-		return 0, context.Canceled
-	}
+	})
+	return c.err
 }

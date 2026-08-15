@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -34,6 +35,27 @@ type closeTracker struct {
 func (c *closeTracker) Close() error {
 	c.closed.Add(1)
 	return c.ReadCloser.Close()
+}
+
+type stallBody struct {
+	rest   []byte
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (b *stallBody) Read(p []byte) (int, error) {
+	if len(b.rest) > 0 {
+		n := copy(p, b.rest)
+		b.rest = b.rest[n:]
+		return n, nil
+	}
+	<-b.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (b *stallBody) Close() error {
+	b.once.Do(func() { close(b.closed) })
+	return nil
 }
 
 type errAfterReader struct {

@@ -259,6 +259,72 @@ func TestStreamCancelKeepsLatencyAndUsage(t *testing.T) {
 	}
 }
 
+func TestStreamIdleTimeoutIsTransient(t *testing.T) {
+	tests := []struct {
+		name       string
+		writeFirst bool
+	}{
+		{name: "blocked before first byte", writeFirst: false},
+		{name: "blocked after delta", writeFirst: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var closed atomic.Int32
+			transport := &scriptedTransport{roundTrip: func(*http.Request) (*http.Response, error) {
+				body := &stallBody{closed: make(chan struct{})}
+				if test.writeFirst {
+					body.rest = []byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+					Body:       &closeTracker{ReadCloser: body, closed: &closed},
+				}, nil
+			}}
+			cfg := validConfig(transport)
+			cfg.IdleTimeout = 40 * time.Millisecond
+			model := newTestModel(t, cfg)
+			stream, err := model.Stream(context.Background(), modelRequest())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.writeFirst {
+				event, nextErr := stream.Next(context.Background())
+				if nextErr != nil || event.Text != "hi" {
+					t.Fatalf("first Next() = (%#v, %v)", event, nextErr)
+				}
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, nextErr := stream.Next(context.Background())
+				done <- nextErr
+			}()
+			var nextErr error
+			select {
+			case nextErr = <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("Next() did not return after idle timeout")
+			}
+			failure := requireProviderFailure(t, nextErr, engine.CodeModelStream, "provider_transient")
+			if !failure.Retryable {
+				t.Fatal("idle timeout should be retryable")
+			}
+			if errors.Is(nextErr, io.EOF) {
+				t.Fatalf("unwrap chain contains io.EOF: %v", nextErr)
+			}
+			if got := stream.(engine.AttemptObserver).Snapshot().FinishReason; got != "" {
+				t.Fatalf("FinishReason = %q, want empty", got)
+			}
+			if err := stream.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if closed.Load() == 0 {
+				t.Fatal("response body was not closed")
+			}
+		})
+	}
+}
+
 func TestStreamConnectionDropHasNoEOF(t *testing.T) {
 	payload := "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"
 	transport := &scriptedTransport{roundTrip: func(*http.Request) (*http.Response, error) {
