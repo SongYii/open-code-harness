@@ -15,9 +15,15 @@ type RuntimeEventType string
 const (
 	RuntimeModelStreamStarted     RuntimeEventType = "model.stream.started"
 	RuntimeModelTextDelta         RuntimeEventType = "model.text.delta"
+	RuntimeModelToolCall          RuntimeEventType = "model.tool_call"
 	RuntimeModelStreamCompleted   RuntimeEventType = "model.stream.completed"
 	RuntimeModelStreamFailed      RuntimeEventType = "model.stream.failed"
 	RuntimeModelStreamInterrupted RuntimeEventType = "model.stream.interrupted"
+	RuntimeToolExecutionStarted   RuntimeEventType = "tool.execution.started"
+	RuntimeToolExecutionCompleted RuntimeEventType = "tool.execution.completed"
+	RuntimeToolExecutionFailed    RuntimeEventType = "tool.execution.failed"
+	RuntimeApprovalRequested      RuntimeEventType = "approval.requested"
+	RuntimeApprovalResolved       RuntimeEventType = "approval.resolved"
 	RuntimeAppendCompleted        RuntimeEventType = "append.completed"
 )
 
@@ -107,13 +113,22 @@ func validPayload(payload RuntimePayload) bool {
 	switch payload.Type {
 	case RuntimeModelStreamStarted, RuntimeModelStreamCompleted, RuntimeAppendCompleted:
 		return payload.Text == "" && payload.Code == ""
-	case RuntimeModelTextDelta:
+	case RuntimeModelTextDelta, RuntimeModelToolCall:
 		return payload.Text != "" && utf8.ValidString(payload.Text) && payload.Code == ""
 	case RuntimeModelStreamFailed, RuntimeModelStreamInterrupted:
 		return payload.Text == "" && validStableCode(payload.Code)
+	case RuntimeToolExecutionStarted, RuntimeToolExecutionCompleted, RuntimeToolExecutionFailed, RuntimeApprovalRequested, RuntimeApprovalResolved:
+		return validToolRuntimePayload(payload)
 	default:
 		return false
 	}
+}
+
+func validToolRuntimePayload(payload RuntimePayload) bool {
+	if payload.Code == "" {
+		return payload.Text == "" || utf8.ValidString(payload.Text)
+	}
+	return payload.Text == "" && validStableCode(payload.Code)
 }
 
 func validStableCode(code string) bool {

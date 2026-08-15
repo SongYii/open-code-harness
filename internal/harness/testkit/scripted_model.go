@@ -27,6 +27,8 @@ type ScriptedStep struct {
 
 // ScriptedModel is a deterministic Model fixture. Model.Stream is safe for
 // concurrent call recording; every returned stream is independently consumed.
+// Expected ModelRequest DeepEqual includes Messages and Tools (nil = Input-only).
+// Configured steps may emit tool_call events.
 type ScriptedModel struct {
 	mu         sync.Mutex
 	expected   engine.ModelRequest
