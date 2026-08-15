@@ -1,0 +1,3 @@
+data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}],"usage":{"input_tokens":4.0,"output_tokens":1.0,"prompt_cache_hit_tokens":2}}
+
+data: [DONE]

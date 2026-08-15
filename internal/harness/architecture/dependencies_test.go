@@ -32,6 +32,8 @@ func TestClassifyProductionDirectory(t *testing.T) {
 		{name: "application production subpackage", directory: "internal/harness/application/orchestration", want: ownerApplication, inspect: true, hasOwner: true},
 		{name: "memory root", directory: "internal/harness/adapters/memory", want: ownerMemory, inspect: true, hasOwner: true},
 		{name: "memory production subpackage", directory: "internal/harness/adapters/memory/index", want: ownerMemory, inspect: true, hasOwner: true},
+		{name: "openaicompat root", directory: "internal/harness/adapters/openaicompat", want: ownerOpenAICompat, inspect: true, hasOwner: true},
+		{name: "openaicompat production subpackage", directory: "internal/harness/adapters/openaicompat/sse", want: ownerOpenAICompat, inspect: true, hasOwner: true},
 		{name: "scenario test support", directory: "internal/harness/application/enginescenariotest", want: ownerApplication, inspect: false, hasOwner: true},
 		{name: "scenario nested test support", directory: "internal/harness/application/enginescenariotest/internal", want: ownerApplication, inspect: false, hasOwner: true},
 		{name: "similarly named production child", directory: "internal/harness/application/enginescenariotestkit", want: ownerApplication, inspect: true, hasOwner: true},
@@ -69,6 +71,17 @@ func TestForbiddenImport(t *testing.T) {
 		{name: "application may import engine", owner: ownerApplication, importPath: modulePath + "/internal/harness/engine", forbidden: false},
 		{name: "engine may import domain", owner: ownerEngine, importPath: modulePath + "/internal/harness/domain", forbidden: false},
 		{name: "domain may import standard library", owner: ownerDomain, importPath: "time", forbidden: false},
+		{name: "domain cannot import net/http", owner: ownerDomain, importPath: "net/http", forbidden: true},
+		{name: "engine cannot import net/http", owner: ownerEngine, importPath: "net/http", forbidden: true},
+		{name: "application cannot import net/http", owner: ownerApplication, importPath: "net/http", forbidden: true},
+		{name: "application cannot import openaicompat", owner: ownerApplication, importPath: modulePath + "/internal/harness/adapters/openaicompat", forbidden: true},
+		{name: "openaicompat may import net/http", owner: ownerOpenAICompat, importPath: "net/http", forbidden: false},
+		{name: "openaicompat may import os", owner: ownerOpenAICompat, importPath: "os", forbidden: false},
+		{name: "openaicompat may import engine", owner: ownerOpenAICompat, importPath: modulePath + "/internal/harness/engine", forbidden: false},
+		{name: "openaicompat cannot import os/exec", owner: ownerOpenAICompat, importPath: "os/exec", forbidden: true},
+		{name: "openaicompat cannot import application", owner: ownerOpenAICompat, importPath: modulePath + "/internal/harness/application", forbidden: true},
+		{name: "openaicompat cannot import testkit", owner: ownerOpenAICompat, importPath: modulePath + "/internal/harness/testkit", forbidden: true},
+		{name: "openaicompat cannot import memory adapter", owner: ownerOpenAICompat, importPath: modulePath + "/internal/harness/adapters/memory", forbidden: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -155,10 +168,11 @@ const modulePath = "github.com/SongYii/open-code-harness"
 type packageOwner string
 
 const (
-	ownerDomain      packageOwner = "domain"
-	ownerEngine      packageOwner = "engine"
-	ownerApplication packageOwner = "application"
-	ownerMemory      packageOwner = "memory"
+	ownerDomain       packageOwner = "domain"
+	ownerEngine       packageOwner = "engine"
+	ownerApplication  packageOwner = "application"
+	ownerMemory       packageOwner = "memory"
+	ownerOpenAICompat packageOwner = "openaicompat"
 )
 
 var excludedTestSupportDirectories = []string{
@@ -187,6 +201,7 @@ func packageOwnership(directory string) (packageOwner, bool) {
 		{root: "internal/harness/engine", owner: ownerEngine},
 		{root: "internal/harness/application", owner: ownerApplication},
 		{root: "internal/harness/adapters/memory", owner: ownerMemory},
+		{root: "internal/harness/adapters/openaicompat", owner: ownerOpenAICompat},
 	} {
 		if directoryWithin(directory, candidate.root) {
 			return candidate.owner, true
@@ -221,11 +236,19 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/adapters",
 			modulePath+"/internal/harness/testkit",
 		)
+	case ownerOpenAICompat:
+		forbidden = append(forbidden,
+			modulePath+"/internal/harness/application",
+			modulePath+"/internal/harness/testkit",
+		)
 	}
 	for _, prefix := range forbidden {
 		if importPath == prefix || strings.HasPrefix(importPath, prefix+"/") {
 			return "forbidden package dependency"
 		}
+	}
+	if owner == ownerOpenAICompat && otherAdapterImport(importPath) {
+		return "forbidden package dependency"
 	}
 	if owner == ownerDomain || owner == ownerEngine {
 		for _, segment := range []string{"acp", "mcp", "tui", "provider", "providers"} {
@@ -234,13 +257,28 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			}
 		}
 	}
-	if owner == ownerApplication || owner == ownerEngine || owner == ownerMemory {
+	if owner == ownerDomain || owner == ownerApplication || owner == ownerEngine || owner == ownerMemory {
 		switch importPath {
 		case "os", "os/exec", "net", "net/http":
 			return "forbidden host/network dependency"
 		}
 	}
+	if owner == ownerOpenAICompat && importPath == "os/exec" {
+		return "forbidden host/network dependency"
+	}
 	return ""
+}
+
+func otherAdapterImport(importPath string) bool {
+	adaptersRoot := modulePath + "/internal/harness/adapters"
+	selfRoot := adaptersRoot + "/openaicompat"
+	if importPath == adaptersRoot {
+		return true
+	}
+	if !strings.HasPrefix(importPath, adaptersRoot+"/") {
+		return false
+	}
+	return !directoryWithin(importPath, selfRoot)
 }
 
 func hasPathSegment(path, wanted string) bool {

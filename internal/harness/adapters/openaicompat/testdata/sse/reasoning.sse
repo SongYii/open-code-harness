@@ -1,0 +1,5 @@
+data: {"choices":[{"delta":{"content":"Visible","reasoning_content":"secret thought","reasoning":"hidden","reasoning_details":[{"text":"nope"}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
