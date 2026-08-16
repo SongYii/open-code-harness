@@ -65,6 +65,10 @@ test-only production branches for the capabilities it does deliver.
 | Implemented plan | Reading copy | [Engine 纵切实施计划中文阅读版](superpowers/plans/2026-08-12-engine-vertical-slice.zh-CN.md) | Chinese synchronized reading copy of the implemented sequence; see the evidence ledger for completion proof |
 | Implemented plan | Plan | [SQLite canonical EventStore implementation plan](superpowers/plans/2026-08-16-sqlite-canonical-eventstore.md) | Frozen five-task sequence for the Slice 2 adapter; completion claims are backed by the evidence ledger, not checkbox state |
 | Implemented plan | Reading copy | [SQLite 规范 EventStore 实施计划中文阅读版](superpowers/plans/2026-08-16-sqlite-canonical-eventstore.zh-CN.md) | 与 SQLite 规范 EventStore 实施计划完整同步的中文执行阅读版 |
+| Approved | Plan | [JSONL audit replica implementation plan](superpowers/plans/2026-08-16-jsonl-audit-replica.md) | Frozen five-task sequence for the Slice 3 audit chain, exporter, consistent export, and import |
+| Approved | Reading copy | [JSONL 审计副本实施计划中文阅读版](superpowers/plans/2026-08-16-jsonl-audit-replica.zh-CN.md) | 与 JSONL 审计副本实施计划完整同步的中文执行阅读版 |
+| Approved | Plan | [Runtime Host and recovery implementation plan](superpowers/plans/2026-08-16-runtime-host-recovery.md) | Frozen five-task sequence for the Slice 4 host; Tasks 1–3 are independent of Slice 3 |
+| Approved | Reading copy | [Runtime Host 与恢复实施计划中文阅读版](superpowers/plans/2026-08-16-runtime-host-recovery.zh-CN.md) | 与 Runtime Host 与恢复实施计划完整同步的中文执行阅读版 |
 | Complete | Research evidence | [Task 1 Assistant Item architecture gate](research/architecture-gates/2026-08-12-task-1-assistant-item-lifecycle.md) | Official-project comparison and load-bearing amendments required before Task 1 implementation |
 | Complete | Research evidence | [Tasks 3–4 Application/EventStore architecture gate](research/architecture-gates/2026-08-12-tasks-3-4-application-eventstore.md) | Agent-project and EventStoreDB comparison establishing exact CAS, atomicity, replay authority, fault, and adapter contracts |
 | Complete | Reading copy | [Task 3–4 Application/EventStore 架构门中文阅读版](research/architecture-gates/2026-08-12-tasks-3-4-application-eventstore.zh-CN.md) | 与 Task 3–4 架构门同步的中文决策记录 |
@@ -82,6 +86,8 @@ test-only production branches for the capabilities it does deliver.
 | Complete | Reading copy | [SQLite 规范 EventStore 架构门中文阅读版](research/architecture-gates/2026-08-16-sqlite-canonical-eventstore.zh-CN.md) | 与 SQLite 规范 EventStore 架构门完整同步的中文证据记录 |
 | Complete | Research evidence | [Runtime Host and recovery architecture gate](research/architecture-gates/2026-08-16-runtime-host-recovery.md) | Slice 4 re-verification establishing fenced-lease confirmation (Pi), fencing theory (Kleppmann), cold-only repair, and reconcile-before-command ordering |
 | Complete | Reading copy | [Runtime Host 与恢复架构门中文阅读版](research/architecture-gates/2026-08-16-runtime-host-recovery.zh-CN.md) | 与 Runtime Host 与恢复架构门完整同步的中文证据记录 |
+| Complete | Research evidence | [JSONL audit replica architecture gate](research/architecture-gates/2026-08-16-jsonl-audit-replica.md) | Slice 3 re-verification establishing transactional-outbox confirmation, verify-then-publish ordering, digest-always framing, and verified-import boundaries |
+| Complete | Reading copy | [JSONL 审计副本架构门中文阅读版](research/architecture-gates/2026-08-16-jsonl-audit-replica.zh-CN.md) | 与 JSONL 审计副本架构门完整同步的中文证据记录 |
 | Complete | Plan | [Domain implementation plan](superpowers/plans/2026-08-11-domain-events-state-machine.md) | Completed Task 1–8 implementation sequence |
 | Complete | Reading copy | [领域实施计划中文阅读版](superpowers/plans/2026-08-11-domain-events-state-machine.zh-CN.md) | Chinese synchronized reading copy of the completed plan |
 
