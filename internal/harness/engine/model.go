@@ -7,18 +7,34 @@ import (
 )
 
 // ModelRequest is one provider-neutral request for a single assistant item.
+// Empty Messages or Tools means Input-only; the runner does not consult a profile.
 type ModelRequest struct {
 	SessionID domain.SessionID
 	TurnID    domain.TurnID
 	ItemID    domain.ItemID
 	Input     string
+	Messages  []domain.ModelPromptMessage
+	Tools     []domain.ToolSchema
 }
 
 type StreamEventType string
 
 const (
 	StreamEventTextDelta StreamEventType = "text_delta"
+	StreamEventToolCall  StreamEventType = "tool_call"
 	StreamEventCompleted StreamEventType = "completed"
+)
+
+// ToolCall is one assembled model tool invocation. Uniqueness is on ID, not Name.
+type ToolCall struct {
+	ID        string
+	Name      string
+	Arguments string
+}
+
+const (
+	maxToolCallIDBytes        = 128
+	maxToolCallArgumentsBytes = 32 * 1024
 )
 
 type TokenUsage struct {
@@ -34,12 +50,15 @@ type AttemptStats struct {
 	LatencyMs         uint64
 }
 
-// StreamEvent is a provider-neutral model event. Streams emit zero or more
-// non-empty UTF-8 text deltas followed by one completed event.
+// StreamEvent is a provider-neutral model event. Grammar is
+// text_delta* tool_call* completed. The completed event has empty Text
+// and a nil ToolCall; RunResult may still carry both concatenated text
+// and ToolCalls.
 type StreamEvent struct {
-	Type  StreamEventType
-	Text  string
-	Usage *TokenUsage // nil except optionally on completed
+	Type     StreamEventType
+	Text     string
+	Usage    *TokenUsage // nil except optionally on completed
+	ToolCall *ToolCall   // non-nil iff Type == tool_call
 }
 
 // AttemptObserver is optional. HTTP streams report finish, request id, and

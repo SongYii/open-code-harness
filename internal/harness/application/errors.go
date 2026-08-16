@@ -18,11 +18,36 @@ const (
 	CategoryDelivery    ErrorCategory = "delivery"
 	CategoryPersistence ErrorCategory = "persistence"
 	CategoryInternal    ErrorCategory = "internal"
+	// CategoryPolicy is composition/config only. Tool denials are not RunTurn errors.
+	CategoryPolicy ErrorCategory = "policy"
 )
 
 const (
 	CodeCommandIdentityMismatch = "command_identity_mismatch"
 	CodeReconciliationRequired  = "reconciliation_required"
+	CodeStepLimit               = "step_limit"
+	CodeEnvelopeLimit           = "envelope_limit"
+
+	CodePolicyDenied    = "policy_denied"
+	CodeApprovalDenied  = "approval_denied"
+	CodeApprovalTimeout = "approval_timeout"
+	CodeScopeDenied     = "scope_denied"
+	CodeUnknownTool     = "unknown_tool"
+	CodeInvalidArgs     = "invalid_args"
+	CodeToolOutputLimit = "output_limit"
+	CodeExecTimeout     = "exec_timeout"
+)
+
+const (
+	ToolTextPolicyDenied    = "policy denied this tool"
+	ToolTextApprovalDenied  = "approval denied this tool"
+	ToolTextApprovalTimeout = "approval timed out"
+	ToolTextScopeDenied     = "path is outside the workspace"
+	ToolTextUnknownTool     = "unknown tool"
+	ToolTextInvalidArgs     = "invalid tool arguments"
+	ToolTextOutputLimit     = "tool output exceeded the size limit"
+	ToolTextExecTimeout     = "command timed out"
+	TruncationMarker        = "\n[truncated]"
 )
 
 // Error is a stable application-facing failure. Cause remains available for

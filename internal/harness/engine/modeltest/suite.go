@@ -79,6 +79,9 @@ func Run(t *testing.T, factory Factory) {
 		if got[2].Usage != nil {
 			t.Fatalf("scripted completed Usage = %#v, want nil default", got[2].Usage)
 		}
+		if expected.Messages != nil || expected.Tools != nil {
+			t.Fatalf("default contract request Messages/Tools = (%#v, %#v), want nil", expected.Messages, expected.Tools)
+		}
 		if gotCalls := probe.Calls(); !reflect.DeepEqual(gotCalls, []engine.ModelRequest{expected}) {
 			t.Fatalf("Calls() = %#v, want %#v", gotCalls, []engine.ModelRequest{expected})
 		}
@@ -221,9 +224,15 @@ func RunRuntime(t *testing.T) {
 		payloads := []engine.RuntimePayload{
 			{Type: engine.RuntimeModelStreamStarted},
 			{Type: engine.RuntimeModelTextDelta, Text: "你好 🌍"},
+			{Type: engine.RuntimeModelToolCall, Text: "read_file:call-1"},
 			{Type: engine.RuntimeModelStreamCompleted},
 			{Type: engine.RuntimeModelStreamFailed, Code: "model_stream"},
 			{Type: engine.RuntimeModelStreamInterrupted, Code: "canceled"},
+			{Type: engine.RuntimeToolExecutionStarted, Text: "read_file:call-1"},
+			{Type: engine.RuntimeToolExecutionCompleted},
+			{Type: engine.RuntimeToolExecutionFailed, Code: "policy_denied"},
+			{Type: engine.RuntimeApprovalRequested},
+			{Type: engine.RuntimeApprovalResolved, Code: "granted"},
 			{Type: engine.RuntimeAppendCompleted},
 		}
 		for _, payload := range payloads {
@@ -234,10 +243,16 @@ func RunRuntime(t *testing.T) {
 		want := []engine.RuntimeEvent{
 			{Correlation: correlation(), Ordinal: 1, Type: engine.RuntimeModelStreamStarted},
 			{Correlation: correlation(), Ordinal: 2, Type: engine.RuntimeModelTextDelta, Text: "你好 🌍"},
-			{Correlation: correlation(), Ordinal: 3, Type: engine.RuntimeModelStreamCompleted},
-			{Correlation: correlation(), Ordinal: 4, Type: engine.RuntimeModelStreamFailed, Code: "model_stream"},
-			{Correlation: correlation(), Ordinal: 5, Type: engine.RuntimeModelStreamInterrupted, Code: "canceled"},
-			{Correlation: correlation(), Ordinal: 6, Type: engine.RuntimeAppendCompleted},
+			{Correlation: correlation(), Ordinal: 3, Type: engine.RuntimeModelToolCall, Text: "read_file:call-1"},
+			{Correlation: correlation(), Ordinal: 4, Type: engine.RuntimeModelStreamCompleted},
+			{Correlation: correlation(), Ordinal: 5, Type: engine.RuntimeModelStreamFailed, Code: "model_stream"},
+			{Correlation: correlation(), Ordinal: 6, Type: engine.RuntimeModelStreamInterrupted, Code: "canceled"},
+			{Correlation: correlation(), Ordinal: 7, Type: engine.RuntimeToolExecutionStarted, Text: "read_file:call-1"},
+			{Correlation: correlation(), Ordinal: 8, Type: engine.RuntimeToolExecutionCompleted},
+			{Correlation: correlation(), Ordinal: 9, Type: engine.RuntimeToolExecutionFailed, Code: "policy_denied"},
+			{Correlation: correlation(), Ordinal: 10, Type: engine.RuntimeApprovalRequested},
+			{Correlation: correlation(), Ordinal: 11, Type: engine.RuntimeApprovalResolved, Code: "granted"},
+			{Correlation: correlation(), Ordinal: 12, Type: engine.RuntimeAppendCompleted},
 		}
 		if !reflect.DeepEqual(sink.events, want) {
 			t.Fatalf("events = %#v, want %#v", sink.events, want)
@@ -250,7 +265,7 @@ func RunRuntime(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewEmitter() error = %v", err)
 		}
-		invalid := []engine.RuntimePayload{{Type: engine.RuntimeModelStreamStarted, Text: "text"}, {Type: engine.RuntimeModelStreamStarted, Code: "code"}, {Type: engine.RuntimeModelStreamStarted, Text: "text", Code: "code"}, {Type: engine.RuntimeModelStreamCompleted, Text: "text"}, {Type: engine.RuntimeModelStreamCompleted, Code: "code"}, {Type: engine.RuntimeModelStreamCompleted, Text: "text", Code: "code"}, {Type: engine.RuntimeAppendCompleted, Text: "text"}, {Type: engine.RuntimeAppendCompleted, Code: "code"}, {Type: engine.RuntimeAppendCompleted, Text: "text", Code: "code"}, {Type: engine.RuntimeModelTextDelta}, {Type: engine.RuntimeModelTextDelta, Code: "code"}, {Type: engine.RuntimeModelTextDelta, Text: "\xff"}, {Type: engine.RuntimeModelTextDelta, Text: "text", Code: "code"}, {Type: engine.RuntimeModelStreamFailed}, {Type: engine.RuntimeModelStreamFailed, Text: "text"}, {Type: engine.RuntimeModelStreamFailed, Text: "text", Code: "model_stream"}, {Type: engine.RuntimeModelStreamInterrupted}, {Type: engine.RuntimeModelStreamInterrupted, Text: "text"}, {Type: engine.RuntimeModelStreamInterrupted, Text: "text", Code: "canceled"}, {Type: engine.RuntimeEventType("unknown")}}
+		invalid := []engine.RuntimePayload{{Type: engine.RuntimeModelStreamStarted, Text: "text"}, {Type: engine.RuntimeModelStreamStarted, Code: "code"}, {Type: engine.RuntimeModelStreamStarted, Text: "text", Code: "code"}, {Type: engine.RuntimeModelStreamCompleted, Text: "text"}, {Type: engine.RuntimeModelStreamCompleted, Code: "code"}, {Type: engine.RuntimeModelStreamCompleted, Text: "text", Code: "code"}, {Type: engine.RuntimeAppendCompleted, Text: "text"}, {Type: engine.RuntimeAppendCompleted, Code: "code"}, {Type: engine.RuntimeAppendCompleted, Text: "text", Code: "code"}, {Type: engine.RuntimeModelTextDelta}, {Type: engine.RuntimeModelTextDelta, Code: "code"}, {Type: engine.RuntimeModelTextDelta, Text: "\xff"}, {Type: engine.RuntimeModelTextDelta, Text: "text", Code: "code"}, {Type: engine.RuntimeModelToolCall}, {Type: engine.RuntimeModelToolCall, Code: "code"}, {Type: engine.RuntimeModelToolCall, Text: "\xff"}, {Type: engine.RuntimeModelToolCall, Text: "read_file", Code: "code"}, {Type: engine.RuntimeToolExecutionFailed, Text: "read_file", Code: "policy_denied"}, {Type: engine.RuntimeApprovalResolved, Code: "Granted"}, {Type: engine.RuntimeModelStreamFailed}, {Type: engine.RuntimeModelStreamFailed, Text: "text"}, {Type: engine.RuntimeModelStreamFailed, Text: "text", Code: "model_stream"}, {Type: engine.RuntimeModelStreamInterrupted}, {Type: engine.RuntimeModelStreamInterrupted, Text: "text"}, {Type: engine.RuntimeModelStreamInterrupted, Text: "text", Code: "canceled"}, {Type: engine.RuntimeEventType("unknown")}}
 		for _, payload := range invalid {
 			if err := emitter.Emit(context.Background(), payload); !engine.IsCode(err, engine.CodeInvalidRequest) {
 				t.Errorf("Emit(%#v) error = %v, want invalid_request", payload, err)

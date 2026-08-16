@@ -13,15 +13,25 @@ const (
 	CommandInterruptTurn = "turn.interrupt"
 	CommandCloseSession  = "session.close"
 
-	CommandStartAssistantTurn     = "assistant.turn.start"
-	CommandStartAssistantMessage  = "assistant.message.start"
-	CommandCompleteAssistantTurn  = "assistant.turn.complete"
-	CommandFailAssistantTurn      = "assistant.turn.fail"
-	CommandInterruptAssistantTurn = "assistant.turn.interrupt"
-	CommandRecordModelUsage       = "model.usage.record"
-	InterruptionCallerCanceled    = "caller_canceled"
-	InterruptionDeliveryFailed    = "runtime_delivery_failed"
-	InterruptionRequestAbandoned  = "request_abandoned"
+	CommandStartAssistantTurn       = "assistant.turn.start"
+	CommandStartAssistantMessage    = "assistant.message.start"
+	CommandCompleteAssistantMessage = "assistant.message.complete"
+	CommandCompleteAssistantTurn    = "assistant.turn.complete"
+	CommandFailAssistantTurn        = "assistant.turn.fail"
+	CommandInterruptAssistantTurn   = "assistant.turn.interrupt"
+	CommandRecordModelUsage         = "model.usage.record"
+	CommandRecordModelRequest       = "model.request.record"
+	CommandStartToolCall            = "tool.call.start"
+	CommandCompleteToolCall         = "tool.call.complete"
+	CommandFailToolCall             = "tool.call.fail"
+	CommandInterruptToolTurn        = "tool.turn.interrupt"
+	CommandFailToolTurn             = "tool.turn.fail"
+	CommandRecordPolicyDecision     = "policy.decision.record"
+	CommandRequestApproval          = "approval.request"
+	CommandResolveApproval          = "approval.resolve"
+	InterruptionCallerCanceled      = "caller_canceled"
+	InterruptionDeliveryFailed      = "runtime_delivery_failed"
+	InterruptionRequestAbandoned    = "request_abandoned"
 )
 
 type CreateSession struct {
@@ -96,6 +106,7 @@ type ModelRequestSpec struct {
 	IncludeUsage        bool
 	MaxTokensField      string
 	Messages            []ModelPromptMessage
+	Tools               []ToolSchema
 }
 
 type RecordModelUsage struct {
@@ -111,6 +122,17 @@ func (c StartAssistantTurn) TargetSessionID() SessionID { return c.SessionID }
 
 func (StartAssistantMessage) CommandType() string          { return CommandStartAssistantMessage }
 func (c StartAssistantMessage) TargetSessionID() SessionID { return c.SessionID }
+
+type CompleteAssistantMessage struct {
+	SessionID SessionID
+	TurnID    TurnID
+	ItemID    ItemID
+	Text      string
+	ToolCalls []ToolCallOffer
+}
+
+func (CompleteAssistantMessage) CommandType() string          { return CommandCompleteAssistantMessage }
+func (c CompleteAssistantMessage) TargetSessionID() SessionID { return c.SessionID }
 
 type CompleteAssistantTurn struct {
 	SessionID SessionID
@@ -150,3 +172,111 @@ type CloseSession struct {
 
 func (CloseSession) CommandType() string          { return CommandCloseSession }
 func (c CloseSession) TargetSessionID() SessionID { return c.SessionID }
+
+type RecordModelRequest struct {
+	SessionID SessionID
+	ModelRequestRecorded
+}
+
+func (RecordModelRequest) CommandType() string          { return CommandRecordModelRequest }
+func (c RecordModelRequest) TargetSessionID() SessionID { return c.SessionID }
+
+type StartToolCall struct {
+	SessionID SessionID
+	TurnID    TurnID
+	ItemID    ItemID
+	CallID    string
+	Name      string
+	Arguments string
+	StepIndex uint32
+}
+
+func (StartToolCall) CommandType() string          { return CommandStartToolCall }
+func (c StartToolCall) TargetSessionID() SessionID { return c.SessionID }
+
+type CompleteToolCall struct {
+	SessionID SessionID
+	TurnID    TurnID
+	ItemID    ItemID
+	CallID    string
+	Content   string
+	Truncated bool
+}
+
+func (CompleteToolCall) CommandType() string          { return CommandCompleteToolCall }
+func (c CompleteToolCall) TargetSessionID() SessionID { return c.SessionID }
+
+type FailToolCall struct {
+	SessionID SessionID
+	TurnID    TurnID
+	ItemID    ItemID
+	CallID    string
+	Code      string
+	Message   string
+}
+
+func (FailToolCall) CommandType() string          { return CommandFailToolCall }
+func (c FailToolCall) TargetSessionID() SessionID { return c.SessionID }
+
+type InterruptToolTurn struct {
+	SessionID  SessionID
+	TurnID     TurnID
+	ItemID     ItemID
+	CallID     string
+	Code       string
+	Message    string
+	ApprovalID ApprovalID
+}
+
+func (InterruptToolTurn) CommandType() string          { return CommandInterruptToolTurn }
+func (c InterruptToolTurn) TargetSessionID() SessionID { return c.SessionID }
+
+type FailToolTurn struct {
+	SessionID SessionID
+	TurnID    TurnID
+	ItemID    ItemID
+	CallID    string
+	Code      string
+	Message   string
+}
+
+func (FailToolTurn) CommandType() string          { return CommandFailToolTurn }
+func (c FailToolTurn) TargetSessionID() SessionID { return c.SessionID }
+
+type RecordPolicyDecision struct {
+	SessionID SessionID
+	TurnID    TurnID
+	ItemID    ItemID
+	CallID    string
+	Name      string
+	Effect    string
+	RuleID    string
+	Reason    string
+}
+
+func (RecordPolicyDecision) CommandType() string          { return CommandRecordPolicyDecision }
+func (c RecordPolicyDecision) TargetSessionID() SessionID { return c.SessionID }
+
+type RequestApproval struct {
+	SessionID  SessionID
+	TurnID     TurnID
+	ItemID     ItemID
+	ApprovalID ApprovalID
+	CallID     string
+	Name       string
+	Reason     string
+}
+
+func (RequestApproval) CommandType() string          { return CommandRequestApproval }
+func (c RequestApproval) TargetSessionID() SessionID { return c.SessionID }
+
+type ResolveApproval struct {
+	SessionID  SessionID
+	TurnID     TurnID
+	ItemID     ItemID
+	ApprovalID ApprovalID
+	Decision   string
+}
+
+func (ResolveApproval) CommandType() string          { return CommandResolveApproval }
+func (c ResolveApproval) TargetSessionID() SessionID { return c.SessionID }

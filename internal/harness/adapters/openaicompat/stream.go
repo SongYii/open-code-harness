@@ -8,10 +8,12 @@ import (
 	"errors"
 	"io"
 	"math"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
 )
@@ -24,6 +26,14 @@ var (
 	errSSELineTooLong = errors.New("sse line too long")
 	errInvalidUsage   = errors.New("invalid usage")
 )
+
+const maxAssembledArgumentsBytes = 32 << 10
+
+type assembledCall struct {
+	id        string
+	name      string
+	arguments string
+}
 
 type chatStream struct {
 	mu          sync.Mutex
@@ -42,9 +52,12 @@ type chatStream struct {
 	closed      bool
 	done        bool
 	terminalErr error
+	nativeTools engine.CapabilityTriState
+	content     []string
+	calls       map[int]*assembledCall
 }
 
-func newChatStream(_ context.Context, body io.ReadCloser, cancel context.CancelFunc, started time.Time, requestID string, idle time.Duration, maxLine int) *chatStream {
+func newChatStream(_ context.Context, body io.ReadCloser, cancel context.CancelFunc, started time.Time, requestID string, idle time.Duration, maxLine int, nativeTools engine.CapabilityTriState) *chatStream {
 	wrapped := &onceCloser{c: body}
 	scanner := bufio.NewScanner(wrapped)
 	scanner.Buffer(make([]byte, 64*1024), maxLine+1)
@@ -56,6 +69,7 @@ func newChatStream(_ context.Context, body io.ReadCloser, cancel context.CancelF
 		started:     started,
 		idleTimeout: idle,
 		stats:       engine.AttemptStats{ProviderRequestID: requestID},
+		nativeTools: nativeTools,
 	}
 }
 
@@ -203,6 +217,9 @@ func (s *chatStream) finishStream() error {
 	if s.completed {
 		return nil
 	}
+	if s.assemblesTools() {
+		return s.emitAssembled()
+	}
 	if !s.sawText {
 		return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "empty_response", httpStatusOK, s.stats.ProviderRequestID, "provider returned an empty completion")
 	}
@@ -212,6 +229,10 @@ func (s *chatStream) finishStream() error {
 	}
 	s.emitCompleted(reason)
 	return nil
+}
+
+func (s *chatStream) assemblesTools() bool {
+	return s != nil && nativeToolsEnabled(engine.CapabilityProfile{NativeTools: s.nativeTools})
 }
 
 func (s *chatStream) consumePayload(payload string) error {
@@ -259,16 +280,16 @@ func (s *chatStream) consumeChoice(choice map[string]any) error {
 		}
 	}
 	if message, ok := choice["message"].(map[string]any); ok {
-		if hasToolCalls(message["tool_calls"]) {
-			return capabilityMismatch(s.stats.ProviderRequestID)
+		if err := s.consumeToolCallsField(message["tool_calls"]); err != nil {
+			return err
 		}
 	}
 	return s.consumeFinish(choice["finish_reason"])
 }
 
 func (s *chatStream) consumeDelta(delta map[string]any) error {
-	if hasToolCalls(delta["tool_calls"]) {
-		return capabilityMismatch(s.stats.ProviderRequestID)
+	if err := s.consumeToolCallsField(delta["tool_calls"]); err != nil {
+		return err
 	}
 	raw, ok := delta["content"]
 	if !ok || raw == nil {
@@ -282,8 +303,25 @@ func (s *chatStream) consumeDelta(delta map[string]any) error {
 		return nil
 	}
 	s.sawText = true
+	if s.assemblesTools() {
+		s.content = append(s.content, text)
+		return nil
+	}
 	s.pending = append(s.pending, engine.StreamEvent{Type: engine.StreamEventTextDelta, Text: text})
 	return nil
+}
+
+func (s *chatStream) consumeToolCallsField(raw any) error {
+	if raw == nil {
+		return nil
+	}
+	if !s.assemblesTools() {
+		if hasToolCalls(raw) {
+			return capabilityMismatch(s.stats.ProviderRequestID)
+		}
+		return nil
+	}
+	return s.consumeToolCalls(raw)
 }
 
 func (s *chatStream) consumeFinish(raw any) error {
@@ -307,8 +345,12 @@ func (s *chatStream) consumeFinish(raw any) error {
 		s.stats.FinishReason = ""
 		return streamFailure(engine.CodeModelStream, engine.FailureClassPermanent, "provider_permanent", httpStatusOK, s.stats.ProviderRequestID, "provider rejected the request")
 	case "tool_calls":
-		s.stats.FinishReason = ""
-		return capabilityMismatch(s.stats.ProviderRequestID)
+		if !s.assemblesTools() {
+			s.stats.FinishReason = ""
+			return capabilityMismatch(s.stats.ProviderRequestID)
+		}
+		s.finish = "tool_calls"
+		return nil
 	default:
 		if s.finish == "" {
 			s.finish = "unknown"
@@ -340,6 +382,167 @@ func (s *chatStream) emitCompleted(reason string) {
 		Type:  engine.StreamEventCompleted,
 		Usage: copyUsage(s.stats.Usage),
 	})
+}
+
+func (s *chatStream) consumeToolCalls(raw any) error {
+	items, ok := raw.([]any)
+	if !ok {
+		return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "invalid_stream", httpStatusOK, s.stats.ProviderRequestID, "invalid stream")
+	}
+	for _, item := range items {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "invalid_stream", httpStatusOK, s.stats.ProviderRequestID, "invalid stream")
+		}
+		if err := s.consumeAssembledCall(obj); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *chatStream) consumeAssembledCall(obj map[string]any) error {
+	rawIndex, present := obj["index"]
+	if !present || rawIndex == nil {
+		return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "invalid_stream", httpStatusOK, s.stats.ProviderRequestID, "invalid stream")
+	}
+	index, ok := asCallIndex(rawIndex)
+	if !ok {
+		return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "invalid_stream", httpStatusOK, s.stats.ProviderRequestID, "invalid stream")
+	}
+	if s.calls == nil {
+		s.calls = make(map[int]*assembledCall)
+	}
+	call := s.calls[index]
+	if call == nil {
+		call = &assembledCall{}
+		s.calls[index] = call
+	}
+	if rawID, exists := obj["id"]; exists && rawID != nil {
+		id, ok := rawID.(string)
+		if !ok {
+			return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "invalid_stream", httpStatusOK, s.stats.ProviderRequestID, "invalid stream")
+		}
+		if id != "" {
+			if call.id != "" && call.id != id {
+				return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "invalid_stream", httpStatusOK, s.stats.ProviderRequestID, "invalid stream")
+			}
+			call.id = id
+		}
+	}
+	rawFn, exists := obj["function"]
+	if !exists || rawFn == nil {
+		return nil
+	}
+	fn, ok := rawFn.(map[string]any)
+	if !ok {
+		return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "invalid_stream", httpStatusOK, s.stats.ProviderRequestID, "invalid stream")
+	}
+	if rawName, hasName := fn["name"]; hasName && rawName != nil {
+		name, ok := rawName.(string)
+		if !ok {
+			return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "invalid_stream", httpStatusOK, s.stats.ProviderRequestID, "invalid stream")
+		}
+		if name != "" {
+			if call.name != "" && call.name != name {
+				return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "invalid_stream", httpStatusOK, s.stats.ProviderRequestID, "invalid stream")
+			}
+			call.name = name
+		}
+	}
+	if rawArgs, hasArgs := fn["arguments"]; hasArgs && rawArgs != nil {
+		args, ok := rawArgs.(string)
+		if !ok {
+			return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "invalid_stream", httpStatusOK, s.stats.ProviderRequestID, "invalid stream")
+		}
+		if len(call.arguments)+len(args) > maxAssembledArgumentsBytes {
+			return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "invalid_stream", httpStatusOK, s.stats.ProviderRequestID, "invalid stream")
+		}
+		call.arguments += args
+	}
+	return nil
+}
+
+func (s *chatStream) emitAssembled() error {
+	if len(s.calls) > 0 && s.finish != "tool_calls" {
+		return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "invalid_stream", httpStatusOK, s.stats.ProviderRequestID, "invalid stream")
+	}
+	if s.finish == "tool_calls" && len(s.calls) == 0 {
+		return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "invalid_stream", httpStatusOK, s.stats.ProviderRequestID, "invalid stream")
+	}
+	if len(s.content) == 0 && len(s.calls) == 0 {
+		return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "empty_response", httpStatusOK, s.stats.ProviderRequestID, "provider returned an empty completion")
+	}
+	for _, text := range s.content {
+		s.pending = append(s.pending, engine.StreamEvent{Type: engine.StreamEventTextDelta, Text: text})
+	}
+	if len(s.calls) > 0 {
+		if err := s.emitAssembledCalls(); err != nil {
+			s.pending = nil
+			return err
+		}
+		s.emitCompleted("tool_calls")
+		return nil
+	}
+	reason := s.finish
+	if reason == "" {
+		reason = "unknown"
+	}
+	s.emitCompleted(reason)
+	return nil
+}
+
+func (s *chatStream) emitAssembledCalls() error {
+	indices := make([]int, 0, len(s.calls))
+	for index := range s.calls {
+		indices = append(indices, index)
+	}
+	sort.Ints(indices)
+	if indices[0] != 0 || indices[len(indices)-1] != len(indices)-1 {
+		return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "invalid_stream", httpStatusOK, s.stats.ProviderRequestID, "invalid stream")
+	}
+	seen := make(map[string]struct{}, len(indices))
+	for _, index := range indices {
+		call := s.calls[index]
+		if call == nil || strings.TrimSpace(call.id) == "" || strings.TrimSpace(call.name) == "" {
+			return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "invalid_stream", httpStatusOK, s.stats.ProviderRequestID, "invalid stream")
+		}
+		if !utf8.ValidString(call.id) || !utf8.ValidString(call.name) {
+			return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "invalid_stream", httpStatusOK, s.stats.ProviderRequestID, "invalid stream")
+		}
+		args := call.arguments
+		if args == "" {
+			args = "{}"
+		}
+		if !utf8.ValidString(args) || len(args) > maxAssembledArgumentsBytes {
+			return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "invalid_stream", httpStatusOK, s.stats.ProviderRequestID, "invalid stream")
+		}
+		if _, exists := seen[call.id]; exists {
+			return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "invalid_stream", httpStatusOK, s.stats.ProviderRequestID, "invalid stream")
+		}
+		seen[call.id] = struct{}{}
+		s.pending = append(s.pending, engine.StreamEvent{
+			Type: engine.StreamEventToolCall,
+			ToolCall: &engine.ToolCall{
+				ID:        call.id,
+				Name:      call.name,
+				Arguments: args,
+			},
+		})
+	}
+	return nil
+}
+
+func asCallIndex(raw any) (int, bool) {
+	switch value := raw.(type) {
+	case float64:
+		if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value != math.Trunc(value) || value > float64(math.MaxInt32) {
+			return 0, false
+		}
+		return int(value), true
+	default:
+		return 0, false
+	}
 }
 
 func (s *chatStream) mapReadError(ctx context.Context, err error) *engine.Error {
@@ -383,10 +586,6 @@ func hasToolCalls(raw any) bool {
 	default:
 		return true
 	}
-}
-
-func capabilityMismatch(requestID string) *engine.Error {
-	return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "capability_mismatch", httpStatusOK, requestID, "provider returned an unsupported capability")
 }
 
 func mapUsage(obj map[string]any) (*engine.TokenUsage, error) {

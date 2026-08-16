@@ -199,6 +199,77 @@ func TestExecutionRegistryAllowsRetainedTerminalUnknownOnlyFromTerminalAppend(t 
 	owner.release()
 }
 
+func TestExecutionRegistryStepAppendMayReturnToRunning(t *testing.T) {
+	registry := newExecutionRegistry()
+	owner, _, err := registry.acquire("request-step", "session-1", Digest{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.setPhase(executionPhaseRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.setPhase(executionPhaseStepAppendInFlight); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.setPhase(executionPhaseRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.retainIntent(AppendIntent{Request: AppendRequest{AppendID: "append-1", SessionID: "session-1", CommandID: "command-1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.setPhase(executionPhaseStepAppendInFlight); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.retainUnknown(executionPhaseStepAppendUnknown); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.setPhase(executionPhaseTerminalInFlight); err == nil {
+		t.Fatal("accepted step_append_unknown → terminal_append_in_flight")
+	}
+	if err := owner.resumeAfterResolvedStepAppend(); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, ok := registry.snapshot("request-step")
+	if !ok || snapshot.Phase != executionPhaseRunning || snapshot.Retained || snapshot.Terminal {
+		t.Fatalf("snapshot=%#v present=%t", snapshot, ok)
+	}
+	if _, _, err := registry.acquire("request-other", "session-1", Digest{2}); err != nil {
+		t.Fatalf("resolved step append still blocked session: %v", err)
+	}
+	owner.release()
+}
+
+func TestExecutionRegistryRetainsStepAppendUnknown(t *testing.T) {
+	registry := newExecutionRegistry()
+	owner, _, err := registry.acquire("request-step-unknown", "session-1", Digest{4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.setPhase(executionPhaseRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.retainIntent(AppendIntent{Request: AppendRequest{AppendID: "append-1", SessionID: "session-1", CommandID: "command-1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.setPhase(executionPhaseStepAppendInFlight); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.retainUnknown(executionPhaseStepAppendUnknown); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := registry.acquire("request-other", "session-1", Digest{5}); !errors.Is(err, errSessionUnresolved) {
+		t.Fatalf("second admission = %v", err)
+	}
+	owner.release()
+	snapshot, ok := registry.snapshot("request-step-unknown")
+	if !ok || snapshot.Phase != executionPhaseStepAppendUnknown || !snapshot.Retained {
+		t.Fatalf("snapshot=%#v present=%t", snapshot, ok)
+	}
+	if _, attached := registry.attachExisting("request-step-unknown", "session-1", Digest{4}); attached {
+		t.Fatal("attachExisting treated retained unknown as a local owner")
+	}
+}
+
 func TestExecutionRegistryThirtyTwoLeasesObserveOneLiveOwner(t *testing.T) {
 	registry := newExecutionRegistry()
 	start := make(chan struct{})

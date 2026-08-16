@@ -24,13 +24,24 @@ absent --assistant.message.started--> running --assistant.message.completed---->
                                             `--assistant.message.interrupted----> interrupted
 ```
 
+```text
+absent --tool.call.started--> running --tool.call.completed----> completed
+                                    |--tool.call.failed---------> failed
+                                    `--tool.call.interrupted----> interrupted
+```
+
 Sessions have only `active` and `closed` states. Turns have only `running`,
 `completed`, `failed`, and `interrupted` states. Terminal turn transitions are
-mutually exclusive: a terminal turn cannot transition again. The initial Item
-kind is `assistant_message`; its lifecycle has the same one-way terminal rule.
-A running assistant Item has no durable partial text. A completed Item contains
-the exact final UTF-8 text, while failed and interrupted Items contain a stable
-machine-readable code and an optional safe display message.
+mutually exclusive: a terminal turn cannot transition again. Write-side Item
+kinds are `assistant_message` and `tool_call`. Approval is not a third Item
+kind: `approval.requested` and `approval.resolved` are version-only facts on
+the running tool Item. A running assistant Item has no durable partial text. A
+completed assistant Item contains the exact final UTF-8 text and may carry
+optional `toolCalls`. Failed and interrupted Items contain a stable
+machine-readable code and an optional safe display message. `validateSession`
+accepts `assistant_message | tool_call`; a crash-left running tool Item makes a
+different Request ID fail with `item_already_running` / `turn_already_running`,
+not an invalid session structure.
 
 ## Stable Catalog
 
@@ -45,9 +56,20 @@ machine-readable code and an optional safe display message.
 | `turn.interrupt` | `InterruptTurn` | `turn.interrupted` |
 | `assistant.turn.start` | `StartAssistantTurn` | `turn.started`, `assistant.message.started` |
 | `assistant.message.start` | `StartAssistantMessage` | `assistant.message.started` |
+| `assistant.message.complete` | `CompleteAssistantMessage` | `assistant.message.completed` |
 | `assistant.turn.complete` | `CompleteAssistantTurn` | `assistant.message.completed`, `turn.completed` |
 | `assistant.turn.fail` | `FailAssistantTurn` | `assistant.message.failed`, `turn.failed` |
 | `assistant.turn.interrupt` | `InterruptAssistantTurn` | `assistant.message.interrupted`, `turn.interrupted` |
+| `model.request.record` | `RecordModelRequest` | `model.request.recorded` |
+| `model.usage.record` | `RecordModelUsage` | `model.usage.recorded` |
+| `tool.call.start` | `StartToolCall` | `tool.call.started` |
+| `tool.call.complete` | `CompleteToolCall` | `tool.call.completed` |
+| `tool.call.fail` | `FailToolCall` | `tool.call.failed` |
+| `tool.turn.interrupt` | `InterruptToolTurn` | optional `approval.resolved`, `tool.call.interrupted`, `turn.interrupted` |
+| `tool.turn.fail` | `FailToolTurn` | `tool.call.failed`, `turn.failed` |
+| `policy.decision.record` | `RecordPolicyDecision` | `policy.decision.recorded` |
+| `approval.request` | `RequestApproval` | `approval.requested` |
+| `approval.resolve` | `ResolveApproval` | `approval.resolved` |
 | `session.close` | `CloseSession` | `session.closed` |
 
 The four `*AssistantTurn` commands are composite use-case commands.
@@ -63,13 +85,25 @@ representable lifecycle timestamps and an exact replay-possible Version:
 state, plus `session.closed` when closed. A structurally impossible in-memory
 state is rejected before Application allocates run IDs.
 
-The three terminal composite commands terminalize the active assistant Item
-and its owning Turn as one ordered decision batch. `InterruptAssistantTurn`
+`CompleteAssistantMessage` is item-only: it emits `assistant.message.completed`
+(optionally with `toolCalls`) and leaves the Turn running so a tool Item or a
+later assistant Step can start. `CompleteAssistantTurn` remains the final-Step
+composite and still emits item completed then `turn.completed`.
+
+The assistant terminal composites terminalize the active assistant Item and
+its owning Turn as one ordered decision batch. `InterruptAssistantTurn`
 copies its stable `Code` into
 `TurnInterrupted.Reason`; the existing Turn event encoding therefore remains
-schema-compatible. The implemented interruption codes are `caller_canceled`,
-`runtime_delivery_failed`, and `request_abandoned`. `process_crash` remains
-reserved for later crash-recovery work.
+schema-compatible. `InterruptToolTurn` / `FailToolTurn` are the matching
+composites when the active Item is `tool_call`. Optional `ApprovalID` on
+`InterruptToolTurn` prepends `approval.resolved{decision=canceled}`. There is
+no standalone `InterruptToolCall`. The implemented interruption codes are
+`caller_canceled`, `runtime_delivery_failed`, and `request_abandoned`.
+`process_crash` remains reserved for later crash-recovery work.
+
+Bare `CompleteTurn` / `FailTurn` / `InterruptTurn` still reject a running Item
+with `item_already_running`. Application must not Decide those commands while
+`ActiveItem != nil`.
 
 `StartTurn` and `StartAssistantMessage` remain available as lower-level domain
 compatibility commands. Application orchestration must not use them as two
@@ -87,7 +121,24 @@ atomic `StartAssistantTurn` batch.
 - `assistant.message.completed`
 - `assistant.message.failed`
 - `assistant.message.interrupted`
+- `model.request.recorded`
+- `model.usage.recorded`
+- `tool.call.started`
+- `tool.call.completed`
+- `tool.call.failed`
+- `tool.call.interrupted`
+- `policy.decision.recorded`
+- `approval.requested`
+- `approval.resolved`
 - `session.closed`
+
+`assistant.message.completed` may include optional `toolCalls`.
+`model.request.recorded` may include optional `tools`. Each `messages[]`
+object requires `role` and `text` and may include `toolCalls`, `toolCallID`,
+and `name`. The codec uses an allowed-versus-required key split: old fixtures
+without those extras still decode; documented extras decode; any other key
+fails. `encoding/json` `omitempty` is not the compatibility story.
+`model.usage.recorded.finishReason` is the closed set `stop|length|unknown|tool_calls|""`.
 
 ### Error codes
 
@@ -126,9 +177,20 @@ than matching error-message prose.
   applying or replaying a Turn terminal event rejects it as `invalid_event`.
 - A successful `CompleteAssistantTurn`, `FailAssistantTurn`, or
   `InterruptAssistantTurn` decision returns exactly two events, with the Item
-  terminal fact first and the Turn terminal fact second. The caller must append
-  that whole batch atomically. Partial application is not a valid domain
-  history.
+  terminal fact first and the Turn terminal fact second. `InterruptToolTurn`
+  returns optional `approval.resolved` then `tool.call.interrupted` then
+  `turn.interrupted`. `FailToolTurn` returns `tool.call.failed` then
+  `turn.failed`. The caller must append that whole batch atomically. Partial
+  application is not a valid domain history.
+- `CompleteAssistantMessage`, `CompleteToolCall`, and `FailToolCall` are
+  item-only. After a tool-bearing assistant complete or a continuing tool
+  terminal, compact state is a running Turn with no active Item.
+- `policy.decision.recorded`, `approval.requested`, `approval.resolved`,
+  `model.request.recorded`, and `model.usage.recorded` are version-only on the
+  running Item (`tool_call` for policy/approval; `assistant_message` for model
+  request/usage).
+- Memory `buildBatch` and EventStore identity indexes treat `tool.call.started`
+  like `assistant.message.started` for historical ItemID uniqueness.
 - A successful `StartAssistantTurn` decision returns `turn.started` followed
   by `assistant.message.started`. Both facts share one append, command ID, and
   occurrence time; partial durable admission is not a valid Application
@@ -166,7 +228,9 @@ authority.
 ACP v1 remains the planned public client protocol, but these internal events
 are not ACP messages and are not a public compatibility promise before v1.0.
 The package imports no ACP or MCP types and has no model SDK, filesystem,
-clock, randomness, logging, storage, provider adapter, TUI, tool, approval,
-persistence-backend, or OpenTelemetry dependency. Runtime token deltas remain
-transient signals and are intentionally absent from durable domain facts.
-Those capabilities remain outside this milestone.
+clock, randomness, logging, storage, provider adapter, TUI, tool executor,
+approval UI, persistence-backend, or OpenTelemetry dependency. Domain records
+tool, policy, and approval facts; it does not execute tools or decide policy.
+Runtime token deltas remain transient signals and are intentionally absent
+from durable domain facts. The Application Step loop is outside this
+milestone.

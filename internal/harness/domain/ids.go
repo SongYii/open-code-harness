@@ -12,6 +12,7 @@ type CommandID string
 type AppendID string
 type RunTurnRequestID string
 type EventID string
+type ApprovalID string
 
 func ParseSessionID(value string) (SessionID, error) {
 	if err := validateID(value); err != nil {
@@ -60,6 +61,13 @@ func ParseEventID(value string) (EventID, error) {
 		return "", err
 	}
 	return EventID(value), nil
+}
+
+func ParseApprovalID(value string) (ApprovalID, error) {
+	if err := validateID(value); err != nil {
+		return "", err
+	}
+	return ApprovalID(value), nil
 }
 
 func validateID(value string) error {

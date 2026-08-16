@@ -301,6 +301,10 @@ func startupFailure(class engine.FailureClass, code string, status int, requestI
 	}
 }
 
+func capabilityMismatch(requestID string) *engine.Error {
+	return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "capability_mismatch", http.StatusOK, requestID, "provider returned an unsupported capability")
+}
+
 func streamFailure(engineCode engine.ErrorCode, class engine.FailureClass, code string, status int, requestID, message string) *engine.Error {
 	return &engine.Error{
 		Code: engineCode,

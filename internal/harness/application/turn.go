@@ -103,7 +103,11 @@ func (service *Service) runTurnOwned(ctx context.Context, request RunTurnRequest
 	if err != nil {
 		return RunTurnResult{}, applicationError(CategoryInternal, "emitter_construction_failed", false, err)
 	}
-	decided, err := domain.Decide(state, domain.StartAssistantTurn{SessionID: request.SessionID, TurnID: turnID, ItemID: itemID, Input: request.Input, Request: modelRequestSpec(service.config.RequestIdentity, request.Input)})
+	var schemas []domain.ToolSchema
+	if service.catalogEnabled() {
+		schemas = service.catalog.Schemas()
+	}
+	decided, err := domain.Decide(state, domain.StartAssistantTurn{SessionID: request.SessionID, TurnID: turnID, ItemID: itemID, Input: request.Input, Request: modelRequestSpec(service.config.RequestIdentity, request.Input, schemas)})
 	if err != nil {
 		return RunTurnResult{}, applicationError(CategoryValidation, "domain_rejected", false, err)
 	}
@@ -145,51 +149,7 @@ func (service *Service) runTurnOwned(ctx context.Context, request RunTurnRequest
 		return RunTurnResult{}, storeContractViolation(err)
 	}
 	runningResult := RunTurnResult{SessionID: request.SessionID, TurnID: turnID, ItemID: itemID, Status: domain.TurnStatusRunning, Records: admissionRecords}
-	runResult, err := service.runner.Run(ctx, engine.RunRequest{ModelRequest: engine.ModelRequest{SessionID: request.SessionID, TurnID: turnID, ItemID: itemID, Input: request.Input}, MaxAssistantBytes: service.config.MaxAssistantBytes}, emitter)
-	if err != nil {
-		cleanupBase := context.WithoutCancel(ctx)
-		cleanupCtx, cancel := context.WithTimeout(cleanupBase, service.config.TerminalCommitTimeout)
-		defer cancel()
-		return service.terminalizeExecutionFailure(cleanupCtx, ctx, runningState, runningResult, commandID, emitter, lease, mapRunError(err), err, runResult.Stats)
-	}
-	decided, err = service.decideTurnTerminal(runningState, request.SessionID, turnID, itemID, runResult.Stats, domain.CompleteAssistantTurn{SessionID: request.SessionID, TurnID: turnID, ItemID: itemID, Text: runResult.Text})
-	if err != nil {
-		return cloneRunTurnResult(runningResult), applicationError(CategoryInternal, "domain_transition_failed", false, err)
-	}
-	if err := lease.setPhase(executionPhaseTerminalInFlight); err != nil {
-		return cloneRunTurnResult(runningResult), storeContractViolation(err)
-	}
-	terminalIntent, err := BuildAppendIntent(service.clock, service.ids, service.authority, request.SessionID, runningState.Version, commandID, nil, decided)
-	if err != nil {
-		return cloneRunTurnResult(runningResult), err
-	}
-	if err := lease.retainIntent(terminalIntent); err != nil {
-		return cloneRunTurnResult(runningResult), storeContractViolation(err)
-	}
-	_, terminalRecords, err := CommitAppendIntent(ctx, service.store, runningState, terminalIntent)
-	if err != nil {
-		if isAppendOutcomeUnknown(err) || ctx.Err() != nil {
-			if retainErr := lease.retainUnknown(executionPhaseTerminalUnknown); retainErr != nil {
-				return cloneRunTurnResult(runningResult), storeContractViolation(retainErr)
-			}
-			return service.resolveTerminalUnknown(ctx, lease, runningState, runningResult, terminalIntent, admissionRecords, emitter)
-		}
-		if IsVersionConflict(err) || IsStoreCode(err, StoreCodeVersionConflict) {
-			if winner, winnerErr := service.reloadDurableWinner(ctx, request, requestDigest); winnerErr == nil && winner.TerminalCommitted {
-				return winner, durableRequestTerminalError(winner)
-			}
-			return cloneRunTurnResult(runningResult), err
-		}
-		return cloneRunTurnResult(runningResult), err
-	}
-	completedResult := RunTurnResult{SessionID: request.SessionID, TurnID: turnID, ItemID: itemID, Status: domain.TurnStatusCompleted, Text: runResult.Text, TerminalCommitted: true, Records: concatenateRunTurnRecords(admissionRecords, terminalRecords)}
-	if err := emitter.Emit(ctx, engine.RuntimePayload{Type: engine.RuntimeAppendCompleted}); err != nil {
-		return runTurnDeliveryFailure(completedResult, err)
-	}
-	if err := emitter.Emit(ctx, engine.RuntimePayload{Type: engine.RuntimeModelStreamCompleted}); err != nil {
-		return runTurnDeliveryFailure(completedResult, err)
-	}
-	return cloneRunTurnResult(completedResult), nil
+	return service.runAfterAdmission(ctx, request, lease, runningState, runningResult, commandID, emitter)
 }
 
 func (service *Service) runTurnFound(ctx context.Context, request RunTurnRequest, digest Digest, record CommandRequestRecord, attachLocal bool) (RunTurnResult, error) {
@@ -222,7 +182,12 @@ func durableRequestTerminalError(result RunTurnResult) error {
 	if !result.TerminalCommitted {
 		return nil
 	}
-	switch event := itemTerminalEvent(result.Records).(type) {
+	// turn event wins: tool cancel has no assistant terminal
+	switch event := requestOutcomeEvent(result.Records).(type) {
+	case domain.TurnFailed:
+		return applicationError(CategoryModel, event.Code, true, nil)
+	case domain.TurnInterrupted:
+		return applicationError(CategoryCanceled, event.Reason, true, nil)
 	case domain.AssistantMessageFailed:
 		return applicationError(CategoryModel, event.Code, true, nil)
 	case domain.AssistantMessageInterrupted:
@@ -254,45 +219,7 @@ func (service *Service) resolveAdmissionUnknown(ctx context.Context, request Run
 	if err := lease.resumeAfterResolvedAdmission(); err != nil {
 		return RunTurnResult{}, storeContractViolation(err)
 	}
-	runResult, runErr := service.runner.Run(ctx, engine.RunRequest{ModelRequest: engine.ModelRequest{SessionID: request.SessionID, TurnID: admission.TurnID, ItemID: admission.ItemID, Input: request.Input}, MaxAssistantBytes: service.config.MaxAssistantBytes}, emitter)
-	if runErr != nil {
-		cleanupBase := context.WithoutCancel(ctx)
-		cleanupCtx, cleanupCancel := context.WithTimeout(cleanupBase, service.config.TerminalCommitTimeout)
-		defer cleanupCancel()
-		return service.terminalizeExecutionFailure(cleanupCtx, ctx, runningState, runningResult, commandID, emitter, lease, mapRunError(runErr), runErr, runResult.Stats)
-	}
-	decided, err := service.decideTurnTerminal(runningState, request.SessionID, admission.TurnID, admission.ItemID, runResult.Stats, domain.CompleteAssistantTurn{SessionID: request.SessionID, TurnID: admission.TurnID, ItemID: admission.ItemID, Text: runResult.Text})
-	if err != nil {
-		return cloneRunTurnResult(runningResult), applicationError(CategoryInternal, "domain_transition_failed", false, err)
-	}
-	if err := lease.setPhase(executionPhaseTerminalInFlight); err != nil {
-		return cloneRunTurnResult(runningResult), storeContractViolation(err)
-	}
-	terminalIntent, err := BuildAppendIntent(service.clock, service.ids, service.authority, request.SessionID, runningState.Version, commandID, nil, decided)
-	if err != nil {
-		return cloneRunTurnResult(runningResult), err
-	}
-	if err := lease.retainIntent(terminalIntent); err != nil {
-		return cloneRunTurnResult(runningResult), storeContractViolation(err)
-	}
-	_, terminalRecords, err := CommitAppendIntent(ctx, service.store, runningState, terminalIntent)
-	if err != nil {
-		if isAppendOutcomeUnknown(err) || ctx.Err() != nil {
-			if retainErr := lease.retainUnknown(executionPhaseTerminalUnknown); retainErr != nil {
-				return cloneRunTurnResult(runningResult), storeContractViolation(retainErr)
-			}
-			return service.resolveTerminalUnknown(ctx, lease, runningState, runningResult, terminalIntent, admissionRecords, emitter)
-		}
-		return cloneRunTurnResult(runningResult), err
-	}
-	completedResult := RunTurnResult{SessionID: request.SessionID, TurnID: admission.TurnID, ItemID: admission.ItemID, Status: domain.TurnStatusCompleted, Text: runResult.Text, TerminalCommitted: true, Records: concatenateRunTurnRecords(admissionRecords, terminalRecords)}
-	if err := emitter.Emit(ctx, engine.RuntimePayload{Type: engine.RuntimeAppendCompleted}); err != nil {
-		return runTurnDeliveryFailure(completedResult, err)
-	}
-	if err := emitter.Emit(ctx, engine.RuntimePayload{Type: engine.RuntimeModelStreamCompleted}); err != nil {
-		return runTurnDeliveryFailure(completedResult, err)
-	}
-	return cloneRunTurnResult(completedResult), nil
+	return service.runAfterAdmission(ctx, request, lease, runningState, runningResult, commandID, emitter)
 }
 
 func (service *Service) abandonAdmittedTurn(ctx context.Context, lease *executionLease, state domain.Session, runningResult RunTurnResult, commandID domain.CommandID, emitter *engine.Emitter) (RunTurnResult, error) {
@@ -353,11 +280,14 @@ func (service *Service) resolveTerminalUnknown(ctx context.Context, lease *execu
 	result := runningResult
 	result.Records = concatenateRunTurnRecords(prior, terminalRecords)
 	result.TerminalCommitted = true
-	result.Text = ""
-	switch terminal := itemTerminalFromProposed(intent.Request.Events).(type) {
-	case domain.AssistantMessageCompleted:
-		result.Status = domain.TurnStatusCompleted
-		result.Text = terminal.Text
+	status, text, code, ok := classifyProposedTerminal(intent.Request.Events)
+	if !ok {
+		return cloneRunTurnResult(result), storeContractViolation(errors.New("resolved terminal intent has no terminal event"))
+	}
+	result.Status = status
+	result.Text = text
+	switch status {
+	case domain.TurnStatusCompleted:
 		if err := lease.publishRetained(result, nil); err != nil {
 			_ = lease.publish(result, nil)
 		}
@@ -368,22 +298,79 @@ func (service *Service) resolveTerminalUnknown(ctx context.Context, lease *execu
 			return runTurnDeliveryFailure(result, emitErr)
 		}
 		return cloneRunTurnResult(result), nil
-	case domain.AssistantMessageFailed:
-		result.Status = domain.TurnStatusFailed
-		committed := applicationError(CategoryModel, terminal.Code, true, nil)
+	case domain.TurnStatusFailed:
+		committed := applicationError(CategoryModel, code, true, nil)
 		if err := lease.publishRetained(result, committed); err != nil {
 			_ = lease.publish(result, committed)
 		}
 		return cloneRunTurnResult(result), committed
-	case domain.AssistantMessageInterrupted:
-		result.Status = domain.TurnStatusInterrupted
-		committed := applicationError(CategoryCanceled, terminal.Code, true, nil)
+	case domain.TurnStatusInterrupted:
+		committed := applicationError(CategoryCanceled, code, true, nil)
 		if err := lease.publishRetained(result, committed); err != nil {
 			_ = lease.publish(result, committed)
 		}
 		return cloneRunTurnResult(result), committed
 	default:
 		return cloneRunTurnResult(result), storeContractViolation(errors.New("resolved terminal intent has no terminal event"))
+	}
+}
+
+func classifyProposedTerminal(events []ProposedEvent) (domain.TurnStatus, string, string, bool) {
+	var text, code string
+	var status domain.TurnStatus
+	var hasTurn bool
+	for _, proposed := range events {
+		switch event := proposed.Event.(type) {
+		case domain.AssistantMessageCompleted:
+			text = event.Text
+		case domain.TurnCompleted:
+			status = domain.TurnStatusCompleted
+			hasTurn = true
+		case domain.TurnFailed:
+			status = domain.TurnStatusFailed
+			code = event.Code
+			hasTurn = true
+		case domain.TurnInterrupted:
+			status = domain.TurnStatusInterrupted
+			code = event.Reason
+			hasTurn = true
+		case domain.AssistantMessageFailed:
+			if !hasTurn {
+				status = domain.TurnStatusFailed
+				code = event.Code
+			}
+		case domain.AssistantMessageInterrupted:
+			if !hasTurn {
+				status = domain.TurnStatusInterrupted
+				code = event.Code
+			}
+		case domain.ToolCallFailed:
+			if !hasTurn {
+				status = domain.TurnStatusFailed
+				code = event.Code
+			}
+		case domain.ToolCallInterrupted:
+			if !hasTurn {
+				status = domain.TurnStatusInterrupted
+				code = event.Code
+			}
+		}
+	}
+	if hasTurn {
+		if status != domain.TurnStatusCompleted {
+			text = ""
+		}
+		return status, text, code, true
+	}
+	switch itemTerminalFromProposed(events).(type) {
+	case domain.AssistantMessageCompleted:
+		return domain.TurnStatusCompleted, text, "", true
+	case domain.AssistantMessageFailed:
+		return domain.TurnStatusFailed, "", code, true
+	case domain.AssistantMessageInterrupted:
+		return domain.TurnStatusInterrupted, "", code, true
+	default:
+		return "", "", "", false
 	}
 }
 
@@ -406,9 +393,9 @@ func isAppendOutcomeUnknown(err error) bool {
 	return errors.As(err, &applicationErr) && applicationErr != nil && applicationErr.Code == "append_outcome_unknown"
 }
 
-func (service *Service) terminalizeExecutionFailure(cleanupCtx context.Context, deliveryCtx context.Context, runningState domain.Session, runningResult RunTurnResult, commandID domain.CommandID, emitter *engine.Emitter, lease *executionLease, primary *Error, executionCause error, stats engine.AttemptStats) (RunTurnResult, error) {
-	terminalCommand, status, terminalSignal, stableCode := terminalCommandForExecution(runningResult, primary)
-	decided, err := service.decideTurnTerminal(runningState, runningResult.SessionID, runningResult.TurnID, runningResult.ItemID, stats, terminalCommand)
+func (service *Service) terminalizeExecutionFailure(cleanupCtx context.Context, deliveryCtx context.Context, runningState domain.Session, runningResult RunTurnResult, itemID domain.ItemID, commandID domain.CommandID, emitter *engine.Emitter, lease *executionLease, primary *Error, executionCause error, stats engine.AttemptStats) (RunTurnResult, error) {
+	terminalCommand, status, terminalSignal, stableCode := terminalCommandForExecution(runningResult, itemID, primary)
+	decided, err := service.decideTurnTerminal(runningState, runningResult.SessionID, runningResult.TurnID, itemID, stats, terminalCommand)
 	if err != nil {
 		return cloneRunTurnResult(runningResult), applicationError(CategoryInternal, "domain_transition_failed", false, errors.Join(executionCause, err))
 	}
@@ -450,15 +437,15 @@ func (service *Service) terminalizeExecutionFailure(cleanupCtx context.Context, 
 	return cloneRunTurnResult(terminalResult), committedError
 }
 
-func terminalCommandForExecution(result RunTurnResult, primary *Error) (domain.Command, domain.TurnStatus, engine.RuntimeEventType, string) {
+func terminalCommandForExecution(result RunTurnResult, itemID domain.ItemID, primary *Error) (domain.Command, domain.TurnStatus, engine.RuntimeEventType, string) {
 	if primary.Category == CategoryCanceled {
-		return domain.InterruptAssistantTurn{SessionID: result.SessionID, TurnID: result.TurnID, ItemID: result.ItemID, Code: domain.InterruptionCallerCanceled}, domain.TurnStatusInterrupted, engine.RuntimeModelStreamInterrupted, domain.InterruptionCallerCanceled
+		return domain.InterruptAssistantTurn{SessionID: result.SessionID, TurnID: result.TurnID, ItemID: itemID, Code: domain.InterruptionCallerCanceled}, domain.TurnStatusInterrupted, engine.RuntimeModelStreamInterrupted, domain.InterruptionCallerCanceled
 	}
 	if primary.Category == CategoryDelivery {
-		return domain.InterruptAssistantTurn{SessionID: result.SessionID, TurnID: result.TurnID, ItemID: result.ItemID, Code: domain.InterruptionDeliveryFailed}, domain.TurnStatusInterrupted, engine.RuntimeModelStreamInterrupted, domain.InterruptionDeliveryFailed
+		return domain.InterruptAssistantTurn{SessionID: result.SessionID, TurnID: result.TurnID, ItemID: itemID, Code: domain.InterruptionDeliveryFailed}, domain.TurnStatusInterrupted, engine.RuntimeModelStreamInterrupted, domain.InterruptionDeliveryFailed
 	}
 	code, message := durableFailure(primary)
-	return domain.FailAssistantTurn{SessionID: result.SessionID, TurnID: result.TurnID, ItemID: result.ItemID, Code: code, Message: message}, domain.TurnStatusFailed, engine.RuntimeModelStreamFailed, code
+	return domain.FailAssistantTurn{SessionID: result.SessionID, TurnID: result.TurnID, ItemID: itemID, Code: code, Message: message}, domain.TurnStatusFailed, engine.RuntimeModelStreamFailed, code
 }
 func durableFailure(primary *Error) (string, string) {
 	var failure *engine.ProviderFailure
@@ -502,6 +489,10 @@ func displayFailureSentence(code string) string {
 		return "assistant output exceeded limit"
 	case string(engine.CodeInvalidStream):
 		return "model stream violated contract"
+	case CodeStepLimit:
+		return "turn exceeded the step limit"
+	case CodeEnvelopeLimit:
+		return "request envelope exceeded the size limit"
 	default:
 		return "model failed"
 	}
@@ -509,7 +500,7 @@ func displayFailureSentence(code string) string {
 
 func (service *Service) decideTurnTerminal(state domain.Session, sessionID domain.SessionID, turnID domain.TurnID, itemID domain.ItemID, stats engine.AttemptStats, terminal domain.Command) ([]domain.UncommittedEvent, error) {
 	var events []domain.UncommittedEvent
-	if service.config.RequestIdentity != nil && observedAttemptStats(stats) {
+	if service.config.RequestIdentity != nil && observedAttemptStats(stats) && assistantItemActive(state, itemID) {
 		usage, err := domain.Decide(state, domain.RecordModelUsage{
 			SessionID:          sessionID,
 			ModelUsageRecorded: modelUsageFromStats(turnID, itemID, stats),
@@ -524,6 +515,11 @@ func (service *Service) decideTurnTerminal(state domain.Session, sessionID domai
 		return nil, err
 	}
 	return append(events, decided...), nil
+}
+
+func assistantItemActive(state domain.Session, itemID domain.ItemID) bool {
+	item := activeItem(state)
+	return item != nil && item.Kind == domain.ItemKindAssistantMessage && item.ID == itemID
 }
 
 func observedAttemptStats(stats engine.AttemptStats) bool {
@@ -546,7 +542,7 @@ func modelUsageFromStats(turnID domain.TurnID, itemID domain.ItemID, stats engin
 	return recorded
 }
 
-func modelRequestSpec(identity *engine.RequestIdentity, input string) *domain.ModelRequestSpec {
+func modelRequestSpec(identity *engine.RequestIdentity, input string, toolSchemas []domain.ToolSchema) *domain.ModelRequestSpec {
 	if identity == nil {
 		return nil
 	}
@@ -564,6 +560,7 @@ func modelRequestSpec(identity *engine.RequestIdentity, input string) *domain.Mo
 		IncludeUsage:        identity.IncludeUsage,
 		MaxTokensField:      identity.MaxTokensField,
 		Messages:            []domain.ModelPromptMessage{{Role: domain.PromptRoleUser, Text: input}},
+		Tools:               toolSchemas,
 	}
 }
 

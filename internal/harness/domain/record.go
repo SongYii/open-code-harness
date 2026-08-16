@@ -33,7 +33,9 @@ func CloneEvent(event Event) (Event, error) {
 	case AssistantMessageStarted:
 		return event, nil
 	case AssistantMessageCompleted:
-		return event, nil
+		cloned := event
+		cloned.ToolCalls = cloneToolCallOffers(event.ToolCalls)
+		return cloned, nil
 	case AssistantMessageFailed:
 		return event, nil
 	case AssistantMessageInterrupted:
@@ -41,8 +43,23 @@ func CloneEvent(event Event) (Event, error) {
 	case ModelRequestRecorded:
 		cloned := event
 		cloned.Messages = cloneModelPromptMessages(event.Messages)
+		cloned.Tools = cloneToolSchemas(event.Tools)
 		return cloned, nil
 	case ModelUsageRecorded:
+		return event, nil
+	case ToolCallStarted:
+		return event, nil
+	case ToolCallCompleted:
+		return event, nil
+	case ToolCallFailed:
+		return event, nil
+	case ToolCallInterrupted:
+		return event, nil
+	case PolicyDecisionRecorded:
+		return event, nil
+	case ApprovalRequested:
+		return event, nil
+	case ApprovalResolved:
 		return event, nil
 	default:
 		return nil, domainError(CodeInvalidEvent, "event type cannot be cloned")
@@ -54,7 +71,33 @@ func cloneModelPromptMessages(messages []ModelPromptMessage) []ModelPromptMessag
 		return nil
 	}
 	cloned := make([]ModelPromptMessage, len(messages))
-	copy(cloned, messages)
+	for index, message := range messages {
+		cloned[index] = message
+		cloned[index].ToolCalls = cloneToolCallOffers(message.ToolCalls)
+	}
+	return cloned
+}
+
+func cloneToolCallOffers(offers []ToolCallOffer) []ToolCallOffer {
+	if offers == nil {
+		return nil
+	}
+	cloned := make([]ToolCallOffer, len(offers))
+	copy(cloned, offers)
+	return cloned
+}
+
+func cloneToolSchemas(schemas []ToolSchema) []ToolSchema {
+	if schemas == nil {
+		return nil
+	}
+	cloned := make([]ToolSchema, len(schemas))
+	for index, schema := range schemas {
+		cloned[index] = schema
+		if schema.InputSchema != nil {
+			cloned[index].InputSchema = append([]byte(nil), schema.InputSchema...)
+		}
+	}
 	return cloned
 }
 

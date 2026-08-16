@@ -16,13 +16,15 @@ var (
 type executionPhase string
 
 const (
-	executionPhaseAdmissionInFlight executionPhase = "admission_in_flight"
-	executionPhaseAdmissionUnknown  executionPhase = "admission_unknown"
-	executionPhaseRunning           executionPhase = "running"
-	executionPhaseCancelWon         executionPhase = "cancel_won"
-	executionPhaseTerminalInFlight  executionPhase = "terminal_append_in_flight"
-	executionPhaseTerminalUnknown   executionPhase = "terminal_unknown"
-	executionPhaseTerminalCommitted executionPhase = "terminal_committed"
+	executionPhaseAdmissionInFlight  executionPhase = "admission_in_flight"
+	executionPhaseAdmissionUnknown   executionPhase = "admission_unknown"
+	executionPhaseRunning            executionPhase = "running"
+	executionPhaseStepAppendInFlight executionPhase = "step_append_in_flight"
+	executionPhaseStepAppendUnknown  executionPhase = "step_append_unknown"
+	executionPhaseCancelWon          executionPhase = "cancel_won"
+	executionPhaseTerminalInFlight   executionPhase = "terminal_append_in_flight"
+	executionPhaseTerminalUnknown    executionPhase = "terminal_unknown"
+	executionPhaseTerminalCommitted  executionPhase = "terminal_committed"
 )
 
 type executionRegistry struct {
@@ -92,6 +94,9 @@ func (registry *executionRegistry) attachExisting(requestID domain.RunTurnReques
 	if entry == nil || entry.sessionID != sessionID || entry.digest != digest {
 		return nil, false
 	}
+	if entry.retained && !entry.ownerActive && !entry.terminal && entry.leases == 0 {
+		return nil, false
+	}
 	entry.leases++
 	return &executionLease{registry: registry, entry: entry}, true
 }
@@ -138,7 +143,7 @@ func (lease *executionLease) setPhase(phase executionPhase) error {
 	}
 	lease.registry.mu.Lock()
 	defer lease.registry.mu.Unlock()
-	if phase == executionPhaseAdmissionUnknown || phase == executionPhaseTerminalUnknown {
+	if phase == executionPhaseAdmissionUnknown || phase == executionPhaseTerminalUnknown || phase == executionPhaseStepAppendUnknown {
 		return errors.New("execution owner capability rejected")
 	}
 	if !lease.ownsLocked() && !(lease.entry != nil && lease.entry.retained && !lease.entry.terminal && lease.ownerToken != 0 && lease.entry.ownerToken == lease.ownerToken) {
@@ -173,7 +178,7 @@ func (lease *executionLease) canResolveLocked() bool {
 }
 
 func (lease *executionLease) retainUnknown(phase executionPhase) error {
-	if phase != executionPhaseAdmissionUnknown && phase != executionPhaseTerminalUnknown {
+	if phase != executionPhaseAdmissionUnknown && phase != executionPhaseTerminalUnknown && phase != executionPhaseStepAppendUnknown {
 		return errors.New("invalid unknown execution phase")
 	}
 	if lease == nil || lease.registry == nil {
@@ -197,7 +202,12 @@ func validExecutionTransition(from, to executionPhase) bool {
 	case executionPhaseAdmissionUnknown:
 		return to == executionPhaseRunning || to == executionPhaseCancelWon || to == executionPhaseTerminalInFlight
 	case executionPhaseRunning:
-		return to == executionPhaseTerminalInFlight || to == executionPhaseCancelWon
+		return to == executionPhaseStepAppendInFlight || to == executionPhaseTerminalInFlight || to == executionPhaseCancelWon
+	case executionPhaseStepAppendInFlight:
+		return to == executionPhaseRunning || to == executionPhaseStepAppendUnknown || to == executionPhaseCancelWon
+	case executionPhaseStepAppendUnknown:
+		// terminal_append_in_flight is forbidden: mid-loop batches are never Turn terminals.
+		return to == executionPhaseRunning || to == executionPhaseStepAppendInFlight || to == executionPhaseCancelWon
 	case executionPhaseCancelWon:
 		return to == executionPhaseTerminalInFlight || to == executionPhaseTerminalUnknown
 	case executionPhaseTerminalInFlight:
@@ -210,12 +220,20 @@ func validExecutionTransition(from, to executionPhase) bool {
 }
 
 func (lease *executionLease) resumeAfterResolvedAdmission() error {
+	return lease.resumeAfterResolvedUnknown(executionPhaseAdmissionUnknown)
+}
+
+func (lease *executionLease) resumeAfterResolvedStepAppend() error {
+	return lease.resumeAfterResolvedUnknown(executionPhaseStepAppendUnknown)
+}
+
+func (lease *executionLease) resumeAfterResolvedUnknown(required executionPhase) error {
 	if lease == nil || lease.registry == nil {
 		return errors.New("invalid execution owner")
 	}
 	lease.registry.mu.Lock()
 	defer lease.registry.mu.Unlock()
-	if lease.released || lease.ownerToken == 0 || lease.entry == nil || lease.entry.ownerToken != lease.ownerToken || !lease.entry.retained || lease.entry.terminal || lease.entry.phase != executionPhaseAdmissionUnknown {
+	if lease.released || lease.ownerToken == 0 || lease.entry == nil || lease.entry.ownerToken != lease.ownerToken || !lease.entry.retained || lease.entry.terminal || lease.entry.phase != required {
 		return errors.New("execution owner capability rejected")
 	}
 	lease.entry.phase = executionPhaseRunning

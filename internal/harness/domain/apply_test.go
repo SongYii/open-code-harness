@@ -785,26 +785,131 @@ func TestApplyModelFactsRejectInvalidTransitions(t *testing.T) {
 	}
 }
 
+func TestApplyToolCallLifecycle(t *testing.T) {
+	t.Parallel()
+
+	state := runningTurnForTest(t)
+	started := recordedForTest(state, validToolCallStarted("turn-1", "item-tool"))
+	state, err := HistoricalApply(state, started)
+	if err != nil {
+		t.Fatalf("start tool: %v", err)
+	}
+	if item := state.Turns["turn-1"].Items["item-tool"]; item.Kind != ItemKindToolCall || item.Status != ItemStatusRunning {
+		t.Fatalf("started item = %#v", item)
+	}
+
+	policy := recordedForTest(state, PolicyDecisionRecorded{
+		TurnID: "turn-1", ItemID: "item-tool", CallID: "call-1",
+		Name: "read_file", Effect: PolicyEffectAllow, RuleID: "default.read", Reason: "in_workspace",
+	})
+	before := state.Clone()
+	state, err = HistoricalApply(state, policy)
+	if err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+	state.Version = before.Version
+	if !reflect.DeepEqual(state, before) {
+		t.Fatalf("policy apply changed historical items: got %#v want %#v", state, before)
+	}
+	state.Version = policy.Sequence
+
+	completed := recordedForTest(state, ToolCallCompleted{
+		TurnID: "turn-1", ItemID: "item-tool", CallID: "call-1", Content: "file body", Truncated: false,
+	})
+	state, err = HistoricalApply(state, completed)
+	if err != nil {
+		t.Fatalf("complete tool: %v", err)
+	}
+	item := state.Turns["turn-1"].Items["item-tool"]
+	payload, ok := item.Payload.(ToolCallPayload)
+	if !ok || item.Status != ItemStatusCompleted || payload.Content != "file body" || state.Turns["turn-1"].ActiveItemID != "" {
+		t.Fatalf("completed item = %#v", item)
+	}
+	if state.ActiveTurnID != "turn-1" {
+		t.Fatalf("turn should stay running, got %#v", state)
+	}
+}
+
+func TestApplyAssistantMessageCompletedWithToolCallsLeavesTurnRunning(t *testing.T) {
+	t.Parallel()
+
+	state := runningAssistantItemForTest(t)
+	record := recordedForTest(state, AssistantMessageCompleted{
+		TurnID: "turn-1", ItemID: "item-1", Text: "calling", ToolCalls: []ToolCallOffer{validToolCallOffer()},
+	})
+	state, err := HistoricalApply(state, record)
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	item := state.Turns["turn-1"].Items["item-1"]
+	payload := item.Payload.(AssistantMessagePayload)
+	if item.Status != ItemStatusCompleted || payload.Text != "calling" || len(payload.ToolCalls) != 1 {
+		t.Fatalf("item = %#v payload = %#v", item, payload)
+	}
+	if state.ActiveTurnID != "turn-1" || state.Turns["turn-1"].ActiveItemID != "" {
+		t.Fatalf("turn/item after tool-bearing complete = %#v", state.Turns["turn-1"])
+	}
+}
+
+func TestApplyToolTerminals(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		event  Event
+		status ItemStatus
+		code   string
+	}{
+		{name: "failed", event: ToolCallFailed{TurnID: "turn-1", ItemID: "item-tool", CallID: "call-1", Code: "policy_denied", Message: "policy denied this tool"}, status: ItemStatusFailed, code: "policy_denied"},
+		{name: "interrupted", event: ToolCallInterrupted{TurnID: "turn-1", ItemID: "item-tool", CallID: "call-1", Code: InterruptionCallerCanceled, Message: ""}, status: ItemStatusInterrupted, code: InterruptionCallerCanceled},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := runningToolItemForTest(t)
+			record := recordedForTest(state, test.event)
+			state, err := HistoricalApply(state, record)
+			if err != nil {
+				t.Fatalf("Apply() error = %v", err)
+			}
+			item := state.Turns["turn-1"].Items["item-tool"]
+			if item.Status != test.status || item.Terminal == nil || item.Terminal.Code != test.code {
+				t.Fatalf("item = %#v", item)
+			}
+		})
+	}
+}
+
 func TestCloneRecordedEventsDeepCopiesEventsAndRejectsUnknownTypes(t *testing.T) {
 	t.Parallel()
 
 	request := validModelRequestRecorded("turn-1", "item-1", "original")
+	request.Tools = []ToolSchema{{Name: "read_file", Description: "read", InputSchema: []byte(`{"type":"object"}`)}}
+	request.Messages = []ModelPromptMessage{{
+		Role: PromptRoleAssistant, Text: "original",
+		ToolCalls: []ToolCallOffer{{ID: "call-1", Name: "read_file", Arguments: "{}"}},
+	}}
+	completed := AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "original", ToolCalls: []ToolCallOffer{{ID: "call-1", Name: "read_file", Arguments: "{}"}}}
 	records := []RecordedEvent{
-		{Event: AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "original"}},
+		{Event: completed},
 		{Event: request},
 		{Event: validModelUsageRecorded("turn-1", "item-1")},
+		{Event: validToolCallStarted("turn-1", "item-tool")},
 	}
 	cloned, err := CloneRecordedEvents(records)
 	if err != nil {
 		t.Fatalf("CloneRecordedEvents() error = %v", err)
 	}
-	cloned[0].Event = AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "changed"}
-	cloned[1].Event.(ModelRequestRecorded).Messages[0].Text = "changed"
-	if records[0].Event.(AssistantMessageCompleted).Text != "original" {
-		t.Fatalf("mutating cloned records changed source = %#v", records)
+	cloned[0].Event.(AssistantMessageCompleted).ToolCalls[0].Name = "changed"
+	cloned[1].Event.(ModelRequestRecorded).Messages[0].ToolCalls[0].Name = "changed"
+	cloned[1].Event.(ModelRequestRecorded).Tools[0].Name = "changed"
+	if records[0].Event.(AssistantMessageCompleted).ToolCalls[0].Name != "read_file" {
+		t.Fatalf("mutating cloned toolCalls changed source = %#v", records)
 	}
-	if records[1].Event.(ModelRequestRecorded).Messages[0].Text != "original" {
-		t.Fatalf("mutating cloned request messages changed source = %#v", records[1])
+	if records[1].Event.(ModelRequestRecorded).Messages[0].ToolCalls[0].Name != "read_file" {
+		t.Fatalf("mutating cloned request toolCalls changed source = %#v", records[1])
+	}
+	if records[1].Event.(ModelRequestRecorded).Tools[0].Name != "read_file" {
+		t.Fatalf("mutating cloned tools changed source = %#v", records[1])
 	}
 
 	_, err = CloneRecordedEvents([]RecordedEvent{{Event: mutableUnknownEvent{Values: []string{"mutable"}}}})

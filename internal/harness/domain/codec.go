@@ -155,6 +155,9 @@ func marshalEvent(event Event) (json.RawMessage, string, error) {
 		if !utf8.ValidString(event.Text) {
 			return nil, "", invalidEventError("assistant message text must be valid UTF-8")
 		}
+		if err := validateToolCallOffers(event.ToolCalls, CodeInvalidEvent); err != nil {
+			return nil, "", err
+		}
 		return marshalEventData(event, EventAssistantMessageCompleted)
 	case AssistantMessageFailed:
 		if err := validateAssistantMessageIDs(event.TurnID, event.ItemID); err != nil {
@@ -182,6 +185,41 @@ func marshalEvent(event Event) (json.RawMessage, string, error) {
 			return nil, "", err
 		}
 		return marshalEventData(event, EventModelUsageRecorded)
+	case ToolCallStarted:
+		if err := validateToolCallStartedPayload(event, CodeInvalidEvent); err != nil {
+			return nil, "", err
+		}
+		return marshalEventData(event, EventToolCallStarted)
+	case ToolCallCompleted:
+		if err := validateToolCallCompletedPayload(event, CodeInvalidEvent); err != nil {
+			return nil, "", err
+		}
+		return marshalEventData(event, EventToolCallCompleted)
+	case ToolCallFailed:
+		if err := validateToolCallFailedPayload(event, CodeInvalidEvent); err != nil {
+			return nil, "", err
+		}
+		return marshalEventData(event, EventToolCallFailed)
+	case ToolCallInterrupted:
+		if err := validateToolCallInterruptedPayload(event, CodeInvalidEvent); err != nil {
+			return nil, "", err
+		}
+		return marshalEventData(event, EventToolCallInterrupted)
+	case PolicyDecisionRecorded:
+		if err := validatePolicyDecisionPayload(event, CodeInvalidEvent); err != nil {
+			return nil, "", err
+		}
+		return marshalEventData(event, EventPolicyDecisionRecorded)
+	case ApprovalRequested:
+		if err := validateApprovalRequestedPayload(event, CodeInvalidEvent); err != nil {
+			return nil, "", err
+		}
+		return marshalEventData(event, EventApprovalRequested)
+	case ApprovalResolved:
+		if err := validateApprovalResolvedPayload(event, CodeInvalidEvent); err != nil {
+			return nil, "", err
+		}
+		return marshalEventData(event, EventApprovalResolved)
 	default:
 		return nil, "", invalidEventError("unsupported event type")
 	}
@@ -197,48 +235,72 @@ func marshalEventData(event Event, eventType string) (json.RawMessage, string, e
 
 func unmarshalEvent(eventType string, data json.RawMessage) (Event, error) {
 	var event Event
-	var keys []string
+	var required []string
+	var optional []string
 	switch eventType {
 	case EventSessionCreated:
 		event = SessionCreated{}
-		keys = []string{"workspaceRoot"}
+		required = []string{"workspaceRoot"}
 	case EventTurnStarted:
 		event = TurnStarted{}
-		keys = []string{"turnID", "input"}
+		required = []string{"turnID", "input"}
 	case EventTurnCompleted:
 		event = TurnCompleted{}
-		keys = []string{"turnID"}
+		required = []string{"turnID"}
 	case EventTurnFailed:
 		event = TurnFailed{}
-		keys = []string{"turnID", "code", "message"}
+		required = []string{"turnID", "code", "message"}
 	case EventTurnInterrupted:
 		event = TurnInterrupted{}
-		keys = []string{"turnID", "reason"}
+		required = []string{"turnID", "reason"}
 	case EventSessionClosed:
 		event = SessionClosed{}
-		keys = []string{}
+		required = []string{}
 	case EventAssistantMessageStarted:
 		event = AssistantMessageStarted{}
-		keys = []string{"turnID", "itemID"}
+		required = []string{"turnID", "itemID"}
 	case EventAssistantMessageCompleted:
 		event = AssistantMessageCompleted{}
-		keys = []string{"turnID", "itemID", "text"}
+		required = []string{"turnID", "itemID", "text"}
+		optional = []string{"toolCalls"}
 	case EventAssistantMessageFailed:
 		event = AssistantMessageFailed{}
-		keys = []string{"turnID", "itemID", "code", "message"}
+		required = []string{"turnID", "itemID", "code", "message"}
 	case EventAssistantMessageInterrupted:
 		event = AssistantMessageInterrupted{}
-		keys = []string{"turnID", "itemID", "code", "message"}
+		required = []string{"turnID", "itemID", "code", "message"}
 	case EventModelRequestRecorded:
 		event = ModelRequestRecorded{}
-		keys = modelRequestRecordedKeys()
+		required = modelRequestRecordedKeys()
+		optional = []string{"tools"}
 	case EventModelUsageRecorded:
 		event = ModelUsageRecorded{}
-		keys = modelUsageRecordedKeys()
+		required = modelUsageRecordedKeys()
+	case EventToolCallStarted:
+		event = ToolCallStarted{}
+		required = []string{"turnID", "itemID", "callID", "name", "arguments", "stepIndex"}
+	case EventToolCallCompleted:
+		event = ToolCallCompleted{}
+		required = []string{"turnID", "itemID", "callID", "content", "truncated"}
+	case EventToolCallFailed:
+		event = ToolCallFailed{}
+		required = []string{"turnID", "itemID", "callID", "code", "message"}
+	case EventToolCallInterrupted:
+		event = ToolCallInterrupted{}
+		required = []string{"turnID", "itemID", "callID", "code", "message"}
+	case EventPolicyDecisionRecorded:
+		event = PolicyDecisionRecorded{}
+		required = []string{"turnID", "itemID", "callID", "name", "effect", "ruleID", "reason"}
+	case EventApprovalRequested:
+		event = ApprovalRequested{}
+		required = []string{"turnID", "itemID", "approvalID", "callID", "name", "reason"}
+	case EventApprovalResolved:
+		event = ApprovalResolved{}
+		required = []string{"turnID", "itemID", "approvalID", "decision"}
 	default:
 		return nil, invalidEventError("unsupported event type")
 	}
-	if err := validateStrictJSONObject(data, keys...); err != nil {
+	if err := validateJSONObjectKeys(data, required, optional); err != nil {
 		return nil, err
 	}
 
@@ -281,6 +343,9 @@ func unmarshalEvent(eventType string, data json.RawMessage) (Event, error) {
 		}
 		event = target
 	case AssistantMessageCompleted:
+		if err := validateOptionalObjectArray(data, "toolCalls", []string{"id", "name", "arguments"}); err != nil {
+			return nil, err
+		}
 		if err := decoder.Decode(&target); err != nil {
 			return nil, invalidEventError("invalid event data")
 		}
@@ -299,11 +364,49 @@ func unmarshalEvent(eventType string, data json.RawMessage) (Event, error) {
 		if err := validateModelRequestMessagesJSON(data); err != nil {
 			return nil, err
 		}
+		if err := validateModelRequestToolsJSON(data); err != nil {
+			return nil, err
+		}
 		if err := decoder.Decode(&target); err != nil {
 			return nil, invalidEventError("invalid event data")
 		}
 		event = target
 	case ModelUsageRecorded:
+		if err := decoder.Decode(&target); err != nil {
+			return nil, invalidEventError("invalid event data")
+		}
+		event = target
+	case ToolCallStarted:
+		if err := decoder.Decode(&target); err != nil {
+			return nil, invalidEventError("invalid event data")
+		}
+		event = target
+	case ToolCallCompleted:
+		if err := decoder.Decode(&target); err != nil {
+			return nil, invalidEventError("invalid event data")
+		}
+		event = target
+	case ToolCallFailed:
+		if err := decoder.Decode(&target); err != nil {
+			return nil, invalidEventError("invalid event data")
+		}
+		event = target
+	case ToolCallInterrupted:
+		if err := decoder.Decode(&target); err != nil {
+			return nil, invalidEventError("invalid event data")
+		}
+		event = target
+	case PolicyDecisionRecorded:
+		if err := decoder.Decode(&target); err != nil {
+			return nil, invalidEventError("invalid event data")
+		}
+		event = target
+	case ApprovalRequested:
+		if err := decoder.Decode(&target); err != nil {
+			return nil, invalidEventError("invalid event data")
+		}
+		event = target
+	case ApprovalResolved:
 		if err := decoder.Decode(&target); err != nil {
 			return nil, invalidEventError("invalid event data")
 		}
@@ -352,20 +455,24 @@ func validateRecordedEventIdentityAndTimestamp(record RecordedEvent) error {
 }
 
 func validateStrictJSONObject(data []byte, requiredKeys ...string) error {
+	return validateJSONObjectKeys(data, requiredKeys, nil)
+}
+
+func validateJSONObjectKeys(data []byte, requiredKeys, optionalKeys []string) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	opening, err := decoder.Token()
 	if err != nil || opening != json.Delim('{') {
 		return invalidEventError("JSON value must be an object")
 	}
 
-	seen := make(map[string]struct{}, len(requiredKeys))
+	seen := make(map[string]struct{}, len(requiredKeys)+len(optionalKeys))
 	for decoder.More() {
 		token, err := decoder.Token()
 		if err != nil {
 			return invalidEventError("invalid JSON object key")
 		}
 		key, ok := token.(string)
-		if !ok || !containsString(requiredKeys, key) {
+		if !ok || (!containsString(requiredKeys, key) && !containsString(optionalKeys, key)) {
 			return invalidEventError("JSON object contains an unknown key")
 		}
 		if _, exists := seen[key]; exists {
@@ -383,8 +490,10 @@ func validateStrictJSONObject(data []byte, requiredKeys ...string) error {
 	if err != nil || closing != json.Delim('}') {
 		return invalidEventError("invalid JSON object")
 	}
-	if len(seen) != len(requiredKeys) {
-		return invalidEventError("JSON object is missing a required key")
+	for _, key := range requiredKeys {
+		if _, exists := seen[key]; !exists {
+			return invalidEventError("JSON object is missing a required key")
+		}
 	}
 	if err := ensureSingleJSONValue(decoder); err != nil {
 		return err
@@ -582,7 +691,7 @@ func validateModelRequestSpec(spec ModelRequestSpec) error {
 		spec.AdapterFamily, spec.ModelID, spec.EndpointID,
 		spec.NativeTools, spec.Images, spec.StructuredOutput,
 		spec.ReasoningFields, spec.PromptCache, spec.MaxTokensField,
-		spec.Messages, CodeInvalidCommand,
+		spec.Messages, spec.Tools, CodeInvalidCommand,
 	)
 }
 
@@ -597,13 +706,14 @@ func validateModelRequestPayload(event ModelRequestRecorded, code ErrorCode) err
 		event.AdapterFamily, event.ModelID, event.EndpointID,
 		event.NativeTools, event.Images, event.StructuredOutput,
 		event.ReasoningFields, event.PromptCache, event.MaxTokensField,
-		event.Messages, code,
+		event.Messages, event.Tools, code,
 	)
 }
 
 func validateModelRequestBody(
 	adapterFamily, modelID, endpointID, nativeTools, images, structuredOutput, reasoningFields, promptCache, maxTokensField string,
 	messages []ModelPromptMessage,
+	tools []ToolSchema,
 	code ErrorCode,
 ) error {
 	for _, value := range []string{adapterFamily, modelID, endpointID, nativeTools, images, structuredOutput, reasoningFields, promptCache, maxTokensField} {
@@ -611,7 +721,10 @@ func validateModelRequestBody(
 			return domainError(code, "model request field must be valid UTF-8")
 		}
 	}
-	return validateModelPromptMessages(messages, code)
+	if err := validateModelPromptMessages(messages, code); err != nil {
+		return err
+	}
+	return validateToolSchemas(tools, code)
 }
 
 func validateModelPromptMessages(messages []ModelPromptMessage, code ErrorCode) error {
@@ -619,13 +732,33 @@ func validateModelPromptMessages(messages []ModelPromptMessage, code ErrorCode) 
 		return domainError(code, "model request messages are required")
 	}
 	for _, message := range messages {
-		switch message.Role {
-		case PromptRoleSystem, PromptRoleUser, PromptRoleAssistant:
-		default:
-			return domainError(code, "model prompt role is invalid")
-		}
 		if !utf8.ValidString(message.Text) {
 			return domainError(code, "model prompt text must be valid UTF-8")
+		}
+		switch message.Role {
+		case PromptRoleSystem, PromptRoleUser:
+			if len(message.ToolCalls) != 0 || message.ToolCallID != "" || message.Name != "" {
+				return domainError(code, "model prompt fields are invalid for role")
+			}
+		case PromptRoleAssistant:
+			if message.ToolCallID != "" || message.Name != "" {
+				return domainError(code, "model prompt fields are invalid for role")
+			}
+			if err := validateToolCallOffers(message.ToolCalls, code); err != nil {
+				return err
+			}
+		case PromptRoleTool:
+			if len(message.ToolCalls) != 0 {
+				return domainError(code, "model prompt fields are invalid for role")
+			}
+			if !hasRequiredText(message.ToolCallID) || !hasRequiredText(message.Name) {
+				return domainError(code, "tool prompt requires toolCallID and name")
+			}
+			if !utf8.ValidString(message.ToolCallID) || !utf8.ValidString(message.Name) {
+				return domainError(code, "model prompt field must be valid UTF-8")
+			}
+		default:
+			return domainError(code, "model prompt role is invalid")
 		}
 	}
 	return nil
@@ -639,7 +772,7 @@ func validateModelUsagePayload(event ModelUsageRecorded, code ErrorCode) error {
 		return err
 	}
 	switch event.FinishReason {
-	case "", FinishReasonStop, FinishReasonLength, FinishReasonUnknown:
+	case "", FinishReasonStop, FinishReasonLength, FinishReasonUnknown, FinishReasonToolCalls:
 	default:
 		return domainError(code, "finish reason is invalid")
 	}
@@ -660,11 +793,253 @@ func validateModelRequestMessagesJSON(data json.RawMessage) error {
 		return invalidEventError("model request messages are required")
 	}
 	for _, message := range parent.Messages {
-		if err := validateStrictJSONObject(message, "role", "text"); err != nil {
+		if err := validateJSONObjectKeys(message, []string{"role", "text"}, []string{"toolCalls", "toolCallID", "name"}); err != nil {
+			return err
+		}
+		if err := validateOptionalObjectArray(message, "toolCalls", []string{"id", "name", "arguments"}); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func validateModelRequestToolsJSON(data json.RawMessage) error {
+	if err := validateOptionalObjectArray(data, "tools", []string{"name", "description", "inputSchema"}); err != nil {
+		return err
+	}
+	fields, err := jsonObjectFields(data)
+	if err != nil {
+		return err
+	}
+	raw, ok := fields["tools"]
+	if !ok {
+		return nil
+	}
+	var tools []json.RawMessage
+	if err := json.Unmarshal(raw, &tools); err != nil {
+		return invalidEventError("invalid event data")
+	}
+	for _, tool := range tools {
+		fields, err := jsonObjectFields(tool)
+		if err != nil {
+			return err
+		}
+		schema, ok := fields["inputSchema"]
+		if !ok || !isJSONObject(schema) {
+			return invalidEventError("tool inputSchema must be an object")
+		}
+	}
+	return nil
+}
+
+func validateToolSchemas(schemas []ToolSchema, code ErrorCode) error {
+	for _, schema := range schemas {
+		if !hasRequiredText(schema.Name) || !utf8.ValidString(schema.Description) {
+			return domainError(code, "tool schema name and description are invalid")
+		}
+		if !isJSONObject(schema.InputSchema) {
+			return domainError(code, "tool inputSchema must be an object")
+		}
+	}
+	return nil
+}
+
+func validateToolCallOffers(offers []ToolCallOffer, code ErrorCode) error {
+	seen := make(map[string]struct{}, len(offers))
+	for _, offer := range offers {
+		if !hasRequiredText(offer.ID) || !hasRequiredText(offer.Name) {
+			return domainError(code, "tool call id and name are required")
+		}
+		if !utf8.ValidString(offer.ID) || !utf8.ValidString(offer.Name) || !utf8.ValidString(offer.Arguments) {
+			return domainError(code, "tool call field must be valid UTF-8")
+		}
+		if _, exists := seen[offer.ID]; exists {
+			return domainError(code, "tool call ids must be unique")
+		}
+		seen[offer.ID] = struct{}{}
+	}
+	return nil
+}
+
+func validateToolCallStartedPayload(event ToolCallStarted, code ErrorCode) error {
+	if err := validateAssistantMessageIDs(event.TurnID, event.ItemID); err != nil {
+		if code == CodeInvalidCommand {
+			return domainError(CodeInvalidCommand, "turn ID is invalid")
+		}
+		return err
+	}
+	if !hasRequiredText(event.CallID) || !hasRequiredText(event.Name) {
+		return domainError(code, "tool call id and name are required")
+	}
+	if !utf8.ValidString(event.CallID) || !utf8.ValidString(event.Name) || !utf8.ValidString(event.Arguments) {
+		return domainError(code, "tool call field must be valid UTF-8")
+	}
+	if event.StepIndex == 0 {
+		return domainError(code, "tool call stepIndex must be 1-based")
+	}
+	return nil
+}
+
+func validateToolCallCompletedPayload(event ToolCallCompleted, code ErrorCode) error {
+	if err := validateAssistantMessageIDs(event.TurnID, event.ItemID); err != nil {
+		if code == CodeInvalidCommand {
+			return domainError(CodeInvalidCommand, "turn ID is invalid")
+		}
+		return err
+	}
+	if !hasRequiredText(event.CallID) || !utf8.ValidString(event.CallID) || !utf8.ValidString(event.Content) {
+		return domainError(code, "tool call completion fields are invalid")
+	}
+	return nil
+}
+
+func validateToolCallFailedPayload(event ToolCallFailed, code ErrorCode) error {
+	if err := validateAssistantMessageIDs(event.TurnID, event.ItemID); err != nil {
+		if code == CodeInvalidCommand {
+			return domainError(CodeInvalidCommand, "turn ID is invalid")
+		}
+		return err
+	}
+	if !hasRequiredText(event.CallID) || !hasRequiredText(event.Code) || !utf8.ValidString(event.CallID) || !utf8.ValidString(event.Message) {
+		return domainError(code, "tool call failure fields are invalid")
+	}
+	return nil
+}
+
+func validateToolCallInterruptedPayload(event ToolCallInterrupted, code ErrorCode) error {
+	if err := validateAssistantMessageIDs(event.TurnID, event.ItemID); err != nil {
+		if code == CodeInvalidCommand {
+			return domainError(CodeInvalidCommand, "turn ID is invalid")
+		}
+		return err
+	}
+	if !hasRequiredText(event.CallID) || !hasRequiredText(event.Code) || !utf8.ValidString(event.CallID) || !utf8.ValidString(event.Message) {
+		return domainError(code, "tool call interruption fields are invalid")
+	}
+	return nil
+}
+
+func validatePolicyDecisionPayload(event PolicyDecisionRecorded, code ErrorCode) error {
+	if err := validateAssistantMessageIDs(event.TurnID, event.ItemID); err != nil {
+		if code == CodeInvalidCommand {
+			return domainError(CodeInvalidCommand, "turn ID is invalid")
+		}
+		return err
+	}
+	switch event.Effect {
+	case PolicyEffectAllow, PolicyEffectDeny, PolicyEffectRequireApproval:
+	default:
+		return domainError(code, "policy effect is invalid")
+	}
+	if !hasRequiredText(event.CallID) || !hasRequiredText(event.Name) || !hasRequiredText(event.RuleID) || !hasRequiredText(event.Reason) {
+		return domainError(code, "policy decision fields are required")
+	}
+	if !utf8.ValidString(event.CallID) || !utf8.ValidString(event.Name) || !utf8.ValidString(event.RuleID) || !utf8.ValidString(event.Reason) {
+		return domainError(code, "policy decision field must be valid UTF-8")
+	}
+	return nil
+}
+
+func validateApprovalRequestedPayload(event ApprovalRequested, code ErrorCode) error {
+	if err := validateAssistantMessageIDs(event.TurnID, event.ItemID); err != nil {
+		if code == CodeInvalidCommand {
+			return domainError(CodeInvalidCommand, "turn ID is invalid")
+		}
+		return err
+	}
+	if _, err := ParseApprovalID(string(event.ApprovalID)); err != nil {
+		if code == CodeInvalidCommand {
+			return domainError(CodeInvalidCommand, "approval ID is invalid")
+		}
+		return invalidEventError("approval ID is invalid")
+	}
+	if !hasRequiredText(event.CallID) || !hasRequiredText(event.Name) || !hasRequiredText(event.Reason) {
+		return domainError(code, "approval request fields are required")
+	}
+	if !utf8.ValidString(event.CallID) || !utf8.ValidString(event.Name) || !utf8.ValidString(event.Reason) {
+		return domainError(code, "approval request field must be valid UTF-8")
+	}
+	return nil
+}
+
+func validateApprovalResolvedPayload(event ApprovalResolved, code ErrorCode) error {
+	if err := validateAssistantMessageIDs(event.TurnID, event.ItemID); err != nil {
+		if code == CodeInvalidCommand {
+			return domainError(CodeInvalidCommand, "turn ID is invalid")
+		}
+		return err
+	}
+	if _, err := ParseApprovalID(string(event.ApprovalID)); err != nil {
+		if code == CodeInvalidCommand {
+			return domainError(CodeInvalidCommand, "approval ID is invalid")
+		}
+		return invalidEventError("approval ID is invalid")
+	}
+	switch event.Decision {
+	case ApprovalDecisionGranted, ApprovalDecisionDenied, ApprovalDecisionTimeout, ApprovalDecisionCanceled:
+	default:
+		return domainError(code, "approval decision is invalid")
+	}
+	return nil
+}
+
+func validateOptionalObjectArray(data json.RawMessage, key string, elemKeys []string) error {
+	fields, err := jsonObjectFields(data)
+	if err != nil {
+		return err
+	}
+	raw, ok := fields[key]
+	if !ok {
+		return nil
+	}
+	if !isJSONArray(raw) {
+		return invalidEventError("JSON array is required")
+	}
+	var elements []json.RawMessage
+	if err := json.Unmarshal(raw, &elements); err != nil {
+		return invalidEventError("invalid event data")
+	}
+	for _, element := range elements {
+		if err := validateStrictJSONObject(element, elemKeys...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func jsonObjectFields(data json.RawMessage) (map[string]json.RawMessage, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	opening, err := decoder.Token()
+	if err != nil || opening != json.Delim('{') {
+		return nil, invalidEventError("JSON value must be an object")
+	}
+	fields := make(map[string]json.RawMessage)
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, invalidEventError("invalid JSON object key")
+		}
+		key, ok := token.(string)
+		if !ok {
+			return nil, invalidEventError("invalid JSON object key")
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return nil, invalidEventError("invalid JSON object value")
+		}
+		fields[key] = value
+	}
+	return fields, nil
+}
+
+func isJSONArray(data json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(data)
+	return len(trimmed) > 0 && trimmed[0] == '['
+}
+
+func isJSONObject(data json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(data)
+	return len(trimmed) > 0 && trimmed[0] == '{'
 }
 
 func invalidEventError(message string) error {

@@ -17,6 +17,7 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
 	"github.com/SongYii/open-code-harness/internal/harness/testkit"
+	"github.com/SongYii/open-code-harness/internal/harness/tools"
 )
 
 var (
@@ -56,6 +57,62 @@ func MustComposeHTTP(t *testing.T, store application.EventStore, cfg openaicompa
 		t.Fatal(err)
 	}
 	return service, model
+}
+
+func MustComposeHTTPTools(t *testing.T, store application.EventStore, cfg openaicompat.Config, files tools.FileSystem) (*application.Service, *openaicompat.Model) {
+	t.Helper()
+	if store == nil || files == nil {
+		t.Fatal("MustComposeHTTPTools: store and files are required")
+	}
+	cfg.AllowInsecureLoopback = allowInsecureLoopback(cfg.BaseURL)
+	model, err := openaicompat.New(cfg)
+	if err != nil {
+		t.Fatalf("openaicompat.New() error = %v", err)
+	}
+	identity := model.Identity()
+	if identity == (engine.RequestIdentity{}) {
+		t.Fatal("MustComposeHTTPTools: adapter identity is zero")
+	}
+	if err := identity.Validate(); err != nil {
+		t.Fatalf("MustComposeHTTPTools: adapter identity invalid: %v", err)
+	}
+	runner, err := engine.NewTurnRunner(model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := readFileCatalog(t)
+	appCfg := application.DefaultConfig()
+	copied := identity
+	appCfg.RequestIdentity = &copied
+	appCfg.Catalog = catalog
+	appCfg.Files = files
+	service, err := application.NewService(store, testkit.NewSequenceIDs(), testkit.FixedClock{Time: fixtureTime}, runner, fixtureAuthority, appCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service, model
+}
+
+func readFileCatalog(t *testing.T) *tools.Catalog {
+	t.Helper()
+	var specs []domain.ToolSpec
+	for _, spec := range tools.DefaultWorkspaceSpecs() {
+		if spec.Name == tools.NameReadFile {
+			specs = append(specs, spec)
+		}
+	}
+	catalog, err := tools.NewCatalog(specs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return catalog
+}
+
+func fixtureToolsConfig(rt http.RoundTripper) openaicompat.Config {
+	cfg := fixtureConfig(rt)
+	cfg.Profile = openaicompat.ProfileToolsSupported(8192, 4096)
+	cfg.MaxRequestBytes = 5 << 20
+	return cfg
 }
 
 func TestMustComposeHTTPSetsLoopbackForFixtureServer(t *testing.T) {

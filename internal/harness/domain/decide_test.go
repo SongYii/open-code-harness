@@ -661,6 +661,242 @@ func TestDecideInterruptAssistantTurnReturnsAtomicBatch(t *testing.T) {
 	}
 }
 
+func TestDecideCompleteAssistantMessageReturnsItemOnly(t *testing.T) {
+	t.Parallel()
+
+	state := runningAssistantItemForTest(t)
+	before := state.Clone()
+	offers := []ToolCallOffer{validToolCallOffer()}
+	events, err := HistoricalDecide(state, CompleteAssistantMessage{
+		SessionID: "session-1", TurnID: "turn-1", ItemID: "item-1", Text: "calling", ToolCalls: offers,
+	})
+	if err != nil {
+		t.Fatalf("Decide() error = %v", err)
+	}
+	want := []UncommittedEvent{{Event: AssistantMessageCompleted{
+		TurnID: "turn-1", ItemID: "item-1", Text: "calling", ToolCalls: offers,
+	}}}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("Decide() = %#v, want %#v", events, want)
+	}
+	if !reflect.DeepEqual(state, before) {
+		t.Fatal("Decide() mutated state")
+	}
+
+	next, err := HistoricalApply(state, recordedForTest(state, events[0].Event))
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if next.ActiveTurnID != "turn-1" || next.Turns["turn-1"].ActiveItemID != "" {
+		t.Fatalf("item-only complete left turn/item = %#v", next.Turns["turn-1"])
+	}
+}
+
+func TestDecideToolTurnCompositesAndBareTurnRejection(t *testing.T) {
+	t.Parallel()
+
+	state := runningToolItemForTest(t)
+	tests := []struct {
+		name  string
+		cmd   Command
+		want  []Event
+		count int
+	}{
+		{
+			name: "interrupt",
+			cmd: InterruptToolTurn{
+				SessionID: "session-1", TurnID: "turn-1", ItemID: "item-tool",
+				CallID: "call-1", Code: InterruptionCallerCanceled, Message: "",
+			},
+			want: []Event{
+				ToolCallInterrupted{TurnID: "turn-1", ItemID: "item-tool", CallID: "call-1", Code: InterruptionCallerCanceled, Message: ""},
+				TurnInterrupted{TurnID: "turn-1", Reason: InterruptionCallerCanceled},
+			},
+		},
+		{
+			name: "interrupt with approval",
+			cmd: InterruptToolTurn{
+				SessionID: "session-1", TurnID: "turn-1", ItemID: "item-tool",
+				CallID: "call-1", Code: InterruptionCallerCanceled, Message: "",
+				ApprovalID: "approval-1",
+			},
+			want: []Event{
+				ApprovalResolved{TurnID: "turn-1", ItemID: "item-tool", ApprovalID: "approval-1", Decision: ApprovalDecisionCanceled},
+				ToolCallInterrupted{TurnID: "turn-1", ItemID: "item-tool", CallID: "call-1", Code: InterruptionCallerCanceled, Message: ""},
+				TurnInterrupted{TurnID: "turn-1", Reason: InterruptionCallerCanceled},
+			},
+		},
+		{
+			name: "fail",
+			cmd: FailToolTurn{
+				SessionID: "session-1", TurnID: "turn-1", ItemID: "item-tool",
+				CallID: "call-1", Code: "runtime_error", Message: "executor failed",
+			},
+			want: []Event{
+				ToolCallFailed{TurnID: "turn-1", ItemID: "item-tool", CallID: "call-1", Code: "runtime_error", Message: "executor failed"},
+				TurnFailed{TurnID: "turn-1", Code: "runtime_error", Message: "executor failed"},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			events, err := HistoricalDecide(state, test.cmd)
+			if err != nil {
+				t.Fatalf("Decide() error = %v", err)
+			}
+			if len(events) != len(test.want) {
+				t.Fatalf("Decide() = %#v, want %d events", events, len(test.want))
+			}
+			for index, want := range test.want {
+				if !reflect.DeepEqual(events[index].Event, want) {
+					t.Fatalf("event %d = %#v, want %#v", index, events[index].Event, want)
+				}
+			}
+		})
+	}
+
+	for _, command := range []Command{
+		CompleteTurn{SessionID: "session-1", TurnID: "turn-1"},
+		FailTurn{SessionID: "session-1", TurnID: "turn-1", Code: "failed", Message: "failed"},
+		InterruptTurn{SessionID: "session-1", TurnID: "turn-1", Reason: "caller_canceled"},
+	} {
+		events, err := HistoricalDecide(state, command)
+		if events != nil || !IsCode(err, CodeItemAlreadyRunning) {
+			t.Fatalf("Decide(%T) = (%#v, %v), want %q", command, events, err, CodeItemAlreadyRunning)
+		}
+	}
+}
+
+func TestDecideToolCallLifecycleAndKindGuards(t *testing.T) {
+	t.Parallel()
+
+	idleTurn := runningTurnForTest(t)
+	started, err := HistoricalDecide(idleTurn, StartToolCall{
+		SessionID: idleTurn.ID, TurnID: "turn-1", ItemID: "item-tool",
+		CallID: "call-1", Name: "read_file", Arguments: `{"path":"README.md"}`, StepIndex: 1,
+	})
+	if err != nil {
+		t.Fatalf("StartToolCall error = %v", err)
+	}
+	if !reflect.DeepEqual(started, []UncommittedEvent{{Event: validToolCallStarted("turn-1", "item-tool")}}) {
+		t.Fatalf("StartToolCall = %#v", started)
+	}
+
+	tool := runningToolItemForTest(t)
+	complete, err := HistoricalDecide(tool, CompleteToolCall{
+		SessionID: tool.ID, TurnID: "turn-1", ItemID: "item-tool", CallID: "call-1", Content: "ok",
+	})
+	if err != nil {
+		t.Fatalf("CompleteToolCall error = %v", err)
+	}
+	if len(complete) != 1 {
+		t.Fatalf("CompleteToolCall = %#v, want one event", complete)
+	}
+	next, err := HistoricalApply(tool, recordedForTest(tool, complete[0].Event))
+	if err != nil {
+		t.Fatalf("Apply complete tool: %v", err)
+	}
+	if next.ActiveTurnID != "turn-1" || next.Turns["turn-1"].ActiveItemID != "" {
+		t.Fatalf("complete tool left %#v", next.Turns["turn-1"])
+	}
+
+	assistant := runningAssistantItemForTest(t)
+	if events, err := HistoricalDecide(assistant, CompleteToolCall{
+		SessionID: assistant.ID, TurnID: "turn-1", ItemID: "item-1", CallID: "call-1", Content: "ok",
+	}); events != nil || !IsCode(err, CodeInvalidCommand) {
+		t.Fatalf("CompleteToolCall on assistant = (%#v, %v)", events, err)
+	}
+	if events, err := HistoricalDecide(tool, CompleteAssistantTurn{
+		SessionID: tool.ID, TurnID: "turn-1", ItemID: "item-tool", Text: "done",
+	}); events != nil || !IsCode(err, CodeInvalidCommand) {
+		t.Fatalf("CompleteAssistantTurn on tool = (%#v, %v)", events, err)
+	}
+}
+
+func TestDecidePolicyAndApprovalAreVersionOnly(t *testing.T) {
+	t.Parallel()
+
+	state := runningToolItemForTest(t)
+	before := state.Clone()
+	tests := []struct {
+		name string
+		cmd  Command
+		want Event
+	}{
+		{
+			name: "policy",
+			cmd: RecordPolicyDecision{
+				SessionID: state.ID, TurnID: "turn-1", ItemID: "item-tool", CallID: "call-1",
+				Name: "read_file", Effect: PolicyEffectAllow, RuleID: "default.read", Reason: "in_workspace",
+			},
+			want: PolicyDecisionRecorded{
+				TurnID: "turn-1", ItemID: "item-tool", CallID: "call-1",
+				Name: "read_file", Effect: PolicyEffectAllow, RuleID: "default.read", Reason: "in_workspace",
+			},
+		},
+		{
+			name: "request",
+			cmd: RequestApproval{
+				SessionID: state.ID, TurnID: "turn-1", ItemID: "item-tool", ApprovalID: "approval-1",
+				CallID: "call-1", Name: "write_file", Reason: "write_requires_approval",
+			},
+			want: ApprovalRequested{
+				TurnID: "turn-1", ItemID: "item-tool", ApprovalID: "approval-1",
+				CallID: "call-1", Name: "write_file", Reason: "write_requires_approval",
+			},
+		},
+		{
+			name: "resolve",
+			cmd: ResolveApproval{
+				SessionID: state.ID, TurnID: "turn-1", ItemID: "item-tool",
+				ApprovalID: "approval-1", Decision: ApprovalDecisionGranted,
+			},
+			want: ApprovalResolved{TurnID: "turn-1", ItemID: "item-tool", ApprovalID: "approval-1", Decision: ApprovalDecisionGranted},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			events, err := HistoricalDecide(state, test.cmd)
+			if err != nil {
+				t.Fatalf("Decide() error = %v", err)
+			}
+			if !reflect.DeepEqual(events, []UncommittedEvent{{Event: test.want}}) {
+				t.Fatalf("Decide() = %#v, want %#v", events, test.want)
+			}
+			if !reflect.DeepEqual(state, before) {
+				t.Fatal("Decide() mutated state")
+			}
+		})
+	}
+}
+
+func TestDecideRecordModelRequestIsVersionOnly(t *testing.T) {
+	t.Parallel()
+
+	state := runningAssistantItemForTest(t)
+	event := validModelRequestRecorded("turn-1", "item-1", "inspect repository")
+	events, err := HistoricalDecide(state, RecordModelRequest{SessionID: state.ID, ModelRequestRecorded: event})
+	if err != nil {
+		t.Fatalf("Decide() error = %v", err)
+	}
+	if !reflect.DeepEqual(events, []UncommittedEvent{{Event: event}}) {
+		t.Fatalf("Decide() = %#v", events)
+	}
+}
+
+func TestCheckStartAssistantTurnEligibilityRejectsRunningToolItem(t *testing.T) {
+	t.Parallel()
+
+	state := runningToolItemForTest(t)
+	eligibilityErr := historicalCheckStartAssistantTurnEligibility(state)
+	_, decideErr := HistoricalDecide(state, StartAssistantTurn{
+		SessionID: state.ID, TurnID: "turn-new", ItemID: "item-new", Input: "inspect repository",
+	})
+	if !IsCode(eligibilityErr, CodeItemAlreadyRunning) || !IsCode(decideErr, CodeItemAlreadyRunning) {
+		t.Fatalf("eligibility = %v, decide = %v, want %q", eligibilityErr, decideErr, CodeItemAlreadyRunning)
+	}
+}
+
 func TestDecideAssistantCommandsExposeStableMetadata(t *testing.T) {
 	t.Parallel()
 
@@ -670,10 +906,20 @@ func TestDecideAssistantCommandsExposeStableMetadata(t *testing.T) {
 	}{
 		{command: StartAssistantTurn{SessionID: "session-1"}, name: "assistant.turn.start"},
 		{command: StartAssistantMessage{SessionID: "session-1"}, name: "assistant.message.start"},
+		{command: CompleteAssistantMessage{SessionID: "session-1"}, name: "assistant.message.complete"},
 		{command: CompleteAssistantTurn{SessionID: "session-1"}, name: "assistant.turn.complete"},
 		{command: FailAssistantTurn{SessionID: "session-1"}, name: "assistant.turn.fail"},
 		{command: InterruptAssistantTurn{SessionID: "session-1"}, name: "assistant.turn.interrupt"},
 		{command: RecordModelUsage{SessionID: "session-1"}, name: "model.usage.record"},
+		{command: RecordModelRequest{SessionID: "session-1"}, name: "model.request.record"},
+		{command: StartToolCall{SessionID: "session-1"}, name: "tool.call.start"},
+		{command: CompleteToolCall{SessionID: "session-1"}, name: "tool.call.complete"},
+		{command: FailToolCall{SessionID: "session-1"}, name: "tool.call.fail"},
+		{command: InterruptToolTurn{SessionID: "session-1"}, name: "tool.turn.interrupt"},
+		{command: FailToolTurn{SessionID: "session-1"}, name: "tool.turn.fail"},
+		{command: RecordPolicyDecision{SessionID: "session-1"}, name: "policy.decision.record"},
+		{command: RequestApproval{SessionID: "session-1"}, name: "approval.request"},
+		{command: ResolveApproval{SessionID: "session-1"}, name: "approval.resolve"},
 	}
 
 	for _, test := range tests {
@@ -899,6 +1145,16 @@ func terminalAssistantItemForTest(t *testing.T) HistoricalSession {
 	next, err := HistoricalApply(state, recordedForTest(state, AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-1", Text: "done"}))
 	if err != nil {
 		t.Fatalf("complete assistant item: %v", err)
+	}
+	return next
+}
+
+func runningToolItemForTest(t *testing.T) HistoricalSession {
+	t.Helper()
+	state := runningTurnForTest(t)
+	next, err := HistoricalApply(state, recordedForTest(state, validToolCallStarted("turn-1", "item-tool")))
+	if err != nil {
+		t.Fatalf("start tool item: %v", err)
 	}
 	return next
 }

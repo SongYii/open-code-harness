@@ -542,6 +542,117 @@ func TestRecordedEventRejectsWhitespaceOnlyTurnInput(t *testing.T) {
 	}
 }
 
+func TestAllowedVersusRequiredCodecKeys(t *testing.T) {
+	t.Parallel()
+
+	prefix := `{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-11T01:02:03Z","type":"`
+	oldCompleted := prefix + EventAssistantMessageCompleted + `","data":{"turnID":"turn-1","itemID":"item-1","text":"hello"}}`
+	decoded, err := UnmarshalRecordedEvent([]byte(oldCompleted))
+	if err != nil {
+		t.Fatalf("old completed without toolCalls error = %v", err)
+	}
+	if calls := decoded.Event.(AssistantMessageCompleted).ToolCalls; calls != nil {
+		t.Fatalf("old completed toolCalls = %#v, want nil", calls)
+	}
+
+	withCalls := prefix + EventAssistantMessageCompleted + `","data":{"turnID":"turn-1","itemID":"item-1","text":"hello","toolCalls":[{"id":"call-1","name":"read_file","arguments":"{}"}]}}`
+	decoded, err = UnmarshalRecordedEvent([]byte(withCalls))
+	if err != nil {
+		t.Fatalf("completed with toolCalls error = %v", err)
+	}
+	if got := decoded.Event.(AssistantMessageCompleted).ToolCalls; len(got) != 1 || got[0].ID != "call-1" {
+		t.Fatalf("decoded toolCalls = %#v", got)
+	}
+
+	oldRequest := prefix + EventModelRequestRecorded + `","data":{"turnID":"turn-1","itemID":"item-1","adapterFamily":"openai_compat","modelID":"test-model","endpointID":"api.example.com","nativeTools":"unsupported","images":"unsupported","structuredOutput":"unsupported","reasoningFields":"unsupported","promptCache":"unsupported","contextWindowTokens":0,"maxOutputTokens":0,"includeUsage":true,"maxTokensField":"","messages":[{"role":"user","text":"hello"}]}}`
+	if _, err := UnmarshalRecordedEvent([]byte(oldRequest)); err != nil {
+		t.Fatalf("old request without tools error = %v", err)
+	}
+
+	withTools := prefix + EventModelRequestRecorded + `","data":{"turnID":"turn-1","itemID":"item-1","adapterFamily":"openai_compat","modelID":"test-model","endpointID":"api.example.com","nativeTools":"supported","images":"unsupported","structuredOutput":"unsupported","reasoningFields":"unsupported","promptCache":"unsupported","contextWindowTokens":0,"maxOutputTokens":0,"includeUsage":true,"maxTokensField":"","messages":[{"role":"assistant","text":"hi","toolCalls":[{"id":"call-1","name":"read_file","arguments":"{}"}]},{"role":"tool","text":"ok","toolCallID":"call-1","name":"read_file"}],"tools":[{"name":"read_file","description":"read","inputSchema":{"type":"object"}}]}}`
+	decoded, err = UnmarshalRecordedEvent([]byte(withTools))
+	if err != nil {
+		t.Fatalf("request with tools/tool role error = %v", err)
+	}
+	got := decoded.Event.(ModelRequestRecorded)
+	if len(got.Tools) != 1 || got.Messages[1].Role != PromptRoleTool || got.Messages[1].ToolCallID != "call-1" {
+		t.Fatalf("decoded request = %#v", got)
+	}
+
+	usage := prefix + EventModelUsageRecorded + `","data":{"turnID":"turn-1","itemID":"item-1","inputTokens":1,"outputTokens":2,"cachedInputTokens":0,"latencyMs":3,"finishReason":"tool_calls","providerRequestID":"req-1"}}`
+	decoded, err = UnmarshalRecordedEvent([]byte(usage))
+	if err != nil {
+		t.Fatalf("usage finishReason tool_calls error = %v", err)
+	}
+	if decoded.Event.(ModelUsageRecorded).FinishReason != FinishReasonToolCalls {
+		t.Fatalf("finishReason = %q", decoded.Event.(ModelUsageRecorded).FinishReason)
+	}
+
+	rejects := []string{
+		prefix + EventAssistantMessageCompleted + `","data":{"turnID":"turn-1","itemID":"item-1","text":"hello","extra":true}}`,
+		prefix + EventAssistantMessageCompleted + `","data":{"turnID":"turn-1","itemID":"item-1","text":"hello","toolCalls":[{"id":"call-1","name":"read_file","arguments":"{}","extra":true}]}}`,
+		prefix + EventModelRequestRecorded + `","data":{"turnID":"turn-1","itemID":"item-1","adapterFamily":"","modelID":"","endpointID":"","nativeTools":"","images":"","structuredOutput":"","reasoningFields":"","promptCache":"","contextWindowTokens":0,"maxOutputTokens":0,"includeUsage":false,"maxTokensField":"","messages":[{"role":"user","text":"hello"}],"extra":true}}`,
+		prefix + EventModelRequestRecorded + `","data":{"turnID":"turn-1","itemID":"item-1","adapterFamily":"","modelID":"","endpointID":"","nativeTools":"","images":"","structuredOutput":"","reasoningFields":"","promptCache":"","contextWindowTokens":0,"maxOutputTokens":0,"includeUsage":false,"maxTokensField":"","messages":[{"role":"user","text":"hello"}],"tools":[{"name":"read_file","description":"","inputSchema":{},"extra":true}]}}`,
+	}
+	for _, input := range rejects {
+		if _, err := UnmarshalRecordedEvent([]byte(input)); !IsCode(err, CodeInvalidEvent) {
+			t.Fatalf("UnmarshalRecordedEvent() error = %v, want %q for %s", err, CodeInvalidEvent, input)
+		}
+	}
+}
+
+func TestToolCallEventJSONRoundTripsCanonically(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		event Event
+		want  string
+	}{
+		{name: "started", event: validToolCallStarted("turn-1", "item-1"), want: `{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-11T01:02:03Z","type":"tool.call.started","data":{"turnID":"turn-1","itemID":"item-1","callID":"call-1","name":"read_file","arguments":"{\"path\":\"README.md\"}","stepIndex":1}}`},
+		{name: "completed", event: ToolCallCompleted{TurnID: "turn-1", ItemID: "item-1", CallID: "call-1", Content: "ok", Truncated: true}, want: `{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-11T01:02:03Z","type":"tool.call.completed","data":{"turnID":"turn-1","itemID":"item-1","callID":"call-1","content":"ok","truncated":true}}`},
+		{name: "failed", event: ToolCallFailed{TurnID: "turn-1", ItemID: "item-1", CallID: "call-1", Code: "policy_denied", Message: "policy denied this tool"}, want: `{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-11T01:02:03Z","type":"tool.call.failed","data":{"turnID":"turn-1","itemID":"item-1","callID":"call-1","code":"policy_denied","message":"policy denied this tool"}}`},
+		{name: "interrupted", event: ToolCallInterrupted{TurnID: "turn-1", ItemID: "item-1", CallID: "call-1", Code: InterruptionCallerCanceled, Message: ""}, want: `{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-11T01:02:03Z","type":"tool.call.interrupted","data":{"turnID":"turn-1","itemID":"item-1","callID":"call-1","code":"caller_canceled","message":""}}`},
+		{name: "policy", event: PolicyDecisionRecorded{TurnID: "turn-1", ItemID: "item-1", CallID: "call-1", Name: "read_file", Effect: PolicyEffectAllow, RuleID: "default.read", Reason: "in_workspace"}, want: `{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-11T01:02:03Z","type":"policy.decision.recorded","data":{"turnID":"turn-1","itemID":"item-1","callID":"call-1","name":"read_file","effect":"allow","ruleID":"default.read","reason":"in_workspace"}}`},
+		{name: "approval requested", event: ApprovalRequested{TurnID: "turn-1", ItemID: "item-1", ApprovalID: "approval-1", CallID: "call-1", Name: "write_file", Reason: "write_requires_approval"}, want: `{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-11T01:02:03Z","type":"approval.requested","data":{"turnID":"turn-1","itemID":"item-1","approvalID":"approval-1","callID":"call-1","name":"write_file","reason":"write_requires_approval"}}`},
+		{name: "approval resolved", event: ApprovalResolved{TurnID: "turn-1", ItemID: "item-1", ApprovalID: "approval-1", Decision: ApprovalDecisionGranted}, want: `{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-11T01:02:03Z","type":"approval.resolved","data":{"turnID":"turn-1","itemID":"item-1","approvalID":"approval-1","decision":"granted"}}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			record := codecTestRecord(test.event)
+			encoded, err := MarshalRecordedEvent(record)
+			if err != nil {
+				t.Fatalf("MarshalRecordedEvent() error = %v", err)
+			}
+			if string(encoded) != test.want {
+				t.Fatalf("encoded = %s\nwant = %s", encoded, test.want)
+			}
+			decoded, err := UnmarshalRecordedEvent(encoded)
+			if err != nil {
+				t.Fatalf("UnmarshalRecordedEvent() error = %v", err)
+			}
+			if !reflect.DeepEqual(decoded, record) {
+				t.Fatalf("decoded = %#v, want %#v", decoded, record)
+			}
+		})
+	}
+}
+
+func TestToolCallInterruptedJSONRejectsNonStrictPayloads(t *testing.T) {
+	t.Parallel()
+
+	prefix := `{"schemaVersion":1,"id":"event-1","commandId":"command-1","sessionId":"session-1","sequence":1,"occurredAt":"2026-08-11T01:02:03Z","type":"` + EventToolCallInterrupted + `","data":`
+	for _, data := range []string{
+		`{"turnID":"turn-1","itemID":"item-1","callID":"call-1","code":"caller_canceled","message":"","extra":true}`,
+		`{"turnID":"turn-1","itemID":"item-1","callID":"call-1","code":"caller_canceled"}`,
+		`{"turnID":"turn-1","itemID":"item-1","callID":"call-1","code":"caller_canceled","message":"","message":"x"}`,
+	} {
+		if _, err := UnmarshalRecordedEvent([]byte(prefix + data + `}`)); !IsCode(err, CodeInvalidEvent) {
+			t.Fatalf("UnmarshalRecordedEvent(%s) error = %v, want %q", data, err, CodeInvalidEvent)
+		}
+	}
+}
+
 func TestAssistantMessageEventJSONRoundTripsCanonically(t *testing.T) {
 	t.Parallel()
 

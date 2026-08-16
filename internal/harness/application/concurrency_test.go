@@ -479,6 +479,9 @@ func (ids *prefixedIDs) NewAppendID() (domain.AppendID, error) {
 func (ids *prefixedIDs) NewEventID() (domain.EventID, error) {
 	return domain.EventID(ids.next("event", &ids.event)), nil
 }
+func (ids *prefixedIDs) NewApprovalID() (domain.ApprovalID, error) {
+	return domain.ApprovalID(ids.next("approval", &ids.event)), nil
+}
 
 type blockingAcceptanceModel struct {
 	*acceptanceSuccessModel

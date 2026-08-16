@@ -60,6 +60,17 @@ func validModelUsageRecorded(turnID TurnID, itemID ItemID) ModelUsageRecorded {
 	}
 }
 
+func validToolCallStarted(turnID TurnID, itemID ItemID) ToolCallStarted {
+	return ToolCallStarted{
+		TurnID: turnID, ItemID: itemID, CallID: "call-1",
+		Name: "read_file", Arguments: `{"path":"README.md"}`, StepIndex: 1,
+	}
+}
+
+func validToolCallOffer() ToolCallOffer {
+	return ToolCallOffer{ID: "call-1", Name: "read_file", Arguments: `{"path":"README.md"}`}
+}
+
 func runningTurnForTest(t *testing.T) HistoricalSession {
 	t.Helper()
 	state := activeSessionForTest(t)

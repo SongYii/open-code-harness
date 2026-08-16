@@ -37,6 +37,7 @@ func TestIDParsersRejectInvalidUTF8(t *testing.T) {
 		{name: "turn", parse: func(value string) error { _, err := ParseTurnID(value); return err }},
 		{name: "command", parse: func(value string) error { _, err := ParseCommandID(value); return err }},
 		{name: "event", parse: func(value string) error { _, err := ParseEventID(value); return err }},
+		{name: "approval", parse: func(value string) error { _, err := ParseApprovalID(value); return err }},
 	}
 
 	for _, test := range tests {
@@ -67,6 +68,23 @@ func TestParseItemIDRejectsBlankPaddedAndInvalidUTF8(t *testing.T) {
 		_, err := ParseItemID(input)
 		if !IsCode(err, CodeInvalidID) {
 			t.Fatalf("ParseItemID(%q) error = %v, want code %q", input, err, CodeInvalidID)
+		}
+	}
+}
+
+func TestParseApprovalID(t *testing.T) {
+	t.Parallel()
+
+	got, err := ParseApprovalID("approval-1")
+	if err != nil {
+		t.Fatalf("ParseApprovalID() error = %v", err)
+	}
+	if got != ApprovalID("approval-1") {
+		t.Fatalf("ParseApprovalID() = %q, want %q", got, ApprovalID("approval-1"))
+	}
+	for _, input := range []string{"", "   ", " approval-1", "approval-1 ", "approval-\xff"} {
+		if _, err := ParseApprovalID(input); !IsCode(err, CodeInvalidID) {
+			t.Fatalf("ParseApprovalID(%q) error = %v, want code %q", input, err, CodeInvalidID)
 		}
 	}
 }

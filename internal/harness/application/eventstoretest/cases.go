@@ -326,6 +326,14 @@ func testLimitsCopiesCancellationAndCorruption(t *testing.T, factory Factory) {
 	} else {
 		requireCode(t, err, application.StoreCodeDomainIdentityConflict)
 	}
+	if _, err := h.Store.Append(context.Background(), v2Append("append-history-tool-start", "session-history", 7, "command-history-tool-start", domain.TurnStarted{TurnID: "turn-tool-history", Input: "tool"}, domain.ToolCallStarted{TurnID: "turn-tool-history", ItemID: "item-tool-history", CallID: "call-1", Name: "read_file", Arguments: `{"path":"README.md"}`, StepIndex: 1}, domain.ToolCallCompleted{TurnID: "turn-tool-history", ItemID: "item-tool-history", CallID: "call-1", Content: "ok", Truncated: false}, domain.TurnCompleted{TurnID: "turn-tool-history"})); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Store.Append(context.Background(), v2Append("append-history-tool-duplicate", "session-history", 11, "command-history-tool-duplicate", domain.TurnStarted{TurnID: "turn-tool-new", Input: "again"}, domain.ToolCallStarted{TurnID: "turn-tool-new", ItemID: "item-tool-history", CallID: "call-2", Name: "read_file", Arguments: `{}`, StepIndex: 1})); err == nil {
+		t.Fatal("historical tool ItemID reuse succeeded")
+	} else {
+		requireCode(t, err, application.StoreCodeDomainIdentityConflict)
+	}
 	testAllIndexRollback(t, h)
 }
 

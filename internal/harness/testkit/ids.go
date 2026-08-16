@@ -13,12 +13,13 @@ import (
 type SequenceIDs struct {
 	mu sync.Mutex
 
-	sessions uint64
-	turns    uint64
-	items    uint64
-	commands uint64
-	appends  uint64
-	events   uint64
+	sessions  uint64
+	turns     uint64
+	items     uint64
+	commands  uint64
+	appends   uint64
+	events    uint64
+	approvals uint64
 }
 
 var _ application.IDGenerator = (*SequenceIDs)(nil)
@@ -65,4 +66,11 @@ func (ids *SequenceIDs) NewEventID() (domain.EventID, error) {
 	defer ids.mu.Unlock()
 	ids.events++
 	return domain.EventID(fmt.Sprintf("event-%d", ids.events)), nil
+}
+
+func (ids *SequenceIDs) NewApprovalID() (domain.ApprovalID, error) {
+	ids.mu.Lock()
+	defer ids.mu.Unlock()
+	ids.approvals++
+	return domain.ApprovalID(fmt.Sprintf("approval-%d", ids.approvals)), nil
 }

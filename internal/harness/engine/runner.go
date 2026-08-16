@@ -18,10 +18,12 @@ type RunRequest struct {
 }
 
 // RunResult is the exactly concatenated assistant output from a completed run.
-// Stats is copied on success, fail, and cancel.
+// ToolCalls are the assembled calls in stream order. Stats is copied on
+// success, fail, and cancel. Fail and cancel clear Text, ToolCalls, and FinishReason.
 type RunResult struct {
-	Text  string
-	Stats AttemptStats
+	Text      string
+	ToolCalls []ToolCall
+	Stats     AttemptStats
 }
 
 // TurnRunner synchronously consumes one ModelStream at a time per Run call.
@@ -75,6 +77,9 @@ func (runner *TurnRunner) Run(ctx context.Context, request RunRequest, emitter *
 	}
 
 	var builder strings.Builder
+	var toolCalls []ToolCall
+	var seenCallIDs map[string]struct{}
+	sawToolCall := false
 	for {
 		if cause := ctx.Err(); cause != nil {
 			return runner.fail(cancel, stream, engineError(CodeCanceled, cause))
@@ -98,7 +103,7 @@ func (runner *TurnRunner) Run(ctx context.Context, request RunRequest, emitter *
 
 		switch event.Type {
 		case StreamEventTextDelta:
-			if event.Text == "" || !utf8.ValidString(event.Text) || event.Usage != nil {
+			if sawToolCall || event.ToolCall != nil || event.Text == "" || !utf8.ValidString(event.Text) || event.Usage != nil {
 				return runner.fail(cancel, stream, engineError(CodeInvalidStream, nil))
 			}
 			if len(event.Text) > request.MaxAssistantBytes-builder.Len() {
@@ -111,11 +116,35 @@ func (runner *TurnRunner) Run(ctx context.Context, request RunRequest, emitter *
 				return runner.fail(cancel, stream, engineError(CodeDelivery, errorCause(err, CodeDelivery)))
 			}
 			builder.WriteString(event.Text)
-		case StreamEventCompleted:
-			if event.Text != "" {
+		case StreamEventToolCall:
+			call, ok := toolCallFromEvent(event)
+			if !ok {
 				return runner.fail(cancel, stream, engineError(CodeInvalidStream, nil))
 			}
-			return runner.succeed(ctx, cancel, stream, RunResult{Text: builder.String(), Stats: AttemptStats{Usage: copyTokenUsage(event.Usage)}})
+			if seenCallIDs == nil {
+				seenCallIDs = make(map[string]struct{})
+			}
+			if _, exists := seenCallIDs[call.ID]; exists {
+				return runner.fail(cancel, stream, engineError(CodeInvalidStream, nil))
+			}
+			if err := emitter.Emit(streamCtx, RuntimePayload{Type: RuntimeModelToolCall, Text: call.Name + ":" + call.ID}); err != nil {
+				if cause := ctx.Err(); cause != nil {
+					return runner.fail(cancel, stream, engineError(CodeCanceled, cause))
+				}
+				return runner.fail(cancel, stream, engineError(CodeDelivery, errorCause(err, CodeDelivery)))
+			}
+			seenCallIDs[call.ID] = struct{}{}
+			sawToolCall = true
+			toolCalls = append(toolCalls, call)
+		case StreamEventCompleted:
+			if event.Text != "" || event.ToolCall != nil {
+				return runner.fail(cancel, stream, engineError(CodeInvalidStream, nil))
+			}
+			return runner.succeed(ctx, cancel, stream, RunResult{
+				Text:      builder.String(),
+				ToolCalls: toolCalls,
+				Stats:     AttemptStats{Usage: copyTokenUsage(event.Usage)},
+			})
 		default:
 			return runner.fail(cancel, stream, engineError(CodeInvalidStream, nil))
 		}
@@ -137,6 +166,9 @@ func (runner *TurnRunner) succeed(ctx context.Context, cancel context.CancelFunc
 	if result.Stats.Usage != nil {
 		stats.Usage = result.Stats.Usage
 	}
+	if len(result.ToolCalls) > 0 {
+		stats.FinishReason = domain.FinishReasonToolCalls
+	}
 	cancel()
 	closeErr := stream.Close()
 	if cause := ctx.Err(); cause != nil {
@@ -151,7 +183,31 @@ func (runner *TurnRunner) succeed(ctx context.Context, cancel context.CancelFunc
 		stats.FinishReason = ""
 		return RunResult{Stats: stats}, engineError(CodeModelStream, errorCause(closeErr, CodeModelStream))
 	}
-	return RunResult{Text: result.Text, Stats: stats}, nil
+	return RunResult{Text: result.Text, ToolCalls: result.ToolCalls, Stats: stats}, nil
+}
+
+func toolCallFromEvent(event StreamEvent) (ToolCall, bool) {
+	if event.Text != "" || event.Usage != nil || event.ToolCall == nil {
+		return ToolCall{}, false
+	}
+	call := *event.ToolCall
+	if !validToolCall(call) {
+		return ToolCall{}, false
+	}
+	return call, true
+}
+
+func validToolCall(call ToolCall) bool {
+	if strings.TrimSpace(call.ID) == "" || len(call.ID) > maxToolCallIDBytes || !utf8.ValidString(call.ID) {
+		return false
+	}
+	if strings.TrimSpace(call.Name) == "" || !utf8.ValidString(call.Name) {
+		return false
+	}
+	if !utf8.ValidString(call.Arguments) || len(call.Arguments) > maxToolCallArgumentsBytes {
+		return false
+	}
+	return true
 }
 
 func classifiedEngineError(err error) *Error {

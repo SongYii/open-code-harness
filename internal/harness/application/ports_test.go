@@ -35,12 +35,13 @@ func (testClock) Now() time.Time { return time.Time{} }
 
 type testIDs struct{}
 
-func (testIDs) NewSessionID() (domain.SessionID, error) { return "", nil }
-func (testIDs) NewTurnID() (domain.TurnID, error)       { return "", nil }
-func (testIDs) NewItemID() (domain.ItemID, error)       { return "", nil }
-func (testIDs) NewCommandID() (domain.CommandID, error) { return "", nil }
-func (testIDs) NewAppendID() (domain.AppendID, error)   { return "", nil }
-func (testIDs) NewEventID() (domain.EventID, error)     { return "", nil }
+func (testIDs) NewSessionID() (domain.SessionID, error)   { return "", nil }
+func (testIDs) NewTurnID() (domain.TurnID, error)         { return "", nil }
+func (testIDs) NewItemID() (domain.ItemID, error)         { return "", nil }
+func (testIDs) NewCommandID() (domain.CommandID, error)   { return "", nil }
+func (testIDs) NewAppendID() (domain.AppendID, error)     { return "", nil }
+func (testIDs) NewEventID() (domain.EventID, error)       { return "", nil }
+func (testIDs) NewApprovalID() (domain.ApprovalID, error) { return "", nil }
 
 func TestApplicationPortsHaveConsumerOwnedSignatures(t *testing.T) {
 	var _ EventStore = testEventStore{}
@@ -208,10 +209,11 @@ func TestErrorCategoriesAreStable(t *testing.T) {
 		CategoryDelivery:    "delivery",
 		CategoryPersistence: "persistence",
 		CategoryInternal:    "internal",
+		CategoryPolicy:      "policy",
 	}
 
-	if len(tests) != 8 {
-		t.Fatalf("category count = %d, want 8", len(tests))
+	if len(tests) != 9 {
+		t.Fatalf("category count = %d, want 9", len(tests))
 	}
 	for category, want := range tests {
 		if got := string(category); got != want {

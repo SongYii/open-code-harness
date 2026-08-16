@@ -158,12 +158,52 @@ func HistoricalApply(state HistoricalSession, record RecordedEvent) (HistoricalS
 		if err := validateModelRequestPayload(event, CodeInvalidEvent); err != nil {
 			return HistoricalSession{}, err
 		}
-		return historical_applyVersionOnlyRunningItem(state, record, event.TurnID, event.ItemID, "model request timestamp precedes item start")
+		return historical_applyVersionOnlyRunningItemKind(state, record, event.TurnID, event.ItemID, ItemKindAssistantMessage, "model request timestamp precedes item start")
 	case ModelUsageRecorded:
 		if err := validateModelUsagePayload(event, CodeInvalidEvent); err != nil {
 			return HistoricalSession{}, err
 		}
-		return historical_applyVersionOnlyRunningItem(state, record, event.TurnID, event.ItemID, "model usage timestamp precedes item start")
+		return historical_applyVersionOnlyRunningItemKind(state, record, event.TurnID, event.ItemID, ItemKindAssistantMessage, "model usage timestamp precedes item start")
+	case ToolCallStarted:
+		return historical_applyToolCallStarted(state, record, event)
+	case ToolCallCompleted:
+		if err := validateToolCallCompletedPayload(event, CodeInvalidEvent); err != nil {
+			return HistoricalSession{}, err
+		}
+		return historical_applyTerminalToolCall(state, record, event.TurnID, event.ItemID, ItemStatusCompleted, ToolCallPayload{CallID: event.CallID, Content: event.Content, Truncated: event.Truncated}, nil)
+	case ToolCallFailed:
+		if err := validateToolCallFailedPayload(event, CodeInvalidEvent); err != nil {
+			return HistoricalSession{}, err
+		}
+		terminal, err := historical_validateItemTerminal(event.Code, event.Message)
+		if err != nil {
+			return HistoricalSession{}, err
+		}
+		return historical_applyTerminalToolCall(state, record, event.TurnID, event.ItemID, ItemStatusFailed, ToolCallPayload{CallID: event.CallID}, terminal)
+	case ToolCallInterrupted:
+		if err := validateToolCallInterruptedPayload(event, CodeInvalidEvent); err != nil {
+			return HistoricalSession{}, err
+		}
+		terminal, err := historical_validateItemTerminal(event.Code, event.Message)
+		if err != nil {
+			return HistoricalSession{}, err
+		}
+		return historical_applyTerminalToolCall(state, record, event.TurnID, event.ItemID, ItemStatusInterrupted, ToolCallPayload{CallID: event.CallID}, terminal)
+	case PolicyDecisionRecorded:
+		if err := validatePolicyDecisionPayload(event, CodeInvalidEvent); err != nil {
+			return HistoricalSession{}, err
+		}
+		return historical_applyVersionOnlyRunningItemKind(state, record, event.TurnID, event.ItemID, ItemKindToolCall, "policy decision timestamp precedes item start")
+	case ApprovalRequested:
+		if err := validateApprovalRequestedPayload(event, CodeInvalidEvent); err != nil {
+			return HistoricalSession{}, err
+		}
+		return historical_applyVersionOnlyRunningItemKind(state, record, event.TurnID, event.ItemID, ItemKindToolCall, "approval request timestamp precedes item start")
+	case ApprovalResolved:
+		if err := validateApprovalResolvedPayload(event, CodeInvalidEvent); err != nil {
+			return HistoricalSession{}, err
+		}
+		return historical_applyVersionOnlyRunningItemKind(state, record, event.TurnID, event.ItemID, ItemKindToolCall, "approval resolution timestamp precedes item start")
 	default:
 		return HistoricalSession{}, domainError(CodeInvalidEvent, "event type cannot be applied")
 	}
@@ -337,7 +377,11 @@ func historical_applyTerminalTurn(state HistoricalSession, record RecordedEvent,
 }
 
 func historical_applyVersionOnlyRunningItem(state HistoricalSession, record RecordedEvent, turnID TurnID, itemID ItemID, beforeStartMessage string) (HistoricalSession, error) {
-	_, item, err := historical_requireRunningItemForEvent(state, record.SessionID, turnID, itemID)
+	return historical_applyVersionOnlyRunningItemKind(state, record, turnID, itemID, "", beforeStartMessage)
+}
+
+func historical_applyVersionOnlyRunningItemKind(state HistoricalSession, record RecordedEvent, turnID TurnID, itemID ItemID, kind ItemKind, beforeStartMessage string) (HistoricalSession, error) {
+	_, item, err := historical_requireRunningItemKindForEvent(state, record.SessionID, turnID, itemID, kind)
 	if err != nil {
 		return HistoricalSession{}, err
 	}
@@ -396,7 +440,10 @@ func historical_applyAssistantMessageCompleted(state HistoricalSession, record R
 	if !utf8.ValidString(event.Text) {
 		return HistoricalSession{}, domainError(CodeInvalidEvent, "assistant message text must be valid UTF-8")
 	}
-	return historical_applyTerminalAssistantMessage(state, record, event.TurnID, event.ItemID, ItemStatusCompleted, AssistantMessagePayload{Text: event.Text}, nil)
+	if err := validateToolCallOffers(event.ToolCalls, CodeInvalidEvent); err != nil {
+		return HistoricalSession{}, err
+	}
+	return historical_applyTerminalAssistantMessage(state, record, event.TurnID, event.ItemID, ItemStatusCompleted, AssistantMessagePayload{Text: event.Text, ToolCalls: cloneToolCallOffers(event.ToolCalls)}, nil)
 }
 
 func historical_applyAssistantMessageFailed(state HistoricalSession, record RecordedEvent, event AssistantMessageFailed) (HistoricalSession, error) {
@@ -415,8 +462,81 @@ func historical_applyAssistantMessageInterrupted(state HistoricalSession, record
 	return historical_applyTerminalAssistantMessage(state, record, event.TurnID, event.ItemID, ItemStatusInterrupted, AssistantMessagePayload{}, terminal)
 }
 
+func historical_applyToolCallStarted(state HistoricalSession, record RecordedEvent, event ToolCallStarted) (HistoricalSession, error) {
+	turn, err := historical_requireRunningTurnForEvent(state, record.SessionID, event.TurnID)
+	if err != nil {
+		return HistoricalSession{}, err
+	}
+	if err := validateToolCallStartedPayload(event, CodeInvalidEvent); err != nil {
+		return HistoricalSession{}, err
+	}
+	if turn.ActiveItemID != "" {
+		return HistoricalSession{}, domainError(CodeInvalidEvent, "an item is already running")
+	}
+	if _, exists := turn.Items[event.ItemID]; exists {
+		return HistoricalSession{}, domainError(CodeInvalidEvent, "item already exists")
+	}
+	if record.OccurredAt.Before(turn.StartedAt) {
+		return HistoricalSession{}, domainError(CodeInvalidEvent, "item start timestamp precedes turn start")
+	}
+	for _, item := range turn.Items {
+		if !item.EndedAt.IsZero() && record.OccurredAt.Before(item.EndedAt) {
+			return HistoricalSession{}, domainError(CodeInvalidEvent, "item start timestamp precedes an item end")
+		}
+	}
+
+	next := state.Clone()
+	turn = next.Turns[event.TurnID]
+	if turn.Items == nil {
+		turn.Items = make(map[ItemID]HistoricalItem)
+	}
+	turn.Items[event.ItemID] = HistoricalItem{
+		ID:        event.ItemID,
+		TurnID:    event.TurnID,
+		Kind:      ItemKindToolCall,
+		Status:    ItemStatusRunning,
+		Payload:   ToolCallPayload{CallID: event.CallID, Name: event.Name, Arguments: event.Arguments},
+		StartedAt: record.OccurredAt,
+	}
+	turn.ActiveItemID = event.ItemID
+	turn.ItemOrder = append(turn.ItemOrder, event.ItemID)
+	next.Turns[event.TurnID] = turn
+	next.Version = record.Sequence
+	return next, nil
+}
+
+func historical_applyTerminalToolCall(state HistoricalSession, record RecordedEvent, turnID TurnID, itemID ItemID, status ItemStatus, payload ToolCallPayload, terminal *ItemTerminal) (HistoricalSession, error) {
+	_, item, err := historical_requireRunningItemKindForEvent(state, record.SessionID, turnID, itemID, ItemKindToolCall)
+	if err != nil {
+		return HistoricalSession{}, err
+	}
+	if record.OccurredAt.Before(item.StartedAt) {
+		return HistoricalSession{}, domainError(CodeInvalidEvent, "item terminal timestamp precedes item start")
+	}
+	if started, ok := item.Payload.(ToolCallPayload); ok {
+		payload.Name = started.Name
+		payload.Arguments = started.Arguments
+		if payload.CallID == "" {
+			payload.CallID = started.CallID
+		}
+	}
+
+	next := state.Clone()
+	turn := next.Turns[turnID]
+	item = turn.Items[itemID]
+	item.Status = status
+	item.Payload = payload
+	item.EndedAt = record.OccurredAt
+	item.Terminal = terminal
+	turn.Items[itemID] = item
+	turn.ActiveItemID = ""
+	next.Turns[turnID] = turn
+	next.Version = record.Sequence
+	return next, nil
+}
+
 func historical_applyTerminalAssistantMessage(state HistoricalSession, record RecordedEvent, turnID TurnID, itemID ItemID, status ItemStatus, payload ItemPayload, terminal *ItemTerminal) (HistoricalSession, error) {
-	turn, item, err := historical_requireRunningItemForEvent(state, record.SessionID, turnID, itemID)
+	turn, item, err := historical_requireRunningItemKindForEvent(state, record.SessionID, turnID, itemID, ItemKindAssistantMessage)
 	if err != nil {
 		return HistoricalSession{}, err
 	}
@@ -463,6 +583,17 @@ func historical_requireRunningItemForEvent(state HistoricalSession, sessionID Se
 	return turn, item, nil
 }
 
+func historical_requireRunningItemKindForEvent(state HistoricalSession, sessionID SessionID, turnID TurnID, itemID ItemID, kind ItemKind) (HistoricalTurn, HistoricalItem, error) {
+	turn, item, err := historical_requireRunningItemForEvent(state, sessionID, turnID, itemID)
+	if err != nil {
+		return HistoricalTurn{}, HistoricalItem{}, err
+	}
+	if kind != "" && item.Kind != kind {
+		return HistoricalTurn{}, HistoricalItem{}, domainError(CodeInvalidEvent, "event item kind does not match active item")
+	}
+	return turn, item, nil
+}
+
 func historical_validateItemTerminal(code, message string) (*ItemTerminal, error) {
 	if !hasRequiredText(code) {
 		return nil, domainError(CodeInvalidEvent, "item terminal code is required")
@@ -496,33 +627,29 @@ func historical_validateTurnItems(turn HistoricalTurn) error {
 		if _, err := ParseItemID(string(item.ID)); err != nil {
 			return domainError(CodeInvalidEvent, "turn contains an invalid item ID")
 		}
-		payload, ok := item.Payload.(AssistantMessagePayload)
-		if item.Kind != ItemKindAssistantMessage || !ok || payload.ItemKind() != item.Kind {
+		if item.Kind != item.Payload.ItemKind() || !validItemKind(item.Kind) {
 			return domainError(CodeInvalidEvent, "turn item kind or payload is invalid")
 		}
-		if !utf8.ValidString(payload.Text) || item.StartedAt.IsZero() {
-			return domainError(CodeInvalidEvent, "assistant message payload or start time is invalid")
+		if item.StartedAt.IsZero() {
+			return domainError(CodeInvalidEvent, "item start time is invalid")
 		}
-
-		switch item.Status {
-		case ItemStatusRunning:
-			if runningItemID != "" || !item.EndedAt.IsZero() || item.Terminal != nil || payload.Text != "" {
-				return domainError(CodeInvalidEvent, "running item state is invalid")
+		switch payload := item.Payload.(type) {
+		case AssistantMessagePayload:
+			if item.Kind != ItemKindAssistantMessage || !utf8.ValidString(payload.Text) {
+				return domainError(CodeInvalidEvent, "assistant message payload or start time is invalid")
 			}
-			runningItemID = item.ID
-		case ItemStatusCompleted:
-			if item.EndedAt.IsZero() || item.EndedAt.Before(item.StartedAt) || item.Terminal != nil {
-				return domainError(CodeInvalidEvent, "completed item state is invalid")
+			if err := historical_validateAssistantItemState(item, payload, &runningItemID); err != nil {
+				return err
 			}
-		case ItemStatusFailed, ItemStatusInterrupted:
-			if item.EndedAt.IsZero() || item.EndedAt.Before(item.StartedAt) || payload.Text != "" || item.Terminal == nil {
-				return domainError(CodeInvalidEvent, "terminal item state is invalid")
+		case ToolCallPayload:
+			if item.Kind != ItemKindToolCall || !utf8.ValidString(payload.CallID) || !utf8.ValidString(payload.Name) || !utf8.ValidString(payload.Arguments) || !utf8.ValidString(payload.Content) {
+				return domainError(CodeInvalidEvent, "tool call payload is invalid")
 			}
-			if _, err := historical_validateItemTerminal(item.Terminal.Code, item.Terminal.Message); err != nil {
+			if err := historical_validateToolItemState(item, payload, &runningItemID); err != nil {
 				return err
 			}
 		default:
-			return domainError(CodeInvalidEvent, "turn item status is invalid")
+			return domainError(CodeInvalidEvent, "turn item kind or payload is invalid")
 		}
 	}
 	if runningItemID == "" {
@@ -531,6 +658,54 @@ func historical_validateTurnItems(turn HistoricalTurn) error {
 		}
 	} else if turn.ActiveItemID != runningItemID {
 		return domainError(CodeInvalidEvent, "active item ID does not identify the running item")
+	}
+	return nil
+}
+
+func historical_validateAssistantItemState(item HistoricalItem, payload AssistantMessagePayload, runningItemID *ItemID) error {
+	switch item.Status {
+	case ItemStatusRunning:
+		if *runningItemID != "" || !item.EndedAt.IsZero() || item.Terminal != nil || payload.Text != "" || len(payload.ToolCalls) != 0 {
+			return domainError(CodeInvalidEvent, "running item state is invalid")
+		}
+		*runningItemID = item.ID
+	case ItemStatusCompleted:
+		if item.EndedAt.IsZero() || item.EndedAt.Before(item.StartedAt) || item.Terminal != nil {
+			return domainError(CodeInvalidEvent, "completed item state is invalid")
+		}
+	case ItemStatusFailed, ItemStatusInterrupted:
+		if item.EndedAt.IsZero() || item.EndedAt.Before(item.StartedAt) || payload.Text != "" || item.Terminal == nil {
+			return domainError(CodeInvalidEvent, "terminal item state is invalid")
+		}
+		if _, err := historical_validateItemTerminal(item.Terminal.Code, item.Terminal.Message); err != nil {
+			return err
+		}
+	default:
+		return domainError(CodeInvalidEvent, "turn item status is invalid")
+	}
+	return nil
+}
+
+func historical_validateToolItemState(item HistoricalItem, payload ToolCallPayload, runningItemID *ItemID) error {
+	switch item.Status {
+	case ItemStatusRunning:
+		if *runningItemID != "" || !item.EndedAt.IsZero() || item.Terminal != nil || payload.Content != "" || payload.Truncated {
+			return domainError(CodeInvalidEvent, "running item state is invalid")
+		}
+		*runningItemID = item.ID
+	case ItemStatusCompleted:
+		if item.EndedAt.IsZero() || item.EndedAt.Before(item.StartedAt) || item.Terminal != nil {
+			return domainError(CodeInvalidEvent, "completed item state is invalid")
+		}
+	case ItemStatusFailed, ItemStatusInterrupted:
+		if item.EndedAt.IsZero() || item.EndedAt.Before(item.StartedAt) || payload.Content != "" || payload.Truncated || item.Terminal == nil {
+			return domainError(CodeInvalidEvent, "terminal item state is invalid")
+		}
+		if _, err := historical_validateItemTerminal(item.Terminal.Code, item.Terminal.Message); err != nil {
+			return err
+		}
+	default:
+		return domainError(CodeInvalidEvent, "turn item status is invalid")
 	}
 	return nil
 }
@@ -569,6 +744,8 @@ func HistoricalDecide(state HistoricalSession, command Command) ([]UncommittedEv
 		return historical_decideInterruptTurn(state, command)
 	case StartAssistantMessage:
 		return historical_decideStartAssistantMessage(state, command)
+	case CompleteAssistantMessage:
+		return historical_decideCompleteAssistantMessage(state, command)
 	case CompleteAssistantTurn:
 		return historical_decideCompleteAssistantTurn(state, command)
 	case FailAssistantTurn:
@@ -577,6 +754,24 @@ func HistoricalDecide(state HistoricalSession, command Command) ([]UncommittedEv
 		return historical_decideInterruptAssistantTurn(state, command)
 	case RecordModelUsage:
 		return historical_decideRecordModelUsage(state, command)
+	case RecordModelRequest:
+		return historical_decideRecordModelRequest(state, command)
+	case StartToolCall:
+		return historical_decideStartToolCall(state, command)
+	case CompleteToolCall:
+		return historical_decideCompleteToolCall(state, command)
+	case FailToolCall:
+		return historical_decideFailToolCall(state, command)
+	case InterruptToolTurn:
+		return historical_decideInterruptToolTurn(state, command)
+	case FailToolTurn:
+		return historical_decideFailToolTurn(state, command)
+	case RecordPolicyDecision:
+		return historical_decideRecordPolicyDecision(state, command)
+	case RequestApproval:
+		return historical_decideRequestApproval(state, command)
+	case ResolveApproval:
+		return historical_decideResolveApproval(state, command)
 	case CloseSession:
 		return historical_decideCloseSession(state, command)
 	default:
@@ -641,13 +836,23 @@ func historical_decideStartAssistantTurn(state HistoricalSession, command StartA
 }
 
 func historical_decideRecordModelUsage(state HistoricalSession, command RecordModelUsage) ([]UncommittedEvent, error) {
-	if _, err := historical_requireRunningItem(state, command.SessionID, command.TurnID, command.ItemID); err != nil {
+	if _, err := historical_requireRunningItemKind(state, command.SessionID, command.TurnID, command.ItemID, ItemKindAssistantMessage); err != nil {
 		return nil, err
 	}
 	if err := validateModelUsagePayload(command.ModelUsageRecorded, CodeInvalidCommand); err != nil {
 		return nil, err
 	}
 	return recordModelUsageEvents(command.ModelUsageRecorded), nil
+}
+
+func historical_decideRecordModelRequest(state HistoricalSession, command RecordModelRequest) ([]UncommittedEvent, error) {
+	if _, err := historical_requireRunningItemKind(state, command.SessionID, command.TurnID, command.ItemID, ItemKindAssistantMessage); err != nil {
+		return nil, err
+	}
+	if err := validateModelRequestPayload(command.ModelRequestRecorded, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	return recordModelRequestEvents(command.ModelRequestRecorded), nil
 }
 
 func historical_validateSessionStructure(state HistoricalSession) error {
@@ -768,7 +973,7 @@ func historical_validateSessionStructure(state HistoricalSession) error {
 	for _, turn := range state.Turns {
 		itemCount += len(turn.Items)
 	}
-	maxLogOnly := uint64(itemCount) * 2
+	maxLogOnly := uint64(itemCount) * 3
 	if state.Version < expectedVersion || state.Version-expectedVersion > maxLogOnly {
 		return domainError(CodeInvalidCommand, "session version does not match lifecycle structure")
 	}
@@ -910,8 +1115,21 @@ func historical_decideStartAssistantMessage(state HistoricalSession, command Sta
 	return startAssistantMessageEvents(command.TurnID, command.ItemID), nil
 }
 
+func historical_decideCompleteAssistantMessage(state HistoricalSession, command CompleteAssistantMessage) ([]UncommittedEvent, error) {
+	if _, err := historical_requireRunningItemKind(state, command.SessionID, command.TurnID, command.ItemID, ItemKindAssistantMessage); err != nil {
+		return nil, err
+	}
+	if err := validateCommandUTF8(command.Text, "assistant message text must be valid UTF-8"); err != nil {
+		return nil, err
+	}
+	if err := validateToolCallOffers(command.ToolCalls, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	return completeAssistantMessageEvents(command.TurnID, command.ItemID, command.Text, command.ToolCalls), nil
+}
+
 func historical_decideCompleteAssistantTurn(state HistoricalSession, command CompleteAssistantTurn) ([]UncommittedEvent, error) {
-	if _, err := historical_requireRunningItem(state, command.SessionID, command.TurnID, command.ItemID); err != nil {
+	if _, err := historical_requireRunningItemKind(state, command.SessionID, command.TurnID, command.ItemID, ItemKindAssistantMessage); err != nil {
 		return nil, err
 	}
 	if err := validateCommandUTF8(command.Text, "assistant message text must be valid UTF-8"); err != nil {
@@ -921,7 +1139,7 @@ func historical_decideCompleteAssistantTurn(state HistoricalSession, command Com
 }
 
 func historical_decideFailAssistantTurn(state HistoricalSession, command FailAssistantTurn) ([]UncommittedEvent, error) {
-	if _, err := historical_requireRunningItem(state, command.SessionID, command.TurnID, command.ItemID); err != nil {
+	if _, err := historical_requireRunningItemKind(state, command.SessionID, command.TurnID, command.ItemID, ItemKindAssistantMessage); err != nil {
 		return nil, err
 	}
 	if err := validateCommandText(command.Code, "failure code is required"); err != nil {
@@ -934,7 +1152,7 @@ func historical_decideFailAssistantTurn(state HistoricalSession, command FailAss
 }
 
 func historical_decideInterruptAssistantTurn(state HistoricalSession, command InterruptAssistantTurn) ([]UncommittedEvent, error) {
-	if _, err := historical_requireRunningItem(state, command.SessionID, command.TurnID, command.ItemID); err != nil {
+	if _, err := historical_requireRunningItemKind(state, command.SessionID, command.TurnID, command.ItemID, ItemKindAssistantMessage); err != nil {
 		return nil, err
 	}
 	if err := historical_validateAssistantInterruptionCode(command.Code); err != nil {
@@ -956,6 +1174,145 @@ func historical_validateAssistantInterruptionCode(code string) error {
 	default:
 		return domainError(CodeInvalidCommand, "interruption code is not allowed")
 	}
+}
+
+func historical_decideStartToolCall(state HistoricalSession, command StartToolCall) ([]UncommittedEvent, error) {
+	turn, err := historical_requireRunningTurn(state, command.SessionID, command.TurnID)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateCommandItemID(command.ItemID); err != nil {
+		return nil, err
+	}
+	if _, exists := turn.Items[command.ItemID]; exists {
+		return nil, domainError(CodeItemAlreadyExists, "item already exists")
+	}
+	if err := historical_rejectRunningItem(turn); err != nil {
+		return nil, err
+	}
+	event := ToolCallStarted{
+		TurnID: command.TurnID, ItemID: command.ItemID, CallID: command.CallID,
+		Name: command.Name, Arguments: command.Arguments, StepIndex: command.StepIndex,
+	}
+	if err := validateToolCallStartedPayload(event, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	return startToolCallEvents(event), nil
+}
+
+func historical_decideCompleteToolCall(state HistoricalSession, command CompleteToolCall) ([]UncommittedEvent, error) {
+	if _, err := historical_requireRunningItemKind(state, command.SessionID, command.TurnID, command.ItemID, ItemKindToolCall); err != nil {
+		return nil, err
+	}
+	event := ToolCallCompleted{
+		TurnID: command.TurnID, ItemID: command.ItemID, CallID: command.CallID,
+		Content: command.Content, Truncated: command.Truncated,
+	}
+	if err := validateToolCallCompletedPayload(event, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	return completeToolCallEvents(event), nil
+}
+
+func historical_decideFailToolCall(state HistoricalSession, command FailToolCall) ([]UncommittedEvent, error) {
+	if _, err := historical_requireRunningItemKind(state, command.SessionID, command.TurnID, command.ItemID, ItemKindToolCall); err != nil {
+		return nil, err
+	}
+	event := ToolCallFailed{
+		TurnID: command.TurnID, ItemID: command.ItemID, CallID: command.CallID,
+		Code: command.Code, Message: command.Message,
+	}
+	if err := validateToolCallFailedPayload(event, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	return failToolCallEvents(event), nil
+}
+
+func historical_decideInterruptToolTurn(state HistoricalSession, command InterruptToolTurn) ([]UncommittedEvent, error) {
+	if _, err := historical_requireRunningItemKind(state, command.SessionID, command.TurnID, command.ItemID, ItemKindToolCall); err != nil {
+		return nil, err
+	}
+	if err := historical_validateAssistantInterruptionCode(command.Code); err != nil {
+		return nil, err
+	}
+	if err := validateCommandUTF8(command.Message, "interruption message must be valid UTF-8"); err != nil {
+		return nil, err
+	}
+	event := ToolCallInterrupted{
+		TurnID: command.TurnID, ItemID: command.ItemID, CallID: command.CallID,
+		Code: command.Code, Message: command.Message,
+	}
+	if err := validateToolCallInterruptedPayload(event, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	var approval *ApprovalResolved
+	if command.ApprovalID != "" {
+		resolved := ApprovalResolved{
+			TurnID: command.TurnID, ItemID: command.ItemID,
+			ApprovalID: command.ApprovalID, Decision: ApprovalDecisionCanceled,
+		}
+		if err := validateApprovalResolvedPayload(resolved, CodeInvalidCommand); err != nil {
+			return nil, err
+		}
+		approval = &resolved
+	}
+	return interruptToolTurnEvents(event, approval), nil
+}
+
+func historical_decideFailToolTurn(state HistoricalSession, command FailToolTurn) ([]UncommittedEvent, error) {
+	if _, err := historical_requireRunningItemKind(state, command.SessionID, command.TurnID, command.ItemID, ItemKindToolCall); err != nil {
+		return nil, err
+	}
+	event := ToolCallFailed{
+		TurnID: command.TurnID, ItemID: command.ItemID, CallID: command.CallID,
+		Code: command.Code, Message: command.Message,
+	}
+	if err := validateToolCallFailedPayload(event, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	return failToolTurnEvents(event), nil
+}
+
+func historical_decideRecordPolicyDecision(state HistoricalSession, command RecordPolicyDecision) ([]UncommittedEvent, error) {
+	if _, err := historical_requireRunningItemKind(state, command.SessionID, command.TurnID, command.ItemID, ItemKindToolCall); err != nil {
+		return nil, err
+	}
+	event := PolicyDecisionRecorded{
+		TurnID: command.TurnID, ItemID: command.ItemID, CallID: command.CallID,
+		Name: command.Name, Effect: command.Effect, RuleID: command.RuleID, Reason: command.Reason,
+	}
+	if err := validatePolicyDecisionPayload(event, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	return recordPolicyDecisionEvents(event), nil
+}
+
+func historical_decideRequestApproval(state HistoricalSession, command RequestApproval) ([]UncommittedEvent, error) {
+	if _, err := historical_requireRunningItemKind(state, command.SessionID, command.TurnID, command.ItemID, ItemKindToolCall); err != nil {
+		return nil, err
+	}
+	event := ApprovalRequested{
+		TurnID: command.TurnID, ItemID: command.ItemID, ApprovalID: command.ApprovalID,
+		CallID: command.CallID, Name: command.Name, Reason: command.Reason,
+	}
+	if err := validateApprovalRequestedPayload(event, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	return requestApprovalEvents(event), nil
+}
+
+func historical_decideResolveApproval(state HistoricalSession, command ResolveApproval) ([]UncommittedEvent, error) {
+	if _, err := historical_requireRunningItemKind(state, command.SessionID, command.TurnID, command.ItemID, ItemKindToolCall); err != nil {
+		return nil, err
+	}
+	event := ApprovalResolved{
+		TurnID: command.TurnID, ItemID: command.ItemID,
+		ApprovalID: command.ApprovalID, Decision: command.Decision,
+	}
+	if err := validateApprovalResolvedPayload(event, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	return resolveApprovalEvents(event), nil
 }
 
 func historical_rejectRunningItem(turn HistoricalTurn) error {
@@ -982,6 +1339,17 @@ func historical_requireRunningItem(state HistoricalSession, sessionID SessionID,
 	item, exists := turn.Items[itemID]
 	if !exists || item.Status != ItemStatusRunning {
 		return HistoricalItem{}, domainError(CodeItemNotRunning, "active item is not running")
+	}
+	return item, nil
+}
+
+func historical_requireRunningItemKind(state HistoricalSession, sessionID SessionID, turnID TurnID, itemID ItemID, kind ItemKind) (HistoricalItem, error) {
+	item, err := historical_requireRunningItem(state, sessionID, turnID, itemID)
+	if err != nil {
+		return HistoricalItem{}, err
+	}
+	if item.Kind != kind {
+		return HistoricalItem{}, domainError(CodeInvalidCommand, "active item kind does not match command")
 	}
 	return item, nil
 }

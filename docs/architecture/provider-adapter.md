@@ -27,7 +27,10 @@ identity. Application and Engine have no vendor-name branches. Default `go
 test` uses a scripted `http.RoundTripper` and recorded SSE fixtures; it needs
 no live key and opens no vendor socket.
 
-Tools, SQLite, ACP, TUI, a plugin kernel, and vendor SDKs are not implemented.
+Native tool send/assemble is implemented when `NativeTools` is `supported`
+or `required`. MCP, SQLite, ACP, TUI, a plugin kernel, and vendor SDKs are
+not implemented. The Application step loop is recorded in the
+[implemented tool-runtime contract](tool-runtime.md).
 
 ## Package authority and dependency direction
 
@@ -63,8 +66,9 @@ enforces these directions (`TestProductionDependencyBoundaries`,
 ## Consumption port
 
 `engine.Model` / `engine.ModelStream` method signatures are unchanged. The
-stream grammar stays `text_delta* → completed`. This slice adds optional usage
-on `completed` and attempt stats on every `Run` exit:
+stream grammar is `text_delta* tool_call* completed`. This slice adds optional
+usage on `completed`, assembled `tool_call` events when native tools are
+supported, and attempt stats on every `Run` exit:
 
 ```go
 type Model interface {
@@ -77,9 +81,10 @@ type ModelStream interface {
 }
 
 type StreamEvent struct {
-    Type  StreamEventType
-    Text  string
-    Usage *TokenUsage // nil except optionally on completed
+    Type     StreamEventType
+    Text     string
+    Usage    *TokenUsage // nil except optionally on completed
+    ToolCall *ToolCall   // non-nil iff Type == tool_call
 }
 
 type TokenUsage struct {
@@ -94,8 +99,9 @@ type AttemptStats struct {
 }
 
 type RunResult struct {
-    Text  string
-    Stats AttemptStats
+    Text      string
+    ToolCalls []ToolCall
+    Stats     AttemptStats
 }
 
 type AttemptObserver interface {
@@ -157,11 +163,13 @@ type RequestIdentity struct {
   invalid. Token fields may be 0 (unknown).
 - `MaxTokensField` is `""`, `"max_tokens"`, or `"max_completion_tokens"`.
 
-The only shipped preset is `openaicompat.ProfileTextOnly`. There is no
-vendor-named helper and no Application/Engine switch on provider names.
-`NativeTools=required` is rejected at `New`
-(`TestNewRejectsInvalidConfig` / `native tools required`). The first adapter
-does not send `tools`, images, `response_format`, or cache-control fields.
+Shipped presets are `openaicompat.ProfileTextOnly` (`NativeTools=unsupported`)
+and adapter-local `openaicompat.ProfileToolsSupported` (`NativeTools=supported`).
+There is no vendor-named helper and no Application/Engine switch on provider
+names. `New` accepts `NativeTools=supported|required` when the rest of the
+profile is valid (`TestNewAcceptsNativeToolsSupportedAndRequired`).
+`ProfileTextOnly` stays unsupported. The adapter still does not send images,
+`response_format`, or cache-control fields.
 
 ## First adapter: `internal/harness/adapters/openaicompat`
 
@@ -197,11 +205,13 @@ func (*Model) Stream(context.Context, engine.ModelRequest) (engine.ModelStream, 
 
 `New` performs no network I/O. It fail-closes on empty BaseURL/ModelID, nil
 API key source, userinfo in the URL, non-loopback `http://` (including
-`169.254.169.254` even when the flag is set), required native tools, invalid
-profile/hints, or negative bounds (`TestNewRejectsInvalidConfig`). Loopback
-`http://` is accepted only with `AllowInsecureLoopback`
-(`TestNewAcceptsLoopbackHTTPWhenAllowed`). Injected clients and transports are
-cloned; `http.DefaultClient` and `http.DefaultTransport` are never mutated
+`169.254.169.254` even when the flag is set), invalid profile/hints, negative
+bounds, or tool-enabled `MaxRequestBytes` set below 5 MiB
+(`TestNewRejectsInvalidConfig`). `NativeTools=required` is accepted when the
+profile is otherwise valid. Loopback `http://` is accepted only with
+`AllowInsecureLoopback` (`TestNewAcceptsLoopbackHTTPWhenAllowed`). Injected
+clients and transports are cloned; `http.DefaultClient` and
+`http.DefaultTransport` are never mutated
 (`TestNewDoesNotMutateDefaultClientOrTransport`). Redirects are disabled:
 `CheckRedirect` returns `http.ErrUseLastResponse`, so a 3xx is classified as
 `provider_permanent` and is not followed (`TestCheckRedirectThreeXXIsPermanent`).
@@ -211,8 +221,14 @@ BaseURL, the profile, and both wire hints (`TestIdentityCopiesProfileAndHints`).
 
 `Stream` is safe for concurrent calls; each call owns one HTTP request
 (`TestStreamConcurrentCallsOwnRequests`). Defaults: idle 60s, response-header
-30s, request JSON 1 MiB, SSE line 256 KiB, `User-Agent: open-code-harness`
-with no version.
+30s, request JSON 1 MiB for `ProfileTextOnly`, SSE line 256 KiB,
+`User-Agent: open-code-harness` with no version. Tool-enabled composition
+(`ProfileToolsSupported` / `NativeTools=supported|required`) requires
+`MaxRequestBytes ≥ 5 MiB` (unset defaults to 5 MiB). A just-under-4-MiB
+projection is accepted when the floor is 5 MiB
+(`TestStreamJustUnder4MiBProjectionAccepted`). `required` plus empty
+`ModelRequest.Tools` fail-closes before HTTP
+(`TestStreamRequiredEmptyToolsFailClosed`).
 
 Test composition helper `MustComposeHTTP` copies `Identity()` into
 `Config.RequestIdentity`, sets `AllowInsecureLoopback` only for loopback
@@ -222,13 +238,18 @@ fixture hosts, and rejects non-loopback `http://`
 
 ## Request mapping
 
-`POST {BaseURL}/chat/completions` with `stream: true` and messages
-`[{role:user, content: Input}]`. No hidden system prompt.
+`POST {BaseURL}/chat/completions` with `stream: true`. Empty `Messages` still
+map to `[{role:user, content: Input}]`. Non-empty `Messages` map roles
+`user|assistant|tool` (`system` only if present in the envelope). Assistant
+`toolCalls` become `tool_calls`; tool messages use `tool_call_id`. No hidden
+system prompt. `tool_choice` is omitted (default auto).
 
 | Field | When sent | Test |
 | --- | --- | --- |
 | `stream_options.include_usage` | only if `Hints.IncludeUsage` | `TestStreamRequestMapping` / `include usage`, `omit usage` |
 | `max_tokens` / `max_completion_tokens` | only if `MaxOutputTokens > 0` and the matching hint is set | `TestStreamRequestMapping` / `max tokens`, `omit max when tokens zero` |
+| `tools` | only if `ModelRequest.Tools` is non-empty; each item is `type=function` | `TestStreamSendsToolsAndMessages` |
+| `messages` multi-role | only if `ModelRequest.Messages` is non-empty | `TestStreamSendsToolsAndMessages` |
 | `Authorization: Bearer <key>` | required | `TestStreamRequestMapping` |
 | `Accept: text/event-stream` | always | `TestStreamRequestMapping` |
 | `User-Agent: open-code-harness` | default | `TestStreamRequestMapping` |
@@ -257,7 +278,11 @@ case-insensitively after `mime.ParseMediaType`
 | fractional usage number | `CodeInvalidStream` + `invalid_stream` | `TestStreamRejectsFractionalUsage` |
 | `finish_reason=stop` | `completed`, `FinishReason=stop` | `TestStreamSuccessEmitsDeltasCompletedAndUsage` |
 | `finish_reason=content_filter` | `CodeModelStream` + `provider_permanent`; `FinishReason=""` | `TestStreamContentFilterAndToolCallsLeaveFinishReasonEmpty` |
-| `finish_reason=tool_calls` or `delta.tool_calls` | `CodeInvalidStream` + `capability_mismatch`; `FinishReason=""` | `TestStreamContentFilterAndToolCallsLeaveFinishReasonEmpty` |
+| `finish_reason=tool_calls` or `delta.tool_calls` with `NativeTools=unsupported` | `CodeInvalidStream` + `capability_mismatch`; `FinishReason=""` | `TestStreamContentFilterAndToolCallsLeaveFinishReasonEmpty`, `TestRunTurnHTTPProfileTextOnlyToolCallsLeaveFinishReasonEmpty` |
+| assembled `tool_calls` with `NativeTools=supported\|required` | buffer by `index`; emit `text_delta*` then `tool_call*` then `completed`; `FinishReason=tool_calls` | `TestStreamAssemblesSupportedToolCalls` |
+| `finish_reason=stop` plus assembled tool call | `CodeInvalidStream` + `invalid_stream` | `TestStreamStopWithAssembledToolsInvalid` |
+| trailing partial / missing id+name / non-UTF-8 / arguments > 32 KiB / gapped or 1-based index / conflicting or duplicate id | `CodeInvalidStream` + `invalid_stream` | `TestStreamTrailingPartialCallInvalid`, `TestStreamAssembledCallRejectsBounds` |
+| unknown `Messages` role; non-object / non-JSON `InputSchema` | `CodeModelStartup` + `provider_permanent`; no HTTP | `TestStreamRejectsInvalidRequestMapping` |
 | empty completion | `CodeInvalidStream` + `empty_response` | `TestStreamEmptyCompletion`, `TestRunTurnHTTPEmptyCompletion` |
 | non-string `content`, non-JSON `data:`, multiple `choices`, line over bound | `CodeInvalidStream` + `invalid_stream` | `TestStreamRejectsNonStringContentAndOversizeLine` |
 | HTTP 200 whose type is not `text/event-stream`; HTTP 201 / 204 | `CodeModelStartup` + `provider_permanent` | `TestStreamNonSSEAndNon200TwoXXFailClosed` |
@@ -275,8 +300,9 @@ on a pre-stream failure is copied onto `ProviderFailure.RequestID`
 (`TestClassifyHTTPErrors`). Latency is the adapter HTTP span; `Snapshot` keeps
 it after cancel (`TestStreamCancelKeepsLatencyAndUsage`).
 
-Successful `completed` fixtures pin `AttemptStats.FinishReason=stop`. Fail and
-cancel paths pin `""`. `content_filter` and `tool_calls` leave `FinishReason`
+Successful `completed` fixtures pin `AttemptStats.FinishReason=stop`. Assembled
+tool-call success pins `tool_calls`. Fail and cancel paths pin `""`.
+`content_filter` and `ProfileTextOnly` `tool_calls` leave `FinishReason`
 empty. `length` and `unknown` are codec-legal on `model.usage.recorded`; they
 are not pinned by an adapter stream case.
 
@@ -377,7 +403,9 @@ identity do not persist usage (`TestRunTurnObservedStatsWithoutIdentityDoNotPers
 with `DisallowUnknownFields` and the required key lists
 (`TestModelFactEventJSONRejectsNonStrictPayloads`,
 `TestRecordedEventJSONUsesCanonicalEncodingForAllPayloads`).
-`finishReason` is `stop`, `length`, `unknown`, or `""`.
+`finishReason` is `stop`, `length`, `unknown`, `tool_calls`, or `""`. See the
+[implemented tool-runtime contract](tool-runtime.md) for the Application
+loop that consumes assembled `tool_call` events.
 
 `DigestRunTurnRequestV1` still covers Session ID and exact UTF-8 input only
 (`TestDigestRunTurnRequestV1FramesSessionAndInput`). Identity is not folded
@@ -420,6 +448,8 @@ HTTP `RunTurn` through fixtures
 | reasoning fixture | completed `Visible`; no leaked reasoning | `TestRunTurnHTTPReasoningIsolation` |
 | secret 401 body | redacted; persisted sentence only | `TestRunTurnHTTPSecretRedaction` |
 | replay same Request ID | `FindCommandRequest` found; no second Stream | `TestRunTurnHTTPFindCommandRequestPreventsSecondStream` |
+| tools-supported `read_file` then complete | first usage `finishReason=tool_calls`; second Stream sees assistant `tool_calls` plus tool message; text `Hello world` | `TestRunTurnHTTPReadFileThenCompletes` |
+| `ProfileTextOnly` vendor `tool_calls` | `capability_mismatch`; usage `finishReason=""` | `TestRunTurnHTTPProfileTextOnlyToolCallsLeaveFinishReasonEmpty` |
 
 A content-filter style fail with observed latency persists
 `provider_permanent` plus usage with `finishReason=""`
@@ -462,13 +492,15 @@ go test ./internal/harness/domain ./internal/harness/engine \
 
 This implemented contract does not provide:
 
-- tools, Tool Runtime, Policy, approvals, MCP, or Engine `tool_call*` /
-  `reasoning_delta` constants;
-- reasoning-item persistence (reasoning fields are dropped);
+- MCP, approvals UX, or a plugin kernel (Application owns the step loop;
+  this adapter only sends `tools` and assembles Engine `tool_call*` when
+  `NativeTools` is `supported` or `required`);
+- Engine `reasoning_delta` constants or reasoning-item persistence
+  (reasoning fields are dropped);
 - images, audio, video, or structured-output requests;
 - prompt-cache layout or vendor cache heuristics;
 - multi-provider routing, fallback, cost optimization, or Application retry;
-- SQLite, JSONL, Runtime Host, ACP, TUI, or a plugin kernel;
+- SQLite, JSONL, Runtime Host, ACP, or TUI;
 - EventStore v2 interface changes;
 - OAuth, model discovery, or vendor SDKs;
 - hidden system prompts;

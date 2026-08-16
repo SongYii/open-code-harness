@@ -86,6 +86,41 @@ func TestApplyCompactClosesIdleSession(t *testing.T) {
 	}
 }
 
+func TestApplyCompactToolItemAndEligibility(t *testing.T) {
+	t.Parallel()
+
+	state := compactActiveSession(t)
+	state = applyCompactRecord(t, state, TurnStarted{TurnID: "turn-1", Input: "inspect"})
+	state = applyCompactRecord(t, state, validToolCallStarted("turn-1", "item-tool"))
+	if item := state.ActiveTurn.ActiveItem; item == nil || item.Kind != ItemKindToolCall || item.ID != "item-tool" {
+		t.Fatalf("compact tool item = %#v", state.ActiveTurn)
+	}
+
+	if err := CheckStartAssistantTurnEligibility(state); !IsCode(err, CodeItemAlreadyRunning) {
+		t.Fatalf("CheckStartAssistantTurnEligibility() = %v, want %q", err, CodeItemAlreadyRunning)
+	}
+	_, err := Decide(state, StartAssistantTurn{SessionID: state.ID, TurnID: "turn-new", ItemID: "item-new", Input: "next"})
+	if !IsCode(err, CodeItemAlreadyRunning) {
+		t.Fatalf("Decide(StartAssistantTurn) = %v, want %q", err, CodeItemAlreadyRunning)
+	}
+	_, err = Decide(state, InterruptTurn{SessionID: state.ID, TurnID: "turn-1", Reason: "caller_canceled"})
+	if !IsCode(err, CodeItemAlreadyRunning) {
+		t.Fatalf("Decide(InterruptTurn) = %v, want %q", err, CodeItemAlreadyRunning)
+	}
+
+	state = applyCompactRecord(t, state, PolicyDecisionRecorded{
+		TurnID: "turn-1", ItemID: "item-tool", CallID: "call-1",
+		Name: "read_file", Effect: PolicyEffectAllow, RuleID: "default.read", Reason: "in_workspace",
+	})
+	if state.ActiveTurn.ActiveItem == nil || state.ActiveTurn.ActiveItem.Kind != ItemKindToolCall {
+		t.Fatalf("policy apply cleared item: %#v", state)
+	}
+	state = applyCompactRecord(t, state, ToolCallCompleted{TurnID: "turn-1", ItemID: "item-tool", CallID: "call-1", Content: "ok"})
+	if state.ActiveTurn == nil || state.ActiveTurn.ActiveItem != nil {
+		t.Fatalf("tool complete should leave running turn: %#v", state)
+	}
+}
+
 func TestApplyCompactModelFactsAreVersionOnly(t *testing.T) {
 	state := compactActiveSession(t)
 	state = applyCompactRecord(t, state, TurnStarted{TurnID: "turn-1", Input: "inspect repository"})

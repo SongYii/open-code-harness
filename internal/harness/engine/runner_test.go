@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -509,6 +510,22 @@ func TestTurnRunnerRejectsInvalidEventsAndBoundsBeforeDelivery(t *testing.T) {
 		{"empty delta", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventTextDelta}}}, 16, CodeInvalidStream, 1, 1},
 		{"usage on delta", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventTextDelta, Text: "ok", Usage: &TokenUsage{OutputTokens: 1}}}}, 16, CodeInvalidStream, 1, 1},
 		{"completed with text", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventCompleted, Text: "not allowed"}}}, 16, CodeInvalidStream, 1, 1},
+		{"completed with tool call", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventCompleted, ToolCall: &ToolCall{ID: "call-1", Name: "read_file"}}}}, 16, CodeInvalidStream, 1, 1},
+		{"nil tool call", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventToolCall}}}, 16, CodeInvalidStream, 1, 1},
+		{"tool call with text", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventToolCall, Text: "no", ToolCall: &ToolCall{ID: "call-1", Name: "read_file"}}}}, 16, CodeInvalidStream, 1, 1},
+		{"usage on tool call", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventToolCall, Usage: &TokenUsage{OutputTokens: 1}, ToolCall: &ToolCall{ID: "call-1", Name: "read_file"}}}}, 16, CodeInvalidStream, 1, 1},
+		{"empty tool id", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventToolCall, ToolCall: &ToolCall{Name: "read_file"}}}}, 16, CodeInvalidStream, 1, 1},
+		{"empty tool name", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventToolCall, ToolCall: &ToolCall{ID: "call-1"}}}}, 16, CodeInvalidStream, 1, 1},
+		{"whitespace tool name", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventToolCall, ToolCall: &ToolCall{ID: "call-1", Name: " \t"}}}}, 16, CodeInvalidStream, 1, 1},
+		{"tool id 129 bytes", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventToolCall, ToolCall: &ToolCall{ID: strings.Repeat("c", 129), Name: "read_file"}}}}, 16, CodeInvalidStream, 1, 1},
+		{"invalid utf8 tool id", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventToolCall, ToolCall: &ToolCall{ID: invalidUTF8, Name: "read_file"}}}}, 16, CodeInvalidStream, 1, 1},
+		{"invalid utf8 tool name", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventToolCall, ToolCall: &ToolCall{ID: "call-1", Name: invalidUTF8}}}}, 16, CodeInvalidStream, 1, 1},
+		{"invalid utf8 arguments", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventToolCall, ToolCall: &ToolCall{ID: "call-1", Name: "read_file", Arguments: invalidUTF8}}}}, 16, CodeInvalidStream, 1, 1},
+		{"oversized arguments", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventToolCall, ToolCall: &ToolCall{ID: "call-1", Name: "read_file", Arguments: string(make([]byte, 32*1024+1))}}}}, 16, CodeInvalidStream, 1, 1},
+		{"delta after first tool", []testkit.ScriptedStep{
+			{Event: StreamEvent{Type: StreamEventToolCall, ToolCall: &ToolCall{ID: "call-1", Name: "read_file", Arguments: `{}`}}},
+			{Event: StreamEvent{Type: StreamEventTextDelta, Text: "late"}},
+		}, 16, CodeInvalidStream, 2, 2},
 		{"invalid utf8 delta", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventTextDelta, Text: invalidUTF8}}}, 16, CodeInvalidStream, 1, 1},
 		{"one byte over", []testkit.ScriptedStep{{Event: StreamEvent{Type: StreamEventTextDelta, Text: "abc"}}}, 2, CodeOutputLimit, 1, 1},
 	}
@@ -763,6 +780,224 @@ func TestTurnRunnerKeepsClassifiedEngineErrorJoinedWithEOF(t *testing.T) {
 	}
 }
 
+func TestTurnRunnerAcceptsTextThenOneToolCall(t *testing.T) {
+	call := ToolCall{ID: "call-1", Name: "read_file", Arguments: `{"path":"README.md"}`}
+	usage := &TokenUsage{InputTokens: 3, OutputTokens: 5}
+	nextIndex := 0
+	stream := &observingStream{
+		controlledStream: controlledStream{
+			next: func(context.Context) (StreamEvent, error) {
+				nextIndex++
+				switch nextIndex {
+				case 1:
+					return StreamEvent{Type: StreamEventTextDelta, Text: "looking "}, nil
+				case 2:
+					return StreamEvent{Type: StreamEventTextDelta, Text: "up"}, nil
+				case 3:
+					copied := call
+					return StreamEvent{Type: StreamEventToolCall, ToolCall: &copied}, nil
+				default:
+					return StreamEvent{Type: StreamEventCompleted, Usage: usage}, nil
+				}
+			},
+			close: func() error { return nil },
+		},
+		stats: AttemptStats{FinishReason: "stop", ProviderRequestID: "req-tool", LatencyMs: 9},
+	}
+	sink := &testkit.RecordingSink{}
+	emitter, err := NewEmitter(sink, validRunnerCorrelation())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := NewTurnRunner(&controlledModel{stream: func(context.Context, ModelRequest) (ModelStream, error) { return stream, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := runner.Run(context.Background(), runnerRequest(), emitter)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if got.Text != "looking up" || !reflect.DeepEqual(got.ToolCalls, []ToolCall{call}) {
+		t.Fatalf("Run() = %#v, want text and one tool call", got)
+	}
+	if got.Stats.FinishReason != domain.FinishReasonToolCalls || got.Stats.ProviderRequestID != "req-tool" || got.Stats.LatencyMs != 9 {
+		t.Fatalf("Stats = %#v, want tool_calls finish reason", got.Stats)
+	}
+	if got.Stats.Usage == nil || *got.Stats.Usage != *usage {
+		t.Fatalf("Stats.Usage = %#v, want completed usage", got.Stats.Usage)
+	}
+	assertRuntimeEvents(t, sink.Attempts(), []RuntimeEvent{
+		{Correlation: validRunnerCorrelation(), Ordinal: 1, Type: RuntimeModelStreamStarted},
+		{Correlation: validRunnerCorrelation(), Ordinal: 2, Type: RuntimeModelTextDelta, Text: "looking "},
+		{Correlation: validRunnerCorrelation(), Ordinal: 3, Type: RuntimeModelTextDelta, Text: "up"},
+		{Correlation: validRunnerCorrelation(), Ordinal: 4, Type: RuntimeModelToolCall, Text: "read_file:call-1"},
+	})
+	assertRuntimeEvents(t, sink.Delivered(), sink.Attempts())
+}
+
+func TestTurnRunnerAcceptsTwoReadFileCallsWithDistinctIDs(t *testing.T) {
+	first := ToolCall{ID: "call-1", Name: "read_file", Arguments: `{"path":"a.go"}`}
+	second := ToolCall{ID: "call-2", Name: "read_file", Arguments: `{"path":"b.go"}`}
+	model, err := testkit.NewScriptedModel(runnerRequest().ModelRequest, testkit.ScriptedModelConfig{Steps: []testkit.ScriptedStep{
+		{Event: StreamEvent{Type: StreamEventToolCall, ToolCall: &first}},
+		{Event: StreamEvent{Type: StreamEventToolCall, ToolCall: &second}},
+		{Event: StreamEvent{Type: StreamEventCompleted}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &testkit.RecordingSink{}
+	emitter, err := NewEmitter(sink, validRunnerCorrelation())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := NewTurnRunner(model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := runner.Run(context.Background(), runnerRequest(), emitter)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if got.Text != "" || !reflect.DeepEqual(got.ToolCalls, []ToolCall{first, second}) {
+		t.Fatalf("Run() = %#v, want two read_file calls", got)
+	}
+	if got.Stats.FinishReason != domain.FinishReasonToolCalls {
+		t.Fatalf("FinishReason = %q, want %q", got.Stats.FinishReason, domain.FinishReasonToolCalls)
+	}
+	assertRunnerCounts(t, model, 3, 1)
+	assertRuntimeEvents(t, sink.Delivered(), []RuntimeEvent{
+		{Correlation: validRunnerCorrelation(), Ordinal: 1, Type: RuntimeModelStreamStarted},
+		{Correlation: validRunnerCorrelation(), Ordinal: 2, Type: RuntimeModelToolCall, Text: "read_file:call-1"},
+		{Correlation: validRunnerCorrelation(), Ordinal: 3, Type: RuntimeModelToolCall, Text: "read_file:call-2"},
+	})
+}
+
+func TestTurnRunnerRejectsDuplicateToolCallIDs(t *testing.T) {
+	first := ToolCall{ID: "call-1", Name: "read_file", Arguments: `{"path":"a.go"}`}
+	duplicate := ToolCall{ID: "call-1", Name: "read_file", Arguments: `{"path":"b.go"}`}
+	model, err := testkit.NewScriptedModel(runnerRequest().ModelRequest, testkit.ScriptedModelConfig{Steps: []testkit.ScriptedStep{
+		{Event: StreamEvent{Type: StreamEventToolCall, ToolCall: &first}},
+		{Event: StreamEvent{Type: StreamEventToolCall, ToolCall: &duplicate}},
+		{Event: StreamEvent{Type: StreamEventCompleted}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &testkit.RecordingSink{}
+	emitter, _ := NewEmitter(sink, validRunnerCorrelation())
+	runner, _ := NewTurnRunner(model)
+	got, err := runner.Run(context.Background(), runnerRequest(), emitter)
+	assertRunFailure(t, got, err, CodeInvalidStream)
+	assertRunnerCounts(t, model, 2, 1)
+	assertAttemptCounts(t, sink, 2, 2)
+}
+
+func TestTurnRunnerRejectsInterleavedDeltaAfterToolCall(t *testing.T) {
+	call := ToolCall{ID: "call-1", Name: "read_file", Arguments: `{"path":"README.md"}`}
+	model, err := testkit.NewScriptedModel(runnerRequest().ModelRequest, testkit.ScriptedModelConfig{Steps: []testkit.ScriptedStep{
+		{Event: StreamEvent{Type: StreamEventTextDelta, Text: "before"}},
+		{Event: StreamEvent{Type: StreamEventToolCall, ToolCall: &call}},
+		{Event: StreamEvent{Type: StreamEventTextDelta, Text: "after"}},
+		{Event: StreamEvent{Type: StreamEventCompleted}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &testkit.RecordingSink{}
+	emitter, _ := NewEmitter(sink, validRunnerCorrelation())
+	runner, _ := NewTurnRunner(model)
+	got, err := runner.Run(context.Background(), runnerRequest(), emitter)
+	assertRunFailure(t, got, err, CodeInvalidStream)
+	assertRunnerCounts(t, model, 3, 1)
+	assertAttemptCounts(t, sink, 3, 3)
+}
+
+func TestTurnRunnerForwardsMessagesAndToolsWithoutConsultingProfile(t *testing.T) {
+	request := runnerRequest()
+	request.Messages = []domain.ModelPromptMessage{{Role: domain.PromptRoleUser, Text: request.Input}}
+	request.Tools = []domain.ToolSchema{{Name: "read_file", Description: "read", InputSchema: []byte(`{"type":"object"}`)}}
+	model, err := testkit.NewScriptedModel(request.ModelRequest, testkit.ScriptedModelConfig{Steps: []testkit.ScriptedStep{
+		{Event: StreamEvent{Type: StreamEventCompleted}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emitter, _ := NewEmitter(&testkit.RecordingSink{}, validRunnerCorrelation())
+	runner, _ := NewTurnRunner(model)
+	got, err := runner.Run(context.Background(), request, emitter)
+	if err != nil || got.Text != "" || got.ToolCalls != nil {
+		t.Fatalf("Run() = (%#v, %v), want empty success", got, err)
+	}
+	if !reflect.DeepEqual(model.Calls(), []ModelRequest{request.ModelRequest}) {
+		t.Fatalf("Calls() = %#v, want forwarded Messages and Tools", model.Calls())
+	}
+}
+
+func TestTurnRunnerClearsToolCallsAndFinishReasonOnFailAndCancel(t *testing.T) {
+	call := ToolCall{ID: "call-1", Name: "read_file", Arguments: `{}`}
+	t.Run("fail after tool", func(t *testing.T) {
+		calls := 0
+		stream := &observingStream{
+			controlledStream: controlledStream{
+				next: func(context.Context) (StreamEvent, error) {
+					calls++
+					if calls == 1 {
+						copied := call
+						return StreamEvent{Type: StreamEventToolCall, ToolCall: &copied}, nil
+					}
+					return StreamEvent{Type: "bad"}, nil
+				},
+				close: func() error { return errors.New("close") },
+			},
+			stats: AttemptStats{FinishReason: domain.FinishReasonToolCalls, LatencyMs: 4},
+		}
+		runner, _ := NewTurnRunner(&controlledModel{stream: func(context.Context, ModelRequest) (ModelStream, error) { return stream, nil }})
+		emitter, _ := NewEmitter(&controlledSink{}, validRunnerCorrelation())
+		got, err := runner.Run(context.Background(), runnerRequest(), emitter)
+		assertRunFailure(t, got, err, CodeInvalidStream)
+		if got.Stats.FinishReason != "" || got.Stats.LatencyMs != 4 {
+			t.Fatalf("fail Stats = %#v, want empty finish reason", got.Stats)
+		}
+	})
+	t.Run("canceled after completed tools", func(t *testing.T) {
+		closeEntered := make(chan struct{})
+		releaseClose := make(chan struct{})
+		calls := 0
+		stream := &observingStream{
+			controlledStream: controlledStream{
+				next: func(context.Context) (StreamEvent, error) {
+					calls++
+					if calls == 1 {
+						copied := call
+						return StreamEvent{Type: StreamEventToolCall, ToolCall: &copied}, nil
+					}
+					return StreamEvent{Type: StreamEventCompleted}, nil
+				},
+				close: func() error {
+					close(closeEntered)
+					<-releaseClose
+					return nil
+				},
+			},
+			stats: AttemptStats{FinishReason: "stop", LatencyMs: 6, ProviderRequestID: "req-cancel-tool"},
+		}
+		runner, _ := NewTurnRunner(&controlledModel{stream: func(context.Context, ModelRequest) (ModelStream, error) { return stream, nil }})
+		emitter, _ := NewEmitter(&controlledSink{}, validRunnerCorrelation())
+		ctx, cancel := context.WithCancel(context.Background())
+		result := make(chan runOutcome, 1)
+		go func() { result <- runRunner(runner, ctx, emitter) }()
+		awaitSignal(t, closeEntered, "Close() entry")
+		cancel()
+		close(releaseClose)
+		outcome := awaitOutcome(t, result)
+		assertRunFailure(t, outcome.result, outcome.err, CodeCanceled)
+		if outcome.result.Stats.FinishReason != "" || outcome.result.Stats.LatencyMs != 6 {
+			t.Fatalf("canceled Stats = %#v, want empty finish reason", outcome.result.Stats)
+		}
+	})
+}
+
 func TestTurnRunnerCopiesCompletedUsageAndObserverStats(t *testing.T) {
 	usage := &TokenUsage{InputTokens: 3, OutputTokens: 5, CachedInputTokens: 1}
 	stream := &observingStream{
@@ -925,8 +1160,11 @@ func assertRunFailure(t *testing.T, got RunResult, err error, want ErrorCode) {
 	if !errors.As(err, &engineErr) || engineErr.Code != want {
 		t.Fatalf("Run() outer error = %#v, want code %q", engineErr, want)
 	}
-	if got.Text != "" {
-		t.Fatalf("Run() result text = %q, want empty", got.Text)
+	if got.Text != "" || len(got.ToolCalls) != 0 {
+		t.Fatalf("Run() result = %#v, want empty text and tool calls", got)
+	}
+	if got.Stats.FinishReason != "" {
+		t.Fatalf("Run() FinishReason = %q, want empty", got.Stats.FinishReason)
 	}
 }
 

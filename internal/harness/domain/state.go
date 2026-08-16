@@ -20,7 +20,14 @@ const (
 
 type ItemKind string
 
-const ItemKindAssistantMessage ItemKind = "assistant_message"
+const (
+	ItemKindAssistantMessage ItemKind = "assistant_message"
+	ItemKindToolCall         ItemKind = "tool_call"
+)
+
+func validItemKind(kind ItemKind) bool {
+	return kind == ItemKindAssistantMessage || kind == ItemKindToolCall
+}
 
 type ItemStatus string
 
@@ -37,12 +44,29 @@ type ItemPayload interface {
 }
 
 type AssistantMessagePayload struct {
-	Text string
+	Text      string
+	ToolCalls []ToolCallOffer
 }
 
 func (AssistantMessagePayload) ItemKind() ItemKind { return ItemKindAssistantMessage }
 
-func (payload AssistantMessagePayload) cloneItemPayload() ItemPayload { return payload }
+func (payload AssistantMessagePayload) cloneItemPayload() ItemPayload {
+	cloned := payload
+	cloned.ToolCalls = cloneToolCallOffers(payload.ToolCalls)
+	return cloned
+}
+
+type ToolCallPayload struct {
+	CallID    string
+	Name      string
+	Arguments string
+	Content   string
+	Truncated bool
+}
+
+func (ToolCallPayload) ItemKind() ItemKind { return ItemKindToolCall }
+
+func (payload ToolCallPayload) cloneItemPayload() ItemPayload { return payload }
 
 type ItemTerminal struct {
 	Code    string

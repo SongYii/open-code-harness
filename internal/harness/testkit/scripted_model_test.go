@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
 	"github.com/SongYii/open-code-harness/internal/harness/engine/modeltest"
 	"github.com/SongYii/open-code-harness/internal/harness/testkit"
@@ -24,6 +25,45 @@ func TestScriptedModel(t *testing.T) {
 		}
 		return model
 	})
+}
+
+func TestScriptedModelEmitsToolCallsAndMatchesMessagesTools(t *testing.T) {
+	expected := engine.ModelRequest{
+		SessionID: "session",
+		TurnID:    "turn",
+		ItemID:    "item",
+		Input:     "input",
+		Messages:  []domain.ModelPromptMessage{{Role: domain.PromptRoleUser, Text: "input"}},
+		Tools:     []domain.ToolSchema{{Name: "read_file", Description: "read", InputSchema: []byte(`{"type":"object"}`)}},
+	}
+	call := engine.ToolCall{ID: "call-1", Name: "read_file", Arguments: `{"path":"README.md"}`}
+	model, err := testkit.NewScriptedModel(expected, testkit.ScriptedModelConfig{Steps: []testkit.ScriptedStep{
+		{Event: engine.StreamEvent{Type: engine.StreamEventToolCall, ToolCall: &call}},
+		{Event: engine.StreamEvent{Type: engine.StreamEventCompleted}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := model.Stream(context.Background(), expected)
+	if err != nil || stream == nil {
+		t.Fatalf("Stream() = (%v, %v), want usable stream", stream, err)
+	}
+	event, err := stream.Next(context.Background())
+	if err != nil || event.Type != engine.StreamEventToolCall || !reflect.DeepEqual(event.ToolCall, &call) {
+		t.Fatalf("Next() = (%#v, %v), want tool_call", event, err)
+	}
+	completed, err := stream.Next(context.Background())
+	if err != nil || completed.Type != engine.StreamEventCompleted || completed.ToolCall != nil {
+		t.Fatalf("Next() = (%#v, %v), want completed", completed, err)
+	}
+	if !reflect.DeepEqual(model.Calls(), []engine.ModelRequest{expected}) {
+		t.Fatalf("Calls() = %#v", model.Calls())
+	}
+	mismatch := expected
+	mismatch.Tools = nil
+	if _, err := model.Stream(context.Background(), mismatch); !engine.IsCode(err, engine.CodeInvalidRequest) {
+		t.Fatalf("Stream(nil Tools) = %v, want invalid_request", err)
+	}
 }
 
 func TestScriptedModelSupportsEveryStartupPairAndDefensiveSnapshots(t *testing.T) {
@@ -65,6 +105,48 @@ func TestScriptedModelSupportsEveryStartupPairAndDefensiveSnapshots(t *testing.T
 	calls[0].Input = "mutated"
 	if got := model.Calls(); !reflect.DeepEqual(got, []engine.ModelRequest{expected}) {
 		t.Fatalf("Calls() defensive snapshot = %#v, want %#v", got, []engine.ModelRequest{expected})
+	}
+
+	withSlices := engine.ModelRequest{
+		SessionID: "session",
+		TurnID:    "turn",
+		ItemID:    "item",
+		Input:     "input",
+		Messages: []domain.ModelPromptMessage{{
+			Role:      domain.PromptRoleAssistant,
+			Text:      "calling",
+			ToolCalls: []domain.ToolCallOffer{{ID: "call-1", Name: "read_file", Arguments: `{}`}},
+		}},
+		Tools: []domain.ToolSchema{{Name: "read_file", Description: "read", InputSchema: []byte(`{"type":"object"}`)}},
+	}
+	want := engine.ModelRequest{
+		SessionID: "session",
+		TurnID:    "turn",
+		ItemID:    "item",
+		Input:     "input",
+		Messages: []domain.ModelPromptMessage{{
+			Role:      domain.PromptRoleAssistant,
+			Text:      "calling",
+			ToolCalls: []domain.ToolCallOffer{{ID: "call-1", Name: "read_file", Arguments: `{}`}},
+		}},
+		Tools: []domain.ToolSchema{{Name: "read_file", Description: "read", InputSchema: []byte(`{"type":"object"}`)}},
+	}
+	sliced, err := testkit.NewScriptedModel(withSlices, testkit.ScriptedModelConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sliced.Stream(context.Background(), withSlices); err != nil {
+		t.Fatal(err)
+	}
+	withSlices.Messages[0].ToolCalls[0].Name = "changed"
+	withSlices.Tools[0].Name = "changed"
+	withSlices.Tools[0].InputSchema[0] = 'x'
+	snapshot := sliced.Calls()
+	snapshot[0].Messages[0].ToolCalls[0].Name = "mutated"
+	snapshot[0].Tools[0].Name = "mutated"
+	snapshot[0].Tools[0].InputSchema[0] = 'y'
+	if got := sliced.Calls(); !reflect.DeepEqual(got, []engine.ModelRequest{want}) {
+		t.Fatalf("Calls() Messages/Tools snapshot = %#v, want %#v", got, []engine.ModelRequest{want})
 	}
 }
 

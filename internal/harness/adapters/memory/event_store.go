@@ -283,6 +283,14 @@ func (store *EventStore) buildBatch(request application.AppendRequest, current [
 				return nil, nil, nil, identityError(request.SessionID, "item")
 			}
 			seenItems[event.ItemID] = struct{}{}
+		case domain.ToolCallStarted:
+			if _, exists := store.state.itemIDs[request.SessionID][event.ItemID]; exists {
+				return nil, nil, nil, identityError(request.SessionID, "item")
+			}
+			if _, exists := seenItems[event.ItemID]; exists {
+				return nil, nil, nil, identityError(request.SessionID, "item")
+			}
+			seenItems[event.ItemID] = struct{}{}
 		}
 	}
 	turns := make([]domain.TurnID, 0, len(seenTurns))

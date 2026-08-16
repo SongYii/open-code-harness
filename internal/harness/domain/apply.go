@@ -46,29 +46,64 @@ func Apply(state Session, record RecordedEvent) (Session, error) {
 		if !utf8.ValidString(event.Text) {
 			return Session{}, domainError(CodeInvalidEvent, "assistant message text must be valid UTF-8")
 		}
-		return applyTerminalItem(state, record, event.TurnID, event.ItemID)
+		if err := validateToolCallOffers(event.ToolCalls, CodeInvalidEvent); err != nil {
+			return Session{}, err
+		}
+		return applyTerminalItemKind(state, record, event.TurnID, event.ItemID, ItemKindAssistantMessage)
 	case AssistantMessageFailed:
 		if !hasRequiredText(event.Code) || !utf8.ValidString(event.Message) {
 			return Session{}, domainError(CodeInvalidEvent, "item terminal details are invalid")
 		}
-		return applyTerminalItem(state, record, event.TurnID, event.ItemID)
+		return applyTerminalItemKind(state, record, event.TurnID, event.ItemID, ItemKindAssistantMessage)
 	case AssistantMessageInterrupted:
 		if !hasRequiredText(event.Code) || !utf8.ValidString(event.Message) {
 			return Session{}, domainError(CodeInvalidEvent, "item terminal details are invalid")
 		}
-		return applyTerminalItem(state, record, event.TurnID, event.ItemID)
+		return applyTerminalItemKind(state, record, event.TurnID, event.ItemID, ItemKindAssistantMessage)
 	case SessionClosed:
 		return applySessionClosed(state, record)
 	case ModelRequestRecorded:
 		if err := validateModelRequestPayload(event, CodeInvalidEvent); err != nil {
 			return Session{}, err
 		}
-		return applyVersionOnlyRunningItem(state, record, event.TurnID, event.ItemID, "model request timestamp precedes item start")
+		return applyVersionOnlyRunningItemKind(state, record, event.TurnID, event.ItemID, ItemKindAssistantMessage, "model request timestamp precedes item start")
 	case ModelUsageRecorded:
 		if err := validateModelUsagePayload(event, CodeInvalidEvent); err != nil {
 			return Session{}, err
 		}
-		return applyVersionOnlyRunningItem(state, record, event.TurnID, event.ItemID, "model usage timestamp precedes item start")
+		return applyVersionOnlyRunningItemKind(state, record, event.TurnID, event.ItemID, ItemKindAssistantMessage, "model usage timestamp precedes item start")
+	case ToolCallStarted:
+		return applyToolCallStarted(state, record, event)
+	case ToolCallCompleted:
+		if err := validateToolCallCompletedPayload(event, CodeInvalidEvent); err != nil {
+			return Session{}, err
+		}
+		return applyTerminalItemKind(state, record, event.TurnID, event.ItemID, ItemKindToolCall)
+	case ToolCallFailed:
+		if err := validateToolCallFailedPayload(event, CodeInvalidEvent); err != nil {
+			return Session{}, err
+		}
+		return applyTerminalItemKind(state, record, event.TurnID, event.ItemID, ItemKindToolCall)
+	case ToolCallInterrupted:
+		if err := validateToolCallInterruptedPayload(event, CodeInvalidEvent); err != nil {
+			return Session{}, err
+		}
+		return applyTerminalItemKind(state, record, event.TurnID, event.ItemID, ItemKindToolCall)
+	case PolicyDecisionRecorded:
+		if err := validatePolicyDecisionPayload(event, CodeInvalidEvent); err != nil {
+			return Session{}, err
+		}
+		return applyVersionOnlyRunningItemKind(state, record, event.TurnID, event.ItemID, ItemKindToolCall, "policy decision timestamp precedes item start")
+	case ApprovalRequested:
+		if err := validateApprovalRequestedPayload(event, CodeInvalidEvent); err != nil {
+			return Session{}, err
+		}
+		return applyVersionOnlyRunningItemKind(state, record, event.TurnID, event.ItemID, ItemKindToolCall, "approval request timestamp precedes item start")
+	case ApprovalResolved:
+		if err := validateApprovalResolvedPayload(event, CodeInvalidEvent); err != nil {
+			return Session{}, err
+		}
+		return applyVersionOnlyRunningItemKind(state, record, event.TurnID, event.ItemID, ItemKindToolCall, "approval resolution timestamp precedes item start")
 	default:
 		return Session{}, domainError(CodeInvalidEvent, "event type cannot be applied")
 	}
@@ -181,8 +216,32 @@ func applyAssistantMessageStarted(state Session, record RecordedEvent, event Ass
 	return next, nil
 }
 
+func applyToolCallStarted(state Session, record RecordedEvent, event ToolCallStarted) (Session, error) {
+	turn, err := requireRunningTurnForEvent(state, record.SessionID, event.TurnID)
+	if err != nil {
+		return Session{}, err
+	}
+	if err := validateToolCallStartedPayload(event, CodeInvalidEvent); err != nil {
+		return Session{}, err
+	}
+	if turn.ActiveItem != nil {
+		return Session{}, domainError(CodeInvalidEvent, "an item is already running")
+	}
+	if record.OccurredAt.Before(turn.LastTransitionAt) {
+		return Session{}, domainError(CodeInvalidEvent, "item start timestamp precedes turn start")
+	}
+	next := state.Clone()
+	next.ActiveTurn.ActiveItem = &Item{ID: event.ItemID, TurnID: event.TurnID, Kind: ItemKindToolCall, StartedAt: record.OccurredAt}
+	next.Version = record.Sequence
+	return next, nil
+}
+
 func applyVersionOnlyRunningItem(state Session, record RecordedEvent, turnID TurnID, itemID ItemID, beforeStartMessage string) (Session, error) {
-	item, err := requireRunningItemForEvent(state, record.SessionID, turnID, itemID)
+	return applyVersionOnlyRunningItemKind(state, record, turnID, itemID, "", beforeStartMessage)
+}
+
+func applyVersionOnlyRunningItemKind(state Session, record RecordedEvent, turnID TurnID, itemID ItemID, kind ItemKind, beforeStartMessage string) (Session, error) {
+	item, err := requireRunningItemKindForEvent(state, record.SessionID, turnID, itemID, kind)
 	if err != nil {
 		return Session{}, err
 	}
@@ -195,7 +254,11 @@ func applyVersionOnlyRunningItem(state Session, record RecordedEvent, turnID Tur
 }
 
 func applyTerminalItem(state Session, record RecordedEvent, turnID TurnID, itemID ItemID) (Session, error) {
-	item, err := requireRunningItemForEvent(state, record.SessionID, turnID, itemID)
+	return applyTerminalItemKind(state, record, turnID, itemID, "")
+}
+
+func applyTerminalItemKind(state Session, record RecordedEvent, turnID TurnID, itemID ItemID, kind ItemKind) (Session, error) {
+	item, err := requireRunningItemKindForEvent(state, record.SessionID, turnID, itemID, kind)
 	if err != nil {
 		return Session{}, err
 	}
@@ -253,6 +316,17 @@ func requireRunningItemForEvent(state Session, sessionID SessionID, turnID TurnI
 		return Item{}, domainError(CodeInvalidEvent, "event item ID does not match active item")
 	}
 	return *turn.ActiveItem, nil
+}
+
+func requireRunningItemKindForEvent(state Session, sessionID SessionID, turnID TurnID, itemID ItemID, kind ItemKind) (Item, error) {
+	item, err := requireRunningItemForEvent(state, sessionID, turnID, itemID)
+	if err != nil {
+		return Item{}, err
+	}
+	if kind != "" && item.Kind != kind {
+		return Item{}, domainError(CodeInvalidEvent, "event item kind does not match active item")
+	}
+	return item, nil
 }
 
 func validateItemTerminal(code, message string) (*ItemTerminal, error) {
