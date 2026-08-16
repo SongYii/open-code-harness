@@ -188,6 +188,13 @@ func (store *Store) corruptReceiptForTesting(appendID domain.AppendID) error {
 			_, _ = store.writer.ExecContext(context.Background(), "ROLLBACK")
 		}
 	}()
+	// The derived outbox row references the receipt's commit position; drop
+	// it first (outbox rows are prunable derived data) so the receipt row
+	// itself can move.
+	if _, err := store.writer.ExecContext(ctx,
+		"DELETE FROM export_outbox WHERE append_id = ?", string(appendID)); err != nil {
+		return mapStorageError(err, "")
+	}
 	if _, err := store.writer.ExecContext(ctx,
 		"UPDATE event_appends SET commit_position = (SELECT head_commit_position + 1 FROM store_metadata WHERE id = 1), "+
 			"first_sequence = (SELECT version + 1 FROM event_streams WHERE session_id = event_appends.session_id), "+

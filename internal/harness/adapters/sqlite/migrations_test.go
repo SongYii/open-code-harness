@@ -67,8 +67,13 @@ func TestStoreMetadataIsSingleton(t *testing.T) {
 	if headPosition != 0 {
 		t.Fatalf("fresh head_commit_position = %d, want 0", headPosition)
 	}
-	if headAuditDigest != nil {
-		t.Fatalf("fresh head_audit_digest = %x, want NULL until Slice 3", headAuditDigest)
+	// Since Slice 3 the chain is active from migration: a fresh database
+	// sits at the genesis seed with no batches.
+	if headAuditDigest == nil {
+		t.Fatal("fresh head_audit_digest = NULL, want genesis seed")
+	}
+	if string(headAuditDigest) != string(auditGenesisDigest[:]) {
+		t.Fatalf("fresh head_audit_digest = %x, want genesis %x", headAuditDigest, auditGenesisDigest[:])
 	}
 
 	if _, err := store.db.ExecContext(ctx,

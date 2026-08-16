@@ -145,12 +145,17 @@ func (store *Store) Append(ctx context.Context, request application.AppendReques
 		return application.CommitReceipt{}, mapStorageError(err, request.SessionID)
 	}
 
+	var committedAtUnix float64
+	if err := conn.QueryRowContext(ctx, "SELECT unixepoch('subsec')").Scan(&committedAtUnix); err != nil {
+		return application.CommitReceipt{}, mapStorageError(err, request.SessionID)
+	}
+
 	if _, err := conn.ExecContext(ctx,
 		"INSERT INTO event_appends (append_id, commit_position, session_id, expected_version, first_sequence, last_sequence, event_count, command_id, request_digest, writer_runtime_id, writer_fencing_token, committed_at_unix) "+
-			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch('subsec'))",
+			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		string(request.AppendID), position, string(request.SessionID), request.ExpectedVersion,
 		receipt.FirstSequence, receipt.LastSequence, len(prepared.events), string(request.CommandID),
-		digest[:], string(request.Authority.RuntimeID), request.Authority.FencingToken); err != nil {
+		digest[:], string(request.Authority.RuntimeID), request.Authority.FencingToken, committedAtUnix); err != nil {
 		return application.CommitReceipt{}, mapStorageError(err, request.SessionID)
 	}
 
@@ -182,6 +187,10 @@ func (store *Store) Append(ctx context.Context, request application.AppendReques
 	}
 
 	if err := store.updateSessionHead(ctx, conn, request.SessionID, prepared, position); err != nil {
+		return application.CommitReceipt{}, err
+	}
+
+	if err := store.maintainAuditChain(ctx, conn, request, prepared, position, committedAtUnix); err != nil {
 		return application.CommitReceipt{}, err
 	}
 

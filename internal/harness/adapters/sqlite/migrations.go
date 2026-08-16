@@ -6,17 +6,21 @@ import (
 	"fmt"
 )
 
-const latestMigrationVersion = 2
+const latestMigrationVersion = 3
 
 type migration struct {
 	version    int
 	name       string
 	statements string
+	// apply is an optional code-driven step executed after statements inside
+	// the same write transaction.
+	apply func(ctx context.Context, conn *sql.Conn) error
 }
 
 var migrations = []migration{
 	{version: 1, name: "full target shape", statements: migration1DDL},
 	{version: 2, name: "append receipt verification index", statements: migration2DDL},
+	{version: 3, name: "audit chain backfill", statements: migration3DDL, apply: backfillAuditChain},
 }
 
 func readUserVersion(ctx context.Context, conn *sql.Conn) (int, error) {
@@ -73,6 +77,11 @@ func (store *Store) migrate(ctx context.Context) error {
 		}
 		if _, err := conn.ExecContext(ctx, step.statements); err != nil {
 			return fmt.Errorf("sqlite migrate: apply %d %q: %w", step.version, step.name, err)
+		}
+		if step.apply != nil {
+			if err := step.apply(ctx, conn); err != nil {
+				return fmt.Errorf("sqlite migrate: code step %d %q: %w", step.version, step.name, err)
+			}
 		}
 		if _, err := conn.ExecContext(ctx,
 			"INSERT INTO schema_migrations (version, name, applied_at_unix) VALUES (?, ?, unixepoch('subsec'))",
