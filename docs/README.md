@@ -50,10 +50,14 @@ test-only production branches for the capabilities it does deliver.
 | Accepted | Reading copy | [Provider 合同与第一个真实 Adapter](superpowers/specs/2026-08-15-provider-adapter-design.zh-CN.md) | 与 Provider 设计同步的中文阅读版：行业对照、是否自研、关键决策与五步 PR Plan |
 | Accepted | Normative design | [Tool Runtime, Policy, and minimal workspace tools](superpowers/specs/2026-08-16-tool-runtime-policy-design.md) | Application-owned Step loop, pure Policy Decide, four builtin tools, mid-loop EventStore resolve, no plugin kernel |
 | Accepted | Reading copy | [Tool Runtime、Policy 与最小工作区工具](superpowers/specs/2026-08-16-tool-runtime-policy-design.zh-CN.md) | 与 Tool/Policy 设计同步的中文阅读版：关键决策、行业对照、管线与 PR Plan |
+| Accepted | Normative design | [SQLite Canonical EventStore (Slice 2)](superpowers/specs/2026-08-16-sqlite-canonical-eventstore-design.md) | Pure-Go SQLite adapter behind the EventStore v2 port: full-shape migrations, append transaction, fencing lease primitive, pinned reads, backup, and fault evidence |
+| Accepted | Reading copy | [SQLite 规范 EventStore（Slice 2）中文阅读版](superpowers/specs/2026-08-16-sqlite-canonical-eventstore-design.zh-CN.md) | 与 SQLite 规范 EventStore 聚焦设计完整同步的中文阅读版 |
 | Implemented plan | Plan | [EventStore v2 contract migration implementation plan](superpowers/plans/2026-08-13-eventstore-v2-contract.md) | Frozen nine-task sequence; completion claims are backed by the evidence ledger, not checkbox state |
 | Implemented plan | Reading copy | [EventStore v2 Contract Migration 实施计划中文阅读版](superpowers/plans/2026-08-13-eventstore-v2-contract.zh-CN.md) | 与 EventStore v2 实施计划完整同步的中文执行阅读版 |
 | Implemented plan | Plan | [Engine vertical slice implementation plan](superpowers/plans/2026-08-12-engine-vertical-slice.md) | Frozen ten-task implementation sequence; completion claims are backed by the evidence ledger, not checkbox state |
 | Implemented plan | Reading copy | [Engine 纵切实施计划中文阅读版](superpowers/plans/2026-08-12-engine-vertical-slice.zh-CN.md) | Chinese synchronized reading copy of the implemented sequence; see the evidence ledger for completion proof |
+| Approved | Plan | [SQLite canonical EventStore implementation plan](superpowers/plans/2026-08-16-sqlite-canonical-eventstore.md) | Frozen five-task sequence for the Slice 2 adapter; completion claims are backed by the evidence ledger, not checkbox state |
+| Approved | Reading copy | [SQLite 规范 EventStore 实施计划中文阅读版](superpowers/plans/2026-08-16-sqlite-canonical-eventstore.zh-CN.md) | 与 SQLite 规范 EventStore 实施计划完整同步的中文执行阅读版 |
 | Complete | Research evidence | [Task 1 Assistant Item architecture gate](research/architecture-gates/2026-08-12-task-1-assistant-item-lifecycle.md) | Official-project comparison and load-bearing amendments required before Task 1 implementation |
 | Complete | Research evidence | [Tasks 3–4 Application/EventStore architecture gate](research/architecture-gates/2026-08-12-tasks-3-4-application-eventstore.md) | Agent-project and EventStoreDB comparison establishing exact CAS, atomicity, replay authority, fault, and adapter contracts |
 | Complete | Reading copy | [Task 3–4 Application/EventStore 架构门中文阅读版](research/architecture-gates/2026-08-12-tasks-3-4-application-eventstore.zh-CN.md) | 与 Task 3–4 架构门同步的中文决策记录 |
@@ -67,6 +71,8 @@ test-only production branches for the capabilities it does deliver.
 | Complete | Reading copy | [EventStore v2 Contract 架构门中文阅读版](research/architecture-gates/2026-08-13-eventstore-v2-contract.zh-CN.md) | 与 EventStore v2 Contract 聚焦架构门完整同步的中文证据记录 |
 | Complete | Research evidence | [DeepSeek Harness comparison and delivery sequencing](research/architecture-gates/2026-08-15-deepseek-harness-and-roadmap.md) | Official DeepSeek Harness adopt/reject boundary, required comparison set, and post-Slice-1 sequencing |
 | Complete | Reading copy | [DeepSeek Harness 对照与交付顺序](research/architecture-gates/2026-08-15-deepseek-harness-and-roadmap.zh-CN.md) | 与 DeepSeek Harness 对照及交付顺序结论完整同步的中文证据记录 |
+| Complete | Research evidence | [SQLite canonical EventStore architecture gate](research/architecture-gates/2026-08-16-sqlite-canonical-eventstore.md) | Slice 2 re-verification of DeepSeek Harness, Codex, Kimi Code, Grok Build, Pi, and Maka establishing row-per-event, WAL, migration, fencing, and fail-closed contracts |
+| Complete | Reading copy | [SQLite 规范 EventStore 架构门中文阅读版](research/architecture-gates/2026-08-16-sqlite-canonical-eventstore.zh-CN.md) | 与 SQLite 规范 EventStore 架构门完整同步的中文证据记录 |
 | Complete | Plan | [Domain implementation plan](superpowers/plans/2026-08-11-domain-events-state-machine.md) | Completed Task 1–8 implementation sequence |
 | Complete | Reading copy | [领域实施计划中文阅读版](superpowers/plans/2026-08-11-domain-events-state-machine.zh-CN.md) | Chinese synchronized reading copy of the completed plan |
 
