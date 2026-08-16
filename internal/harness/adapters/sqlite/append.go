@@ -283,45 +283,23 @@ func (store *Store) lookupReceipt(ctx context.Context, queryer rowQueryer, appen
 // updateSessionHead maintains the one synchronous projection inside the
 // append transaction. It is derived state, never authoritative.
 func (store *Store) updateSessionHead(ctx context.Context, conn *sql.Conn, sessionID domain.SessionID, prepared *preparedAppend, position uint64) error {
-	status := "idle"
-	var activeTurn, activeItem sql.NullString
+	head := sessionHeadState{status: "idle"}
 	err := conn.QueryRowContext(ctx,
 		"SELECT status, active_turn_id, active_item_id FROM session_heads WHERE session_id = ?",
-		string(sessionID)).Scan(&status, &activeTurn, &activeItem)
+		string(sessionID)).Scan(&head.status, &head.turn, &head.item)
 	switch {
 	case isNoRows(err):
-		status = "idle"
+		head = sessionHeadState{status: "idle"}
 	case err != nil:
 		return mapStorageError(err, sessionID)
 	}
 	for _, entry := range prepared.events {
-		switch entry.eventType {
-		case domain.EventTurnStarted:
-			status = "active"
-			activeTurn = sql.NullString{String: string(entry.record.Event.(domain.TurnStarted).TurnID), Valid: true}
-			activeItem = sql.NullString{}
-		case domain.EventTurnCompleted, domain.EventTurnFailed, domain.EventTurnInterrupted:
-			status = "idle"
-			activeTurn = sql.NullString{}
-			activeItem = sql.NullString{}
-		case domain.EventSessionClosed:
-			status = "closed"
-			activeTurn = sql.NullString{}
-			activeItem = sql.NullString{}
-		case domain.EventAssistantMessageStarted:
-			activeItem = sql.NullString{String: string(entry.record.Event.(domain.AssistantMessageStarted).ItemID), Valid: true}
-		case domain.EventToolCallStarted:
-			activeItem = sql.NullString{String: string(entry.record.Event.(domain.ToolCallStarted).ItemID), Valid: true}
-		case domain.EventAssistantMessageCompleted, domain.EventAssistantMessageFailed,
-			domain.EventAssistantMessageInterrupted, domain.EventToolCallCompleted,
-			domain.EventToolCallFailed, domain.EventToolCallInterrupted:
-			activeItem = sql.NullString{}
-		}
+		head = applyHeadTransition(head, entry.record.Event)
 	}
 	if _, err := conn.ExecContext(ctx,
 		"INSERT INTO session_heads (session_id, status, active_turn_id, active_item_id, updated_at_commit_position) VALUES (?, ?, ?, ?, ?) "+
 			"ON CONFLICT(session_id) DO UPDATE SET status = excluded.status, active_turn_id = excluded.active_turn_id, active_item_id = excluded.active_item_id, updated_at_commit_position = excluded.updated_at_commit_position",
-		string(sessionID), status, activeTurn, activeItem, position); err != nil {
+		string(sessionID), head.status, head.turn, head.item, position); err != nil {
 		return mapStorageError(err, sessionID)
 	}
 	return nil
