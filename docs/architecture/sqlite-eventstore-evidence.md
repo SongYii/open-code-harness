@@ -13,9 +13,9 @@
 | `103204e` | Docs | Architecture gate, bilingual spec, and bilingual plan |
 | `9d7f187` | Task 1 / PR 1 | Driver introduction, open profile verification, version gate, full-shape migrations, corruption fail-closed path |
 | `35523bd` | Task 2 / PR 2 | Append transaction: exact retry, CAS, admission, domain identities, result-code classification |
-| (Task 3 / PR 3) | Pinned pagination, append resolution, command request lookup, reader/writer atomicity |
-| (Task 4 / PR 4) | Fencing lease acquire/renew, per-append predicate, unknown-outcome protocol, conformance suite green |
-| (Task 5 / PR 5) | Backup, projection rebuild, benchmarks, contract and evidence publication |
+| `c310f59` | Task 3 / PR 3 | Pinned pagination, append resolution, command request lookup, reader/writer atomicity |
+| `74c65f1` | Task 4 / PR 4 | Fencing lease acquire/renew, per-append predicate, unknown-outcome protocol, conformance suite green |
+| `6ef089d` | Task 5 / PR 5 | Backup, projection rebuild, benchmarks, contract and evidence publication |
 
 ## Dependency and license inventory
 
