@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	_ "modernc.org/sqlite" // pure-Go driver; CGO stays disabled
 )
@@ -35,9 +36,10 @@ func (err *CorruptError) Error() string {
 // Store is the SQLite canonical EventStore adapter. One dedicated writer
 // connection owns every mutation transaction; reads share a bounded pool.
 type Store struct {
-	db     *sql.DB
-	writer *sql.Conn
-	config Config
+	db      *sql.DB
+	writer  *sql.Conn
+	writeMu sync.Mutex
+	config  Config
 }
 
 // Open prepares the database: deny-list diagnosis, pragmas, profile
