@@ -331,22 +331,20 @@ func TestAppendRejectsOverLimitBatch(t *testing.T) {
 	requireStoreCode(t, err, application.StoreCodeInvalidAppend)
 }
 
-func TestAppendWriterFencedWhenLeaseRowDisagrees(t *testing.T) {
+func TestAppendWriterFencedWhenAuthorityDisagrees(t *testing.T) {
 	store := openStore(t, tempStoreConfig(t))
 	ctx := context.Background()
-	if _, err := store.writer.ExecContext(ctx,
-		"INSERT INTO runtime_leases (id, runtime_id, fencing_token, lease_expires_at_unix, last_heartbeat_at_unix) VALUES (1, 'runtime-other', 9, unixepoch('subsec') + 3600, unixepoch('subsec'))"); err != nil {
-		t.Fatalf("seed lease: %v", err)
-	}
+
 	request := appendRequest("append-fenced", "session-f", 0, "command-f", domain.SessionCreated{WorkspaceRoot: "/w"})
+	request.Authority = application.WriterAuthority{RuntimeID: "runtime-1", FencingToken: 2}
 	_, err := store.Append(ctx, request)
 	requireStoreCode(t, err, application.StoreCodeWriterFenced)
 
-	// An absent lease row still permits appends until Task 4 wires Open-time
-	// acquisition; the permissive intermediate mode is explicit.
-	if _, err := store.writer.ExecContext(ctx, "DELETE FROM runtime_leases"); err != nil {
-		t.Fatalf("clear lease: %v", err)
-	}
+	request.Authority = application.WriterAuthority{RuntimeID: "runtime-2", FencingToken: 1}
+	_, err = store.Append(ctx, request)
+	requireStoreCode(t, err, application.StoreCodeWriterFenced)
+
+	request.Authority = store.Authority()
 	mustAppend(t, store, request)
 }
 

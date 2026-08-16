@@ -56,9 +56,10 @@ func isNoRows(err error) bool { return errors.Is(err, sql.ErrNoRows) }
 
 func newStoreError(code application.StoreErrorCode, session domain.SessionID, cause error) error {
 	storeErr, err := application.NewStoreError(application.StoreError{
-		Code:      code,
-		SessionID: session,
-		Cause:     cause,
+		Code:             code,
+		SessionID:        session,
+		Cause:            cause,
+		MayHaveCommitted: code == application.StoreCodeCommitOutcomeUnknown,
 	})
 	if err != nil {
 		return fmt.Errorf("sqlite adapter: construct store error: %w", err)
@@ -71,6 +72,9 @@ func appendRejected(session domain.SessionID, cause error) error {
 }
 
 func contextError(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("context is required")
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}

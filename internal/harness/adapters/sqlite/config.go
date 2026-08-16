@@ -3,6 +3,8 @@ package sqlite
 import (
 	"fmt"
 	"time"
+
+	"github.com/SongYii/open-code-harness/internal/harness/application"
 )
 
 const (
@@ -11,6 +13,9 @@ const (
 	maxBusyTimeout           = 60 * time.Second
 	defaultMaxReadConnection = 4
 	defaultWALAutoCheckpoint = 1000
+	defaultLeaseDuration     = 30 * time.Second
+	minLeaseDuration         = time.Second
+	maxLeaseDuration         = time.Hour
 )
 
 // Config bounds every resource the adapter may consume. Zero values take the
@@ -20,6 +25,14 @@ type Config struct {
 	// filesystem; known network or synchronization locations listed in
 	// DeniedPathPrefixes are refused at open with a diagnosis.
 	Path string
+
+	// RuntimeID names the runtime acquiring the singleton writer lease at
+	// open. Required.
+	RuntimeID string
+
+	// LeaseDuration bounds the runtime lease acquired at open and extended
+	// by RenewLease. Default 30s; allowed range 1s to 1h.
+	LeaseDuration time.Duration
 
 	// BusyTimeout bounds how long a contended lock waits before failing.
 	// Default 5s; allowed range 100ms to 60s.
@@ -47,12 +60,21 @@ func (config Config) withDefaults() Config {
 	if config.WALAutoCheckpoint == 0 {
 		config.WALAutoCheckpoint = defaultWALAutoCheckpoint
 	}
+	if config.LeaseDuration == 0 {
+		config.LeaseDuration = defaultLeaseDuration
+	}
 	return config
 }
 
 func (config Config) validate() error {
 	if config.Path == "" {
 		return fmt.Errorf("sqlite config: path is required")
+	}
+	if _, err := application.ParseRuntimeID(config.RuntimeID); err != nil {
+		return fmt.Errorf("sqlite config: %w", err)
+	}
+	if config.LeaseDuration < minLeaseDuration || config.LeaseDuration > maxLeaseDuration {
+		return fmt.Errorf("sqlite config: lease duration %s outside [%s, %s]", config.LeaseDuration, minLeaseDuration, maxLeaseDuration)
 	}
 	if config.BusyTimeout < minBusyTimeout || config.BusyTimeout > maxBusyTimeout {
 		return fmt.Errorf("sqlite config: busy timeout %s outside [%s, %s]", config.BusyTimeout, minBusyTimeout, maxBusyTimeout)

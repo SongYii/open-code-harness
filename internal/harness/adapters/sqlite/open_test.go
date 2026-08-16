@@ -23,7 +23,7 @@ func openStore(t *testing.T, config Config) *Store {
 
 func tempStoreConfig(t *testing.T) Config {
 	t.Helper()
-	return Config{Path: filepath.Join(t.TempDir(), "harness.db")}
+	return Config{Path: filepath.Join(t.TempDir(), "harness.db"), RuntimeID: "runtime-1"}
 }
 
 func TestOpenAppliesAndReportsOperatingProfile(t *testing.T) {
@@ -88,6 +88,7 @@ func TestOpenRejectsDeniedPathPrefix(t *testing.T) {
 	dir := t.TempDir()
 	config := Config{
 		Path:               filepath.Join(dir, "synced", "harness.db"),
+		RuntimeID:          "runtime-1",
 		DeniedPathPrefixes: []string{filepath.Join(dir, "synced")},
 	}
 	_, err := Open(context.Background(), config)
@@ -132,7 +133,7 @@ func TestSQLiteVersionSupportsSubsecondUnixEpoch(t *testing.T) {
 
 func TestOpenRefusesNewerFormat(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "future.db")
-	store, err := Open(context.Background(), Config{Path: path})
+	store, err := Open(context.Background(), Config{Path: path, RuntimeID: "runtime-1"})
 	if err != nil {
 		t.Fatalf("initial Open: %v", err)
 	}
@@ -151,7 +152,7 @@ func TestOpenRefusesNewerFormat(t *testing.T) {
 		t.Fatalf("raw close: %v", err)
 	}
 
-	_, err = Open(context.Background(), Config{Path: path})
+	_, err = Open(context.Background(), Config{Path: path, RuntimeID: "runtime-1"})
 	if err == nil {
 		t.Fatal("Open() on newer format = nil, want error")
 	}
@@ -169,7 +170,7 @@ func TestOpenRefusesNewerFormat(t *testing.T) {
 
 func TestOpenDetectsTamperedMetadata(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tampered.db")
-	store, err := Open(context.Background(), Config{Path: path})
+	store, err := Open(context.Background(), Config{Path: path, RuntimeID: "runtime-1"})
 	if err != nil {
 		t.Fatalf("initial Open: %v", err)
 	}
@@ -181,7 +182,7 @@ func TestOpenDetectsTamperedMetadata(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 
-	_, err = Open(context.Background(), Config{Path: path})
+	_, err = Open(context.Background(), Config{Path: path, RuntimeID: "runtime-1"})
 	if err == nil {
 		t.Fatal("Open() on tampered metadata = nil, want error")
 	}
@@ -193,7 +194,7 @@ func TestOpenDetectsTamperedMetadata(t *testing.T) {
 
 func TestOpenDetectsMissingMetadataRow(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.db")
-	store, err := Open(context.Background(), Config{Path: path})
+	store, err := Open(context.Background(), Config{Path: path, RuntimeID: "runtime-1"})
 	if err != nil {
 		t.Fatalf("initial Open: %v", err)
 	}
@@ -204,7 +205,7 @@ func TestOpenDetectsMissingMetadataRow(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 
-	_, err = Open(context.Background(), Config{Path: path})
+	_, err = Open(context.Background(), Config{Path: path, RuntimeID: "runtime-1"})
 	if err == nil {
 		t.Fatal("Open() on missing metadata = nil, want error")
 	}

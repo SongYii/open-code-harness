@@ -32,34 +32,20 @@ func (store *Store) ResolveAppend(ctx context.Context, request application.Resol
 	if _, err := domain.ParseAppendID(string(request.AppendID)); err != nil {
 		return application.AppendResolution{}, appendRejected("", err)
 	}
+	if cause := store.popFault(faultResolve); cause != nil {
+		return application.AppendResolution{}, newStoreError(application.StoreCodeUnavailable, "", cause)
+	}
 
-	var storedDigest []byte
-	var storedPosition, storedFirst, storedLast uint64
-	var storedSession string
-	err := store.db.QueryRowContext(ctx,
-		"SELECT request_digest, commit_position, first_sequence, last_sequence, session_id FROM event_appends WHERE append_id = ?",
-		string(request.AppendID)).Scan(&storedDigest, &storedPosition, &storedFirst, &storedLast, &storedSession)
+	receipt, found, err := store.lookupReceipt(ctx, store.db, request.AppendID, request.RequestDigest, "")
 	switch {
-	case isNoRows(err):
-		return application.AppendResolution{Kind: application.AppendResolutionNotFound}, nil
 	case err != nil:
-		return application.AppendResolution{}, mapStorageError(err, "")
-	}
-	if !bytes.Equal(storedDigest, request.RequestDigest[:]) {
-		return application.AppendResolution{Kind: application.AppendResolutionIdentityMismatch}, nil
-	}
-	if storedPosition == 0 || storedFirst == 0 || storedLast < storedFirst {
-		return application.AppendResolution{}, newStoreError(application.StoreCodeCorrupt, domain.SessionID(storedSession),
-			wrapDetail(fmt.Sprintf("stored receipt for append %q is inconsistent", request.AppendID), nil))
-	}
-	receipt := application.CommitReceipt{
-		AppendID:       request.AppendID,
-		CommitPosition: storedPosition,
-		FirstSequence:  storedFirst,
-		LastSequence:   storedLast,
-	}
-	if err := receiptIdentityCheck(receipt, domain.SessionID(storedSession)); err != nil {
+		var mismatch *application.StoreError
+		if errors.As(err, &mismatch) && mismatch.Code == application.StoreCodeAppendIdentityMismatch {
+			return application.AppendResolution{Kind: application.AppendResolutionIdentityMismatch}, nil
+		}
 		return application.AppendResolution{}, err
+	case !found:
+		return application.AppendResolution{Kind: application.AppendResolutionNotFound}, nil
 	}
 	return application.AppendResolution{Kind: application.AppendResolutionCommitted, Receipt: &receipt}, nil
 }
@@ -104,11 +90,4 @@ func (store *Store) FindCommandRequest(ctx context.Context, request application.
 	record.ItemID = domain.ItemID(itemID)
 	record.AdmissionAppendID = domain.AppendID(admissionAppendID)
 	return application.CommandRequestLookup{Kind: application.CommandRequestLookupFound, Record: &record}, nil
-}
-
-func receiptIdentityCheck(receipt application.CommitReceipt, session domain.SessionID) error {
-	if _, err := domain.ParseSessionID(string(session)); err != nil {
-		return newStoreError(application.StoreCodeCorrupt, session, wrapDetail("receipt session identity invalid", err))
-	}
-	return nil
 }

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/SongYii/open-code-harness/internal/harness/application"
+
 	_ "modernc.org/sqlite" // pure-Go driver; CGO stays disabled
 )
 
@@ -36,10 +38,12 @@ func (err *CorruptError) Error() string {
 // Store is the SQLite canonical EventStore adapter. One dedicated writer
 // connection owns every mutation transaction; reads share a bounded pool.
 type Store struct {
-	db      *sql.DB
-	writer  *sql.Conn
-	writeMu sync.Mutex
-	config  Config
+	db        *sql.DB
+	writer    *sql.Conn
+	writeMu   sync.Mutex
+	authority application.WriterAuthority
+	faults    faultState
+	config    Config
 }
 
 // Open prepares the database: deny-list diagnosis, pragmas, profile
@@ -77,7 +81,7 @@ func Open(ctx context.Context, config Config) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("sqlite open: writer connection: %w", err)
 	}
-	store := &Store{db: db, writer: writer, config: config}
+	store := &Store{db: db, writer: writer, faults: newFaultState(), config: config}
 
 	if err := store.verifyProfile(ctx); err != nil {
 		_ = store.Close()
@@ -91,7 +95,26 @@ func Open(ctx context.Context, config Config) (*Store, error) {
 		_ = store.Close()
 		return nil, err
 	}
+	if _, err := store.AcquireLease(ctx); err != nil {
+		_ = store.Close()
+		return nil, err
+	}
 	return store, nil
+}
+
+// replaceWriterConn quarantines a connection whose transaction state is
+// unknown and pins a fresh dedicated writer connection.
+func (store *Store) replaceWriterConn(ctx context.Context) error {
+	quarantined := store.writer
+	if quarantined != nil {
+		_ = quarantined.Close()
+	}
+	conn, err := store.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	store.writer = conn
+	return nil
 }
 
 // Close releases the writer connection and the read pool.

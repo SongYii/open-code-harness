@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-const latestMigrationVersion = 1
+const latestMigrationVersion = 2
 
 type migration struct {
 	version    int
@@ -16,6 +16,7 @@ type migration struct {
 
 var migrations = []migration{
 	{version: 1, name: "full target shape", statements: migration1DDL},
+	{version: 2, name: "append receipt verification index", statements: migration2DDL},
 }
 
 func readUserVersion(ctx context.Context, conn *sql.Conn) (int, error) {

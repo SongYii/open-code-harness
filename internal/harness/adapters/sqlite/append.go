@@ -50,29 +50,12 @@ func (store *Store) Append(ctx context.Context, request application.AppendReques
 	// Receipt resolution: an existing AppendID with the same digest returns
 	// the original receipt even after the stream advanced; a different digest
 	// is an identity mismatch that never commits.
-	var storedDigest []byte
-	var storedPosition, storedFirst, storedLast uint64
-	var storedSession string
-	err = conn.QueryRowContext(ctx,
-		"SELECT request_digest, commit_position, first_sequence, last_sequence, session_id FROM event_appends WHERE append_id = ?",
-		string(request.AppendID)).Scan(&storedDigest, &storedPosition, &storedFirst, &storedLast, &storedSession)
+	receipt, found, err := store.lookupReceipt(ctx, conn, request.AppendID, digest, request.SessionID)
 	switch {
-	case err == nil:
-		if !bytes.Equal(storedDigest, digest[:]) {
-			return application.CommitReceipt{}, newStoreError(application.StoreCodeAppendIdentityMismatch, request.SessionID, nil)
-		}
-		if storedPosition == 0 || storedFirst == 0 || storedLast < storedFirst || storedSession != string(request.SessionID) {
-			return application.CommitReceipt{}, newStoreError(application.StoreCodeCorrupt, request.SessionID,
-				fmt.Errorf("stored receipt for append %q is inconsistent", request.AppendID))
-		}
-		return application.CommitReceipt{
-			AppendID:       request.AppendID,
-			CommitPosition: storedPosition,
-			FirstSequence:  storedFirst,
-			LastSequence:   storedLast,
-		}, nil
-	case !isNoRows(err):
-		return application.CommitReceipt{}, mapStorageError(err, request.SessionID)
+	case err != nil:
+		return application.CommitReceipt{}, err
+	case found:
+		return receipt, nil
 	}
 
 	if err := store.verifyLeaseForAppend(ctx, conn, request); err != nil {
@@ -148,7 +131,7 @@ func (store *Store) Append(ctx context.Context, request application.AppendReques
 		return application.CommitReceipt{}, mapStorageError(err, request.SessionID)
 	}
 	position := headPosition + 1
-	receipt := application.CommitReceipt{
+	receipt = application.CommitReceipt{
 		AppendID:       request.AppendID,
 		CommitPosition: position,
 		FirstSequence:  current + 1,
@@ -210,40 +193,91 @@ func (store *Store) Append(ctx context.Context, request application.AppendReques
 	if err := contextError(ctx); err != nil {
 		return application.CommitReceipt{}, appendRejected(request.SessionID, err)
 	}
+	if cause := store.popFault(faultBeforeCommit); cause != nil {
+		return application.CommitReceipt{}, newStoreError(application.StoreCodeUnavailable, request.SessionID, cause)
+	}
+	store.runCommitHook(commitHookBeforePublish)
+	if err := contextError(ctx); err != nil {
+		return application.CommitReceipt{}, appendRejected(request.SessionID, err)
+	}
 
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		// COMMIT was attempted: the outcome is never converted to a definite
-		// non-commit. Task 4 refines this into the bounded receipt-lookup
-		// protocol; the conservative classification is already unknown.
+		// non-commit. Release or quarantine the writer, then perform exactly
+		// one bounded receipt lookup on a fresh connection.
+		if _, rollbackErr := conn.ExecContext(context.Background(), "ROLLBACK"); rollbackErr != nil {
+			if replaceErr := store.replaceWriterConn(context.Background()); replaceErr != nil {
+				return application.CommitReceipt{}, newStoreError(application.StoreCodeCommitOutcomeUnknown, request.SessionID,
+					fmt.Errorf("commit failed (%v); writer quarantine failed (%v)", err, replaceErr))
+			}
+			conn = store.writer
+		}
+		resolved, found, lookupErr := store.lookupReceipt(ctx, store.db, request.AppendID, digest, request.SessionID)
+		if lookupErr == nil && found {
+			return resolved, nil
+		}
+		if lookupErr != nil {
+			err = fmt.Errorf("%w; receipt lookup also failed: %v", err, lookupErr)
+		}
 		return application.CommitReceipt{}, newStoreError(application.StoreCodeCommitOutcomeUnknown, request.SessionID, err)
 	}
 	committed = true
+	store.runCommitHook(commitHookAfterPublish)
+	if cause := store.popFault(faultAfterCommitBeforeAck); cause != nil {
+		return application.CommitReceipt{}, newStoreError(application.StoreCodeCommitOutcomeUnknown, request.SessionID, cause)
+	}
 	return receipt, nil
 }
 
-// verifyLeaseForAppend enforces the ownership predicate whenever a lease row
-// exists. Until Task 4 wires acquisition into Open, an absent row permits
-// appends so intermediate slices stay testable.
-func (store *Store) verifyLeaseForAppend(ctx context.Context, conn *sql.Conn, request application.AppendRequest) error {
-	var runtimeID string
-	var fencingToken uint64
-	var expiresAt float64
-	err := conn.QueryRowContext(ctx,
-		"SELECT runtime_id, fencing_token, lease_expires_at_unix FROM runtime_leases WHERE id = 1").Scan(&runtimeID, &fencingToken, &expiresAt)
+// rowQueryer is the shared shape of *sql.Conn, *sql.DB, and *sql.Tx for
+// receipt lookups.
+type rowQueryer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// lookupReceipt resolves one AppendID against a request digest and validates
+// the stored receipt by cross-checking the events actually committed under
+// it. found=false means no row exists.
+func (store *Store) lookupReceipt(ctx context.Context, queryer rowQueryer, appendID domain.AppendID, digest application.Digest, session domain.SessionID) (application.CommitReceipt, bool, error) {
+	var storedDigest []byte
+	var storedPosition, storedFirst, storedLast uint64
+	var storedSession string
+	var eventCount int
+	err := queryer.QueryRowContext(ctx,
+		"SELECT request_digest, commit_position, first_sequence, last_sequence, session_id, event_count FROM event_appends WHERE append_id = ?",
+		string(appendID)).Scan(&storedDigest, &storedPosition, &storedFirst, &storedLast, &storedSession, &eventCount)
 	switch {
 	case isNoRows(err):
-		return nil
+		return application.CommitReceipt{}, false, nil
 	case err != nil:
-		return mapStorageError(err, request.SessionID)
+		return application.CommitReceipt{}, false, mapStorageError(err, session)
 	}
-	var now float64
-	if err := conn.QueryRowContext(ctx, "SELECT unixepoch('subsec')").Scan(&now); err != nil {
-		return mapStorageError(err, request.SessionID)
+	if !bytes.Equal(storedDigest, digest[:]) {
+		return application.CommitReceipt{}, false, newStoreError(application.StoreCodeAppendIdentityMismatch, session, nil)
 	}
-	if runtimeID != string(request.Authority.RuntimeID) || fencingToken != request.Authority.FencingToken || expiresAt < now {
-		return newStoreError(application.StoreCodeWriterFenced, request.SessionID, nil)
+	if (session != "" && storedSession != string(session)) || storedPosition == 0 || storedFirst == 0 ||
+		storedLast < storedFirst || storedLast != storedFirst+uint64(eventCount)-1 {
+		return application.CommitReceipt{}, false, newStoreError(application.StoreCodeCorrupt, session,
+			wrapDetail(fmt.Sprintf("stored receipt for append %q is inconsistent", appendID), nil))
 	}
-	return nil
+	var counted int
+	var minSequence, maxSequence sql.NullInt64
+	if err := queryer.QueryRowContext(ctx,
+		"SELECT COUNT(*), MIN(sequence), MAX(sequence) FROM events WHERE append_id = ?",
+		string(appendID)).Scan(&counted, &minSequence, &maxSequence); err != nil {
+		return application.CommitReceipt{}, false, mapStorageError(err, session)
+	}
+	if counted != eventCount || !minSequence.Valid || !maxSequence.Valid ||
+		uint64(minSequence.Int64) != storedFirst || uint64(maxSequence.Int64) != storedLast {
+		return application.CommitReceipt{}, false, newStoreError(application.StoreCodeCorrupt, session,
+			wrapDetail(fmt.Sprintf("receipt range for append %q disagrees with committed events", appendID), nil))
+	}
+	return application.CommitReceipt{
+		AppendID:       appendID,
+		CommitPosition: storedPosition,
+		FirstSequence:  storedFirst,
+		LastSequence:   storedLast,
+	}, true, nil
 }
 
 // updateSessionHead maintains the one synchronous projection inside the

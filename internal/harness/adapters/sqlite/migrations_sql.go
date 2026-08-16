@@ -127,3 +127,9 @@ CREATE TABLE export_checkpoints (
 	updated_at_unix REAL NOT NULL
 );
 `
+
+// migration2DDL adds the index used to cross-check a stored receipt against
+// the events actually committed under its AppendID.
+const migration2DDL = `
+CREATE INDEX events_by_append ON events (append_id);
+`
