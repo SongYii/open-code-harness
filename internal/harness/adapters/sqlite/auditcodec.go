@@ -29,6 +29,7 @@ type auditBatch struct {
 	LastSequence    uint64
 	CommittedAtUnix float64
 	PreviousDigest  [sha256.Size]byte
+	BatchDigest     [sha256.Size]byte
 	Events          [][]byte
 }
 
@@ -164,6 +165,11 @@ func (auditCodecV1) Decode(envelope []byte) (auditBatch, error) {
 		return auditBatch{}, &CorruptError{Detail: "audit envelope committedAt is not RFC3339Nano"}
 	}
 	batch.CommittedAtUnix = float64(parsed.Unix()) + float64(parsed.Nanosecond())/1e9
+	parsedDigest, err := parseAuditDigestString(decoded.BatchDigest)
+	if err != nil {
+		return auditBatch{}, &CorruptError{Detail: "audit envelope batchDigest is malformed"}
+	}
+	batch.BatchDigest = parsedDigest
 	previous, err := parseAuditDigestString(decoded.PreviousDigest)
 	if err != nil {
 		return auditBatch{}, &CorruptError{Detail: "audit envelope previousDigest is malformed"}

@@ -95,83 +95,20 @@ func backfillAuditChain(ctx context.Context, conn *sql.Conn) error {
 		return nil
 	}
 
-	codec, err := auditCodecFor(auditFormatVersionV1)
-	if err != nil {
-		return err
-	}
 	previous := auditGenesisDigest
 
-	rows, err := conn.QueryContext(ctx,
-		"SELECT append_id, commit_position, session_id, expected_version, first_sequence, last_sequence, command_id, committed_at_unix FROM event_appends ORDER BY commit_position")
+	appends, err := loadAuditAppendRows(ctx, conn, 0)
 	if err != nil {
 		return err
 	}
-	type appendRow struct {
-		appendID        string
-		position        uint64
-		sessionID       string
-		expectedVersion uint64
-		first, last     uint64
-		commandID       string
-		committedAt     float64
-	}
-	var appends []appendRow
-	for rows.Next() {
-		var row appendRow
-		if err := rows.Scan(&row.appendID, &row.position, &row.sessionID, &row.expectedVersion,
-			&row.first, &row.last, &row.commandID, &row.committedAt); err != nil {
-			rows.Close()
-			return err
-		}
-		appends = append(appends, row)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	rows.Close()
-
 	for _, row := range appends {
-		eventRows, err := conn.QueryContext(ctx,
-			"SELECT payload FROM events WHERE append_id = ? ORDER BY order_in_append", row.appendID)
-		if err != nil {
-			return err
-		}
-		var payloads [][]byte
-		for eventRows.Next() {
-			var payload []byte
-			if err := eventRows.Scan(&payload); err != nil {
-				eventRows.Close()
-				return err
-			}
-			payloads = append(payloads, payload)
-		}
-		if err := eventRows.Err(); err != nil {
-			eventRows.Close()
-			return err
-		}
-		eventRows.Close()
-
-		var existingPrevious, existingBatch []byte
+		var existingBatch []byte
 		if err := conn.QueryRowContext(ctx,
-			"SELECT previous_audit_digest, batch_audit_digest FROM event_appends WHERE append_id = ?",
-			row.appendID).Scan(&existingPrevious, &existingBatch); err != nil {
+			"SELECT batch_audit_digest FROM event_appends WHERE append_id = ?",
+			row.appendID).Scan(&existingBatch); err != nil {
 			return err
 		}
-		batch := auditBatch{
-			FormatVersion:   auditFormatVersionV1,
-			CommitPosition:  row.position,
-			AppendID:        row.appendID,
-			CommandID:       row.commandID,
-			SessionID:       row.sessionID,
-			ExpectedVersion: row.expectedVersion,
-			FirstSequence:   row.first,
-			LastSequence:    row.last,
-			CommittedAtUnix: row.committedAt,
-			PreviousDigest:  previous,
-			Events:          payloads,
-		}
-		envelope, batchDigest, err := codec.Encode(batch)
+		envelope, batchDigest, err := encodeAuditAppend(ctx, conn, row, previous)
 		if err != nil {
 			return err
 		}
@@ -217,4 +154,92 @@ func bytesEqual(left, right []byte) bool {
 		}
 	}
 	return true
+}
+
+// auditAppendRow is one event_appends row in codec-neutral form.
+type auditAppendRow struct {
+	appendID        string
+	position        uint64
+	sessionID       string
+	expectedVersion uint64
+	first, last     uint64
+	commandID       string
+	committedAt     float64
+}
+
+// loadAuditAppendRows returns append rows at or after fromPosition in
+// commit-position order.
+func loadAuditAppendRows(ctx context.Context, conn *sql.Conn, fromPosition uint64) ([]auditAppendRow, error) {
+	rows, err := conn.QueryContext(ctx,
+		"SELECT append_id, commit_position, session_id, expected_version, first_sequence, last_sequence, command_id, committed_at_unix FROM event_appends WHERE commit_position >= ? ORDER BY commit_position",
+		fromPosition)
+	if err != nil {
+		return nil, err
+	}
+	var appends []auditAppendRow
+	for rows.Next() {
+		var row auditAppendRow
+		if err := rows.Scan(&row.appendID, &row.position, &row.sessionID, &row.expectedVersion,
+			&row.first, &row.last, &row.commandID, &row.committedAt); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		appends = append(appends, row)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	return appends, nil
+}
+
+// rowsQueryer is the query surface shared by *sql.Conn and *sql.DB.
+type rowsQueryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+func queryRows(ctx context.Context, queryer rowsQueryer, query string, args ...any) (*sql.Rows, error) {
+	return queryer.QueryContext(ctx, query, args...)
+}
+
+// encodeAuditAppend re-encodes one append under codec v1 from canonical
+// bytes, chaining onto previous. The recomputed digest is authoritative.
+func encodeAuditAppend(ctx context.Context, queryer rowsQueryer, row auditAppendRow, previous [sha256.Size]byte) ([]byte, [sha256.Size]byte, error) {
+	codec, err := auditCodecFor(auditFormatVersionV1)
+	if err != nil {
+		return nil, [sha256.Size]byte{}, err
+	}
+	eventRows, err := queryRows(ctx, queryer, "SELECT payload FROM events WHERE append_id = ? ORDER BY order_in_append", row.appendID)
+	if err != nil {
+		return nil, [sha256.Size]byte{}, err
+	}
+	var payloads [][]byte
+	for eventRows.Next() {
+		var payload []byte
+		if err := eventRows.Scan(&payload); err != nil {
+			eventRows.Close()
+			return nil, [sha256.Size]byte{}, err
+		}
+		payloads = append(payloads, payload)
+	}
+	if err := eventRows.Err(); err != nil {
+		eventRows.Close()
+		return nil, [sha256.Size]byte{}, err
+	}
+	eventRows.Close()
+	batch := auditBatch{
+		FormatVersion:   auditFormatVersionV1,
+		CommitPosition:  row.position,
+		AppendID:        row.appendID,
+		CommandID:       row.commandID,
+		SessionID:       row.sessionID,
+		ExpectedVersion: row.expectedVersion,
+		FirstSequence:   row.first,
+		LastSequence:    row.last,
+		CommittedAtUnix: row.committedAt,
+		PreviousDigest:  previous,
+		Events:          payloads,
+	}
+	return codec.Encode(batch)
 }
