@@ -15,13 +15,23 @@ and the [foundational architecture charter](docs/superpowers/specs/2026-08-11-op
 
 ## Current status
 
+The numbered milestone list lives in
+[docs/README.md](docs/README.md#milestone-status). Completed slices so far:
+
 - Domain events and the Session/Turn state machine: implemented and verified.
 - Industrial Engine vertical slice: implemented and verified through reusable
   scenario, replay, concurrency, race, and dependency-boundary gates.
 - EventStore v2 contract: implemented and verified. The memory adapter is a
   conformance reference, not durable production storage.
-- Provider, Tool/Policy, ACP, TUI, production persistence, and recovery
-  milestones: not yet implemented.
+- Provider adapter (`adapters/openaicompat`): implemented and verified; not GA.
+  Thin OpenAI-compatible Chat Completions SSE client behind `engine.Model`,
+  not a vendor SDK or plugin kernel.
+- Tool Runtime, Policy, and four builtin workspace tools: implemented and
+  verified; not GA. Application-owned Step loop and a pure Policy Decide
+  table behind ports; not a plugin kernel.
+
+ACP, TUI, production persistence (SQLite), crash recovery, MCP, evaluation,
+and OpenTelemetry are not yet implemented. The project remains pre-v0.
 
 ## Development
 
@@ -35,10 +45,19 @@ The current Store contract is documented in
 and its [Chinese reading copy](docs/architecture/eventstore-v2.zh-CN.md),
 with auditable results in the
 [EventStore v2 evidence ledger](docs/architecture/eventstore-v2-evidence.md).
-The ten-task sequence is retained in the
+The Provider contract is documented in
+[Implemented Provider Adapter](docs/architecture/provider-adapter.md),
+with auditable results in the
+[Provider adapter evidence ledger](docs/architecture/provider-adapter-evidence.md).
+The Tool Runtime contract is documented in
+[Implemented Tool Runtime](docs/architecture/tool-runtime.md)
+and its [Chinese reading copy](docs/architecture/tool-runtime.zh-CN.md),
+with auditable results in the
+[Tool Runtime evidence ledger](docs/architecture/tool-runtime-evidence.md).
+The ten-task Engine sequence is retained in the
 [implemented plan](docs/superpowers/plans/2026-08-12-engine-vertical-slice.md),
 with auditable results in the bilingual
-[completion evidence ledger](docs/architecture/engine-vertical-slice-evidence.md).
+[Engine completion evidence ledger](docs/architecture/engine-vertical-slice-evidence.md).
 
 ```bash
 gofmt -w .
