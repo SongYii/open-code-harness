@@ -133,3 +133,16 @@ CREATE TABLE export_checkpoints (
 const migration2DDL = `
 CREATE INDEX events_by_append ON events (append_id);
 `
+
+// migration3DDL adds the exporter lease table from the accepted runtime
+// design section 7.8; the audit-chain backfill itself is the code step
+// registered with migration 3.
+const migration3DDL = `
+CREATE TABLE export_leases (
+	id INTEGER PRIMARY KEY CHECK (id = 1),
+	exporter_id TEXT NOT NULL,
+	fencing_token INTEGER NOT NULL CHECK (fencing_token > 0),
+	lease_expires_at_unix REAL NOT NULL,
+	last_heartbeat_at_unix REAL NOT NULL
+);
+`

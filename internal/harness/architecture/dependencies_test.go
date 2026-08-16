@@ -212,7 +212,8 @@ func TestForbiddenImport(t *testing.T) {
 		{name: "sqlite cannot import policy", owner: ownerSQLite, importPath: modulePath + "/internal/harness/policy", forbidden: true},
 		{name: "sqlite cannot import testkit", owner: ownerSQLite, importPath: modulePath + "/internal/harness/testkit", forbidden: true},
 		{name: "sqlite cannot import memory", owner: ownerSQLite, importPath: modulePath + "/internal/harness/adapters/memory", forbidden: true},
-		{name: "sqlite cannot import os", owner: ownerSQLite, importPath: "os", forbidden: true},
+		{name: "sqlite may import os for file-based export", owner: ownerSQLite, importPath: "os", forbidden: false},
+		{name: "sqlite cannot import os/exec", owner: ownerSQLite, importPath: "os/exec", forbidden: true},
 		{name: "sqlite cannot import net", owner: ownerSQLite, importPath: "net", forbidden: true},
 	}
 	for _, test := range tests {
@@ -436,7 +437,7 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			}
 		}
 	}
-	if owner == ownerDomain || owner == ownerApplication || owner == ownerEngine || owner == ownerMemory || owner == ownerPolicy || owner == ownerTools || owner == ownerSQLite {
+	if owner == ownerDomain || owner == ownerApplication || owner == ownerEngine || owner == ownerMemory || owner == ownerPolicy || owner == ownerTools {
 		switch importPath {
 		case "os", "os/exec", "net", "net/http":
 			return "forbidden host/network dependency"
@@ -444,6 +445,12 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 	}
 	if owner == ownerOpenAICompat && importPath == "os/exec" {
 		return "forbidden host/network dependency"
+	}
+	if owner == ownerSQLite {
+		switch importPath {
+		case "net", "net/http", "os/exec":
+			return "forbidden host/network dependency"
+		}
 	}
 	if owner == ownerWorkspaceFS {
 		switch importPath {

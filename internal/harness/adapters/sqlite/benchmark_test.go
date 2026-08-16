@@ -133,3 +133,83 @@ func BenchmarkBackup(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkExportOnce(b *testing.B) {
+	store := benchmarkStore(b)
+	ctx := context.Background()
+	authority := store.Authority()
+	var version uint64
+	for i := 0; i < 100; i++ {
+		request := application.AppendRequest{
+			AppendID:        domain.AppendID(fmt.Sprintf("append-exp-%d", i)),
+			SessionID:       "session-export-bench",
+			ExpectedVersion: version,
+			CommandID:       domain.CommandID(fmt.Sprintf("command-exp-%d", i)),
+			Authority:       authority,
+			Events: []application.ProposedEvent{
+				{ID: domain.EventID(fmt.Sprintf("event-exp-%d-0", i)), SchemaVersion: 1, OccurredAt: testTime, Event: domain.TurnStarted{TurnID: domain.TurnID(fmt.Sprintf("turn-exp-%d", i)), Input: "export"}},
+				{ID: domain.EventID(fmt.Sprintf("event-exp-%d-1", i)), SchemaVersion: 1, OccurredAt: testTime, Event: domain.TurnCompleted{TurnID: domain.TurnID(fmt.Sprintf("turn-exp-%d", i))}},
+			},
+		}
+		receipt, err := store.Append(ctx, request)
+		if err != nil {
+			b.Fatalf("seed append %d: %v", i, err)
+		}
+		version = receipt.LastSequence
+	}
+	base := b.TempDir()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		directory := fmt.Sprintf("%s/audit-%d", base, i)
+		if _, err := store.ExportOnce(ctx, ExportConfig{Directory: directory}); err != nil {
+			b.Fatalf("export %d: %v", i, err)
+		}
+	}
+}
+
+func BenchmarkImportAudit(b *testing.B) {
+	store := benchmarkStore(b)
+	ctx := context.Background()
+	authority := store.Authority()
+	var version uint64
+	for i := 0; i < 50; i++ {
+		events := []application.ProposedEvent{
+			{ID: domain.EventID(fmt.Sprintf("event-imp-%d-0", i)), SchemaVersion: 1, OccurredAt: testTime, Event: domain.TurnStarted{TurnID: domain.TurnID(fmt.Sprintf("turn-imp-%d", i)), Input: "import"}},
+			{ID: domain.EventID(fmt.Sprintf("event-imp-%d-1", i)), SchemaVersion: 1, OccurredAt: testTime, Event: domain.TurnCompleted{TurnID: domain.TurnID(fmt.Sprintf("turn-imp-%d", i))}},
+		}
+		if i == 0 {
+			events = append([]application.ProposedEvent{{ID: domain.EventID(fmt.Sprintf("event-imp-%d-s", i)), SchemaVersion: 1, OccurredAt: testTime, Event: domain.SessionCreated{WorkspaceRoot: "/w"}}}, events...)
+		}
+		request := application.AppendRequest{
+			AppendID:        domain.AppendID(fmt.Sprintf("append-imp-%d", i)),
+			SessionID:       "session-import-bench",
+			ExpectedVersion: version,
+			CommandID:       domain.CommandID(fmt.Sprintf("command-imp-%d", i)),
+			Authority:       authority,
+			Events:          events,
+		}
+		receipt, err := store.Append(ctx, request)
+		if err != nil {
+			b.Fatalf("seed append %d: %v", i, err)
+		}
+		version = receipt.LastSequence
+	}
+	directory := fmt.Sprintf("%s/audit", b.TempDir())
+	if _, err := store.ExportOnce(ctx, ExportConfig{Directory: directory}); err != nil {
+		b.Fatalf("export: %v", err)
+	}
+	base := b.TempDir()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		destination := fmt.Sprintf("%s/imported-%d.db", base, i)
+		imported, err := ImportAuditReplica(ctx, directory, Config{Path: destination, RuntimeID: "runtime-import"})
+		if err != nil {
+			b.Fatalf("import %d: %v", i, err)
+		}
+		if err := imported.Close(); err != nil {
+			b.Fatalf("close %d: %v", i, err)
+		}
+	}
+}
