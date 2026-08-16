@@ -27,10 +27,16 @@ func seedAppends(t *testing.T, store *Store, count int) {
 	version := exportedHead(t, store)
 	for i := 0; i < count; i++ {
 		exportSeedCounter++
+		var events []domain.Event
+		if version == 0 && i == 0 {
+			events = append(events, domain.SessionCreated{WorkspaceRoot: "/w"})
+		}
+		events = append(events,
+			domain.TurnStarted{TurnID: domain.TurnID(turnName(exportSeedCounter)), Input: "x"},
+			domain.TurnCompleted{TurnID: domain.TurnID(turnName(exportSeedCounter))})
 		request := appendRequest(
 			domain.AppendID(appendName(exportSeedCounter)), "session-export", version,
-			domain.CommandID(commandName(exportSeedCounter)),
-			domain.TurnStarted{TurnID: domain.TurnID(turnName(exportSeedCounter)), Input: "x"})
+			domain.CommandID(commandName(exportSeedCounter)), events...)
 		receipt := mustAppend(t, store, request)
 		version = receipt.LastSequence
 	}

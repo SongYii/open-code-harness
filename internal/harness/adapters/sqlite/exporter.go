@@ -471,11 +471,10 @@ func (store *Store) verifyGeneration(ctx context.Context, directory string, gene
 }
 
 func (store *Store) writeManifestGeneration(ctx context.Context, directory string, segments []segmentEntry, head uint64) error {
-	var headAudit []byte
-	if err := store.db.QueryRowContext(ctx,
-		"SELECT head_audit_digest FROM store_metadata WHERE id = 1").Scan(&headAudit); err != nil {
-		return mapStorageError(err, "")
-	}
+	// The manifest names the digest of the batch at its own head position,
+	// which for a consistent export may trail the live chain head.
+	headDigest := store.chainDigestAt(ctx, head)
+	headAudit := headDigest[:]
 	generation := manifestGeneration{
 		FormatVersion:      manifestFormatVersion,
 		HeadCommitPosition: head,
@@ -589,4 +588,58 @@ func writeSyncedFile(path string, payload []byte) error {
 		return err
 	}
 	return file.Close()
+}
+
+// ExportConsistent fixes a target commit position and emits every batch
+// through it into a fresh directory with a self-contained manifest
+// generation. It never touches the exporter checkpoint or the outbox.
+func (store *Store) ExportConsistent(ctx context.Context, target uint64, config ExportConfig) error {
+	config = config.withDefaults()
+	if config.Directory == "" {
+		return fmt.Errorf("sqlite export: directory is required")
+	}
+	for _, dir := range []string{"staging", "segments", "manifests"} {
+		if err := os.MkdirAll(filepath.Join(config.Directory, dir), 0o700); err != nil {
+			return err
+		}
+	}
+	if existing, _ := os.ReadDir(filepath.Join(config.Directory, "segments")); len(existing) > 0 {
+		return fmt.Errorf("sqlite export: consistent export requires an empty directory")
+	}
+
+	var sqliteHead uint64
+	if err := store.db.QueryRowContext(ctx,
+		"SELECT head_commit_position FROM store_metadata WHERE id = 1").Scan(&sqliteHead); err != nil {
+		return mapStorageError(err, "")
+	}
+	if target == 0 || target > sqliteHead {
+		return fmt.Errorf("sqlite export: target position %d is outside the committed head %d", target, sqliteHead)
+	}
+
+	var segments []segmentEntry
+	after := uint64(0)
+	for after < target {
+		limited := config
+		remaining := target - after
+		if remaining < limited.SegmentMaxPositions {
+			limited.SegmentMaxPositions = remaining
+		}
+		rows, err := store.readPendingBatches(ctx, after, limited)
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			break
+		}
+		segment, head, err := store.sealSegment(ctx, config, segments, after, rows)
+		if err != nil {
+			return err
+		}
+		segments = append(segments, segment)
+		after = head
+	}
+	if after != target {
+		return fmt.Errorf("sqlite export: consistent export stopped at %d, short of target %d", after, target)
+	}
+	return store.writeManifestGeneration(ctx, config.Directory, segments, target)
 }
