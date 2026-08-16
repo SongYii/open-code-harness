@@ -55,6 +55,10 @@ test-only production branches for the capabilities it does deliver.
 | Accepted | Reading copy | [Tool Runtime、Policy 与最小工作区工具](superpowers/specs/2026-08-16-tool-runtime-policy-design.zh-CN.md) | 与 Tool/Policy 设计同步的中文阅读版：关键决策、行业对照、管线与 PR Plan |
 | Accepted | Normative design | [SQLite Canonical EventStore (Slice 2)](superpowers/specs/2026-08-16-sqlite-canonical-eventstore-design.md) | Pure-Go SQLite adapter behind the EventStore v2 port: full-shape migrations, append transaction, fencing lease primitive, pinned reads, backup, and fault evidence |
 | Accepted | Reading copy | [SQLite 规范 EventStore（Slice 2）中文阅读版](superpowers/specs/2026-08-16-sqlite-canonical-eventstore-design.zh-CN.md) | 与 SQLite 规范 EventStore 聚焦设计完整同步的中文阅读版 |
+| Draft | Normative design | [JSONL Audit Replica and Import (Slice 3)](superpowers/specs/2026-08-16-jsonl-audit-replica-design.md) | Audit codec v1, chain maintenance in the append transaction, codec-v1 backfill, crash-convergent exporter, consistent export, and eight-step verified import |
+| Draft | Reading copy | [JSONL 审计副本与导入（Slice 3）中文阅读版](superpowers/specs/2026-08-16-jsonl-audit-replica-design.zh-CN.md) | 与 JSONL 审计副本聚焦设计完整同步的中文阅读版 |
+| Draft | Normative design | [Runtime Host and Crash Recovery (Slice 4)](superpowers/specs/2026-08-16-runtime-host-recovery-design.md) | Single Runtime Host: startup reconciliation with deterministic recovery appends, bounded heartbeat with fencing reaction, graceful shutdown, exporter ownership |
+| Draft | Reading copy | [Runtime Host 与崩溃恢复（Slice 4）中文阅读版](superpowers/specs/2026-08-16-runtime-host-recovery-design.zh-CN.md) | 与 Runtime Host 聚焦设计完整同步的中文阅读版 |
 | Implemented plan | Plan | [EventStore v2 contract migration implementation plan](superpowers/plans/2026-08-13-eventstore-v2-contract.md) | Frozen nine-task sequence; completion claims are backed by the evidence ledger, not checkbox state |
 | Implemented plan | Reading copy | [EventStore v2 Contract Migration 实施计划中文阅读版](superpowers/plans/2026-08-13-eventstore-v2-contract.zh-CN.md) | 与 EventStore v2 实施计划完整同步的中文执行阅读版 |
 | Implemented plan | Plan | [Engine vertical slice implementation plan](superpowers/plans/2026-08-12-engine-vertical-slice.md) | Frozen ten-task implementation sequence; completion claims are backed by the evidence ledger, not checkbox state |
@@ -76,6 +80,8 @@ test-only production branches for the capabilities it does deliver.
 | Complete | Reading copy | [DeepSeek Harness 对照与交付顺序](research/architecture-gates/2026-08-15-deepseek-harness-and-roadmap.zh-CN.md) | 与 DeepSeek Harness 对照及交付顺序结论完整同步的中文证据记录 |
 | Complete | Research evidence | [SQLite canonical EventStore architecture gate](research/architecture-gates/2026-08-16-sqlite-canonical-eventstore.md) | Slice 2 re-verification of DeepSeek Harness, Codex, Kimi Code, Grok Build, Pi, and Maka establishing row-per-event, WAL, migration, fencing, and fail-closed contracts |
 | Complete | Reading copy | [SQLite 规范 EventStore 架构门中文阅读版](research/architecture-gates/2026-08-16-sqlite-canonical-eventstore.zh-CN.md) | 与 SQLite 规范 EventStore 架构门完整同步的中文证据记录 |
+| Complete | Research evidence | [Runtime Host and recovery architecture gate](research/architecture-gates/2026-08-16-runtime-host-recovery.md) | Slice 4 re-verification establishing fenced-lease confirmation (Pi), fencing theory (Kleppmann), cold-only repair, and reconcile-before-command ordering |
+| Complete | Reading copy | [Runtime Host 与恢复架构门中文阅读版](research/architecture-gates/2026-08-16-runtime-host-recovery.zh-CN.md) | 与 Runtime Host 与恢复架构门完整同步的中文证据记录 |
 | Complete | Plan | [Domain implementation plan](superpowers/plans/2026-08-11-domain-events-state-machine.md) | Completed Task 1–8 implementation sequence |
 | Complete | Reading copy | [领域实施计划中文阅读版](superpowers/plans/2026-08-11-domain-events-state-machine.zh-CN.md) | Chinese synchronized reading copy of the completed plan |
 
