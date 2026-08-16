@@ -45,6 +45,8 @@ func TestClassifyProductionDirectory(t *testing.T) {
 		{name: "workspacefs production subpackage", directory: "internal/harness/adapters/workspacefs/internal", want: ownerWorkspaceFS, inspect: true, hasOwner: true},
 		{name: "localexec root", directory: "internal/harness/adapters/localexec", want: ownerLocalExec, inspect: true, hasOwner: true},
 		{name: "localexec production subpackage", directory: "internal/harness/adapters/localexec/internal", want: ownerLocalExec, inspect: true, hasOwner: true},
+		{name: "sqlite root", directory: "internal/harness/adapters/sqlite", want: ownerSQLite, inspect: true, hasOwner: true},
+		{name: "sqlite production subpackage", directory: "internal/harness/adapters/sqlite/internal", want: ownerSQLite, inspect: true, hasOwner: true},
 		{name: "scenario test support", directory: "internal/harness/application/enginescenariotest", want: ownerApplication, inspect: false, hasOwner: true},
 		{name: "scenario nested test support", directory: "internal/harness/application/enginescenariotest/internal", want: ownerApplication, inspect: false, hasOwner: true},
 		{name: "similarly named production child", directory: "internal/harness/application/enginescenariotestkit", want: ownerApplication, inspect: true, hasOwner: true},
@@ -203,6 +205,15 @@ func TestForbiddenImport(t *testing.T) {
 		{name: "memory cannot import localexec", owner: ownerMemory, importPath: modulePath + "/internal/harness/adapters/localexec", forbidden: true},
 		{name: "openaicompat cannot import workspacefs", owner: ownerOpenAICompat, importPath: modulePath + "/internal/harness/adapters/workspacefs", forbidden: true},
 		{name: "openaicompat cannot import localexec", owner: ownerOpenAICompat, importPath: modulePath + "/internal/harness/adapters/localexec", forbidden: true},
+		{name: "sqlite may import application", owner: ownerSQLite, importPath: modulePath + "/internal/harness/application", forbidden: false},
+		{name: "sqlite may import domain", owner: ownerSQLite, importPath: modulePath + "/internal/harness/domain", forbidden: false},
+		{name: "sqlite cannot import engine", owner: ownerSQLite, importPath: modulePath + "/internal/harness/engine", forbidden: true},
+		{name: "sqlite cannot import tools", owner: ownerSQLite, importPath: modulePath + "/internal/harness/tools", forbidden: true},
+		{name: "sqlite cannot import policy", owner: ownerSQLite, importPath: modulePath + "/internal/harness/policy", forbidden: true},
+		{name: "sqlite cannot import testkit", owner: ownerSQLite, importPath: modulePath + "/internal/harness/testkit", forbidden: true},
+		{name: "sqlite cannot import memory", owner: ownerSQLite, importPath: modulePath + "/internal/harness/adapters/memory", forbidden: true},
+		{name: "sqlite cannot import os", owner: ownerSQLite, importPath: "os", forbidden: true},
+		{name: "sqlite cannot import net", owner: ownerSQLite, importPath: "net", forbidden: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -295,6 +306,7 @@ const (
 	ownerApplication  packageOwner = "application"
 	ownerMemory       packageOwner = "memory"
 	ownerOpenAICompat packageOwner = "openaicompat"
+	ownerSQLite       packageOwner = "sqlite"
 	ownerPolicy       packageOwner = "policy"
 	ownerTools        packageOwner = "tools"
 	ownerWorkspaceFS  packageOwner = "workspacefs"
@@ -329,6 +341,7 @@ func packageOwnership(directory string) (packageOwner, bool) {
 		{root: "internal/harness/application", owner: ownerApplication},
 		{root: "internal/harness/adapters/memory", owner: ownerMemory},
 		{root: "internal/harness/adapters/openaicompat", owner: ownerOpenAICompat},
+		{root: "internal/harness/adapters/sqlite", owner: ownerSQLite},
 		{root: "internal/harness/policy", owner: ownerPolicy},
 		{root: "internal/harness/adapters/workspacefs", owner: ownerWorkspaceFS},
 		{root: "internal/harness/adapters/localexec", owner: ownerLocalExec},
@@ -393,6 +406,13 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/adapters",
 			modulePath+"/internal/harness/testkit",
 		)
+	case ownerSQLite:
+		forbidden = append(forbidden,
+			modulePath+"/internal/harness/engine",
+			modulePath+"/internal/harness/tools",
+			modulePath+"/internal/harness/policy",
+			modulePath+"/internal/harness/testkit",
+		)
 	case ownerWorkspaceFS, ownerLocalExec:
 		forbidden = append(forbidden,
 			modulePath+"/internal/harness/application",
@@ -416,7 +436,7 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			}
 		}
 	}
-	if owner == ownerDomain || owner == ownerApplication || owner == ownerEngine || owner == ownerMemory || owner == ownerPolicy || owner == ownerTools {
+	if owner == ownerDomain || owner == ownerApplication || owner == ownerEngine || owner == ownerMemory || owner == ownerPolicy || owner == ownerTools || owner == ownerSQLite {
 		switch importPath {
 		case "os", "os/exec", "net", "net/http":
 			return "forbidden host/network dependency"
@@ -451,6 +471,8 @@ func adapterOwnerRoot(owner packageOwner) (string, bool) {
 		return adaptersRoot + "/workspacefs", true
 	case ownerLocalExec:
 		return adaptersRoot + "/localexec", true
+	case ownerSQLite:
+		return adaptersRoot + "/sqlite", true
 	default:
 		return "", false
 	}

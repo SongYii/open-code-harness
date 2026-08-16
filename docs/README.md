@@ -36,10 +36,13 @@ test-only production branches for the capabilities it does deliver.
 | Implemented | Reading copy | [已实现 Provider Adapter 合同](architecture/provider-adapter.zh-CN.md) | 中文阅读版；该副本早于 native-tool send/assemble，以英文 [provider-adapter.md](architecture/provider-adapter.md) 和 [tool-runtime.md](architecture/tool-runtime.md) 为准 |
 | Implemented | Implemented contract | [Tool runtime](architecture/tool-runtime.md) | Current Application-owned Step loop, Policy Decide table, four builtin workspace tools, mid-loop ResolveAppend, workspace jail, and exclusions |
 | Implemented | Reading copy | [已实现 Tool Runtime 合同](architecture/tool-runtime.zh-CN.md) | 与已实现 Tool Runtime 合同同步的中文语义阅读版 |
+| Implemented | Implemented contract | [SQLite canonical EventStore](architecture/sqlite-eventstore.md) | Current pure-Go SQLite adapter: verified open profile, full-shape migrations, append transaction with exact retry, pinned reads, fencing lease primitive, verified backup, and exclusions |
+| Implemented | Reading copy | [已实现 SQLite 规范 EventStore 合同](architecture/sqlite-eventstore.zh-CN.md) | 与已实现 SQLite 规范 EventStore 合同同步的中文语义阅读版 |
 | Complete | Evidence ledger | [EventStore v2 completion evidence / EventStore v2 完成证据](architecture/eventstore-v2-evidence.md) | Auditable Task 1–9 commits, verification commands, benchmark sample, and deferred blockers |
 | Complete | Evidence ledger | [Engine vertical slice completion evidence / Engine 纵切完成证据](architecture/engine-vertical-slice-evidence.md) | Auditable Task 1–10 commits, architecture gates, verification commands, and deferred GA blockers |
 | Complete | Evidence ledger | [Provider adapter completion evidence / Provider Adapter 完成证据](architecture/provider-adapter-evidence.md) | Auditable PR 1–5 commits, keyless verification commands, and deferred GA blockers |
 | Complete | Evidence ledger | [Tool runtime completion evidence / Tool Runtime 完成证据](architecture/tool-runtime-evidence.md) | Auditable execute-plan PRs 1–9, keyless verification commands, and deferred GA blockers |
+| Complete | Evidence ledger | [SQLite canonical EventStore completion evidence / SQLite 规范 EventStore 完成证据](architecture/sqlite-eventstore-evidence.md) | Auditable five-task commits, dependency inventory, benchmarks, verification evidence, and deferred GA blockers |
 | Accepted | Normative design | [Industrial Engine vertical slice](superpowers/specs/2026-08-12-engine-vertical-slice-design.md) | Application/Engine boundary, formal ports, deterministic adapters, atomic event flow, failure semantics, and acceptance criteria |
 | Accepted | Reading copy | [工业级 Engine 最小纵切](superpowers/specs/2026-08-12-engine-vertical-slice-design.zh-CN.md) | Chinese synchronized reading copy of the Engine design |
 | Accepted | Normative design | [Production Runtime persistence, recovery, and client boundary](superpowers/specs/2026-08-13-runtime-persistence-recovery-client-design.md) | SQLite canonical events, exact append retry, audit replica, fencing, crash recovery, ACP boundary, resource limits, and staged delivery |
@@ -50,10 +53,14 @@ test-only production branches for the capabilities it does deliver.
 | Accepted | Reading copy | [Provider 合同与第一个真实 Adapter](superpowers/specs/2026-08-15-provider-adapter-design.zh-CN.md) | 与 Provider 设计同步的中文阅读版：行业对照、是否自研、关键决策与五步 PR Plan |
 | Accepted | Normative design | [Tool Runtime, Policy, and minimal workspace tools](superpowers/specs/2026-08-16-tool-runtime-policy-design.md) | Application-owned Step loop, pure Policy Decide, four builtin tools, mid-loop EventStore resolve, no plugin kernel |
 | Accepted | Reading copy | [Tool Runtime、Policy 与最小工作区工具](superpowers/specs/2026-08-16-tool-runtime-policy-design.zh-CN.md) | 与 Tool/Policy 设计同步的中文阅读版：关键决策、行业对照、管线与 PR Plan |
+| Accepted | Normative design | [SQLite Canonical EventStore (Slice 2)](superpowers/specs/2026-08-16-sqlite-canonical-eventstore-design.md) | Pure-Go SQLite adapter behind the EventStore v2 port: full-shape migrations, append transaction, fencing lease primitive, pinned reads, backup, and fault evidence |
+| Accepted | Reading copy | [SQLite 规范 EventStore（Slice 2）中文阅读版](superpowers/specs/2026-08-16-sqlite-canonical-eventstore-design.zh-CN.md) | 与 SQLite 规范 EventStore 聚焦设计完整同步的中文阅读版 |
 | Implemented plan | Plan | [EventStore v2 contract migration implementation plan](superpowers/plans/2026-08-13-eventstore-v2-contract.md) | Frozen nine-task sequence; completion claims are backed by the evidence ledger, not checkbox state |
 | Implemented plan | Reading copy | [EventStore v2 Contract Migration 实施计划中文阅读版](superpowers/plans/2026-08-13-eventstore-v2-contract.zh-CN.md) | 与 EventStore v2 实施计划完整同步的中文执行阅读版 |
 | Implemented plan | Plan | [Engine vertical slice implementation plan](superpowers/plans/2026-08-12-engine-vertical-slice.md) | Frozen ten-task implementation sequence; completion claims are backed by the evidence ledger, not checkbox state |
 | Implemented plan | Reading copy | [Engine 纵切实施计划中文阅读版](superpowers/plans/2026-08-12-engine-vertical-slice.zh-CN.md) | Chinese synchronized reading copy of the implemented sequence; see the evidence ledger for completion proof |
+| Implemented plan | Plan | [SQLite canonical EventStore implementation plan](superpowers/plans/2026-08-16-sqlite-canonical-eventstore.md) | Frozen five-task sequence for the Slice 2 adapter; completion claims are backed by the evidence ledger, not checkbox state |
+| Implemented plan | Reading copy | [SQLite 规范 EventStore 实施计划中文阅读版](superpowers/plans/2026-08-16-sqlite-canonical-eventstore.zh-CN.md) | 与 SQLite 规范 EventStore 实施计划完整同步的中文执行阅读版 |
 | Complete | Research evidence | [Task 1 Assistant Item architecture gate](research/architecture-gates/2026-08-12-task-1-assistant-item-lifecycle.md) | Official-project comparison and load-bearing amendments required before Task 1 implementation |
 | Complete | Research evidence | [Tasks 3–4 Application/EventStore architecture gate](research/architecture-gates/2026-08-12-tasks-3-4-application-eventstore.md) | Agent-project and EventStoreDB comparison establishing exact CAS, atomicity, replay authority, fault, and adapter contracts |
 | Complete | Reading copy | [Task 3–4 Application/EventStore 架构门中文阅读版](research/architecture-gates/2026-08-12-tasks-3-4-application-eventstore.zh-CN.md) | 与 Task 3–4 架构门同步的中文决策记录 |
@@ -67,6 +74,8 @@ test-only production branches for the capabilities it does deliver.
 | Complete | Reading copy | [EventStore v2 Contract 架构门中文阅读版](research/architecture-gates/2026-08-13-eventstore-v2-contract.zh-CN.md) | 与 EventStore v2 Contract 聚焦架构门完整同步的中文证据记录 |
 | Complete | Research evidence | [DeepSeek Harness comparison and delivery sequencing](research/architecture-gates/2026-08-15-deepseek-harness-and-roadmap.md) | Official DeepSeek Harness adopt/reject boundary, required comparison set, and post-Slice-1 sequencing |
 | Complete | Reading copy | [DeepSeek Harness 对照与交付顺序](research/architecture-gates/2026-08-15-deepseek-harness-and-roadmap.zh-CN.md) | 与 DeepSeek Harness 对照及交付顺序结论完整同步的中文证据记录 |
+| Complete | Research evidence | [SQLite canonical EventStore architecture gate](research/architecture-gates/2026-08-16-sqlite-canonical-eventstore.md) | Slice 2 re-verification of DeepSeek Harness, Codex, Kimi Code, Grok Build, Pi, and Maka establishing row-per-event, WAL, migration, fencing, and fail-closed contracts |
+| Complete | Reading copy | [SQLite 规范 EventStore 架构门中文阅读版](research/architecture-gates/2026-08-16-sqlite-canonical-eventstore.zh-CN.md) | 与 SQLite 规范 EventStore 架构门完整同步的中文证据记录 |
 | Complete | Plan | [Domain implementation plan](superpowers/plans/2026-08-11-domain-events-state-machine.md) | Completed Task 1–8 implementation sequence |
 | Complete | Reading copy | [领域实施计划中文阅读版](superpowers/plans/2026-08-11-domain-events-state-machine.zh-CN.md) | Chinese synchronized reading copy of the completed plan |
 
@@ -79,7 +88,7 @@ test-only production branches for the capabilities it does deliver.
 5. **Tool Runtime, Policy, and minimal workspace tools** — designed, implemented, and verified; not GA. Application-owned Step loop, pure Policy Decide, and four builtin workspace tools behind ports; not a plugin kernel.
 6. **ACP v1 adapter and conformance** — cross-cutting boundary accepted; focused implementation specification not written yet.
 7. **TypeScript TUI client** — cross-cutting boundary accepted; focused implementation specification not written yet.
-8. **Context Engine, checkpoint, and recovery** — production persistence and crash-recovery boundary accepted; Context Engine and focused implementation specifications not written yet.
+8. **Context Engine, checkpoint, and recovery** — production persistence and crash-recovery boundary accepted; the persistence track's Slice 2 (SQLite canonical EventStore) is designed, implemented, and verified, not GA; JSONL audit, Runtime Host, ACP, TUI, and the Context Engine itself remain undesigned.
 9. **MCP client adapter** — not designed yet.
 10. **Scenario evaluation, benchmarks, and OpenTelemetry** — not designed yet.
 11. **Open-source release, governance, and ecosystem documentation** — not designed yet.
