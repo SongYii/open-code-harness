@@ -50,7 +50,7 @@ type Store struct {
 // verification, SQLite version gate, format gate, migrations, and metadata
 // verification.
 func Open(ctx context.Context, config Config) (*Store, error) {
-	config = config.withDefaults()
+	config = config.WithDefaults()
 	if err := config.validate(); err != nil {
 		return nil, err
 	}

@@ -40,12 +40,15 @@ test-only production branches for the capabilities it does deliver.
 | Implemented | Reading copy | [已实现 SQLite 规范 EventStore 合同](architecture/sqlite-eventstore.zh-CN.md) | 与已实现 SQLite 规范 EventStore 合同同步的中文语义阅读版 |
 | Implemented | Implemented contract | [JSONL audit replica](architecture/jsonl-audit-replica.md) | Audit codec v1, chain maintenance in the append transaction, codec-v1 backfill, crash-convergent exporter, consistent export, and eight-step verified import |
 | Implemented | Reading copy | [已实现 JSONL 审计副本合同](architecture/jsonl-audit-replica.zh-CN.md) | 与已实现 JSONL 审计副本合同同步的中文语义阅读版 |
+| Implemented | Implemented contract | [Runtime Host and crash recovery](architecture/runtime-host.md) | Single host: startup reconciliation with deterministic recovery appends, bounded heartbeat with fencing reaction, matching-pair lease release, exporter ownership |
+| Implemented | Reading copy | [已实现 Runtime Host 与崩溃恢复合同](architecture/runtime-host.zh-CN.md) | 与已实现 Runtime Host 与崩溃恢复合同同步的中文语义阅读版 |
 | Complete | Evidence ledger | [EventStore v2 completion evidence / EventStore v2 完成证据](architecture/eventstore-v2-evidence.md) | Auditable Task 1–9 commits, verification commands, benchmark sample, and deferred blockers |
 | Complete | Evidence ledger | [Engine vertical slice completion evidence / Engine 纵切完成证据](architecture/engine-vertical-slice-evidence.md) | Auditable Task 1–10 commits, architecture gates, verification commands, and deferred GA blockers |
 | Complete | Evidence ledger | [Provider adapter completion evidence / Provider Adapter 完成证据](architecture/provider-adapter-evidence.md) | Auditable PR 1–5 commits, keyless verification commands, and deferred GA blockers |
 | Complete | Evidence ledger | [Tool runtime completion evidence / Tool Runtime 完成证据](architecture/tool-runtime-evidence.md) | Auditable execute-plan PRs 1–9, keyless verification commands, and deferred GA blockers |
 | Complete | Evidence ledger | [SQLite canonical EventStore completion evidence / SQLite 规范 EventStore 完成证据](architecture/sqlite-eventstore-evidence.md) | Auditable five-task commits, dependency inventory, benchmarks, verification evidence, and deferred GA blockers |
 | Complete | Evidence ledger | [JSONL audit replica completion evidence / JSONL 审计副本完成证据](architecture/jsonl-audit-replica-evidence.md) | Auditable task commits, publication and import matrices, benchmarks, and deferred GA blockers |
+| Complete | Evidence ledger | [Runtime Host completion evidence / Runtime Host 完成证据](architecture/runtime-host-evidence.md) | Auditable task commits, reconciliation and heartbeat matrices, lifecycle evidence, and deferred GA blockers |
 | Accepted | Normative design | [Industrial Engine vertical slice](superpowers/specs/2026-08-12-engine-vertical-slice-design.md) | Application/Engine boundary, formal ports, deterministic adapters, atomic event flow, failure semantics, and acceptance criteria |
 | Accepted | Reading copy | [工业级 Engine 最小纵切](superpowers/specs/2026-08-12-engine-vertical-slice-design.zh-CN.md) | Chinese synchronized reading copy of the Engine design |
 | Accepted | Normative design | [Production Runtime persistence, recovery, and client boundary](superpowers/specs/2026-08-13-runtime-persistence-recovery-client-design.md) | SQLite canonical events, exact append retry, audit replica, fencing, crash recovery, ACP boundary, resource limits, and staged delivery |
@@ -70,8 +73,8 @@ test-only production branches for the capabilities it does deliver.
 | Implemented plan | Reading copy | [SQLite 规范 EventStore 实施计划中文阅读版](superpowers/plans/2026-08-16-sqlite-canonical-eventstore.zh-CN.md) | 与 SQLite 规范 EventStore 实施计划完整同步的中文执行阅读版 |
 | Implemented plan | Plan | [JSONL audit replica implementation plan](superpowers/plans/2026-08-16-jsonl-audit-replica.md) | Frozen five-task sequence for the Slice 3 audit chain, exporter, consistent export, and import |
 | Implemented plan | Reading copy | [JSONL 审计副本实施计划中文阅读版](superpowers/plans/2026-08-16-jsonl-audit-replica.zh-CN.md) | 与 JSONL 审计副本实施计划完整同步的中文执行阅读版 |
-| Approved | Plan | [Runtime Host and recovery implementation plan](superpowers/plans/2026-08-16-runtime-host-recovery.md) | Frozen five-task sequence for the Slice 4 host; Tasks 1–3 are independent of Slice 3 |
-| Approved | Reading copy | [Runtime Host 与恢复实施计划中文阅读版](superpowers/plans/2026-08-16-runtime-host-recovery.zh-CN.md) | 与 Runtime Host 与恢复实施计划完整同步的中文执行阅读版 |
+| Implemented plan | Plan | [Runtime Host and recovery implementation plan](superpowers/plans/2026-08-16-runtime-host-recovery.md) | Frozen five-task sequence for the Slice 4 host; Tasks 1–3 are independent of Slice 3 |
+| Implemented plan | Reading copy | [Runtime Host 与恢复实施计划中文阅读版](superpowers/plans/2026-08-16-runtime-host-recovery.zh-CN.md) | 与 Runtime Host 与恢复实施计划完整同步的中文执行阅读版 |
 | Complete | Research evidence | [Task 1 Assistant Item architecture gate](research/architecture-gates/2026-08-12-task-1-assistant-item-lifecycle.md) | Official-project comparison and load-bearing amendments required before Task 1 implementation |
 | Complete | Research evidence | [Tasks 3–4 Application/EventStore architecture gate](research/architecture-gates/2026-08-12-tasks-3-4-application-eventstore.md) | Agent-project and EventStoreDB comparison establishing exact CAS, atomicity, replay authority, fault, and adapter contracts |
 | Complete | Reading copy | [Task 3–4 Application/EventStore 架构门中文阅读版](research/architecture-gates/2026-08-12-tasks-3-4-application-eventstore.zh-CN.md) | 与 Task 3–4 架构门同步的中文决策记录 |
@@ -103,7 +106,7 @@ test-only production branches for the capabilities it does deliver.
 5. **Tool Runtime, Policy, and minimal workspace tools** — designed, implemented, and verified; not GA. Application-owned Step loop, pure Policy Decide, and four builtin workspace tools behind ports; not a plugin kernel.
 6. **ACP v1 adapter and conformance** — cross-cutting boundary accepted; focused implementation specification not written yet.
 7. **TypeScript TUI client** — cross-cutting boundary accepted; focused implementation specification not written yet.
-8. **Context Engine, checkpoint, and recovery** — production persistence and crash-recovery boundary accepted; the persistence track's Slice 2 (SQLite canonical EventStore) and Slice 3 (JSONL audit replica, consistent export, and verified import) are designed, implemented, and verified, not GA; Runtime Host, ACP, TUI, and the Context Engine itself remain undesigned.
+8. **Context Engine, checkpoint, and recovery** — production persistence and crash-recovery boundary accepted; the persistence track's Slices 2–4 (SQLite canonical EventStore, JSONL audit replica with export/import, and Runtime Host with crash recovery) are designed, implemented, and verified, not GA; ACP, TUI, and the Context Engine itself remain undesigned.
 9. **MCP client adapter** — not designed yet.
 10. **Scenario evaluation, benchmarks, and OpenTelemetry** — not designed yet.
 11. **Open-source release, governance, and ecosystem documentation** — not designed yet.

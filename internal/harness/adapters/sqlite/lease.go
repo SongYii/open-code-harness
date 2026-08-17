@@ -62,7 +62,7 @@ func (store *Store) AcquireLease(ctx context.Context) (application.WriterAuthori
 		case runtimeID == string(application.RuntimeID(store.config.RuntimeID)):
 			authority = application.WriterAuthority{RuntimeID: application.RuntimeID(store.config.RuntimeID), FencingToken: fencingToken}
 		default:
-			return application.WriterAuthority{}, fmt.Errorf("sqlite lease: held by live runtime %q until %f", runtimeID, expiresAt)
+			return application.WriterAuthority{}, &ErrLeaseHeld{Owner: runtimeID}
 		}
 		if _, err := conn.ExecContext(ctx,
 			"UPDATE runtime_leases SET runtime_id = ?, fencing_token = ?, lease_expires_at_unix = unixepoch('subsec') + ?, last_heartbeat_at_unix = unixepoch('subsec') WHERE id = 1",
@@ -206,5 +206,74 @@ func (store *Store) corruptReceiptForTesting(appendID domain.AppendID) error {
 		return mapStorageError(err, "")
 	}
 	committed = true
+	return nil
+}
+
+// ErrLeaseHeld reports that a live foreign runtime owns the lease.
+type ErrLeaseHeld struct {
+	Owner string
+}
+
+func (err *ErrLeaseHeld) Error() string {
+	return "sqlite lease: held by live runtime " + err.Owner
+}
+
+// ActiveSessions enumerates sessions whose heads projection says active.
+// The projection is never proof; callers confirm by stream replay.
+func (store *Store) ActiveSessions(ctx context.Context) ([]domain.SessionID, error) {
+	rows, err := store.db.QueryContext(ctx,
+		"SELECT session_id FROM session_heads WHERE status = 'active' ORDER BY session_id")
+	if err != nil {
+		return nil, mapStorageError(err, "")
+	}
+	var sessions []domain.SessionID
+	for rows.Next() {
+		var session string
+		if err := rows.Scan(&session); err != nil {
+			rows.Close()
+			return nil, mapStorageError(err, "")
+		}
+		sessions = append(sessions, domain.SessionID(session))
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, mapStorageError(err, "")
+	}
+	rows.Close()
+	return sessions, nil
+}
+
+// ReleaseLease expires the lease when — and only when — it is still owned
+// by this runtime and fencing token, so a stale host can never release a
+// successor's lease. Releasing an already-lost lease reports fencing.
+func (store *Store) ReleaseLease(ctx context.Context) error {
+	store.writeMu.Lock()
+	defer store.writeMu.Unlock()
+	result, err := store.writer.ExecContext(ctx,
+		"UPDATE runtime_leases SET lease_expires_at_unix = unixepoch('subsec') WHERE id = 1 AND runtime_id = ? AND fencing_token = ?",
+		string(store.authority.RuntimeID), store.authority.FencingToken)
+	if err != nil {
+		return mapStorageError(err, "")
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return mapStorageError(err, "")
+	}
+	if updated == 0 {
+		return newStoreError(application.StoreCodeWriterFenced, "", nil)
+	}
+	return nil
+}
+
+// ExpireLeaseForTesting forces the current lease to expiry; it simulates
+// an abandoned crashed owner for recovery tests.
+func (store *Store) ExpireLeaseForTesting(ctx context.Context) error {
+	store.writeMu.Lock()
+	defer store.writeMu.Unlock()
+	_, err := store.writer.ExecContext(ctx,
+		"UPDATE runtime_leases SET lease_expires_at_unix = 0 WHERE id = 1")
+	if err != nil {
+		return mapStorageError(err, "")
+	}
 	return nil
 }
