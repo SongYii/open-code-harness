@@ -50,7 +50,7 @@ type Config struct {
 	DeniedPathPrefixes []string
 }
 
-func (config Config) withDefaults() Config {
+func (config Config) WithDefaults() Config {
 	if config.BusyTimeout == 0 {
 		config.BusyTimeout = defaultBusyTimeout
 	}

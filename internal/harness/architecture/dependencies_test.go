@@ -46,6 +46,8 @@ func TestClassifyProductionDirectory(t *testing.T) {
 		{name: "localexec root", directory: "internal/harness/adapters/localexec", want: ownerLocalExec, inspect: true, hasOwner: true},
 		{name: "localexec production subpackage", directory: "internal/harness/adapters/localexec/internal", want: ownerLocalExec, inspect: true, hasOwner: true},
 		{name: "sqlite root", directory: "internal/harness/adapters/sqlite", want: ownerSQLite, inspect: true, hasOwner: true},
+		{name: "runtime root", directory: "internal/harness/runtime", want: ownerRuntime, inspect: true, hasOwner: true},
+		{name: "runtime production subpackage", directory: "internal/harness/runtime/internal", want: ownerRuntime, inspect: true, hasOwner: true},
 		{name: "sqlite production subpackage", directory: "internal/harness/adapters/sqlite/internal", want: ownerSQLite, inspect: true, hasOwner: true},
 		{name: "scenario test support", directory: "internal/harness/application/enginescenariotest", want: ownerApplication, inspect: false, hasOwner: true},
 		{name: "scenario nested test support", directory: "internal/harness/application/enginescenariotest/internal", want: ownerApplication, inspect: false, hasOwner: true},
@@ -213,6 +215,15 @@ func TestForbiddenImport(t *testing.T) {
 		{name: "sqlite cannot import testkit", owner: ownerSQLite, importPath: modulePath + "/internal/harness/testkit", forbidden: true},
 		{name: "sqlite cannot import memory", owner: ownerSQLite, importPath: modulePath + "/internal/harness/adapters/memory", forbidden: true},
 		{name: "sqlite may import os for file-based export", owner: ownerSQLite, importPath: "os", forbidden: false},
+		{name: "runtime may import application", owner: ownerRuntime, importPath: modulePath + "/internal/harness/application", forbidden: false},
+		{name: "runtime may import domain", owner: ownerRuntime, importPath: modulePath + "/internal/harness/domain", forbidden: false},
+		{name: "runtime may import sqlite adapter", owner: ownerRuntime, importPath: modulePath + "/internal/harness/adapters/sqlite", forbidden: false},
+		{name: "runtime cannot import engine", owner: ownerRuntime, importPath: modulePath + "/internal/harness/engine", forbidden: true},
+		{name: "runtime cannot import tools", owner: ownerRuntime, importPath: modulePath + "/internal/harness/tools", forbidden: true},
+		{name: "runtime cannot import policy", owner: ownerRuntime, importPath: modulePath + "/internal/harness/policy", forbidden: true},
+		{name: "runtime cannot import testkit", owner: ownerRuntime, importPath: modulePath + "/internal/harness/testkit", forbidden: true},
+		{name: "runtime cannot import memory adapter", owner: ownerRuntime, importPath: modulePath + "/internal/harness/adapters/memory", forbidden: true},
+		{name: "runtime cannot import openaicompat", owner: ownerRuntime, importPath: modulePath + "/internal/harness/adapters/openaicompat", forbidden: true},
 		{name: "sqlite cannot import os/exec", owner: ownerSQLite, importPath: "os/exec", forbidden: true},
 		{name: "sqlite cannot import net", owner: ownerSQLite, importPath: "net", forbidden: true},
 	}
@@ -308,6 +319,7 @@ const (
 	ownerMemory       packageOwner = "memory"
 	ownerOpenAICompat packageOwner = "openaicompat"
 	ownerSQLite       packageOwner = "sqlite"
+	ownerRuntime      packageOwner = "runtime"
 	ownerPolicy       packageOwner = "policy"
 	ownerTools        packageOwner = "tools"
 	ownerWorkspaceFS  packageOwner = "workspacefs"
@@ -343,6 +355,7 @@ func packageOwnership(directory string) (packageOwner, bool) {
 		{root: "internal/harness/adapters/memory", owner: ownerMemory},
 		{root: "internal/harness/adapters/openaicompat", owner: ownerOpenAICompat},
 		{root: "internal/harness/adapters/sqlite", owner: ownerSQLite},
+		{root: "internal/harness/runtime", owner: ownerRuntime},
 		{root: "internal/harness/policy", owner: ownerPolicy},
 		{root: "internal/harness/adapters/workspacefs", owner: ownerWorkspaceFS},
 		{root: "internal/harness/adapters/localexec", owner: ownerLocalExec},
@@ -413,6 +426,17 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/tools",
 			modulePath+"/internal/harness/policy",
 			modulePath+"/internal/harness/testkit",
+		)
+	case ownerRuntime:
+		forbidden = append(forbidden,
+			modulePath+"/internal/harness/engine",
+			modulePath+"/internal/harness/tools",
+			modulePath+"/internal/harness/policy",
+			modulePath+"/internal/harness/testkit",
+			modulePath+"/internal/harness/adapters/memory",
+			modulePath+"/internal/harness/adapters/openaicompat",
+			modulePath+"/internal/harness/adapters/workspacefs",
+			modulePath+"/internal/harness/adapters/localexec",
 		)
 	case ownerWorkspaceFS, ownerLocalExec:
 		forbidden = append(forbidden,
