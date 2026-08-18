@@ -26,6 +26,12 @@ func ExecutionRegistrySnapshotForTest(service *Service, requestID domain.RunTurn
 	return ExecutionRegistryTestSnapshot{Present: ok, Leases: snapshot.Leases, Phase: string(snapshot.Phase)}
 }
 
+// testRendezvousTimeout bounds goroutine rendezvous in tests. It fires only
+// when a test is genuinely stuck, so it is deliberately generous: a tight
+// bound turns CPU contention under -race into a false failure rather than a
+// real signal. Negative assertions must not use it.
+const testRendezvousTimeout = 30 * time.Second
+
 func TestExecutionRegistryElectsOwnerAndCleansAfterDetach(t *testing.T) {
 	registry := newExecutionRegistry()
 	digest := Digest{1}
@@ -302,7 +308,7 @@ func TestExecutionRegistryThirtyTwoLeasesObserveOneLiveOwner(t *testing.T) {
 				}
 				owner = got.lease
 			}
-		case <-time.After(time.Second):
+		case <-time.After(testRendezvousTimeout):
 			t.Fatal("timed out acquiring leases")
 		}
 	}

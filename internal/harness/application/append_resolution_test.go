@@ -71,7 +71,7 @@ func TestResolveAppendIntentHonorsInjectedTimeout(t *testing.T) {
 	}
 	select {
 	case <-started:
-	case <-time.After(time.Second):
+	case <-time.After(testRendezvousTimeout):
 		t.Fatal("resolver was not invoked")
 	}
 }
