@@ -155,3 +155,11 @@ reading copy exists and declares its authority, not that it is current.
    sources that are directly relevant to the slice: Pi, Kimi Code, Grok Build,
    Codex, Maka, and DeepSeek Harness. Community projects such as
    DeepSeek-Reasonix are non-authoritative context only.
+8. A gate cites a reference project by repository and commit, and states the
+   date it was observed. `scripts/fetch-reference.sh <owner/repo> <sha>`
+   fetches a shallow, pinned, gitignored checkout under `.reference/` so the
+   citation can be re-derived and the subsystem can be read rather than
+   guessed. The checkout is disposable by design: rule 7 requires each later
+   gate to re-verify at the then-current state, so no reference is kept
+   tracked or long-lived. Nothing under `.reference/` may be copied into this
+   repository.
