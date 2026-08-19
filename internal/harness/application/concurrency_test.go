@@ -56,7 +56,7 @@ func TestConcurrentRunTurnSameSessionHasOneAtomicAdmissionWinner(t *testing.T) {
 	close(lookupGate.release)
 	select {
 	case <-model.started:
-	case <-time.After(time.Second):
+	case <-time.After(testRendezvousTimeout):
 		t.Fatal("owner did not enter blocking model")
 	}
 	mismatchDone := make(chan error, 1)
@@ -208,11 +208,17 @@ func (store *foundLookupObserver) FindCommandRequest(ctx context.Context, reques
 	return lookup, err
 }
 
+// testRendezvousTimeout bounds goroutine rendezvous in tests. It fires only
+// when a test is genuinely stuck, so it is deliberately generous: a tight
+// bound turns CPU contention under -race into a false failure rather than a
+// real signal. Negative assertions must not use it.
+const testRendezvousTimeout = 30 * time.Second
+
 func await(t *testing.T, channel <-chan struct{}, description string) {
 	t.Helper()
 	select {
 	case <-channel:
-	case <-time.After(time.Second):
+	case <-time.After(testRendezvousTimeout):
 		t.Fatalf("timed out waiting for %s", description)
 	}
 }
@@ -222,7 +228,7 @@ func awaitOutcome[T any](t *testing.T, channel <-chan T, description string) T {
 	select {
 	case value := <-channel:
 		return value
-	case <-time.After(time.Second):
+	case <-time.After(testRendezvousTimeout):
 		var zero T
 		t.Fatalf("timed out waiting for %s", description)
 		return zero

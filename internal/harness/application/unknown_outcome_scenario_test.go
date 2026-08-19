@@ -109,7 +109,7 @@ func TestUnknownOutcomeWaiterDoesNotStartSecondResolver(t *testing.T) {
 	}()
 	select {
 	case <-started:
-	case <-time.After(time.Second):
+	case <-time.After(testRendezvousTimeout):
 		t.Fatal("owner did not enter resolve")
 	}
 	waiterDone := make(chan outcome, 1)
@@ -117,6 +117,9 @@ func TestUnknownOutcomeWaiterDoesNotStartSecondResolver(t *testing.T) {
 		result, runErr := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-shared-resolver", Input: "inspect", Sink: &testkit.RecordingSink{}})
 		waiterDone <- outcome{result, runErr}
 	}()
+	// Early signal only: a short window can under-report a second resolver, so
+	// it may pass spuriously but never fail spuriously. The authoritative check
+	// is the post-completion count below.
 	time.Sleep(20 * time.Millisecond)
 	if store.resolveCalls() != 1 {
 		t.Fatalf("resolver calls=%d", store.resolveCalls())
@@ -126,6 +129,9 @@ func TestUnknownOutcomeWaiterDoesNotStartSecondResolver(t *testing.T) {
 	waiter := awaitOutcome(t, waiterDone, "waiter")
 	if owner.err != nil || waiter.err != nil || !reflect.DeepEqual(owner.result.TurnID, waiter.result.TurnID) || len(model.Calls()) != 1 {
 		t.Fatalf("owner=%#v waiter=%#v calls=%d", owner, waiter, len(model.Calls()))
+	}
+	if store.resolveCalls() != 1 {
+		t.Fatalf("resolver calls after both returned = %d, want 1", store.resolveCalls())
 	}
 }
 
@@ -150,7 +156,7 @@ func TestUnresolvedSessionRejectsDifferentAdmission(t *testing.T) {
 	}()
 	select {
 	case <-registryUnknown.started:
-	case <-time.After(time.Second):
+	case <-time.After(testRendezvousTimeout):
 		t.Fatal("owner did not retain unknown")
 	}
 	_, otherErr := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-other", Input: "other", Sink: &testkit.RecordingSink{}})
@@ -160,7 +166,7 @@ func TestUnresolvedSessionRejectsDifferentAdmission(t *testing.T) {
 	close(registryUnknown.release)
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testRendezvousTimeout):
 		t.Fatal("owner did not finish")
 	}
 }
