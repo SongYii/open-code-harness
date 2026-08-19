@@ -8,6 +8,9 @@
 
 **证据：** [EventStore v2 Contract 架构门](../../research/architecture-gates/2026-08-13-eventstore-v2-contract.zh-CN.md)
 
+英文版本 [2026-08-13-eventstore-v2-contract-design.md](2026-08-13-eventstore-v2-contract-design.md) 是规范文本；本文是与之同步的中文阅读版。两者若有分歧，以英文为准。
+
+
 ## 1. 决策摘要
 
 本 Slice 在编写任何 SQLite 代码之前，把当前“完整 Stream、Adapter 生成 Metadata”的 EventStore 替换为支持精确语义、分页与 Receipt 的 v2 Contract。Application 拥有稳定 Append/Event Identity、Event Timestamp、Schema Version 和 Caller Request Admission；Store 只拥有 Stream Sequence 与 Global Commit Position。

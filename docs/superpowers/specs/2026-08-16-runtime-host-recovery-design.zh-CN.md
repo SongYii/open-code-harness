@@ -10,6 +10,9 @@
 
 **已实现基线：** [SQLite 规范 EventStore](../../architecture/sqlite-eventstore.md)——租约机制、fencing 谓词与 `session_heads` 投影均已交付
 
+英文版本 [2026-08-16-runtime-host-recovery-design.md](2026-08-16-runtime-host-recovery-design.md) 是规范文本；本文是与之同步的中文阅读版。两者若有分歧，以英文为准。
+
+
 ## 1. 决策摘要
 
 Slice 4 在已实现的 Application 服务与 SQLite 存储之上构建唯一的

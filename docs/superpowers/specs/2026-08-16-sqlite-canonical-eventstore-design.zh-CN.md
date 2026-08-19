@@ -10,6 +10,9 @@
 
 **本适配器必须满足的已实现合同：** [EventStore v2](../../architecture/eventstore-v2.md)
 
+英文版本 [2026-08-16-sqlite-canonical-eventstore-design.md](2026-08-16-sqlite-canonical-eventstore-design.md) 是规范文本；本文是与之同步的中文阅读版。两者若有分歧，以英文为准。
+
+
 ## 1. 决策摘要
 
 本切片实现第一个持久化规范 EventStore：一个位于已实现

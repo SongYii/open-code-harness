@@ -8,6 +8,9 @@
 
 **包：** `internal/harness/runtime`
 
+英文版本 [runtime-host.md](runtime-host.md) 是规范文本；本文是与之同步的中文阅读版。两者若有分歧，以英文为准。
+
+
 ## 范围
 
 Application 服务与 SQLite 存储之上的唯一 Runtime Host：带确定性恢复

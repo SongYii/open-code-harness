@@ -8,6 +8,9 @@
 
 本架构门把已接受的 Runtime Persistence 调研收窄到第一个交付 Slice。它决定数据库实现开始前，Domain、Application、Adapter Contract、Test Double 与 Conformance Test 必须具备哪些保证；不选择 SQL Schema 或 Driver 机制。
 
+英文版本 [2026-08-13-eventstore-v2-contract.md](2026-08-13-eventstore-v2-contract.md) 是规范文本；本文是与之同步的中文阅读版。两者若有分歧，以英文为准。
+
+
 ## 问题
 
 1. 精确 Append Retry 与普通 Event-ID 去重有什么区别？

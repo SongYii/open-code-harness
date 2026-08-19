@@ -13,6 +13,9 @@ Runtime 合同落地后 Slice 2 作为下一个实施切片的顺序确认。
 
 英文版为规范研究记录，本文件是同步的中文阅读版。
 
+英文版本 [2026-08-16-sqlite-canonical-eventstore.md](2026-08-16-sqlite-canonical-eventstore.md) 是规范文本；本文是与之同步的中文阅读版。两者若有分歧，以英文为准。
+
+
 ## 问题
 
 1. Provider 适配器与 Tool Runtime 合同落地之后，Slice 2（SQLite 规范

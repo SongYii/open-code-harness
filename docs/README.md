@@ -117,6 +117,26 @@ test-only production branches for the capabilities it does deliver.
 10. **Scenario evaluation, benchmarks, and OpenTelemetry** — not designed yet.
 11. **Open-source release, governance, and ecosystem documentation** — not designed yet.
 
+## Executable documentation rules
+
+Several rules below were prose, and prose drifted: the root README described
+three landed slices as unimplemented because nothing required it to agree with
+this file. The rules that can be checked without judgement are now tests in
+`internal/docsguard`, run by `go test ./...` like any other gate:
+
+| Gate | Rule it enforces |
+| --- | --- |
+| `TestRelativeLinksResolve` | Every relative Markdown link in `README.md`, `SECURITY.md`, and `docs/` resolves to a file |
+| `TestAuthorityTableTargetsExist` | Every document named in the authority table above exists |
+| `TestImplementedContractsAppearInRootReadme` | Every implemented contract listed above is referenced from the root README |
+| `TestReadingCopiesHaveANormativeSource` | Every `*.zh-CN.md` has an English source beside it |
+| `TestReadingCopiesNameTheirNormativeSource` | Every reading copy names the document that wins when the copies diverge |
+| `TestEveryImplementedContractHasEvidence` | Every implemented contract has an evidence ledger, with exemptions named in the test rather than left implicit |
+
+A rule that cannot be checked without judgement stays prose and stays below.
+Synchronization of translated *content* is one of those: the gates prove a
+reading copy exists and declares its authority, not that it is current.
+
 ## Documentation rules
 
 1. Every subsystem receives an approved design before an implementation plan.
