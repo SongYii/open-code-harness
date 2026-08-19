@@ -54,6 +54,9 @@ func TestClassifyProductionDirectory(t *testing.T) {
 		{name: "similarly named production child", directory: "internal/harness/application/enginescenariotestkit", want: ownerApplication, inspect: true, hasOwner: true},
 		{name: "event store test support", directory: "internal/harness/application/eventstoretest", want: ownerApplication, inspect: false, hasOwner: true},
 		{name: "model test support", directory: "internal/harness/engine/modeltest", want: ownerEngine, inspect: false, hasOwner: true},
+		{name: "system root", directory: "internal/harness/adapters/system", want: ownerSystem, inspect: true, hasOwner: true},
+		{name: "composition root", directory: "internal/harness/composition", want: ownerComposition, inspect: true, hasOwner: true},
+		{name: "composition production subpackage", directory: "internal/harness/composition/wiring", want: ownerComposition, inspect: true, hasOwner: true},
 		{name: "unowned adapter still inspected", directory: "internal/harness/adapters/other", inspect: true},
 		{name: "unowned nested adapter still inspected", directory: "internal/harness/adapters/other/internal", inspect: true},
 		{name: "harness root still inspected", directory: "internal/harness", inspect: true},
@@ -147,6 +150,14 @@ func TestForbiddenImport(t *testing.T) {
 		{name: "engine cannot import net/http", owner: ownerEngine, importPath: "net/http", forbidden: true},
 		{name: "application cannot import net/http", owner: ownerApplication, importPath: "net/http", forbidden: true},
 		{name: "application cannot import openaicompat", owner: ownerApplication, importPath: modulePath + "/internal/harness/adapters/openaicompat", forbidden: true},
+		{name: "composition may import sqlite", owner: ownerComposition, importPath: modulePath + "/internal/harness/adapters/sqlite", forbidden: false},
+		{name: "composition may import openaicompat", owner: ownerComposition, importPath: modulePath + "/internal/harness/adapters/openaicompat", forbidden: false},
+		{name: "composition may import localexec", owner: ownerComposition, importPath: modulePath + "/internal/harness/adapters/localexec", forbidden: false},
+		{name: "composition may import runtime", owner: ownerComposition, importPath: modulePath + "/internal/harness/runtime", forbidden: false},
+		{name: "composition cannot import testkit", owner: ownerComposition, importPath: modulePath + "/internal/harness/testkit", forbidden: true},
+		{name: "system cannot import adapters", owner: ownerSystem, importPath: modulePath + "/internal/harness/adapters/sqlite", forbidden: true},
+		{name: "system cannot import engine", owner: ownerSystem, importPath: modulePath + "/internal/harness/engine", forbidden: true},
+		{name: "system may import application", owner: ownerSystem, importPath: modulePath + "/internal/harness/application", forbidden: false},
 		{name: "openaicompat may import net/http", owner: ownerOpenAICompat, importPath: "net/http", forbidden: false},
 		{name: "openaicompat may import os", owner: ownerOpenAICompat, importPath: "os", forbidden: false},
 		{name: "openaicompat may import engine", owner: ownerOpenAICompat, importPath: modulePath + "/internal/harness/engine", forbidden: false},
@@ -268,16 +279,22 @@ func assertProductionDependencyBoundaries(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if hasOwner {
-			for _, spec := range parsed.Imports {
-				importPath, err := strconv.Unquote(spec.Path.Value)
-				if err != nil {
-					return err
-				}
-				if reason := forbiddenImport(owner, importPath); reason != "" {
-					position := fileSet.Position(spec.Pos())
-					violations = append(violations, position.String()+": "+reason+" "+strconv.Quote(importPath))
-				}
+		for _, spec := range parsed.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				return err
+			}
+			// A directory with no declared owner is checked against the
+			// unowned rules, not skipped. Skipping would make "no owner"
+			// mean "unrestricted", so a new package could inherit the
+			// composition exception simply by not being listed.
+			reason := unownedImport(importPath)
+			if hasOwner {
+				reason = forbiddenImport(owner, importPath)
+			}
+			if reason != "" {
+				position := fileSet.Position(spec.Pos())
+				violations = append(violations, position.String()+": "+reason+" "+strconv.Quote(importPath))
 			}
 		}
 		appendAllowAllViolations(fileSet, path, relative, parsed, &violations)
@@ -324,6 +341,8 @@ const (
 	ownerTools        packageOwner = "tools"
 	ownerWorkspaceFS  packageOwner = "workspacefs"
 	ownerLocalExec    packageOwner = "localexec"
+	ownerSystem       packageOwner = "system"
+	ownerComposition  packageOwner = "composition"
 )
 
 var excludedTestSupportDirectories = []string{
@@ -359,6 +378,8 @@ func packageOwnership(directory string) (packageOwner, bool) {
 		{root: "internal/harness/policy", owner: ownerPolicy},
 		{root: "internal/harness/adapters/workspacefs", owner: ownerWorkspaceFS},
 		{root: "internal/harness/adapters/localexec", owner: ownerLocalExec},
+		{root: "internal/harness/adapters/system", owner: ownerSystem},
+		{root: "internal/harness/composition", owner: ownerComposition},
 		{root: "internal/harness/tools", owner: ownerTools},
 	} {
 		if directoryWithin(directory, candidate.root) {
@@ -370,6 +391,27 @@ func packageOwnership(directory string) (packageOwner, bool) {
 
 func directoryWithin(directory, root string) bool {
 	return directory == root || strings.HasPrefix(directory, root+"/")
+}
+
+// unownedImport applies to a production directory under internal/harness
+// that no owner claims. Only the composition root may name an adapter, and
+// only a test may name testkit; a package nobody has classified may do
+// neither. Adding a package therefore requires either staying inside those
+// bounds or declaring an owner deliberately.
+func withinPackage(importPath, prefix string) bool {
+	return importPath == prefix || strings.HasPrefix(importPath, prefix+"/")
+}
+
+func unownedImport(importPath string) string {
+	for _, prefix := range []string{
+		modulePath + "/internal/harness/adapters",
+		modulePath + "/internal/harness/testkit",
+	} {
+		if withinPackage(importPath, prefix) {
+			return "forbidden package dependency from an unowned package"
+		}
+	}
+	return ""
 }
 
 func forbiddenImport(owner packageOwner, importPath string) string {
@@ -428,15 +470,33 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/testkit",
 		)
 	case ownerRuntime:
+		// Runtime is denied the adapters root as a whole, with sqlite carved
+		// out below. Enumerating the denied adapters instead would mean every
+		// adapter added later silently widened Runtime's reach, which is how
+		// adapters/system first became importable here.
 		forbidden = append(forbidden,
 			modulePath+"/internal/harness/engine",
 			modulePath+"/internal/harness/tools",
 			modulePath+"/internal/harness/policy",
 			modulePath+"/internal/harness/testkit",
-			modulePath+"/internal/harness/adapters/memory",
-			modulePath+"/internal/harness/adapters/openaicompat",
-			modulePath+"/internal/harness/adapters/workspacefs",
-			modulePath+"/internal/harness/adapters/localexec",
+			modulePath+"/internal/harness/adapters",
+		)
+	case ownerSystem:
+		forbidden = append(forbidden,
+			modulePath+"/internal/harness/engine",
+			modulePath+"/internal/harness/tools",
+			modulePath+"/internal/harness/policy",
+			modulePath+"/internal/harness/runtime",
+			modulePath+"/internal/harness/testkit",
+			modulePath+"/internal/harness/adapters",
+		)
+	case ownerComposition:
+		// The composition root may name every adapter. That is the whole
+		// point of the package, and the reason no other package may.
+		// Test support stays forbidden: production wiring must not reach
+		// for a double.
+		forbidden = append(forbidden,
+			modulePath+"/internal/harness/testkit",
 		)
 	case ownerWorkspaceFS, ownerLocalExec:
 		forbidden = append(forbidden,
@@ -446,8 +506,15 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/engine",
 		)
 	}
+	// The Runtime Host owns the canonical store's lifecycle and its Config
+	// embeds sqlite.Config; the Slice 4 design established that dependency.
+	// It is the only adapter Runtime may name.
+	runtimeSQLite := ownerRuntime == owner && withinPackage(importPath, modulePath+"/internal/harness/adapters/sqlite")
 	for _, prefix := range forbidden {
-		if importPath == prefix || strings.HasPrefix(importPath, prefix+"/") {
+		if runtimeSQLite {
+			break
+		}
+		if withinPackage(importPath, prefix) {
 			return "forbidden package dependency"
 		}
 	}
@@ -651,4 +718,77 @@ func containsScriptedModel(node ast.Node) bool {
 		return !found
 	})
 	return found
+}
+
+// TestUnownedPackagesCannotImportAdapters pins the property that makes the
+// composition exception safe: adding a package under internal/harness without
+// declaring an owner does not grant it the right to name an adapter.
+//
+// Before this rule the walk skipped unowned directories entirely, so "no
+// owner" meant "unrestricted" rather than "forbidden".
+func TestUnownedPackagesCannotImportAdapters(t *testing.T) {
+	tests := []struct {
+		name       string
+		importPath string
+		forbidden  bool
+	}{
+		{name: "adapter root", importPath: modulePath + "/internal/harness/adapters/sqlite", forbidden: true},
+		{name: "adapter subpackage", importPath: modulePath + "/internal/harness/adapters/sqlite/internal", forbidden: true},
+		{name: "adapters parent", importPath: modulePath + "/internal/harness/adapters", forbidden: true},
+		{name: "test support", importPath: modulePath + "/internal/harness/testkit", forbidden: true},
+		{name: "similarly named package is not an adapter", importPath: modulePath + "/internal/harness/adaptersx", forbidden: false},
+		{name: "domain stays permitted", importPath: modulePath + "/internal/harness/domain", forbidden: false},
+		{name: "standard library stays permitted", importPath: "time", forbidden: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := unownedImport(test.importPath) != ""; got != test.forbidden {
+				t.Fatalf("unownedImport(%q) forbidden = %t, want %t", test.importPath, got, test.forbidden)
+			}
+		})
+	}
+}
+
+// TestOnlyCompositionAndRuntimeMayNameAnAdapter states the exception as an
+// exhaustive claim rather than a comment, so widening it fails here.
+//
+// Two owners may name an adapter, and the second is narrow. The composition
+// root may name every adapter, which is the whole purpose of the package.
+// Runtime may name sqlite and nothing else: the Runtime Host owns the
+// canonical store's lifecycle and its Config embeds sqlite.Config, a
+// dependency the Slice 4 design established. An adapter may of course name
+// itself. Every other pairing is forbidden.
+func TestOnlyCompositionAndRuntimeMayNameAnAdapter(t *testing.T) {
+	adapters := []string{
+		modulePath + "/internal/harness/adapters/sqlite",
+		modulePath + "/internal/harness/adapters/openaicompat",
+		modulePath + "/internal/harness/adapters/memory",
+		modulePath + "/internal/harness/adapters/workspacefs",
+		modulePath + "/internal/harness/adapters/localexec",
+		modulePath + "/internal/harness/adapters/system",
+	}
+	owners := []packageOwner{
+		ownerDomain, ownerEngine, ownerApplication, ownerPolicy, ownerTools,
+		ownerRuntime, ownerMemory, ownerOpenAICompat, ownerSQLite,
+		ownerWorkspaceFS, ownerLocalExec, ownerSystem,
+	}
+	permitted := func(owner packageOwner, adapter string) bool {
+		if selfRoot, ok := adapterOwnerRoot(owner); ok && adapter == selfRoot {
+			return true
+		}
+		return owner == ownerRuntime && adapter == modulePath+"/internal/harness/adapters/sqlite"
+	}
+	for _, owner := range owners {
+		for _, adapter := range adapters {
+			allowed := forbiddenImport(owner, adapter) == ""
+			if allowed != permitted(owner, adapter) {
+				t.Errorf("owner %q import of %s: allowed=%t, want %t", owner, adapter, allowed, permitted(owner, adapter))
+			}
+		}
+	}
+	for _, adapter := range adapters {
+		if reason := forbiddenImport(ownerComposition, adapter); reason != "" {
+			t.Errorf("composition may not import %s (%s); the root must be able to name every adapter", adapter, reason)
+		}
+	}
 }
