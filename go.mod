@@ -2,6 +2,8 @@ module github.com/SongYii/open-code-harness
 
 go 1.26
 
+toolchain go1.26.6
+
 require modernc.org/sqlite v1.56.0
 
 require (

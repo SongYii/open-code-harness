@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   go:
     runs-on: ubuntu-latest
@@ -27,3 +31,43 @@ jobs:
         run: go test ./internal/harness/application ./internal/harness/domain -run 'TestDigest|TestRecordedEvent|TestReplay|TestCompact' -count=1
       - name: Test with race detector
         run: go test -race ./... -count=1
+
+  # The race detector requires cgo, so the primary job cannot cover the
+  # `!unix` build tag. These targets are built and vetted, not tested: no
+  # platform beyond Linux is claimed to be supported.
+  cross-build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [windows, darwin]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+        run: go build ./...
+      - name: Vet
+        env:
+          GOOS: ${{ matrix.goos }}
+        run: go vet ./...
+
+  vulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify dependency graph is unchanged
+        run: |
+          go mod tidy -diff
+          git diff --exit-code go.mod go.sum
+      - name: govulncheck
+        run: |
+          go run golang.org/x/vuln/cmd/govulncheck@latest ./...
