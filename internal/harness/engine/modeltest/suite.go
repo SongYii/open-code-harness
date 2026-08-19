@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
@@ -84,6 +85,37 @@ func Run(t *testing.T, factory Factory) {
 		}
 		if probe.CloseCalls() != 1 || probe.NextCalls() != 0 {
 			t.Fatalf("counts = (%d, %d), want (1, 0)", probe.CloseCalls(), probe.NextCalls())
+		}
+	})
+
+	// Double-only: an in-process implementation can be observed consulting the
+	// context before it is cancelled, proving Next actually reached its
+	// blocking point rather than returning early. A transport blocks in a
+	// socket read and never consults an unrelated context, so this stays out
+	// of RunContract.
+	t.Run("observes the context while blocking", func(t *testing.T) {
+		probe := factory(request("observe"), Config{Steps: []ContractStep{{WaitForCancel: true}}})
+		stream, err := probe.Stream(context.Background(), request("observe"))
+		if err != nil || stream == nil {
+			t.Fatalf("Stream() = (%v, %v), want usable stream", stream, err)
+		}
+		defer stream.Close()
+		ctx, cancel := newDoneObservedContext(context.Background())
+		result := make(chan error, 1)
+		go func() { _, err := stream.Next(ctx); result <- err }()
+		select {
+		case <-ctx.entered:
+		case <-time.After(contractRendezvousTimeout):
+			t.Fatal("Next() did not begin waiting for context cancellation")
+		}
+		cancel()
+		select {
+		case err := <-result:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("Next() error = %v, want context.Canceled", err)
+			}
+		case <-time.After(contractRendezvousTimeout):
+			t.Fatal("Next() did not unblock after cancellation")
 		}
 	})
 
