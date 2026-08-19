@@ -110,7 +110,7 @@ func TestUnknownOutcomeWaiterDoesNotStartSecondResolver(t *testing.T) {
 	select {
 	case <-started:
 	case <-time.After(testRendezvousTimeout):
-		t.Fatal("owner did not enter resolve")
+		fatalStalled(t, "owner did not enter resolve")
 	}
 	waiterDone := make(chan outcome, 1)
 	go func() {
@@ -157,7 +157,7 @@ func TestUnresolvedSessionRejectsDifferentAdmission(t *testing.T) {
 	select {
 	case <-registryUnknown.started:
 	case <-time.After(testRendezvousTimeout):
-		t.Fatal("owner did not retain unknown")
+		fatalStalled(t, "owner did not retain unknown")
 	}
 	_, otherErr := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-other", Input: "other", Sink: &testkit.RecordingSink{}})
 	if !isUnknown(otherErr) {
@@ -167,7 +167,7 @@ func TestUnresolvedSessionRejectsDifferentAdmission(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(testRendezvousTimeout):
-		t.Fatal("owner did not finish")
+		fatalStalled(t, "owner did not finish")
 	}
 }
 

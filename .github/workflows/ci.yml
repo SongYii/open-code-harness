@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Nightly. The soak and citation lanes need time and network, so they run
+    # here rather than on the pull-request path.
+    - cron: '17 4 * * *'
 
 permissions:
   contents: read
@@ -71,3 +75,38 @@ jobs:
       - name: govulncheck
         run: |
           go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  # A single green run samples the suite once. Two flaky tests reached main
+  # that way and turned documentation-only pull requests red: a heartbeat test
+  # that sampled state on an exact tick boundary, and twelve wall-clock
+  # rendezvous guards that lost races under -race with packages in parallel.
+  # Neither reproduced reliably in one run of one package, so this repeats the
+  # whole suite. It runs beside the `go` job and adds no wall-clock time to it.
+  determinism:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Repeat the race suite
+        run: go test -race ./... -count=3
+
+  # Deeper repetition and the network-dependent citation gate. Nightly only.
+  soak:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Soak the race suite
+        run: go test -race ./... -count=10 -timeout 40m
+      - name: Check external citations resolve
+        env:
+          DOCSGUARD_CHECK_EXTERNAL_LINKS: "1"
+        run: go test ./internal/docsguard -run TestExternalCitations -count=1 -v
