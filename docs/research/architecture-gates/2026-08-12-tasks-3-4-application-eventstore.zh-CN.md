@@ -5,6 +5,9 @@
 - 评审结论：**READY_WITH_AMENDMENTS**
 - 评审时实现状态：尚未开始
 
+英文版本 [2026-08-12-tasks-3-4-application-eventstore.md](2026-08-12-tasks-3-4-application-eventstore.md) 是规范文本；本文是与之同步的中文阅读版。两者若有分歧，以英文为准。
+
+
 ## 核心证据与取舍
 
 | 项目 | 一手资料与事实 | 我们的决定 |

@@ -8,6 +8,9 @@
 
 **技术栈：** Go 1.26、`database/sql`、`modernc.org/sqlite`、`crypto/sha256`、基于冻结领域编解码器的 `encoding/json`、确定性时间处用 `testing/synctest`、race/benchmark 工具。
 
+英文版本 [2026-08-16-jsonl-audit-replica.md](2026-08-16-jsonl-audit-replica.md) 是规范文本；本文是与之同步的中文阅读版。两者若有分歧，以英文为准。
+
+
 ## 全局约束
 
 - 规范：`docs/superpowers/specs/2026-08-16-jsonl-audit-replica-design.md`；研究证据：Slice 3 架构门。

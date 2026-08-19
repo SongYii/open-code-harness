@@ -8,6 +8,9 @@
 
 **技术栈：** Go 1.26、确定性时间用 `testing/synctest`、标准并发原语、race 工具。
 
+英文版本 [2026-08-16-runtime-host-recovery.md](2026-08-16-runtime-host-recovery.md) 是规范文本；本文是与之同步的中文阅读版。两者若有分歧，以英文为准。
+
+
 ## 全局约束
 
 - 规范：`docs/superpowers/specs/2026-08-16-runtime-host-recovery-design.md`；研究证据：Slice 4 架构门。

@@ -8,6 +8,9 @@
 
 **包：** `internal/harness/adapters/sqlite`
 
+英文版本 [jsonl-audit-replica.md](jsonl-audit-replica.md) 是规范文本；本文是与之同步的中文阅读版。两者若有分歧，以英文为准。
+
+
 ## 范围
 
 Slice 3 在追加事务内激活审计链，以编解码器 v1 回填 Slice 3 之前的

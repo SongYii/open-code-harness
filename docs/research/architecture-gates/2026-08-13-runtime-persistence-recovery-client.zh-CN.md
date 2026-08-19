@@ -6,6 +6,9 @@
 
 本文记录已批准 Runtime 持久化与客户端边界设计所使用的一手资料。它是调研证据，不是兼容性承诺，也不代表所有参考系统都提供相同的正确性合同。
 
+英文版本 [2026-08-13-runtime-persistence-recovery-client.md](2026-08-13-runtime-persistence-recovery-client.md) 是规范文本；本文是与之同步的中文阅读版。两者若有分歧，以英文为准。
+
+
 ## 决策问题
 
 1. SQLite 还是 JSONL 应当成为物理提交权威？

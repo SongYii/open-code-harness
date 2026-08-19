@@ -10,6 +10,9 @@
 
 英文版是规范性调研记录。本文是完整同步阅读版。
 
+英文版本 [2026-08-15-deepseek-harness-and-roadmap.md](2026-08-15-deepseek-harness-and-roadmap.md) 是规范文本；本文是与之同步的中文阅读版。两者若有分歧，以英文为准。
+
+
 ## 问题
 
 1. 在 Engine 纵切和生产 Runtime 设计之后，Open Code Harness 的产品目标是否仍然正确？

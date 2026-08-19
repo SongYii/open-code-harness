@@ -10,6 +10,9 @@
 
 **技术栈：** Go 1.26、Go 标准库、`testing`、JSON Lines 夹具、GitHub Actions。
 
+英文版本 [2026-08-11-domain-events-state-machine.md](2026-08-11-domain-events-state-machine.md) 是规范文本；本文是与之同步的中文阅读版。两者若有分歧，以英文为准。
+
+
 ## 全局约束
 
 - 模块路径为 `github.com/SongYii/open-code-harness`。

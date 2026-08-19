@@ -6,6 +6,9 @@
 
 **分支：** `agent/sqlite-canonical-eventstore`
 
+英文版本 [sqlite-eventstore-evidence.md](sqlite-eventstore-evidence.md) 是规范文本；本文是与之同步的中文阅读版。两者若有分歧，以英文为准。
+
+
 ## 提交
 
 | 提交 | 任务 | 内容 |

@@ -8,6 +8,9 @@
 
 **包：** `internal/harness/adapters/sqlite`
 
+英文版本 [sqlite-eventstore.md](sqlite-eventstore.md) 是规范文本；本文是与之同步的中文阅读版。两者若有分歧，以英文为准。
+
+
 ## 范围
 
 EventStore v2 端口之后的纯 Go（`CGO_ENABLED=0`）SQLite 适配器。SQLite

@@ -10,6 +10,9 @@
 
 **已实现基线：** [SQLite 规范 EventStore](../../architecture/sqlite-eventstore.md)
 
+英文版本 [2026-08-16-jsonl-audit-replica-design.md](2026-08-16-jsonl-audit-replica-design.md) 是规范文本；本文是与之同步的中文阅读版。两者若有分歧，以英文为准。
+
+
 ## 1. 决策摘要
 
 Slice 3 激活 Slice 2 创建但未维护的审计链，并构建导出器、副本布局、
