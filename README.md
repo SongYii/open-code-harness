@@ -64,3 +64,18 @@ gofmt -w .
 go vet ./...
 go test -race ./... -count=1
 ```
+
+Testing with `-race` requires cgo, so a C toolchain must be installed.
+
+## Security
+
+Open Code Harness executes model-proposed tool calls against a local
+workspace, and the model is treated as untrusted input. [SECURITY.md](SECURITY.md)
+states which boundaries the code enforces today and which it does not — most
+importantly, `exec` is bounded `os/exec`, not a kernel sandbox. Report
+vulnerabilities privately through GitHub Security Advisories, not public
+issues.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).
