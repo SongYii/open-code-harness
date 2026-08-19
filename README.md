@@ -43,6 +43,12 @@ The numbered milestone list lives in
   deterministic recovery appends, a bounded heartbeat with fencing reaction,
   matching-pair lease release, and exporter ownership.
 
+- Composition root (`internal/harness/composition`, `cmd/och`): implemented
+  and verified; not GA. The single place adapters are named, enforced by the
+  architecture guard, with an end-to-end test that assembles every slice above
+  and runs one tool-calling turn against a real database and a fixture-driven
+  provider — no network and no credential.
+
 ACP, TUI, MCP, the Context Engine, evaluation, and OpenTelemetry are not yet
 implemented. The project remains pre-v0.
 
@@ -67,6 +73,11 @@ The Tool Runtime contract is documented in
 and its [Chinese reading copy](docs/architecture/tool-runtime.zh-CN.md),
 with auditable results in the
 [Tool Runtime evidence ledger](docs/architecture/tool-runtime-evidence.md).
+The assembly contract is documented in
+[Implemented Composition Root](docs/architecture/composition-root.md)
+and its [Chinese reading copy](docs/architecture/composition-root.zh-CN.md),
+with auditable results in the
+[Composition root evidence ledger](docs/architecture/composition-root-evidence.md).
 The durable Store adapter is documented in
 [Implemented SQLite Canonical EventStore](docs/architecture/sqlite-eventstore.md)
 and its [Chinese reading copy](docs/architecture/sqlite-eventstore.zh-CN.md),
@@ -91,6 +102,7 @@ with auditable results in the bilingual
 gofmt -w .
 go vet ./...
 go test -race ./... -count=1
+go run ./cmd/och -help
 ```
 
 Testing with `-race` requires cgo, so a C toolchain must be installed.
