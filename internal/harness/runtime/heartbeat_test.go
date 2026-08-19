@@ -143,7 +143,10 @@ func TestHeartbeatRegainsLeaseAfterQuiescence(t *testing.T) {
 		done := make(chan struct{})
 		go func() { host.heartbeatLoop(ctx, script, 100*time.Millisecond); close(done) }()
 		defer func() { cancel(); <-done }()
-		time.Sleep(400 * time.Millisecond)
+		// Sample mid-interval. The scripted renewal stays fenced forever, so
+		// the loop loses and regains the lease on every tick; waking on an
+		// exact multiple of the interval races the tick it is observing.
+		time.Sleep(450 * time.Millisecond)
 		if !host.Ready() {
 			t.Fatal("lease was not regained through the takeover path")
 		}
