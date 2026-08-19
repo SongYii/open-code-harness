@@ -9,7 +9,7 @@
 - **Depends on:** Domain events / Session-Turn state machine; Engine vertical slice; EventStore v2 Slice 1; Provider contract + `adapters/openaicompat` (PRs #7, #12, #13)
 - **Normative language:** English
 - **Reading copy:** [Tool Runtime、Policy 与最小工作区工具](2026-08-16-tool-runtime-policy-design.zh-CN.md)
-- **Charter authority:** [Open Code Harness architecture design](docs/superpowers/specs/2026-08-11-open-code-harness-architecture-design.md) §6.4
+- **Charter authority:** [Open Code Harness architecture design](2026-08-11-open-code-harness-architecture-design.md) §6.4
 - **Out of scope next:** SQLite, JSONL audit, Runtime Host / crash continuation, ACP, TUI, full MCP client, OS Seatbelt/Landlock/bwrap backends, plugin registry, parallel tool batches, Context Engine
 
 This document designs the Tool Runtime, an independent Policy Engine, and the smallest builtin workspace tool set that turns one admitted Turn into a bounded Step loop (`model → tool* → model`) without making the kernel a plugin host. It is an internal Go design, not a stable public protocol. Pre-v0 changes still require the design, implementation, tests, and architecture docs to move together.
