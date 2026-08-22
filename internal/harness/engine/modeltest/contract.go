@@ -135,21 +135,24 @@ func RunContract(t *testing.T, contract Contract) {
 		}
 	})
 
+	// The stream and the Next call share one context, which is how
+	// engine.TurnRunner drives the port: it derives streamCtx once and passes
+	// it to both Stream and every Next. A transport can only interrupt a read
+	// through the context its request was issued with, so cancelling an
+	// unrelated context passed to Next is not something the contract may
+	// require. See the Slice 5 evidence ledger for the port ambiguity this
+	// exposed.
 	t.Run("blocks a configured step until cancellation", func(t *testing.T) {
 		probe := factory(request("cancel"), Config{Steps: []ContractStep{{WaitForCancel: true}}})
-		stream, err := probe.Stream(context.Background(), request("cancel"))
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		stream, err := probe.Stream(ctx, request("cancel"))
 		if err != nil || stream == nil {
 			t.Fatalf("Stream() = (%v, %v), want usable stream", stream, err)
 		}
 		defer stream.Close()
-		ctx, cancel := newDoneObservedContext(context.Background())
 		result := make(chan error, 1)
 		go func() { _, err := stream.Next(ctx); result <- err }()
-		select {
-		case <-ctx.entered:
-		case <-time.After(contractRendezvousTimeout):
-			t.Fatal("Next() did not begin waiting for context cancellation")
-		}
 		cancel()
 		select {
 		case err := <-result:
