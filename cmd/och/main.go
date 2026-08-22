@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -42,6 +43,7 @@ func run(arguments []string) error {
 	maxOutput := flags.Uint("max-output", 0, "provider maximum output in tokens (required)")
 	flags.StringVar(&policyMode, "policy", string(policy.ModeDefault), "policy mode: default, read_only, allow_writes, deny_all")
 	flags.DurationVar(&config.ShutdownTimeout, "shutdown-timeout", composition.DefaultShutdownTimeout, "how long shutdown may wait for the host's loops")
+	serveACP := flags.Bool("acp", false, "serve ACP v1 JSON-RPC on stdin/stdout (stderr for diagnostics)")
 
 	if err := flags.Parse(arguments); err != nil {
 		return err
@@ -56,6 +58,13 @@ func run(arguments []string) error {
 	assembly, err := composition.Open(ctx, config)
 	if err != nil {
 		return err
+	}
+	if *serveACP {
+		fmt.Fprintf(os.Stderr, "och: acp v1 on stdin/stdout; workspace=%s\n", config.WorkspaceRoot)
+		serveErr := assembly.ServeACP(ctx, os.Stdin, os.Stdout)
+		stop()
+		closeErr := assembly.Close()
+		return errors.Join(serveErr, closeErr)
 	}
 	fmt.Fprintf(os.Stdout, "och: ready; workspace=%s database=%s runtime=%s\n",
 		config.WorkspaceRoot, config.DatabasePath, config.RuntimeID)

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/policy"
+	"github.com/SongYii/open-code-harness/internal/harness/tools"
 )
 
 // Provider names the model endpoint and where its credential comes from.
@@ -54,6 +55,9 @@ type Config struct {
 	Provider Provider
 	Policy   policy.Mode
 	Limits   Limits
+	// Approver is optional. Unset becomes a deny slot so an ACP server can
+	// attach later without reconstructing the Service.
+	Approver tools.Approver
 
 	// ShutdownTimeout bounds Close. Default 10s. This is the only bound this
 	// package introduces rather than forwards.

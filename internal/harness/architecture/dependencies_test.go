@@ -55,6 +55,8 @@ func TestClassifyProductionDirectory(t *testing.T) {
 		{name: "event store test support", directory: "internal/harness/application/eventstoretest", want: ownerApplication, inspect: false, hasOwner: true},
 		{name: "model test support", directory: "internal/harness/engine/modeltest", want: ownerEngine, inspect: false, hasOwner: true},
 		{name: "system root", directory: "internal/harness/adapters/system", want: ownerSystem, inspect: true, hasOwner: true},
+		{name: "acp root", directory: "internal/harness/adapters/acp", want: ownerACP, inspect: true, hasOwner: true},
+		{name: "acp production subpackage", directory: "internal/harness/adapters/acp/internal", want: ownerACP, inspect: true, hasOwner: true},
 		{name: "composition root", directory: "internal/harness/composition", want: ownerComposition, inspect: true, hasOwner: true},
 		{name: "composition production subpackage", directory: "internal/harness/composition/wiring", want: ownerComposition, inspect: true, hasOwner: true},
 		{name: "unowned adapter still inspected", directory: "internal/harness/adapters/other", inspect: true},
@@ -150,6 +152,10 @@ func TestForbiddenImport(t *testing.T) {
 		{name: "engine cannot import net/http", owner: ownerEngine, importPath: "net/http", forbidden: true},
 		{name: "application cannot import net/http", owner: ownerApplication, importPath: "net/http", forbidden: true},
 		{name: "application cannot import openaicompat", owner: ownerApplication, importPath: modulePath + "/internal/harness/adapters/openaicompat", forbidden: true},
+		{name: "composition may import acp", owner: ownerComposition, importPath: modulePath + "/internal/harness/adapters/acp", forbidden: false},
+		{name: "acp may import application", owner: ownerACP, importPath: modulePath + "/internal/harness/application", forbidden: false},
+		{name: "acp cannot import sqlite", owner: ownerACP, importPath: modulePath + "/internal/harness/adapters/sqlite", forbidden: true},
+		{name: "acp cannot import testkit", owner: ownerACP, importPath: modulePath + "/internal/harness/testkit", forbidden: true},
 		{name: "composition may import sqlite", owner: ownerComposition, importPath: modulePath + "/internal/harness/adapters/sqlite", forbidden: false},
 		{name: "composition may import openaicompat", owner: ownerComposition, importPath: modulePath + "/internal/harness/adapters/openaicompat", forbidden: false},
 		{name: "composition may import localexec", owner: ownerComposition, importPath: modulePath + "/internal/harness/adapters/localexec", forbidden: false},
@@ -342,6 +348,7 @@ const (
 	ownerWorkspaceFS  packageOwner = "workspacefs"
 	ownerLocalExec    packageOwner = "localexec"
 	ownerSystem       packageOwner = "system"
+	ownerACP          packageOwner = "acp"
 	ownerComposition  packageOwner = "composition"
 )
 
@@ -379,6 +386,7 @@ func packageOwnership(directory string) (packageOwner, bool) {
 		{root: "internal/harness/adapters/workspacefs", owner: ownerWorkspaceFS},
 		{root: "internal/harness/adapters/localexec", owner: ownerLocalExec},
 		{root: "internal/harness/adapters/system", owner: ownerSystem},
+		{root: "internal/harness/adapters/acp", owner: ownerACP},
 		{root: "internal/harness/composition", owner: ownerComposition},
 		{root: "internal/harness/tools", owner: ownerTools},
 	} {
@@ -490,6 +498,12 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/testkit",
 			modulePath+"/internal/harness/adapters",
 		)
+	case ownerACP:
+		forbidden = append(forbidden,
+			modulePath+"/internal/harness/testkit",
+			modulePath+"/internal/harness/policy",
+			modulePath+"/internal/harness/runtime",
+		)
 	case ownerComposition:
 		// The composition root may name every adapter. That is the whole
 		// point of the package, and the reason no other package may.
@@ -571,6 +585,8 @@ func adapterOwnerRoot(owner packageOwner) (string, bool) {
 		return adaptersRoot + "/localexec", true
 	case ownerSQLite:
 		return adaptersRoot + "/sqlite", true
+	case ownerACP:
+		return adaptersRoot + "/acp", true
 	default:
 		return "", false
 	}
@@ -766,11 +782,12 @@ func TestOnlyCompositionAndRuntimeMayNameAnAdapter(t *testing.T) {
 		modulePath + "/internal/harness/adapters/workspacefs",
 		modulePath + "/internal/harness/adapters/localexec",
 		modulePath + "/internal/harness/adapters/system",
+		modulePath + "/internal/harness/adapters/acp",
 	}
 	owners := []packageOwner{
 		ownerDomain, ownerEngine, ownerApplication, ownerPolicy, ownerTools,
 		ownerRuntime, ownerMemory, ownerOpenAICompat, ownerSQLite,
-		ownerWorkspaceFS, ownerLocalExec, ownerSystem,
+		ownerWorkspaceFS, ownerLocalExec, ownerSystem, ownerACP,
 	}
 	permitted := func(owner packageOwner, adapter string) bool {
 		if selfRoot, ok := adapterOwnerRoot(owner); ok && adapter == selfRoot {

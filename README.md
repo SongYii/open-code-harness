@@ -49,7 +49,11 @@ The numbered milestone list lives in
   and runs one tool-calling turn against a real database and a fixture-driven
   provider — no network and no credential.
 
-ACP, TUI, MCP, the Context Engine, evaluation, and OpenTelemetry are not yet
+- ACP v1 adapter (`adapters/acp`): implemented and verified; not GA. JSON-RPC
+  2.0 over NDJSON on the composition root (`ServeACP`, `cmd/och -acp`).
+  Conversation memory, v2, and authenticate are not included.
+
+TUI, MCP, the Context Engine, evaluation, and OpenTelemetry are not yet
 implemented. The project remains pre-v0.
 
 ## Development
@@ -78,6 +82,11 @@ The assembly contract is documented in
 and its [Chinese reading copy](docs/architecture/composition-root.zh-CN.md),
 with auditable results in the
 [Composition root evidence ledger](docs/architecture/composition-root-evidence.md).
+The ACP v1 adapter contract is documented in
+[Implemented ACP v1 Adapter](docs/architecture/acp-v1.md)
+and its [Chinese reading copy](docs/architecture/acp-v1.zh-CN.md),
+with auditable results in the
+[ACP v1 adapter evidence ledger](docs/architecture/acp-v1-evidence.md).
 The durable Store adapter is documented in
 [Implemented SQLite Canonical EventStore](docs/architecture/sqlite-eventstore.md)
 and its [Chinese reading copy](docs/architecture/sqlite-eventstore.zh-CN.md),

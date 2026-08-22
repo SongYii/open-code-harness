@@ -39,7 +39,10 @@ assembly never leaves a lease held or a database locked. When a release itself
 fails, both errors are joined rather than one replacing the other.
 
 `Assembly` exposes `Service()`, `Host()`, and `Store()` as read-only
-accessors. It owns every resource it returns.
+accessors. It owns every resource it returns. `ServeACP` speaks ACP v1
+JSON-RPC on a caller-supplied duplex; the writer receives only ACP frames.
+The Application service is constructed with a `tools.Slot` Approver so an
+ACP server can attach without rebuilding the service.
 
 `Close()` stops admission, waits for the host's loops within
 `Config.ShutdownTimeout` (default 10s), releases the lease, and closes the
@@ -120,8 +123,9 @@ sleep-based synchronization.
 - Process supervision, restart policy, daemonization, and logging policy.
 - Multi-host, multi-workspace, and multi-tenant assembly.
 - Generated composition documentation.
-- An `Approver`: the assembly supplies none, so any tool the policy table
-  routes to approval fails closed. Interactive approval arrives with a client.
+- An `Approver` other than the replaceable slot: unset still fails closed
+  (`DenyApprover`). Interactive approval arrives when `ServeACP` installs
+  the ACP server into the slot.
 - GA blockers: no soak test of a long-lived assembly, no process-level crash
   injection, no verification against a live provider, and no performance
   characterization of the assembled path.

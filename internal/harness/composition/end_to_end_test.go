@@ -1,6 +1,7 @@
 package composition_test
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -119,6 +120,88 @@ func TestAssemblyRunsAToolCallingTurnEndToEnd(t *testing.T) {
 	if state.Status != domain.SessionStatusActive || state.ActiveTurn != nil {
 		t.Fatalf("replayed state = %#v, want an active session with no running turn", state)
 	}
+}
+
+// TestAssemblyServesACPTurnEndToEnd drives the same assembled harness through
+// ACP v1 JSON-RPC over in-memory pipes. Stdio is not involved.
+func TestAssemblyServesACPTurnEndToEnd(t *testing.T) {
+	config := validConfig(t)
+	t.Setenv(config.Provider.APIKeyEnv, "assembly-key")
+	const fileName = "NOTES.md"
+	const fileBody = "the workspace file the model asks for"
+	if err := os.WriteFile(filepath.Join(config.WorkspaceRoot, fileName), []byte(fileBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config.Policy = policy.ModeDefault
+	server := newTwoStepProvider(t, fileName)
+	config.Provider.BaseURL = server.URL
+	config.Provider.AllowInsecureLoopback = true
+
+	assembly, err := composition.Open(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = assembly.Close() })
+
+	agentIn, clientOut := io.Pipe()
+	clientIn, agentOut := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		done <- assembly.ServeACP(context.Background(), agentIn, agentOut)
+	}()
+	t.Cleanup(func() {
+		_ = agentIn.Close()
+		_ = clientOut.Close()
+		_ = clientIn.Close()
+		_ = agentOut.Close()
+		<-done
+	})
+
+	writeACP(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}`)
+	_ = readACP(t, clientIn)
+	writeACP(t, clientOut, fmt.Sprintf(`{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":%q}}`, config.WorkspaceRoot))
+	created := readACP(t, clientIn)
+	sessionID, _ := created["result"].(map[string]any)["sessionId"].(string)
+	if sessionID == "" {
+		t.Fatalf("session/new = %#v", created)
+	}
+	writeACP(t, clientOut, fmt.Sprintf(`{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":%q,"prompt":[{"type":"text","text":%q}]}}`, sessionID, "what is in "+fileName+"?"))
+	for {
+		message := readACP(t, clientIn)
+		if message["method"] == "session/update" {
+			continue
+		}
+		if message["id"] != float64(3) {
+			t.Fatalf("unexpected ACP frame %#v", message)
+		}
+		if message["error"] != nil {
+			t.Fatalf("session/prompt error = %#v", message["error"])
+		}
+		if message["result"].(map[string]any)["stopReason"] != "end_turn" {
+			t.Fatalf("session/prompt = %#v", message)
+		}
+		break
+	}
+}
+
+func writeACP(t *testing.T, w io.Writer, line string) {
+	t.Helper()
+	if _, err := io.WriteString(w, line+"\n"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readACP(t *testing.T, r io.Reader) map[string]any {
+	t.Helper()
+	scanner := bufio.NewScanner(r)
+	if !scanner.Scan() {
+		t.Fatalf("read ACP: %v", scanner.Err())
+	}
+	var message map[string]any
+	if err := json.Unmarshal(scanner.Bytes(), &message); err != nil {
+		t.Fatalf("ACP frame %q: %v", scanner.Text(), err)
+	}
+	return message
 }
 
 // twoStepProvider answers the first request with a read_file tool call and the
