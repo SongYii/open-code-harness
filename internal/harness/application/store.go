@@ -45,6 +45,20 @@ func (authority WriterAuthority) Validate() error {
 	return nil
 }
 
+// CurrentAuthority lets a static WriterAuthority satisfy AuthoritySource.
+func (authority WriterAuthority) CurrentAuthority() WriterAuthority {
+	return authority
+}
+
+// AuthoritySource supplies the writer authority at append time. The Service
+// reads it per intent build, so an expired-takeover fencing-token rotation
+// takes effect on the next append without rebuilding the Service. A static
+// WriterAuthority satisfies this interface unchanged; the SQLite store
+// implements it with the live lease state.
+type AuthoritySource interface {
+	CurrentAuthority() WriterAuthority
+}
+
 // EventStore is the authoritative per-Session event-stream boundary.
 type EventStore interface {
 	ReadStream(context.Context, ReadStreamRequest) (StreamPage, error)

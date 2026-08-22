@@ -74,8 +74,10 @@ Open 在自己的 `BEGIN IMMEDIATE` 中获取单例 `runtime_leases` 行：缺�
 或过期的租约以单调递增的令牌取得；活动的外来租约拒绝打开；同
 runtime 重开即续约。`RenewLease` 延长期限并更新心跳；续约过期租约被
 fence。SQLite 的 `unixepoch('subsec')` 是唯一租约时钟。每次追加在写
-事务内校验 `runtime_id`、`fencing_token` 与期限。宿主生命周期（心跳
-调度、接管策略、启动调和）属于 Slice 4，本切片有意缺失。
+事务内校验 `runtime_id`、`fencing_token` 与期限。`Authority` /
+`CurrentAuthority` 在写锁下返回活的租约状态，因此过期接管造成的令牌
+轮转对下一次追加可见。宿主生命周期（心跳调度、接管策略、启动调和）
+属于 Slice 4，本切片有意缺失。
 
 ## 投影、备份、重建
 

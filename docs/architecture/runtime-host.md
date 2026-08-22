@@ -35,9 +35,13 @@ Assistant Item appends one atomic batch: `assistant.message.interrupted
 (code = process_crash)` then `turn.interrupted (reason = process_crash)`.
 The Session stays active; the original `CommandID` remains the lineage.
 The recovery `AppendID` is a deterministic hash in a fixed namespace of
-Session, Turn, Item (or the `no_item` sentinel), and `process_crash`, so
-a lost acknowledgement retries the exact append and duplicate
-reconciliation resolves to the original receipt. A legacy running Turn
+Session, Turn, Item (or the `no_item` sentinel), and `process_crash`.
+Recovery events stamp `OccurredAt` from the maximum timestamp already
+present on the replayed stream, not from a wall clock: the append digest
+covers every event's `OccurredAt`, so a wall-clock stamp would turn a
+lost acknowledgement into `AppendIdentityMismatch`. A lost acknowledgement
+therefore retries a byte-identical append, and duplicate reconciliation
+resolves to the original receipt. A legacy running Turn
 with no active Item closes the turn only, with the sentinel in its ID
 namespace. An active Item referencing a different turn refuses; a missing
 TurnStarted lineage refuses. No automatic model or tool replay of any
@@ -53,7 +57,10 @@ attempted while ownership is uncertain. Transient store unavailability
 within the deadline does not revoke ownership: the per-append store
 predicate is the authority, not the renewal round-trip. After quiescence
 the loop may re-acquire through the normal expired-takeover path (next
-monotonic token) and resume admission.
+monotonic token) and resume admission. The Application service does not
+snapshot `WriterAuthority` at construction: it holds an `AuthoritySource`
+and reads the live fencing token per append, so the rotated token is
+visible on the next write instead of fencing every subsequent append.
 
 ## Shutdown and exporter ownership
 

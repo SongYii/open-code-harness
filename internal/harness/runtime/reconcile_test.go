@@ -70,7 +70,7 @@ func TestReconcileClosesInterruptedAssistantItem(t *testing.T) {
 	store := openHostStore(t)
 	seedCrashedAssistantItem(t, store)
 
-	rec := &reconciler{store: store, authority: hostAuthority(store), now: time.Now}
+	rec := &reconciler{store: store, authority: hostAuthority(store)}
 	appended, err := rec.reconcileSession(context.Background(), "session-crash")
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -98,7 +98,7 @@ func TestReconcileClosesInterruptedAssistantItem(t *testing.T) {
 func TestReconcileIsIdempotent(t *testing.T) {
 	store := openHostStore(t)
 	seedCrashedAssistantItem(t, store)
-	rec := &reconciler{store: store, authority: hostAuthority(store), now: time.Now}
+	rec := &reconciler{store: store, authority: hostAuthority(store)}
 	if _, err := rec.reconcileSession(context.Background(), "session-crash"); err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestReconcileLegacyTurnWithoutItem(t *testing.T) {
 			proposed("event-legacy-2", domain.TurnStarted{TurnID: "turn-legacy", Input: "hi"}),
 		},
 	})
-	rec := &reconciler{store: store, authority: hostAuthority(store), now: time.Now}
+	rec := &reconciler{store: store, authority: hostAuthority(store)}
 	appended, err := rec.reconcileSession(context.Background(), "session-legacy")
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -165,7 +165,7 @@ func TestReconcileCleanStreamIsNoop(t *testing.T) {
 			proposed("event-clean-3", domain.TurnCompleted{TurnID: "turn-clean"}),
 		},
 	})
-	rec := &reconciler{store: store, authority: hostAuthority(store), now: time.Now}
+	rec := &reconciler{store: store, authority: hostAuthority(store)}
 	appended, err := rec.reconcileSession(context.Background(), "session-clean")
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)

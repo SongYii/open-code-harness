@@ -33,8 +33,11 @@ Application 服务与 SQLite 存储之上的唯一 Runtime Host：带确定性�
 原子批次：先 `assistant.message.interrupted (code = process_crash)`、
 后 `turn.interrupted (reason = process_crash)`。会话保持活动；原
 `CommandID` 保持血统。恢复 `AppendID` 是会话、Turn、Item（或
-`no_item` 哨兵）与 `process_crash` 在固定命名空间内的确定性哈希，
-因此丢失确认时以完全相同的追加重试，重复调和解析到原回执。无活动
+`no_item` 哨兵）与 `process_crash` 在固定命名空间内的确定性哈希。
+恢复事件的 `OccurredAt` 取自重放流上已有的最大时间戳，而不是墙钟：
+追加 digest 覆盖每个事件的 `OccurredAt`，墙钟打戳会把丢失确认变成
+`AppendIdentityMismatch`。因此丢失确认时以字节相同的追加重试，重复
+调和解析到原回执。无活动
 Item 的遗留运行 Turn 仅以哨兵关闭 turn。活动 Item 引用其他 Turn
 拒绝；缺失 TurnStarted 血统拒绝。绝不自动重放模型或工具。
 
@@ -45,7 +48,9 @@ fence 的续约立即反应：停止接纳、经工作上下文取消本地工�
 导出器——不删除任何东西，所有权不确定时不尝试接管。截止期内的
 瞬时存储不可用不吊销所有权：每次追加的存储谓词才是权威，而不是
 续约往返。静止之后循环可经正常的过期接管路径（下一单调令牌）重新
-获取并恢复接纳。
+获取并恢复接纳。Application 服务不在构造时拍下 `WriterAuthority`
+快照：它持有 `AuthoritySource`，每次追加读取活的 fencing 令牌，因此
+轮转后的令牌对下一次写入可见，而不会把后续追加全部 fence 掉。
 
 ## 关停与导出器归属
 

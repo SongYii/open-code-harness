@@ -29,7 +29,9 @@ provider credential from the environment, and then constructs in a fixed
 order: Runtime Host — which opens the SQLite store and completes startup
 reconciliation — then the provider model and turn runner, then the workspace
 filesystem and command runner, then the tool catalog, then the Application
-service.
+service. The service receives the SQLite store as an `AuthoritySource`, not
+a `WriterAuthority` snapshot, so an expired-takeover fencing-token rotation
+is visible on the next append.
 
 `Open` never returns a non-nil `Assembly` with a non-nil error. Every failure
 after the host has launched releases the host before returning, so a failed

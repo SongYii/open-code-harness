@@ -20,7 +20,7 @@
 
 ## 装配
 
-`Open(ctx, Config) (*Assembly, error)` 先校验配置、从环境读取 provider 凭据，再按固定顺序构造：Runtime Host（它打开 SQLite store 并完成启动重整）→ provider model 与 turn runner → 工作区文件系统与命令执行器 → 工具目录 → Application service。
+`Open(ctx, Config) (*Assembly, error)` 先校验配置、从环境读取 provider 凭据，再按固定顺序构造：Runtime Host（它打开 SQLite store 并完成启动重整）→ provider model 与 turn runner → 工作区文件系统与命令执行器 → 工具目录 → Application service。service 接收的是作为 `AuthoritySource` 的 SQLite store，而不是一份 `WriterAuthority` 快照，因此过期接管造成的 fencing 令牌轮转对下一次追加可见。
 
 `Open` **绝不**在返回非 nil 错误的同时返回非 nil `Assembly`。host 启动之后的任何失败都会先释放 host 再返回，因此失败的装配不会留下被持有的租约或被锁住的数据库。若释放本身失败，两个错误会被 join，而不是其中一个覆盖另一个。
 

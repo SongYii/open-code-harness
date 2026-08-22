@@ -103,9 +103,21 @@ func (store *Store) RenewLease(ctx context.Context) error {
 	return nil
 }
 
-// Authority returns the lease authority acquired at open.
+var _ application.AuthoritySource = (*Store)(nil)
+
+// Authority returns the lease authority acquired at open. The read takes
+// the write lock: AcquireLease mutates the field during expired takeover.
 func (store *Store) Authority() application.WriterAuthority {
+	store.writeMu.Lock()
+	defer store.writeMu.Unlock()
 	return store.authority
+}
+
+// CurrentAuthority implements application.AuthoritySource with the live
+// lease state, so a fencing-token rotation performed by expired takeover is
+// visible to the next append instead of stranding holders of a snapshot.
+func (store *Store) CurrentAuthority() application.WriterAuthority {
+	return store.Authority()
 }
 
 // verifyLeaseForAppend enforces the ownership predicate on every new append:

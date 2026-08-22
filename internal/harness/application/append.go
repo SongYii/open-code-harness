@@ -148,7 +148,7 @@ func cloneAppendIntent(intent AppendIntent) (AppendIntent, error) {
 }
 
 func appendCompact(ctx context.Context, service *Service, sessionID domain.SessionID, state domain.Session, events []domain.UncommittedEvent, commandID domain.CommandID, admission *CommandAdmission) (domain.Session, []domain.RecordedEvent, error) {
-	intent, err := BuildAppendIntent(service.clock, service.ids, service.authority, sessionID, state.Version, commandID, admission, events)
+	intent, err := BuildAppendIntent(service.clock, service.ids, service.authority.CurrentAuthority(), sessionID, state.Version, commandID, admission, events)
 	if err != nil {
 		return domain.Session{}, nil, err
 	}

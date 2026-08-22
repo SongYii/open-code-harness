@@ -153,6 +153,9 @@ func TestHeartbeatRegainsLeaseAfterQuiescence(t *testing.T) {
 		if script.acquireCount() == 0 {
 			t.Fatal("takeover was never attempted")
 		}
+		if err := host.WorkContext().Err(); err != nil {
+			t.Fatalf("work context still cancelled after lease was regained: %v", err)
+		}
 	})
 }
 

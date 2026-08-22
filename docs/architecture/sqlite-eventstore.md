@@ -83,8 +83,10 @@ increasing token; a live foreign lease refuses open; a same-runtime reopen
 renews. `RenewLease` extends expiry and stamps heartbeat; renewing an
 expired lease fences. SQLite `unixepoch('subsec')` is the only lease clock.
 Every append verifies `runtime_id`, `fencing_token`, and expiry inside the
-write transaction. Host lifecycle (heartbeat scheduling, takeover policy,
-startup reconciliation) is Slice 4 and intentionally absent.
+write transaction. `Authority` / `CurrentAuthority` return the live lease
+state under the writer lock, so an expired-takeover token rotation is
+visible to the next append. Host lifecycle (heartbeat scheduling, takeover
+policy, startup reconciliation) is Slice 4 and intentionally absent.
 
 ## Projections, backup, rebuild
 
