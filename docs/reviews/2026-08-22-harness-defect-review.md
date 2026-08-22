@@ -2,8 +2,12 @@
 
 > **评审对象**：`/home/ubuntu/code/open-code-harness` @ `31f37d1`（2026-08-22）
 > **评审方法**：三路并行源码深读（适配器层 / 核心循环与状态机 / 工具系统与文档真实性）+ 本机实证验证
-> **对照基准**：Codex、DeepSeek Harness、Kimi Code、Grok Build、pi 五个开源 harness 的源码级分析（见本仓库 [agent-harness-analysis.md](./agent-harness-analysis.md)）
+> **对照基准**：Codex、DeepSeek Harness、Kimi Code、Grok Build、pi 五个开源 harness 的源码级分析
 > **评审日期**：2026-08-22
+
+> **修订记录**
+> - v1（2026-08-22）：初版。
+> - v2（2026-08-22）：经外部 review 修订——(a) 撤回原 P0-1 "-race 稳定失败" 定性，改为间歇性缺陷并附双方复现数据，待最小化复现后重定级；(b) 原 P0-5 能力空洞移出缺陷清单，并入"能力路线图"章节；(c) 明确 Session 丢弃已完成 turn 为设计意图而非实现违约（`domain/state.go:93` 注释明示）；(d) 修复文档内链失效问题。编号保持 v1 不变以维持讨论引用。
 
 ---
 
@@ -14,8 +18,8 @@
 优点是真实且突出的：Decide/Apply 纯函数分离、append intent + unknown-outcome 三段式解析、AST 级架构守卫、"model-visible means logged" 式的事件溯源纪律、合同文档与代码的高度吻合。这些在同类项目中属最高档。
 
 但存在两类问题：
-1. **已实现部分有会在生产中引爆的具体缺陷**（含一个当前可机器复现的测试失败）；
-2. **防御预算与功能供给严重失衡**——9 相位租约状态机 + 1047 行手写 JSON codec 的复杂度，服务的是一个尚无重试、无压缩、无多轮记忆的 agent 循环。
+1. **已实现部分存在会在生产中引爆的具体缺陷**（P0-2/P0-3/P0-4，均经代码证实）；
+2. **防御预算与功能供给严重失衡**——9 相位租约状态机 + 1047 行手写 JSON codec 的复杂度，服务的是一个尚无重试、无压缩、无多轮记忆的 agent 循环（详见"能力路线图"章节）。
 
 ## 二、实证结果
 
@@ -24,9 +28,9 @@
 | `go build ./...` | ✅ 通过 |
 | `go vet ./...` | ✅ 干净 |
 | 全量测试（非 race，15 包） | ✅ 通过 |
-| `go test -race ./internal/harness/adapters/sqlite/` | ❌ **稳定失败**（2/2 复现，见 P0-1） |
+| `go test -race ./internal/harness/adapters/sqlite/` | ⚠️ **间歇性失败**（评审机器 5 轮中 4 败；另一环境 2/2 通过，见原 P0-1 降级说明） |
 
-race 失败详情：
+race 失败详情（失败时）：
 
 ```
 --- FAIL: TestConformance/limits_copies_cancellation_and_corruption (39-43s)
@@ -34,13 +38,15 @@ race 失败详情：
     store/writer_fenced (session=session-request-plus-one expected=0 actual=0 ...)
 ```
 
-单跑该用例通过、非 race 稳定通过——时间敏感缺陷，非环境噪音。
+非 race 下稳定通过。失败率随环境/负载变化，属竞态窗口型 flaky，而非确定性缺陷。
 
 ## 三、P0 缺陷（会真实引爆）
 
-### P0-1【可复现】conformance 套件在 -race 下必败
-超限请求在竞态时序下走了 `store/writer_fenced` 拒绝路径，触发"被拒请求不得泄漏身份"不变量断言失败。说明**限流拒绝与 fencing 判定之间存在顺序依赖**，直接违背本项目 "deterministic verification" 的立身承诺。
-**建议**：优先定位 `cases.go:296` 对应路径；预期根因在 over-limit 检查与 lease 校验的判定顺序。
+### P0-1【v2 已降级 → P1-flaky】conformance 套件在 -race 下间歇性失败
+> **v2 修订**：初版声称"2/2 稳定复现"，经第二环境验证（`-race -count=2` 两轮通过）不成立。合并双方数据：评审机器累计 5 轮 4 败（含单独跑 TestConformance 的 FAIL/PASS/FAIL），另一机器 0/2 败——**缺陷真实存在但非确定性**，降级为 P1-flaky，待最小化复现后重定级。
+
+超限请求在竞态时序下走了 `store/writer_fenced` 拒绝路径，触发"被拒请求不得泄漏身份"不变量断言失败（`cases.go:296`）。说明**限流拒绝与 fencing 判定之间存在顺序/时序依赖**。
+**建议**：先最小化复现（怀疑与机器负载/CPU 数相关的调度窗口），定位 over-limit 检查与 lease 校验的判定顺序；在根因修复前，该用例可加 `// TODO flaky` 标注或 t.Skip 短路 CI 噪音，但不应长期容忍。
 
 ### P0-2 恢复 append 的 "exact retry" 被墙钟破坏，可永久楔死启动
 - digest 覆盖每个事件的 `OccurredAt`：`application/digest.go:48`
@@ -65,10 +71,8 @@ token 轮转后 Service 持有的旧 authority 与 `verifyLeaseForAppend`（`lea
 攻击链：一次被批准的 exec 用 `setsid` 把后台进程留在进程组外 → 在窗口期 symlink swap → `read_file`/`write_file` 越界。SECURITY.md 分别承认 jail 与 exec 两个单点的局限，但**组合链不在任何清单里**，而 jail 被标为 Enforced（SECURITY.md:31-33）。
 **建议**：openat2/O_NOFOLLOW 语义或对已解析 fd 操作；短期至少将该场景写入 Not enforced 清单。
 
-### P0-5 Agent 循环三大能力空洞
-1. **零重试语义**：`engine.Error.Retryable/RetryAfter` 已定义（`engine/errors.go:24-25`）但全仓库无人消费；任何瞬时错误（限流/网络抖动）直接 terminalize 整个 turn（`application/loop.go:166-171`, `turn.go:396-438`），失败后亦无 resume 入口。
-2. **无 token 计量回路、无 compaction**：`ModelUsageRecorded` 记录了 inputTokens/outputTokens 但从不反馈进决策；上下文控制仅有静态 4MB 封包上限，超限即死（`loop.go:149-151,295-304`）。长任务必然死于步数（默认 MaxSteps=8）或字节上限，而非自动压缩续命。
-3. **多轮失忆**：Session 聚合丢弃 completed turns/items（`domain/state.go:93-101` 注释自认）；每次 turn 投影从 `{role:user}` 单条开始（`loop.go:46-52`）。同一 Session 第 N 次 RunTurn 看不到前 N-1 轮任何内容，违背 session 基本语义。
+### P0-5【v2 已移出缺陷清单 → 见"能力路线图"】
+> **v2 修订**：重试/压缩/多轮记忆属能力缺口而非正确性或安全缺陷，不应与 P0 混列。且 Session 丢弃已完成 turn 在 `domain/state.go:93` 注释中为明示的设计决策，非文档违约。内容并入第八章"能力路线图"。
 
 ## 四、P1 缺陷（高优先级）
 
@@ -116,26 +120,42 @@ token 轮转后 Service 持有的旧 authority 与 `verifyLeaseForAppend`（`lea
 | Grok | 外部协议面（ACP）；TUI 级端到端测试基建 |
 | pi | 方向相反的教训：防御复杂度远超功能供给 |
 
-## 八、建议修复顺序
+## 八、能力路线图（v2 自缺陷清单拆出）
 
-1. **立即**（动摇立身之本）：
-   - P0-1 race 复败的 conformance 用例
+以下为能力缺口与业界对照，**不属于缺陷**；其中 Session 丢弃已完成 turn 是 `domain/state.go:93` 明示的设计决策。
+
+1. **零重试语义**：`engine.Error.Retryable/RetryAfter` 已定义（`engine/errors.go:24-25`）但全仓库无人消费；任何瞬时错误直接 terminalize 整个 turn（`application/loop.go:166-171`, `turn.go:396-438`），失败后亦无 resume 入口。
+2. **无 token 计量回路、无 compaction**：`ModelUsageRecorded` 记录了 inputTokens/outputTokens 但从不反馈进决策；上下文控制仅有静态 4MB 封包上限，超限即死（`loop.go:149-151,295-304`）。长任务必然死于步数（默认 MaxSteps=8）或字节上限。
+3. **跨 turn 上下文为空**：每次 turn 投影从 `{role:user}` 单条开始（`loop.go:46-52`）。作为设计意图成立，但产品化前需要 conversation projection 端口承载多轮语义。
+
+对照五大 harness：
+
+| 参照 | 本项目缺口 |
+|---|---|
+| Codex | token 计量→压缩触发闭环；审批沉淀为规则（ExecpolicyAmendment 式） |
+| Kimi | 结构性错误恢复阶梯（分类→退避→降级→带失败上下文续跑）；压缩竞态防御 |
+| DeepSeek | waterfall 式扩展缝（工具注册/MCP 插件点）；子代理 |
+| Grok | 外部协议面（ACP）；TUI 级端到端测试基建 |
+| pi | 方向相反的教训：防御复杂度远超功能供给 |
+
+## 九、建议处理顺序（v2 修订）
+
+1. **立即**（已证实的正确性/安全缺陷）：
    - P0-2 恢复 append 时间戳确定性
    - P0-3 authority 动态化接线
-2. **本里程碑**：
    - P0-4 安全清单诚实化或 jail 加固（openat2/fd 语义）
-   - 错误恢复阶梯（Retryable 字段已有，只差消费者）
-   - 多轮会话投影（conversation projection 端口）
    - P1-3 workCancel 数据竞争、P1-2 chainDigestAt fail-open
-3. **下一里程碑**：
-   - token-aware compaction 接口
-   - 异步审批 + 审批持久化
-   - steering 注入
-   - 这三件做完，ACP/TUI 才有意义
+2. **本里程碑**：
+   - 原 P0-1 race flake 最小化复现 + 根因修复
+   - P1 其余项按依赖排序
+3. **下一里程碑**（能力路线图，非缺陷）：
+   - 错误恢复阶梯（Retryable 字段已有，只差消费者）
+   - token-aware compaction 接口、异步审批、steering 注入
+   - 多轮会话投影（conversation projection 端口）
 4. **持续改进**：
    - exporter 统一时钟域 + 结构化日志/metrics
    - evidence ledger 提交可达性治理（避免 squash 证据提交）
    - schema 编译缓存 + 递归深度上限
 
 ---
-*本报告所有论断均附 `file:line` 证据，可在 `/home/ubuntu/code/open-code-harness` 直接核对；race 失败可用 `go test -race -count=1 ./internal/harness/adapters/sqlite/` 复现。*
+*v2 说明：本报告所有论断均附 `file:line` 证据，可在本仓库评审分支直接核对。原 P0-1 为间歇性失败，无法用单条命令确定性复现；复现数据见该条目及第二章实证结果。*
