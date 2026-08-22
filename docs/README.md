@@ -133,6 +133,14 @@ this file. The rules that can be checked without judgement are now tests in
 | `TestReadingCopiesNameTheirNormativeSource` | Every reading copy names the document that wins when the copies diverge |
 | `TestEveryImplementedContractHasEvidence` | Every implemented contract has an evidence ledger, with exemptions named in the test rather than left implicit |
 
+Two further gates run outside the pull-request path, in the nightly lane:
+`determinism` repeats the whole race suite, because a single green run only
+samples it and two flaky tests reached `main` that way;
+`TestExternalCitationsResolve` follows every cited URL, because citations rot
+— `badlogic/pi-mono`, cited by nine documents, now redirects elsewhere. Dead
+citations are recorded in the test with what was found and when, never
+deleted.
+
 A rule that cannot be checked without judgement stays prose and stays below.
 Synchronization of translated *content* is one of those: the gates prove a
 reading copy exists and declares its authority, not that it is current.

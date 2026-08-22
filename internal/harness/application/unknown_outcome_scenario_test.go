@@ -110,7 +110,13 @@ func TestUnknownOutcomeWaiterDoesNotStartSecondResolver(t *testing.T) {
 	select {
 	case <-started:
 	case <-time.After(testRendezvousTimeout):
-		t.Fatal("owner did not enter resolve")
+		select {
+		case owner := <-ownerDone:
+			t.Fatalf("owner finished without entering resolve: result=%#v err=%v resolveCalls=%d",
+				owner.result, owner.err, store.resolveCalls())
+		default:
+		}
+		fatalStalled(t, "owner did not enter resolve")
 	}
 	waiterDone := make(chan outcome, 1)
 	go func() {
@@ -157,7 +163,7 @@ func TestUnresolvedSessionRejectsDifferentAdmission(t *testing.T) {
 	select {
 	case <-registryUnknown.started:
 	case <-time.After(testRendezvousTimeout):
-		t.Fatal("owner did not retain unknown")
+		fatalStalled(t, "owner did not retain unknown")
 	}
 	_, otherErr := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-other", Input: "other", Sink: &testkit.RecordingSink{}})
 	if !isUnknown(otherErr) {
@@ -167,7 +173,7 @@ func TestUnresolvedSessionRejectsDifferentAdmission(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(testRendezvousTimeout):
-		t.Fatal("owner did not finish")
+		fatalStalled(t, "owner did not finish")
 	}
 }
 
@@ -224,11 +230,17 @@ func (store *cancelOnAdmissionUnknownStore) Append(ctx context.Context, request 
 
 type holdResolveStore struct {
 	application.EventStore
-	unknown  error
-	started  chan struct{}
-	release  chan struct{}
-	mu       sync.Mutex
-	resolves int
+	unknown error
+	// started is closed on the first ResolveAppend rather than sent to. An
+	// unbuffered channel with a non-blocking send drops the signal whenever
+	// the resolver arrives before the waiter, and the waiter then blocks for
+	// a signal that will never come again. Closing is a broadcast: it cannot
+	// be missed and cannot be consumed by one receiver.
+	started   chan struct{}
+	startOnce sync.Once
+	release   chan struct{}
+	mu        sync.Mutex
+	resolves  int
 }
 
 func (store *holdResolveStore) Append(ctx context.Context, request application.AppendRequest) (application.CommitReceipt, error) {
@@ -246,10 +258,7 @@ func (store *holdResolveStore) ResolveAppend(ctx context.Context, request applic
 	store.mu.Lock()
 	store.resolves++
 	store.mu.Unlock()
-	select {
-	case store.started <- struct{}{}:
-	default:
-	}
+	store.startOnce.Do(func() { close(store.started) })
 	select {
 	case <-store.release:
 	case <-ctx.Done():

@@ -333,13 +333,13 @@ func TestCancelDuringExecuteUsesInterruptToolTurn(t *testing.T) {
 	select {
 	case <-entered:
 	case <-time.After(testRendezvousTimeout):
-		t.Fatal("execute did not start")
+		fatalStalled(t, "execute did not start")
 	}
 	cancel()
 	select {
 	case <-done:
 	case <-time.After(testRendezvousTimeout):
-		t.Fatal("RunTurn did not return")
+		fatalStalled(t, "RunTurn did not return")
 	}
 	assertRunTurnError(t, runErr, application.CategoryCanceled, domain.InterruptionCallerCanceled, true)
 	types := turnEventTypes(result.Records)
@@ -630,13 +630,13 @@ func TestStepTwoStreamCancelInterruptsLiveAssistant(t *testing.T) {
 	select {
 	case <-entered:
 	case <-time.After(testRendezvousTimeout):
-		t.Fatal("step 2 stream did not start")
+		fatalStalled(t, "step 2 stream did not start")
 	}
 	cancel()
 	select {
 	case <-done:
 	case <-time.After(testRendezvousTimeout):
-		t.Fatal("RunTurn did not return")
+		fatalStalled(t, "RunTurn did not return")
 	}
 	assertRunTurnError(t, runErr, application.CategoryCanceled, "canceled", true)
 	if result.ItemID != "item-1" {

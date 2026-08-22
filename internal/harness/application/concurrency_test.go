@@ -214,12 +214,27 @@ func (store *foundLookupObserver) FindCommandRequest(ctx context.Context, reques
 // real signal. Negative assertions must not use it.
 const testRendezvousTimeout = 30 * time.Second
 
+// fatalStalled fails a rendezvous with every goroutine stack attached.
+//
+// A rendezvous that misses testRendezvousTimeout is not slow, it is stuck,
+// and the message alone says only which channel never fired. One such stall
+// has been observed twice in this package and reproduced in neither of the
+// thirty-five runs that followed, so the next occurrence has to carry its own
+// diagnosis or it will be lost again.
+func fatalStalled(t *testing.T, description string) {
+	t.Helper()
+	buffer := make([]byte, 1<<20)
+	buffer = buffer[:runtime.Stack(buffer, true)]
+	t.Fatalf("timed out waiting for %s after %s; all goroutine stacks follow:\n%s",
+		description, testRendezvousTimeout, buffer)
+}
+
 func await(t *testing.T, channel <-chan struct{}, description string) {
 	t.Helper()
 	select {
 	case <-channel:
 	case <-time.After(testRendezvousTimeout):
-		t.Fatalf("timed out waiting for %s", description)
+		fatalStalled(t, description)
 	}
 }
 
@@ -230,7 +245,7 @@ func awaitOutcome[T any](t *testing.T, channel <-chan T, description string) T {
 		return value
 	case <-time.After(testRendezvousTimeout):
 		var zero T
-		t.Fatalf("timed out waiting for %s", description)
+		fatalStalled(t, description)
 		return zero
 	}
 }
