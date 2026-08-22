@@ -7,7 +7,6 @@ import (
 	"reflect"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
@@ -36,68 +35,16 @@ type ContractStep struct {
 	WaitForCancel bool
 }
 
-// Run executes the model-port contract against a factory. A factory's returned
-// streams are consumed by exactly one goroutine; Stream itself is exercised
-// concurrently across independent requests.
+// Run executes the full model-port contract against an in-process double.
+//
+// It is RunContract plus the cases that can only be expressed by a Go value:
+// returning a nil stream, returning a stream alongside a startup error, and
+// Close accounting. A transport adapter calls RunContract instead; asking it
+// to fake these would test the fake, not the adapter.
 func Run(t *testing.T, factory Factory) {
 	t.Helper()
 
-	t.Run("delivers the complete request and ordered unicode events", func(t *testing.T) {
-		expected := request("input \u2705")
-		probe := factory(expected, Config{Steps: []ContractStep{
-			{Event: engine.StreamEvent{Type: engine.StreamEventTextDelta, Text: "\u4f60\u597d"}},
-			{Event: engine.StreamEvent{Type: engine.StreamEventTextDelta, Text: " 🌍"}},
-			{Event: engine.StreamEvent{Type: engine.StreamEventCompleted}},
-		}})
-
-		stream, err := probe.Stream(context.Background(), expected)
-		if err != nil || stream == nil {
-			t.Fatalf("Stream() = (%v, %v), want usable stream", stream, err)
-		}
-		defer func() {
-			if err := stream.Close(); err != nil {
-				t.Fatalf("Close() error = %v", err)
-			}
-		}()
-
-		var got []engine.StreamEvent
-		for range 3 {
-			event, err := stream.Next(context.Background())
-			if err != nil {
-				t.Fatalf("Next() error = %v", err)
-			}
-			got = append(got, event)
-		}
-		want := []engine.StreamEvent{
-			{Type: engine.StreamEventTextDelta, Text: "\u4f60\u597d"},
-			{Type: engine.StreamEventTextDelta, Text: " 🌍"},
-			{Type: engine.StreamEventCompleted},
-		}
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("events = %#v, want %#v", got, want)
-		}
-		if got[2].Usage != nil {
-			t.Fatalf("scripted completed Usage = %#v, want nil default", got[2].Usage)
-		}
-		if expected.Messages != nil || expected.Tools != nil {
-			t.Fatalf("default contract request Messages/Tools = (%#v, %#v), want nil", expected.Messages, expected.Tools)
-		}
-		if gotCalls := probe.Calls(); !reflect.DeepEqual(gotCalls, []engine.ModelRequest{expected}) {
-			t.Fatalf("Calls() = %#v, want %#v", gotCalls, []engine.ModelRequest{expected})
-		}
-		if probe.NextCalls() != 3 {
-			t.Fatalf("NextCalls() = %d, want 3", probe.NextCalls())
-		}
-	})
-
-	t.Run("returns configured startup error", func(t *testing.T) {
-		startup := errors.New("provider unavailable")
-		probe := factory(request("startup"), Config{StartupError: startup})
-		stream, err := probe.Stream(context.Background(), request("startup"))
-		if !errors.Is(err, startup) || stream != nil {
-			t.Fatalf("Stream() = (%v, %v), want (nil, startup error)", stream, err)
-		}
-	})
+	RunContract(t, Contract{Factory: factory})
 
 	t.Run("expresses startup stream pairs and close accounting", func(t *testing.T) {
 		startup := errors.New("startup")
@@ -137,75 +84,6 @@ func Run(t *testing.T, factory Factory) {
 		}
 		if probe.CloseCalls() != 1 || probe.NextCalls() != 0 {
 			t.Fatalf("counts = (%d, %d), want (1, 0)", probe.CloseCalls(), probe.NextCalls())
-		}
-	})
-
-	t.Run("returns configured mid-stream error", func(t *testing.T) {
-		midstream := errors.New("connection lost")
-		probe := factory(request("midstream"), Config{Steps: []ContractStep{{Err: midstream}}})
-		stream, err := probe.Stream(context.Background(), request("midstream"))
-		if err != nil || stream == nil {
-			t.Fatalf("Stream() = (%v, %v), want usable stream", stream, err)
-		}
-		defer stream.Close()
-		_, err = stream.Next(context.Background())
-		if !errors.Is(err, midstream) {
-			t.Fatalf("Next() error = %v, want mid-stream error", err)
-		}
-	})
-
-	t.Run("blocks a configured step until cancellation", func(t *testing.T) {
-		probe := factory(request("cancel"), Config{Steps: []ContractStep{{WaitForCancel: true}}})
-		stream, err := probe.Stream(context.Background(), request("cancel"))
-		if err != nil || stream == nil {
-			t.Fatalf("Stream() = (%v, %v), want usable stream", stream, err)
-		}
-		defer stream.Close()
-		ctx, cancel := newDoneObservedContext(context.Background())
-		result := make(chan error, 1)
-		go func() { _, err := stream.Next(ctx); result <- err }()
-		select {
-		case <-ctx.entered:
-		case <-time.After(time.Second):
-			t.Fatal("Next() did not begin waiting for context cancellation")
-		}
-		cancel()
-		select {
-		case err := <-result:
-			if !errors.Is(err, context.Canceled) {
-				t.Fatalf("Next() error = %v, want context.Canceled", err)
-			}
-		case <-time.After(time.Second):
-			t.Fatal("Next() did not unblock after cancellation")
-		}
-	})
-
-	t.Run("records concurrent stream requests independently", func(t *testing.T) {
-		first := request("first")
-		probe := factory(first, Config{})
-		requests := []engine.ModelRequest{first, request("second")}
-		var wait sync.WaitGroup
-		for _, req := range requests {
-			wait.Add(1)
-			go func(req engine.ModelRequest) {
-				defer wait.Done()
-				stream, err := probe.Stream(context.Background(), req)
-				if err == nil && stream != nil {
-					_ = stream.Close()
-				}
-			}(req)
-		}
-		wait.Wait()
-		calls := probe.Calls()
-		if len(calls) != 2 {
-			t.Fatalf("len(Calls()) = %d, want 2", len(calls))
-		}
-		seen := map[string]bool{}
-		for _, call := range calls {
-			seen[call.Input] = true
-		}
-		if !seen["first"] || !seen["second"] {
-			t.Fatalf("Calls() = %#v, want both independent requests", calls)
 		}
 	})
 
