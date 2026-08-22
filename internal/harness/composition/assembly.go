@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
+	"github.com/SongYii/open-code-harness/internal/harness/adapters/acp"
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/localexec"
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/openaicompat"
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/sqlite"
@@ -23,9 +25,11 @@ import (
 // policy engine. Accessors are read-only; the assembly owns every resource it
 // returns and releases them in Close.
 type Assembly struct {
-	service *application.Service
-	host    *runtime.Host
-	store   application.EventStore
+	service   *application.Service
+	host      *runtime.Host
+	store     application.EventStore
+	approver  *tools.Slot
+	workspace string
 
 	timeout  time.Duration
 	closeErr error
@@ -128,6 +132,8 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 	appConfig.Catalog = catalog
 	appConfig.Files = files
 	appConfig.Commands = commands
+	approver := tools.NewSlot(config.Approver)
+	appConfig.Approver = approver
 	identity := model.Identity()
 	appConfig.RequestIdentity = &identity
 	if config.Limits.MaxSteps > 0 {
@@ -152,11 +158,27 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 	}
 
 	return &Assembly{
-		service: service,
-		host:    host,
-		store:   store,
-		timeout: config.ShutdownTimeout,
+		service:   service,
+		host:      host,
+		store:     store,
+		approver:  approver,
+		workspace: config.WorkspaceRoot,
+		timeout:   config.ShutdownTimeout,
 	}, nil
+}
+
+// ServeACP speaks ACP v1 JSON-RPC on in/out until in closes or ctx is done.
+// The writer receives only ACP frames.
+func (assembly *Assembly) ServeACP(ctx context.Context, in io.Reader, out io.Writer) error {
+	if assembly == nil {
+		return fmt.Errorf("composition: serve acp: assembly is nil")
+	}
+	return acp.Serve(ctx, acp.Config{
+		Sessions:  assembly.service,
+		History:   assembly.store,
+		Workspace: assembly.workspace,
+		Approver:  assembly.approver,
+	}, in, out)
 }
 
 // Close stops admission, waits for the host's loops within the configured

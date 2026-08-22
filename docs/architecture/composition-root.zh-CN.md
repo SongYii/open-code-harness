@@ -24,7 +24,7 @@
 
 `Open` **绝不**在返回非 nil 错误的同时返回非 nil `Assembly`。host 启动之后的任何失败都会先释放 host 再返回，因此失败的装配不会留下被持有的租约或被锁住的数据库。若释放本身失败，两个错误会被 join，而不是其中一个覆盖另一个。
 
-`Assembly` 以只读访问器暴露 `Service()`、`Host()`、`Store()`，并拥有它返回的每个资源。
+`Assembly` 以只读访问器暴露 `Service()`、`Host()`、`Store()`，并拥有它返回的每个资源。`ServeACP` 在调用方提供的双工上讲 ACP v1 JSON-RPC，写入端只收到 ACP 帧。Application 服务构造时带 `tools.Slot` Approver，因此 ACP 服务器无需重建 Service 即可接入。
 
 `Close()` 停止准入，在 `Config.ShutdownTimeout`（默认 10 秒）内等待 host 的循环，释放租约，关闭 store。它是**幂等**的：第二次调用返回首次结果，而不是再关一次——那会释放本装配已不再拥有的租约。丢弃 `Assembly` 而不 `Close` 会泄漏 SQLite 句柄与 host goroutine；此点如实声明，不做防御。
 
@@ -67,5 +67,5 @@ provider profile 使用 `ProfileToolsSupported`：装配始终启用工作区工
 - 进程监管、重启策略、守护进程化与日志策略。
 - 多 host、多工作区、多租户装配。
 - 生成式组合文档。
-- **`Approver`**：装配不提供审批器，因此凡被 policy 表路由到审批的工具都会 fail closed。交互式审批随客户端到来。
+- **`Approver` 以外的固定审批器**：未设置时仍 fail closed（`DenyApprover`）。交互式审批在 `ServeACP` 把 ACP 服务器装进槽位之后到来。
 - GA 阻塞项：无长时运行装配的 soak 测试，无进程级崩溃注入，无对真实 provider 的验证，无装配路径的性能刻画。
