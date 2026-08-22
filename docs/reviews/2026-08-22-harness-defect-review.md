@@ -8,6 +8,7 @@
 > **修订记录**
 > - v1（2026-08-22）：初版。
 > - v2（2026-08-22）：经外部 review 修订——(a) 撤回原 P0-1 "-race 稳定失败" 定性，改为间歇性缺陷并附双方复现数据，待最小化复现后重定级；(b) 原 P0-5 能力空洞移出缺陷清单，并入"能力路线图"章节；(c) 明确 Session 丢弃已完成 turn 为设计意图而非实现违约（`domain/state.go:93` 注释明示）；(d) 修复文档内链失效问题。编号保持 v1 不变以维持讨论引用。
+> - v3（2026-08-22）：第三环境独立复核——(a) P0-1 在新环境再次复现（含**单用例独立失败**），合并数据更新至三环境，削弱"纯机器负载"假设；(b) P0-2/P0-3 经第二评审人逐行读码独立证实机制成立；(c) 补充 P1-7 的装配层证据（`composition.Config.Approver` 字段存在但 assembly 从不传播，Service 构造后依赖冻结）。
 
 ---
 
@@ -28,7 +29,7 @@
 | `go build ./...` | ✅ 通过 |
 | `go vet ./...` | ✅ 干净 |
 | 全量测试（非 race，15 包） | ✅ 通过 |
-| `go test -race ./internal/harness/adapters/sqlite/` | ⚠️ **间歇性失败**（评审机器 5 轮中 4 败；另一环境 2/2 通过，见原 P0-1 降级说明） |
+| `go test -race ./internal/harness/adapters/sqlite/` | ⚠️ **间歇性失败**（环境 A：5 轮 4 败；环境 B：2 轮 0 败；环境 C：3 轮 2 败，见 P0-1 三环境数据） |
 
 race 失败详情（失败时）：
 
@@ -43,10 +44,11 @@ race 失败详情（失败时）：
 ## 三、P0 缺陷（会真实引爆）
 
 ### P0-1【v2 已降级 → P1-flaky】conformance 套件在 -race 下间歇性失败
-> **v2 修订**：初版声称"2/2 稳定复现"，经第二环境验证（`-race -count=2` 两轮通过）不成立。合并双方数据：评审机器累计 5 轮 4 败（含单独跑 TestConformance 的 FAIL/PASS/FAIL），另一机器 0/2 败——**缺陷真实存在但非确定性**，降级为 P1-flaky，待最小化复现后重定级。
+> **v2 修订**：初版声称"2/2 稳定复现"，经第二环境验证（`-race -count=2` 两轮通过）不成立。
+> **v3 补充**：第三环境独立复现——`-race -count=2` 全套 **FAIL**、单用例 `-run 'TestConformance/limits' -count=1` **FAIL**、全套 `-count=1` PASS。三环境合并：A 5 轮 4 败、B 2 轮 0 败、C 3 轮 2 败，**合计 10 轮 6 败**。单用例独立失败表明该窗口不纯依赖机器负载；**缺陷真实存在但非确定性**，维持 P1-flaky 定级，待最小化复现后重定级。
 
-超限请求在竞态时序下走了 `store/writer_fenced` 拒绝路径，触发"被拒请求不得泄漏身份"不变量断言失败（`cases.go:296`）。说明**限流拒绝与 fencing 判定之间存在顺序/时序依赖**。
-**建议**：先最小化复现（怀疑与机器负载/CPU 数相关的调度窗口），定位 over-limit 检查与 lease 校验的判定顺序；在根因修复前，该用例可加 `// TODO flaky` 标注或 t.Skip 短路 CI 噪音，但不应长期容忍。
+超限请求在竞态时序下走了 `store/writer_fenced` 拒绝路径，触发"被拒请求不得泄漏身份"不变量断言失败（`cases.go:296`）。说明**限流拒绝与 fencing 判定之间存在顺序/时序依赖**，直接违背本项目 "deterministic verification" 的立身承诺。
+**建议**：先最小化复现（单用例即可失败，可从 `-run 'TestConformance/limits' -race -count=N` 起步），定位 over-limit 检查与 lease 校验的判定顺序；根因修复前不建议 `t.Skip` 掩盖——这是对确定性验证承诺的违反，应保持 CI 可见（如允许失败的独立 job + 告警）。
 
 ### P0-2 恢复 append 的 "exact retry" 被墙钟破坏，可永久楔死启动
 - digest 覆盖每个事件的 `OccurredAt`：`application/digest.go:48`
@@ -54,6 +56,7 @@ race 失败详情（失败时）：
 - 场景：恢复 append 已 COMMIT 但回执丢失（`StoreCodeCommitOutcomeUnknown` 正为此存在）→ 重启后同一 `recoveryAppendID` 因 digest 不同被判 `AppendIdentityMismatch`（`sqlite/append.go:264-266`）→ Launch 失败（`runtime/host.go:115`），且每次重启重复失败。
 
 注释声称 "A lost recovery acknowledgement retries the exact same append"（`reconcile.go:21-26`），实现不成立。
+> **v3 交叉验证**：第二评审人独立读码证实同一机制链（`reconcile.go:86` 现取 `r.now().UTC()`、digest 覆盖 `OccurredAt`、同 `AppendID` 载荷不一致即 mismatch）。
 **建议**：恢复事件改用确定性时间戳（从持久化的 intent 重放），而非 `r.now()`。
 
 ### P0-3 lease token 轮转后 Authority 快照脱节，心跳自愈形同虚设
@@ -62,6 +65,7 @@ race 失败详情（失败时）：
 - 心跳失联自愈后清除 lostLease、恢复准入：`heartbeat.go:70-78`
 
 token 轮转后 Service 持有的旧 authority 与 `verifyLeaseForAppend`（`lease.go:129`）永不匹配 → 所有业务 append 返回 `WriterFenced`，无机制推送新 authority，只能整体重启。fencing reaction 对真实写入路径无效。
+> **v3 交叉验证**：第二评审人独立证实——`Store.Authority()` 返回 open 时快照（`lease.go:107`），`NewService` 将其冻结为不可变字段（`service.go:74,116`），心跳重获租约（`heartbeat.go:51-56`）后无任何路径更新 Service 持有的 token。
 **建议**：Service 改为 authority provider（动态获取）或 leaseRegained 时主动通知 Service 更新。
 
 ### P0-4 文件系统监狱的 TOCTOU 击穿链，与 SECURITY.md 声明矛盾
@@ -84,7 +88,7 @@ token 轮转后 Service 持有的旧 authority 与 `verifyLeaseForAppend`（`lea
 | 4 | import 第八步校验在 COMMIT 之后执行，失败则目标库永久不可重试（撞 "destination is not empty"） | `auditimport.go:288-294,203` |
 | 5 | Backup 存在校验与 VACUUM INTO 无共同快照，并发 append 下误报 CorruptError；副本文件未 fsync | `backup.go:29-33,83-85` |
 | 6 | `write_file` 用 O_TRUNC 直接覆写：中途出错留半文件、无 fsync、跨 session 并发无互斥——违反自家 "不接受 silent partial writes" 标准 | `fs.go:121` |
-| 7 | 审批同步阻塞 30s 即拒、崩溃不留存、无 per-tool/per-path 规则、无 "本会话总是允许" 类记忆、策略零组合子 | `pipeline.go:142-203`、`service.go:20`、`policy/engine.go:20-25` |
+| 7 | 审批同步阻塞 30s 即拒、崩溃不留存、无 per-tool/per-path 规则、无 "本会话总是允许" 类记忆、策略零组合子；且装配断线——`composition.Config.Approver` 字段存在（`config.go:41`）但 assembly 只接线 `Commands`（`assembly.go:130`），所有组装实际落到 `DenyApprover` 兜底，Service 构造后依赖冻结（`service.go:74`），外部审批面（如 ACP 每请求审批）无法注入 | `pipeline.go:142-203`、`service.go:20,74`、`config.go:41`、`assembly.go:130`、`policy/engine.go:20-25` |
 | 8 | steering 中断注入完全缺失（业界标配）；流式 text delta 不落盘，崩溃后 replay 丢失半截回复 | events 仅有 started/completed（`events.go:16-17`） |
 | 9 | stop reason 处理粗糙：FinishReason 由"是否有 toolCalls"反推而非用 provider 真实值；length 截断无差异化处理；终态信号 emit 不对称 | `runner.go:169-171`、`turn.go:431-436` vs `loop.go:380-398` |
 | 10 | Tool Runtime 证据台账引用的 SHA（eeb2e02 等）在 git 对象库中不存在——疑似 squash 合并摧毁被引对象；"auditable commits" 各台账执行不一致 | `tool-runtime-evidence.md:32-40` |
@@ -158,4 +162,4 @@ token 轮转后 Service 持有的旧 authority 与 `verifyLeaseForAppend`（`lea
    - schema 编译缓存 + 递归深度上限
 
 ---
-*v2 说明：本报告所有论断均附 `file:line` 证据，可在本仓库评审分支直接核对。原 P0-1 为间歇性失败，无法用单条命令确定性复现；复现数据见该条目及第二章实证结果。*
+*v3 说明：本报告所有论断均附 `file:line` 证据，可在本仓库评审分支直接核对；P0-2/P0-3 已由两位评审人独立读码证实。P0-1 为间歇性失败，尚无单条命令的确定性复现，但环境 C 的单用例独立失败（`go test -race -run 'TestConformance/limits' -count=1 ./internal/harness/adapters/sqlite/`）是最接近的起点；三环境复现数据见该条目及第二章实证结果。*
