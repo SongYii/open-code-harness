@@ -60,21 +60,29 @@ func (host *Host) fencingReaction() {
 	host.mu.Lock()
 	alreadyLost := host.lostLease
 	host.lostLease = true
+	cancel := host.workCancel
 	host.mu.Unlock()
-	if !alreadyLost {
-		host.workCancel()
+	if !alreadyLost && cancel != nil {
+		cancel()
 	}
 }
 
-// leaseRegained resumes admission with a fresh work context.
+// leaseRegained resumes admission with a fresh work context. The previous
+// work cancel is invoked after the lock is released: a cancel callback that
+// reads Ready/Store/WorkContext would deadlock if it ran while holding mu.
 func (host *Host) leaseRegained() {
 	host.mu.Lock()
-	defer host.mu.Unlock()
 	if host.shutdown {
+		host.mu.Unlock()
 		return
 	}
 	host.lostLease = false
+	previous := host.workCancel
 	host.workCtx, host.workCancel = context.WithCancel(context.Background())
+	host.mu.Unlock()
+	if previous != nil {
+		previous()
+	}
 }
 
 // runExporter drains the audit replica on a bounded cadence after

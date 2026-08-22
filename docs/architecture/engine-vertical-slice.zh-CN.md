@@ -71,6 +71,10 @@ type IDGenerator interface {
     NewAppendID() (domain.AppendID, error)
     NewEventID() (domain.EventID, error)
 }
+
+type AuthoritySource interface {
+    CurrentAuthority() WriterAuthority
+}
 ```
 
 `Load` 以及返回 `[]domain.RecordedEvent` 的 v1 `Append` 已不存在。
@@ -86,7 +90,7 @@ type Config struct {
 }
 
 func DefaultConfig() Config
-func NewService(EventStore, IDGenerator, Clock, *engine.TurnRunner, WriterAuthority, Config) (*Service, error)
+func NewService(EventStore, IDGenerator, Clock, *engine.TurnRunner, AuthoritySource, Config) (*Service, error)
 
 func (*Service) CreateSession(context.Context, CreateSessionRequest) (CreateSessionResult, error)
 func (*Service) LoadSession(context.Context, domain.SessionID) (domain.Session, error)

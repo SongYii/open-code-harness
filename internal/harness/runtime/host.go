@@ -109,9 +109,7 @@ func Launch(ctx context.Context, config Config) (*Host, error) {
 	if err != nil {
 		return nil, classifyOpenError(err)
 	}
-	authority := store.Authority()
-
-	rec := &reconciler{store: store, authority: authority, now: time.Now}
+	rec := &reconciler{store: store, authority: store}
 	if err := reconcileAll(ctx, rec, store); err != nil {
 		_ = store.Close()
 		return nil, err
@@ -175,8 +173,11 @@ func (host *Host) Store() (store *sqlite.Store, err error) {
 	return host.store, nil
 }
 
-// WorkContext is cancelled when the host stops admitting executions.
+// WorkContext is cancelled when the host stops admitting executions. The
+// read takes the lock: leaseRegained swaps the field concurrently.
 func (host *Host) WorkContext() context.Context {
+	host.mu.RLock()
+	defer host.mu.RUnlock()
 	return host.workCtx
 }
 
@@ -193,7 +194,12 @@ func (host *Host) Shutdown(ctx context.Context) error {
 	host.shutdown = true
 	host.mu.Unlock()
 
-	host.workCancel()
+	host.mu.Lock()
+	cancel := host.workCancel
+	host.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	host.loopCancel()
 	done := make(chan struct{})
 	go func() { host.loopWG.Wait(); close(done) }()

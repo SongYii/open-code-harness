@@ -56,12 +56,15 @@ func DefaultConfig() Config {
 
 // Service is the single application command authority for Session and Turn
 // use cases. Its dependencies and configuration are immutable after creation.
+// AuthoritySource is the exception that proves the rule: the field itself
+// does not change, but CurrentAuthority is read per append so an
+// expired-takeover fencing-token rotation is visible without rebuilding.
 type Service struct {
 	store      EventStore
 	ids        IDGenerator
 	clock      Clock
 	runner     *engine.TurnRunner
-	authority  WriterAuthority
+	authority  AuthoritySource
 	config     Config
 	executions *executionRegistry
 	policy     policy.Engine
@@ -71,7 +74,7 @@ type Service struct {
 	approver   tools.Approver
 }
 
-func NewService(store EventStore, ids IDGenerator, clock Clock, runner *engine.TurnRunner, authority WriterAuthority, config Config) (*Service, error) {
+func NewService(store EventStore, ids IDGenerator, clock Clock, runner *engine.TurnRunner, authority AuthoritySource, config Config) (*Service, error) {
 	if config.AppendResolutionTimeout == 0 {
 		config.AppendResolutionTimeout = DefaultAppendResolutionTimeout
 	}
@@ -90,7 +93,7 @@ func NewService(store EventStore, ids IDGenerator, clock Clock, runner *engine.T
 	if config.PolicyMode == "" {
 		config.PolicyMode = policy.ModeDefault
 	}
-	if isNilValue(store) || isNilValue(ids) || isNilValue(clock) || runner == nil || authority.Validate() != nil || config.MaxAssistantBytes <= 0 || config.TerminalCommitTimeout <= 0 || config.AppendResolutionTimeout <= 0 || config.AppendResolutionMaxOperations == 0 || config.MaxSteps < 1 || config.MaxToolCallsPerStep < 1 {
+	if isNilValue(store) || isNilValue(ids) || isNilValue(clock) || runner == nil || isNilValue(authority) || authority.CurrentAuthority().Validate() != nil || config.MaxAssistantBytes <= 0 || config.TerminalCommitTimeout <= 0 || config.AppendResolutionTimeout <= 0 || config.AppendResolutionMaxOperations == 0 || config.MaxSteps < 1 || config.MaxToolCallsPerStep < 1 {
 		return nil, applicationError(CategoryValidation, "invalid_configuration", false, nil)
 	}
 	if config.RequestIdentity != nil {

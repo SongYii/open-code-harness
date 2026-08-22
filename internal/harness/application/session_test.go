@@ -302,23 +302,27 @@ func TestNewServiceValidatesDependenciesAndConfiguration(t *testing.T) {
 	var typedNilStore *sessionStore
 	var typedNilIDs *sessionIDs
 	var typedNilRunner *engine.TurnRunner
+	var typedNilAuthority *liveAuthoritySource
 
 	tests := []struct {
-		name   string
-		store  application.EventStore
-		ids    application.IDGenerator
-		runner *engine.TurnRunner
-		config application.Config
+		name      string
+		store     application.EventStore
+		ids       application.IDGenerator
+		runner    *engine.TurnRunner
+		authority application.AuthoritySource
+		config    application.Config
 	}{
-		{name: "nil store", ids: validIDs, runner: validRunner, config: application.DefaultConfig()},
-		{name: "typed nil store", store: typedNilStore, ids: validIDs, runner: validRunner, config: application.DefaultConfig()},
-		{name: "nil IDs", store: validStore, runner: validRunner, config: application.DefaultConfig()},
-		{name: "typed nil IDs", store: validStore, ids: typedNilIDs, runner: validRunner, config: application.DefaultConfig()},
-		{name: "nil runner", store: validStore, ids: validIDs, config: application.DefaultConfig()},
-		{name: "typed nil runner", store: validStore, ids: validIDs, runner: typedNilRunner, config: application.DefaultConfig()},
-		{name: "output limit", store: validStore, ids: validIDs, runner: validRunner, config: application.Config{TerminalCommitTimeout: time.Second}},
-		{name: "terminal timeout", store: validStore, ids: validIDs, runner: validRunner, config: application.Config{MaxAssistantBytes: 1}},
-		{name: "invalid request identity", store: validStore, ids: validIDs, runner: validRunner, config: func() application.Config {
+		{name: "nil store", ids: validIDs, runner: validRunner, authority: v2Authority, config: application.DefaultConfig()},
+		{name: "typed nil store", store: typedNilStore, ids: validIDs, runner: validRunner, authority: v2Authority, config: application.DefaultConfig()},
+		{name: "nil IDs", store: validStore, runner: validRunner, authority: v2Authority, config: application.DefaultConfig()},
+		{name: "typed nil IDs", store: validStore, ids: typedNilIDs, runner: validRunner, authority: v2Authority, config: application.DefaultConfig()},
+		{name: "nil runner", store: validStore, ids: validIDs, authority: v2Authority, config: application.DefaultConfig()},
+		{name: "typed nil runner", store: validStore, ids: validIDs, runner: typedNilRunner, authority: v2Authority, config: application.DefaultConfig()},
+		{name: "nil authority", store: validStore, ids: validIDs, runner: validRunner, config: application.DefaultConfig()},
+		{name: "typed nil authority", store: validStore, ids: validIDs, runner: validRunner, authority: typedNilAuthority, config: application.DefaultConfig()},
+		{name: "output limit", store: validStore, ids: validIDs, runner: validRunner, authority: v2Authority, config: application.Config{TerminalCommitTimeout: time.Second}},
+		{name: "terminal timeout", store: validStore, ids: validIDs, runner: validRunner, authority: v2Authority, config: application.Config{MaxAssistantBytes: 1}},
+		{name: "invalid request identity", store: validStore, ids: validIDs, runner: validRunner, authority: v2Authority, config: func() application.Config {
 			config := application.DefaultConfig()
 			identity := validTurnRequestIdentity()
 			identity.AdapterFamily = "OpenAI"
@@ -328,7 +332,7 @@ func TestNewServiceValidatesDependenciesAndConfiguration(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			service, err := application.NewService(test.store, test.ids, testkit.FixedClock{Time: validSessionTime()}, test.runner, v2Authority, test.config)
+			service, err := application.NewService(test.store, test.ids, testkit.FixedClock{Time: validSessionTime()}, test.runner, test.authority, test.config)
 			if service != nil {
 				t.Fatalf("NewService() service = %#v, want nil", service)
 			}
@@ -382,6 +386,57 @@ func newSessionServiceWithStore(t *testing.T, store application.EventStore, ids 
 	}
 	return service
 }
+
+// TestServicePicksUpRotatedFencingToken is the P0-3 regression: NewService
+// used to snapshot WriterAuthority, so an expired-takeover token rotation
+// fenced every subsequent append. Passing the store as AuthoritySource
+// makes the next CreateSession observe the live token.
+func TestServicePicksUpRotatedFencingToken(t *testing.T) {
+	store, err := memory.NewEventStore(v2Authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := application.NewService(store, testkit.NewSequenceIDs(), testkit.FixedClock{Time: validSessionTime()}, sessionRunnerForTest(t), store, application.DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"}); err != nil {
+		t.Fatalf("CreateSession before rotation: %v", err)
+	}
+
+	rotated := application.WriterAuthority{RuntimeID: v2Authority.RuntimeID, FencingToken: v2Authority.FencingToken + 1}
+	store.SetAuthority(rotated)
+	if _, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace-after"}); err != nil {
+		t.Fatalf("CreateSession after fencing-token rotation: %v", err)
+	}
+}
+
+// TestServiceSnapshotAuthorityIsFencedAfterRotation records the failure
+// mode P0-3 fixed: a static WriterAuthority captured at construction does
+// not see a later token rotation.
+func TestServiceSnapshotAuthorityIsFencedAfterRotation(t *testing.T) {
+	store, err := memory.NewEventStore(v2Authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := application.NewService(store, testkit.NewSequenceIDs(), testkit.FixedClock{Time: validSessionTime()}, sessionRunnerForTest(t), v2Authority, application.DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"}); err != nil {
+		t.Fatalf("CreateSession before rotation: %v", err)
+	}
+
+	store.SetAuthority(application.WriterAuthority{RuntimeID: v2Authority.RuntimeID, FencingToken: v2Authority.FencingToken + 1})
+	_, err = service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace-after"})
+	if err == nil {
+		t.Fatal("CreateSession with a captured authority snapshot succeeded after rotation")
+	}
+}
+
+type liveAuthoritySource struct{}
+
+func (*liveAuthoritySource) CurrentAuthority() application.WriterAuthority { return v2Authority }
 
 func sessionRunnerForTest(t *testing.T) *engine.TurnRunner {
 	t.Helper()

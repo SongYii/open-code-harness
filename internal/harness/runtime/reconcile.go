@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/application"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
@@ -32,9 +31,11 @@ func recoveryEventID(appendID domain.AppendID, index int) domain.EventID {
 // reconciler reads canonical streams through the Store port and appends
 // recovery terminal facts. It owns no domain rules.
 type reconciler struct {
-	store     application.EventStore
-	authority application.WriterAuthority
-	now       func() time.Time
+	store application.EventStore
+	// authority is read at append time so an expired-takeover token
+	// rotation between Launch attempts cannot strand the recovery append
+	// behind a stale fencing token.
+	authority application.AuthoritySource
 }
 
 // reconcileSession replays one session stream and appends the recovery
@@ -83,7 +84,20 @@ func (r *reconciler) appendRecovery(ctx context.Context, session domain.SessionI
 	}
 
 	appendID := recoveryAppendID(session, turn, item)
-	occurredAt := r.now().UTC()
+	// The recovery facts must be byte-stable across retries: the digest of
+	// an append covers every event's OccurredAt, so a wall-clock timestamp
+	// here would turn a lost acknowledgement into AppendIdentityMismatch
+	// instead of the exact-retry resolution the deterministic AppendID
+	// promises. Derive the stamp from the replayed stream itself — the
+	// maximum recorded time is a function of the log alone. It also keeps
+	// the replay monotonicity invariant intact (no event may precede the
+	// last transition it follows).
+	occurredAt := records[0].OccurredAt.UTC()
+	for _, record := range records[1:] {
+		if record.OccurredAt.After(occurredAt) {
+			occurredAt = record.OccurredAt.UTC()
+		}
+	}
 	var events []application.ProposedEvent
 	add := func(event domain.Event) {
 		events = append(events, application.ProposedEvent{
@@ -103,7 +117,7 @@ func (r *reconciler) appendRecovery(ctx context.Context, session domain.SessionI
 		SessionID:       session,
 		ExpectedVersion: head,
 		CommandID:       lineage,
-		Authority:       r.authority,
+		Authority:       r.authority.CurrentAuthority(),
 		Events:          events,
 	})
 	if err != nil {

@@ -57,7 +57,10 @@ type eventStoreV2State struct {
 	itemIDs        map[domain.SessionID]map[domain.ItemID]struct{}
 }
 
-var _ application.EventStore = (*EventStore)(nil)
+var (
+	_ application.EventStore      = (*EventStore)(nil)
+	_ application.AuthoritySource = (*EventStore)(nil)
+)
 
 // NewEventStore constructs an empty store owned by authority.
 func NewEventStore(authority application.WriterAuthority) (*EventStore, error) {
@@ -71,6 +74,15 @@ func NewEventStore(authority application.WriterAuthority) (*EventStore, error) {
 
 func newEventStoreV2State() eventStoreV2State {
 	return eventStoreV2State{streams: make(map[domain.SessionID][]domain.RecordedEvent), appends: make(map[domain.AppendID]storedAppend), requests: make(map[domain.RunTurnRequestID]application.CommandRequestRecord), eventIDs: make(map[domain.EventID]struct{}), turnIDs: make(map[domain.SessionID]map[domain.TurnID]struct{}), itemIDs: make(map[domain.SessionID]map[domain.ItemID]struct{})}
+}
+
+// CurrentAuthority implements application.AuthoritySource with the live
+// lease state, matching the SQLite adapter so a fencing-token rotation is
+// visible to the next append.
+func (store *EventStore) CurrentAuthority() application.WriterAuthority {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return store.authority
 }
 
 // SetAuthority rotates the current deterministic owner. Invalid values are

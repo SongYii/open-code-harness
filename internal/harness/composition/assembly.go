@@ -143,7 +143,10 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 		appConfig.ApprovalTimeout = config.Limits.ApprovalTimeout
 	}
 
-	service, err := application.NewService(store, system.IDs{}, system.Clock{}, runner, sqliteStore.Authority(), appConfig)
+	// Pass the store itself as the AuthoritySource: the Service then reads
+	// the live fencing token per append, so an expired-takeover rotation is
+	// picked up instead of wedging every append behind a stale snapshot.
+	service, err := application.NewService(store, system.IDs{}, system.Clock{}, runner, sqliteStore, appConfig)
 	if err != nil {
 		return release(fmt.Errorf("composition: application service: %w", err))
 	}

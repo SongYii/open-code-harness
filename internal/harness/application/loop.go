@@ -320,7 +320,7 @@ func (service *Service) commitStepAppend(ctx context.Context, owned *ownedTurn, 
 	if err := owned.lease.setPhase(executionPhaseStepAppendInFlight); err != nil {
 		return storeContractViolation(err)
 	}
-	intent, err := BuildAppendIntent(service.clock, service.ids, service.authority, owned.result.SessionID, owned.state.Version, owned.commandID, nil, events)
+	intent, err := BuildAppendIntent(service.clock, service.ids, service.authority.CurrentAuthority(), owned.result.SessionID, owned.state.Version, owned.commandID, nil, events)
 	if err != nil {
 		return err
 	}
@@ -432,7 +432,7 @@ func (service *Service) commitTerminalAppend(commitCtx, deliveryCtx context.Cont
 	if err := owned.lease.setPhase(executionPhaseTerminalInFlight); err != nil {
 		return cloneRunTurnResult(owned.result), storeContractViolation(err)
 	}
-	intent, err := BuildAppendIntent(service.clock, service.ids, service.authority, owned.result.SessionID, owned.state.Version, owned.commandID, nil, events)
+	intent, err := BuildAppendIntent(service.clock, service.ids, service.authority.CurrentAuthority(), owned.result.SessionID, owned.state.Version, owned.commandID, nil, events)
 	if err != nil {
 		return cloneRunTurnResult(owned.result), err
 	}

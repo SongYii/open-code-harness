@@ -112,7 +112,7 @@ func (service *Service) runTurnOwned(ctx context.Context, request RunTurnRequest
 		return RunTurnResult{}, applicationError(CategoryValidation, "domain_rejected", false, err)
 	}
 	admission := &CommandAdmission{RunTurnRequestID: request.RequestID, RequestDigest: requestDigest, TurnID: turnID, ItemID: itemID}
-	admissionIntent, err := BuildAppendIntent(service.clock, service.ids, service.authority, request.SessionID, state.Version, commandID, admission, decided)
+	admissionIntent, err := BuildAppendIntent(service.clock, service.ids, service.authority.CurrentAuthority(), request.SessionID, state.Version, commandID, admission, decided)
 	if err != nil {
 		return RunTurnResult{}, err
 	}
@@ -236,7 +236,7 @@ func (service *Service) abandonAdmittedTurn(ctx context.Context, lease *executio
 	if err := lease.setPhase(executionPhaseTerminalInFlight); err != nil {
 		return cloneRunTurnResult(runningResult), storeContractViolation(err)
 	}
-	intent, err := BuildAppendIntent(service.clock, service.ids, service.authority, runningResult.SessionID, state.Version, commandID, nil, decided)
+	intent, err := BuildAppendIntent(service.clock, service.ids, service.authority.CurrentAuthority(), runningResult.SessionID, state.Version, commandID, nil, decided)
 	if err != nil {
 		return cloneRunTurnResult(runningResult), err
 	}
@@ -402,7 +402,7 @@ func (service *Service) terminalizeExecutionFailure(cleanupCtx context.Context, 
 	if err := lease.setPhase(executionPhaseTerminalInFlight); err != nil {
 		return cloneRunTurnResult(runningResult), storeContractViolation(err)
 	}
-	terminalIntent, err := BuildAppendIntent(service.clock, service.ids, service.authority, runningResult.SessionID, runningState.Version, commandID, nil, decided)
+	terminalIntent, err := BuildAppendIntent(service.clock, service.ids, service.authority.CurrentAuthority(), runningResult.SessionID, runningState.Version, commandID, nil, decided)
 	if err != nil {
 		return cloneRunTurnResult(runningResult), err
 	}
