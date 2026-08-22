@@ -221,18 +221,33 @@ Engine 的 step loop 每个 session 持有一个 turn，因此第二个并发
 `session/prompt` 在触碰引擎之前就被本地同步拒绝并返回 invalid-request 类错
 误——即 Kimi 的 `assertNoActiveTurn` 形态，而非排队。
 
-### F5. 停止原因来自已实现的结果代数
+### F5. 停止原因受已实现结果代数约束，且存在 refusal 缺口
 
-已实现的 Engine/Application 结果代数已经区分完成、取消与阻断/拒绝类终局。
-到 ACP 停止原因（`end_turn`、`cancelled`、`refusal`）的映射是适配器内的
-固定全函数；未知结局走 JSON-RPC 错误通道，绝不编造停止原因。
+已实现的 turn 终态恰好是 `completed`、`failed`、`interrupted`
+（`internal/harness/domain/state.go:14-19`）；取消只以
+`caller_canceled` 中断码存在。不存在拒绝类或策略阻断类的 turn 终态：今天
+审批被拒或策略拒绝都经由失败/中断路径落终，而不是独立的终态。因此 v1 映射
+为：`completed → end_turn`、`interrupted(caller_canceled) → cancelled`；
+其余一切走 JSON-RPC 错误通道的固定消息——适配器绝不编造 `refusal` 停止
+原因。暴露真正的 refusal 类停止原因需要域合同变更（新终态或新码），按 F9
+属于聚焦规范的显式决策，不属于适配器。
 
-### F6. 权限桥接是 Policy Decide 的薄而 fail-closed 的投影
+### F6. 权限桥接是 Policy Decide 的薄而 fail-closed 的投影——且注入路径是未决设计点
 
 Policy Decide 的 `ask` 结局变成每次询问一条 `session/request_permission`，
 最少提供 `allow_once`/`reject_once`；传输失败、客户端取消与拆解一律默认
 拒绝（C4）。always-allow 的作用域映射等到 Policy 合同获得作用域规则之后再
 做——记录为候选，不在本切片内改动合同。
+
+桥接还有一个本架构门已验证但未设计的接线问题：`composition.Config` 声明了
+`Approver tools.Approver`（`internal/harness/composition/config.go:41`），
+但组装从不把它传播进应用配置（只接线了 `Commands`，
+`internal/harness/composition/assembly.go:130`），于是所有组装都落到
+`DenyApprover` 兜底；且 `application.Service` 在构造时冻结依赖
+（`internal/harness/application/service.go:74`），ACP 的每请求审批无法事后
+换入。让 `session/request_permission` 真正工作，要么要求组装层传播
+approver 并提供动态 approver 缝隙（provider 或替换通知），要么新增端口
+——这是属于聚焦规范的合同决策。
 
 ### F7. 验证扩展 Slice 5 的组装测试，保持无密钥
 
@@ -249,7 +264,8 @@ JSON-RPC，断言上述 C2/C3/C4/C5/C6 行为。真实二进制冒烟（构建�
 3. 最小基线：initialize、按需 authenticate、session/new、带固定读重放的
    session/load、带流式更新的 prompt、cancel、权限桥接。
 4. 在已提交的 turn-ended 事件上恰好结算一次；并发 prompt 本地拒绝。
-5. Policy Decide 的 fail-closed 权限投影。
+5. Policy Decide 的 fail-closed 权限投影；approver 注入路径（组装传播 +
+   动态缝隙或新端口）是聚焦规范的显式决策。
 6. 固定的停止原因与错误映射，内部信息零泄漏。
 7. 围绕真实组装、经内存 NDJSON 双工的无密钥 e2e；可选的真实二进制冒烟通道。
 

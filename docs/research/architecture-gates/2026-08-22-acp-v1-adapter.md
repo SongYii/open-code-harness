@@ -271,21 +271,40 @@ concurrent `session/prompt` is rejected synchronously with an invalid-request
 error before touching the engine — the Kimi `assertNoActiveTurn` shape, not
 a queue.
 
-### F5. Stop reasons come from the implemented result algebra
+### F5. Stop reasons are constrained by the implemented result algebra, which has a refusal gap
 
-The implemented Engine/Application result algebra already distinguishes
-completed, cancelled, and blocked/refusal-class endings. The mapping to ACP
-stop reasons (`end_turn`, `cancelled`, `refusal`) is a fixed total function
-in the adapter; unknown outcomes stay errors on the JSON-RPC error channel,
-never invented stop reasons.
+The implemented turn terminals are exactly `completed`, `failed`, and
+`interrupted` (`internal/harness/domain/state.go:14-19`); cancellation
+exists only as the `caller_canceled` interruption code. There is no
+refusal- or policy-blocked turn terminal: a denied approval or policy reject
+today resolves through failure/interruption paths, not through a distinct
+terminal state. The v1 mapping is therefore: `completed → end_turn`,
+`interrupted(caller_canceled) → cancelled`; everything else stays on the
+JSON-RPC error channel as a fixed message — the adapter never invents a
+`refusal` stop reason. Exposing a genuine refusal-class stop reason requires
+a domain contract change (a new terminal or code), which per F9 belongs to
+the focused specification as an explicit decision, not to the adapter.
 
-### F6. Permission bridging is a thin, fail-closed projection of Policy Decide
+### F6. Permission bridging is a thin, fail-closed projection of Policy Decide — and the injection path is an open design point
 
 Policy Decide `ask` outcomes become one `session/request_permission` per ask
 with at minimum `allow_once`/`reject_once`; transport failure, client
 cancellation, and teardown all default to reject (C4). Always-allow scope
 mapping waits until the Policy contract gains a scoped rule — reported as a
 candidate, not changed inside this slice.
+
+Bridging also has an unsolved wiring problem this gate verifies but does not
+design: `composition.Config` declares `Approver tools.Approver`
+(`internal/harness/composition/config.go:41`), the assembly never propagates
+it into the application configuration (only `Commands` is wired,
+`internal/harness/composition/assembly.go:130`), so every assembly falls
+back to `DenyApprover`; and `application.Service` freezes its dependencies
+at construction (`internal/harness/application/service.go:74`), so an ACP
+per-request approver cannot be swapped in afterwards. Making
+`session/request_permission` work therefore requires either assembly-level
+propagation of the approver plus a dynamic approver seam (provider or
+replacement notification), or a new port — a contract decision that belongs
+to the focused specification.
 
 ### F7. Verification extends the Slice 5 assembly test, keylessly
 
@@ -306,7 +325,9 @@ credentials, no subprocess in the default gate path (R6 retained).
    cancel, permission bridging.
 4. Settlement exactly once, on the committed turn-ended event; concurrent
    prompts rejected locally.
-5. Fail-closed permission projection of Policy Decide.
+5. Fail-closed permission projection of Policy Decide; the approver
+   injection path (assembly propagation + dynamic seam or new port) is an
+   explicit decision for the focused specification.
 6. Fixed stop-reason and error mappings with no internal leakage.
 7. Keyless e2e over in-memory NDJSON duplex around the real assembly;
    optional real-binary smoke lane.
