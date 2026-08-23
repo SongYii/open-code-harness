@@ -74,7 +74,7 @@ sink 记住的 `LiveTool`，不是领域。顺序 `executeOneTool` 使同一时�
 | `tool.execution.started` | `tool_call_update` `{toolCallId, status: in_progress}` | 包含校验 / 审批等待 |
 | `approval.requested` / `resolved` | 无 | 权限 RPC 即 UX |
 | `tool.execution.completed` | `tool_call_update` `{status: completed}` | 现场无 `content` / `rawOutput` |
-| `tool.execution.failed` | `tool_call_update` `{status: failed}` | 绝不跳过。`Code` 不上线 |
+| `tool.execution.failed` | `tool_call_update` `{status: failed}` | 可发送的帧绝不跳过。`Code` 不上线。若 `toolCallId` 本身放不下，与其他工具卡片一样省略 |
 | `model.stream.*`、`append.completed` | 无 | 运行器 / 存储内部 |
 
 prompt 路径上的 `session/update` 写失败被吞掉（`Emit` 返回 nil），以免
@@ -111,13 +111,18 @@ load 不发 `session/request_permission`。
 非法 JSON 或错误的 `jsonrpc` 版本。出站文本在投影器内按 UTF-8 码点边界
 裁剪，绝不在领域层裁剪。JSON 编码之后（含换行与控制字符转义），
 `session/update` NDJSON 帧含尾随换行不得超过 `maxFrameBytes`。投影器会
-收缩文本直到编码后的帧放下。
+收缩文本与工具 `title` 直到编码后的帧放下。绝不裁剪 `toolCallId`：身份
+必须在现场更新、load 回放与 `session/request_permission` 之间一致。若
+身份字段本身放不下，投影器省略该更新（load 继续），而不是让 RPC 失败
+或写出超限帧。
 
 | 界限 | 上限 | 超出时 |
 | --- | --- | --- |
-| 出站 `session/update` 帧 | 编码后 1 MiB | 收缩文本直到 marshal 后的帧放下 |
+| 出站 `session/update` 帧 | 编码后 1 MiB | 收缩文本/title 直到 marshal 后的帧放下；身份仍放不下则省略该更新 |
 | 出站 `agent_message_chunk` / `user_message_chunk` 文本 | 原文 768 KiB，再按编码帧适配 | 裁剪；对话继续 |
 | 出站工具 `content` 文本 | 原文 16 KiB，再按编码帧适配 | 裁剪；若裁剪后的前缀尚未以 `\n[truncated]` 结尾，则追加该标记 |
+| 出站工具 `title`（及 permission `title`） | 收缩直到编码帧放下 | 按 UTF-8 边界裁剪；绝不追加 `\n[truncated]`。`kind` 仍按未裁剪的名称计算 |
+| 出站 `toolCallId`（及 permission `toolCallId`） | 必须放进编码帧 | 绝不裁剪。省略该 `session/update`。跳过 permission RPC（fail-closed 拒绝） |
 | 出站 `rawInput` | 16 KiB 紧凑 JSON | 在 UTF-8 边界裁剪编码字节；若结果不再是合法 JSON，则 **省略** `rawInput`。绝不给 `rawInput` 追加 `\n[truncated]`。若工具调用帧仍超过 1 MiB 则整段省略 |
 
 ## 现场保真缺口

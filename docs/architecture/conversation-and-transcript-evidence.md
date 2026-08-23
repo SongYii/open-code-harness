@@ -34,7 +34,8 @@ OpenReader, and `export-session` without re-landing that Draft.
 | --- | --- |
 | ACP live | `TestProjectRuntimeEvent`, `TestServePromptProjectsLiveToolCallsAndCodeOnlyFailed`, `TestServePromptSwallowsSessionUpdateWriteErrors` |
 | ACP load | `TestProjectRecordedEvent`, `TestServeLoadReplaysToolBearingHistory`, `TestServeLoadFailsOnSessionUpdateWriteError` |
-| ACP clip / id / kind | `TestClipBounds`, `TestToolCallIDAndToolKind` |
+| ACP clip / id / kind | `TestClipBounds`, `TestOutgoingFrameFitsAfterJSONEscaping`, `TestToolCallIDAndToolKind`, `TestOversizeToolIdentityDegradesToSendableFrame` |
+| ACP oversize identity (live/load/permission) | `TestServePromptProjectsOversizeToolName`, `TestServeLoadDegradesOversizeToolIdentity`, `TestServePermissionClipsOversizeTitleAndDeniesUnsendableID` |
 | ACP workspace | `TestServeLoadAndPromptRejectForeignWorkspace` |
 | Transcript catalog | `TestProjectRecordFrozenPayloads`, `TestProjectRecordOmitsRequestAndPolicy`, `TestProjectRecordRejectsUnknownDomainType`, `TestProjectRecordStepRefAlignment` |
 | Transcript goldens | `TestGoldenFixturesRoundTrip`, `TestSnapshotAndCompleteGoldensMatchSpec`, `TestDecodeSkipsUnknownFactTypesOnly` |

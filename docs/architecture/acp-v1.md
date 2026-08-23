@@ -77,7 +77,7 @@ has the user prompt; the in-flight turn does not emit `user_message_chunk`.
 | `tool.execution.started` | `tool_call_update` `{toolCallId, status: in_progress}` | Includes validation / approval wait |
 | `approval.requested` / `resolved` | none | Permission RPC is the UX |
 | `tool.execution.completed` | `tool_call_update` `{status: completed}` | No live `content` / `rawOutput` |
-| `tool.execution.failed` | `tool_call_update` `{status: failed}` | Never skip. `Code` stays off the wire |
+| `tool.execution.failed` | `tool_call_update` `{status: failed}` | Never skip a sendable frame. `Code` stays off the wire. If `toolCallId` itself cannot fit, omit like any other tool card |
 | `model.stream.*`, `append.completed` | none | Runner / store internals |
 
 `session/update` write errors on the prompt path are swallowed
@@ -118,13 +118,19 @@ Clip outgoing text in the projector, at a UTF-8 code-point boundary, never
 in Domain. After JSON encoding (including escaping of newlines and
 control characters), the `session/update` NDJSON frame including its
 trailing newline must be at most `maxFrameBytes`. The projector shrinks
-text until that encoded frame fits.
+text and tool `title` until that encoded frame fits. It never clips
+`toolCallId`: identity must match across live updates, load replay, and
+`session/request_permission`. If the identity fields themselves cannot
+fit, the projector omits that update (load continues) rather than failing
+the RPC or writing an oversize frame.
 
 | Bound | Limit | On exceed |
 | --- | --- | --- |
-| Outgoing `session/update` frame | 1 MiB encoded | shrink text until the marshaled frame fits |
+| Outgoing `session/update` frame | 1 MiB encoded | shrink text/title until the marshaled frame fits; omit the update if identity still cannot fit |
 | Outgoing `agent_message_chunk` / `user_message_chunk` text | 768 KiB raw, then encoded-frame fit | clip; conversation continues |
 | Outgoing tool `content` text | 16 KiB raw, then encoded-frame fit | clip; if the clipped prefix does not already end with `\n[truncated]`, append that marker |
+| Outgoing tool `title` (and permission `title`) | shrink until encoded-frame fit | clip at a UTF-8 boundary; never append `\n[truncated]`. `kind` still uses the unclipped name |
+| Outgoing `toolCallId` (and permission `toolCallId`) | must fit in the encoded frame | never clip. Omit the `session/update`. Skip the permission RPC (fail-closed deny) |
 | Outgoing `rawInput` | 16 KiB compact JSON | clip encoded bytes at a UTF-8 boundary; if the result is no longer valid JSON, **omit** `rawInput`. Never append `\n[truncated]` to `rawInput`. Omit entirely if the tool-call frame still exceeds 1 MiB |
 
 ## Live fidelity gap
