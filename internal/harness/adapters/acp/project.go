@@ -47,10 +47,7 @@ func ProjectRuntimeEvent(sessionID string, event engine.RuntimeEvent, live LiveT
 		if event.Text == "" {
 			return nil
 		}
-		return []any{agentMessageChunk{
-			SessionUpdate: "agent_message_chunk",
-			Content:       textContent{Type: "text", Text: clipUpdateText(event.Text)},
-		}}
+		return []any{chatChunk(sessionID, "agent_message_chunk", event.Text)}
 	case engine.RuntimeModelToolCall:
 		return []any{toolCallUpdate{
 			SessionUpdate: "tool_call",
@@ -88,56 +85,37 @@ func ProjectRecordedEvent(sessionID string, record domain.RecordedEvent) []any {
 		if event.Input == "" {
 			return nil
 		}
-		return []any{agentMessageChunk{
-			SessionUpdate: "user_message_chunk",
-			Content:       textContent{Type: "text", Text: clipUpdateText(event.Input)},
-		}}
+		return []any{chatChunk(sessionID, "user_message_chunk", event.Input)}
 	case domain.AssistantMessageCompleted:
 		if event.Text == "" {
 			return nil
 		}
-		return []any{agentMessageChunk{
-			SessionUpdate: "agent_message_chunk",
-			Content:       textContent{Type: "text", Text: clipUpdateText(event.Text)},
-		}}
+		return []any{chatChunk(sessionID, "agent_message_chunk", event.Text)}
 	case domain.AssistantMessageFailed:
 		if event.Message == "" {
 			return nil
 		}
-		return []any{agentMessageChunk{
-			SessionUpdate: "agent_message_chunk",
-			Content:       textContent{Type: "text", Text: clipUpdateText(event.Message)},
-		}}
+		return []any{chatChunk(sessionID, "agent_message_chunk", event.Message)}
 	case domain.AssistantMessageInterrupted:
 		if event.Message == "" {
 			return nil
 		}
-		return []any{agentMessageChunk{
-			SessionUpdate: "agent_message_chunk",
-			Content:       textContent{Type: "text", Text: clipUpdateText(event.Message)},
-		}}
+		return []any{chatChunk(sessionID, "agent_message_chunk", event.Message)}
 	case domain.ToolCallStarted:
-		return []any{toolCallUpdate{
-			SessionUpdate: "tool_call",
-			ToolCallID:    ToolCallID(event.TurnID, event.CallID),
-			Title:         event.Name,
-			Kind:          ToolKind(event.Name),
-			Status:        "in_progress",
-			RawInput:      rawInputValue(event.Arguments),
-		}}
+		return []any{startedToolCall(sessionID, event)}
 	case domain.ToolCallCompleted:
 		return []any{toolCallUpdate{
 			SessionUpdate: "tool_call_update",
 			ToolCallID:    ToolCallID(event.TurnID, event.CallID),
 			Status:        "completed",
-			Content:       toolTextContent(event.Content),
+			Content:       toolTextContent(sessionID, ToolCallID(event.TurnID, event.CallID), "completed", event.Content),
 		}}
 	case domain.ToolCallFailed:
 		return []any{toolCallUpdate{
 			SessionUpdate: "tool_call_update",
 			ToolCallID:    ToolCallID(event.TurnID, event.CallID),
 			Status:        "failed",
-			Content:       toolTextContent(event.Message),
+			Content:       toolTextContent(sessionID, ToolCallID(event.TurnID, event.CallID), "failed", event.Message),
 		}}
 	case domain.ToolCallInterrupted:
 		return []any{toolCallUpdate{
@@ -176,29 +154,87 @@ func splitToolText(text string) (name, callID string) {
 	return text[:index], text[index+1:]
 }
 
-func toolTextContent(text string) []toolCallContent {
+func chatChunk(sessionID, sessionUpdate, text string) agentMessageChunk {
+	text = clipUTF8Prefix(text, maxChatTextBytes)
+	makeUpdate := func(s string) any {
+		return agentMessageChunk{SessionUpdate: sessionUpdate, Content: textContent{Type: "text", Text: s}}
+	}
+	return makeUpdate(shrinkUntilFrameFits(sessionID, text, makeUpdate)).(agentMessageChunk)
+}
+
+func startedToolCall(sessionID string, event domain.ToolCallStarted) toolCallUpdate {
+	update := toolCallUpdate{
+		SessionUpdate: "tool_call",
+		ToolCallID:    ToolCallID(event.TurnID, event.CallID),
+		Title:         event.Name,
+		Kind:          ToolKind(event.Name),
+		Status:        "in_progress",
+		RawInput:      rawInputValue(event.Arguments),
+	}
+	if !frameFits(sessionID, update) {
+		update.RawInput = nil
+	}
+	return update
+}
+
+func toolTextContent(sessionID, toolCallID, status, text string) []toolCallContent {
 	if text == "" {
 		return nil
 	}
-	return []toolCallContent{{
-		Type:    "content",
-		Content: textContent{Type: "text", Text: clipToolContent(text)},
-	}}
-}
-
-func clipUpdateText(text string) string {
-	return clipUTF8Prefix(text, maxChatTextBytes)
-}
-
-func clipToolContent(text string) string {
 	clipped := clipUTF8Prefix(text, maxToolContentBytes)
-	if clipped == text {
+	if clipped != text && !strings.HasSuffix(clipped, truncatedMarker) {
+		clipped += truncatedMarker
+	}
+	makeUpdate := func(s string) any {
+		return toolCallUpdate{
+			SessionUpdate: "tool_call_update",
+			ToolCallID:    toolCallID,
+			Status:        status,
+			Content:       []toolCallContent{{Type: "content", Content: textContent{Type: "text", Text: s}}},
+		}
+	}
+	clipped = shrinkUntilFrameFits(sessionID, clipped, makeUpdate)
+	if clipped != text && !strings.HasSuffix(clipped, truncatedMarker) {
+		marked := clipUTF8Prefix(clipped, max(0, len(clipped)-len(truncatedMarker))) + truncatedMarker
+		clipped = shrinkUntilFrameFits(sessionID, marked, makeUpdate)
+	}
+	return []toolCallContent{{Type: "content", Content: textContent{Type: "text", Text: clipped}}}
+}
+
+func shrinkUntilFrameFits(sessionID, text string, makeUpdate func(string) any) string {
+	if frameFits(sessionID, makeUpdate(text)) {
 		return text
 	}
-	if !strings.HasSuffix(clipped, truncatedMarker) {
-		return clipped + truncatedMarker
+	low, high := 0, len(text)
+	best := ""
+	for low <= high {
+		mid := low + (high-low)/2
+		candidate := clipUTF8Prefix(text, mid)
+		if frameFits(sessionID, makeUpdate(candidate)) {
+			best = candidate
+			low = mid + 1
+		} else {
+			high = mid - 1
+		}
 	}
-	return clipped
+	return best
+}
+
+func frameFits(sessionID string, update any) bool {
+	payload, err := marshalSessionUpdate(sessionID, update)
+	return err == nil && len(payload)+1 <= maxFrameBytes
+}
+
+func marshalSessionUpdate(sessionID string, update any) ([]byte, error) {
+	params, err := json.Marshal(sessionUpdateParams{SessionID: sessionID, Update: update})
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(struct {
+		JSONRPC string          `json:"jsonrpc"`
+		Method  string          `json:"method"`
+		Params  json.RawMessage `json:"params"`
+	}{JSONRPC: jsonRPCVersion, Method: methodSessionUpdate, Params: params})
 }
 
 func clipUTF8Prefix(text string, limit int) string {

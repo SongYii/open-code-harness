@@ -319,27 +319,31 @@ func TestProjectRecordedEvent(t *testing.T) {
 func TestClipBounds(t *testing.T) {
 	t.Run("chat utf8 prefix", func(t *testing.T) {
 		prefix := strings.Repeat("a", maxChatTextBytes-2)
-		got := clipUpdateText(prefix + "你")
-		if got != prefix {
-			t.Fatalf("clipUpdateText len = %d, want %d", len(got), len(prefix))
+		got := chatChunk("session-1", "agent_message_chunk", prefix+"你")
+		if got.Content.Text != prefix {
+			t.Fatalf("chat text len = %d, want %d", len(got.Content.Text), len(prefix))
 		}
-		if !utf8.ValidString(got) {
+		if !utf8.ValidString(got.Content.Text) {
 			t.Fatal("clipped chat text is not valid UTF-8")
 		}
 	})
 	t.Run("tool content marker", func(t *testing.T) {
 		prefix := strings.Repeat("b", maxToolContentBytes-2)
-		got := clipToolContent(prefix + "你")
-		if !strings.HasPrefix(got, prefix) {
+		got := toolTextContent("session-1", "turn-1/call-1", "completed", prefix+"你")
+		if len(got) != 1 {
+			t.Fatalf("tool content blocks = %d, want 1", len(got))
+		}
+		text := got[0].Content.Text
+		if !strings.HasPrefix(text, prefix) {
 			t.Fatal("clipped tool content lost prefix")
 		}
-		if strings.Contains(got, "你") {
+		if strings.Contains(text, "你") {
 			t.Fatal("clipped tool content kept the split rune")
 		}
-		if !strings.HasSuffix(got, truncatedMarker) {
+		if !strings.HasSuffix(text, truncatedMarker) {
 			t.Fatal("clipped tool content missing truncation marker")
 		}
-		if !utf8.ValidString(got) {
+		if !utf8.ValidString(text) {
 			t.Fatal("clipped tool content is not valid UTF-8")
 		}
 	})
@@ -358,6 +362,45 @@ func TestClipBounds(t *testing.T) {
 			t.Fatal("json string rawInput must be omitted")
 		}
 	})
+}
+
+func TestOutgoingFrameFitsAfterJSONEscaping(t *testing.T) {
+	sessionID := "session-1"
+	cases := []struct {
+		name string
+		text string
+	}{
+		{name: "newlines", text: strings.Repeat("\n", maxChatTextBytes)},
+		{name: "html-escaped", text: strings.Repeat("<", maxChatTextBytes)},
+		{name: "controls", text: strings.Repeat("\x01", maxChatTextBytes)},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			updates := ProjectRecordedEvent(sessionID, domain.RecordedEvent{
+				Event: domain.TurnStarted{TurnID: "turn-1", Input: test.text},
+			})
+			if len(updates) != 1 {
+				t.Fatalf("updates = %d, want 1", len(updates))
+			}
+			payload, err := marshalSessionUpdate(sessionID, updates[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(payload)+1 > maxFrameBytes {
+				t.Fatalf("encoded frame %d exceeds %d", len(payload)+1, maxFrameBytes)
+			}
+			chunk, ok := updates[0].(agentMessageChunk)
+			if !ok {
+				t.Fatalf("update type %T", updates[0])
+			}
+			if !utf8.ValidString(chunk.Content.Text) {
+				t.Fatal("clipped text is not valid UTF-8")
+			}
+			if len(chunk.Content.Text) >= len(test.text) {
+				t.Fatal("escaping payload was not shrunk below the raw-byte clip")
+			}
+		})
+	}
 }
 
 func assertUpdates(t *testing.T, got, want []any) {
