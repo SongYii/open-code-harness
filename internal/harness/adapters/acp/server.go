@@ -184,7 +184,8 @@ func (s *server) sessionLoad(message rpcRequest) error {
 	if err != nil {
 		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
 	}
-	if _, err := s.config.Sessions.LoadSession(s.ctx, sessionID); err != nil {
+	session, err := s.config.Sessions.LoadSession(s.ctx, sessionID)
+	if err != nil || filepath.Clean(session.WorkspaceRoot) != s.workspace {
 		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
 	}
 	if s.config.History != nil {
@@ -263,6 +264,10 @@ func (s *server) sessionPrompt(message rpcRequest) error {
 	if strings.TrimSpace(input) == "" {
 		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
 	}
+	session, err := s.config.Sessions.LoadSession(s.ctx, sessionID)
+	if err != nil || filepath.Clean(session.WorkspaceRoot) != s.workspace {
+		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
+	}
 
 	s.mu.Lock()
 	if existing := s.sessions[params.SessionID]; existing != nil && existing.cancel != nil {
@@ -337,7 +342,7 @@ func (s *server) Decide(ctx context.Context, req tools.ApprovalRequest) (tools.A
 	id, waiter := s.nextID()
 	params := permissionParams{
 		SessionID: string(req.SessionID),
-		ToolCall:  permissionToolCall{ToolCallID: req.CallID, Title: req.Name, Kind: "other", Status: "pending"},
+		ToolCall:  permissionToolCall{ToolCallID: ToolCallID(req.TurnID, req.CallID), Title: req.Name, Kind: ToolKind(req.Name), Status: "pending"},
 		Options: []permissionOption{
 			{OptionID: optionAllowOnce, Name: "Allow once", Kind: "allow_once"},
 			{OptionID: optionRejectOnce, Name: "Reject once", Kind: "reject_once"},
@@ -390,19 +395,37 @@ func mustMarshal(value any) []byte {
 type updateSink struct {
 	sessionID string
 	out       *frameWriter
+	live      LiveTool
 }
 
 func (sink *updateSink) Emit(_ context.Context, event engine.RuntimeEvent) error {
-	if event.Type != engine.RuntimeModelTextDelta || event.Text == "" {
-		return nil
+	live := sink.remember(event)
+	for _, update := range ProjectRuntimeEvent(sink.sessionID, event, live) {
+		_ = sink.out.writeNotification(methodSessionUpdate, sessionUpdateParams{
+			SessionID: sink.sessionID,
+			Update:    update,
+		})
 	}
-	return sink.out.writeNotification(methodSessionUpdate, sessionUpdateParams{
-		SessionID: sink.sessionID,
-		Update: agentMessageChunk{
-			SessionUpdate: "agent_message_chunk",
-			Content:       textContent{Type: "text", Text: event.Text},
-		},
-	})
+	return nil
+}
+
+func (sink *updateSink) remember(event engine.RuntimeEvent) LiveTool {
+	switch event.Type {
+	case engine.RuntimeModelToolCall, engine.RuntimeToolExecutionStarted:
+		name, callID := splitToolText(event.Text)
+		sink.live = LiveTool{TurnID: event.TurnID, CallID: callID, Name: name}
+		return sink.live
+	case engine.RuntimeToolExecutionCompleted, engine.RuntimeToolExecutionFailed:
+		live := sink.live
+		if event.Text != "" {
+			name, callID := splitToolText(event.Text)
+			live = LiveTool{TurnID: event.TurnID, CallID: callID, Name: name}
+		}
+		sink.live = LiveTool{}
+		return live
+	default:
+		return sink.live
+	}
 }
 
 var _ tools.Approver = (*server)(nil)

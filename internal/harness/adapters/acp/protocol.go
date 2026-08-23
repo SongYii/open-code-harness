@@ -86,6 +86,21 @@ type textContent struct {
 	Text string `json:"text"`
 }
 
+type toolCallUpdate struct {
+	SessionUpdate string            `json:"sessionUpdate"`
+	ToolCallID    string            `json:"toolCallId"`
+	Title         string            `json:"title,omitempty"`
+	Kind          string            `json:"kind,omitempty"`
+	Status        string            `json:"status,omitempty"`
+	Content       []toolCallContent `json:"content,omitempty"`
+	RawInput      json.RawMessage   `json:"rawInput,omitempty"`
+}
+
+type toolCallContent struct {
+	Type    string      `json:"type"`
+	Content textContent `json:"content"`
+}
+
 type permissionParams struct {
 	SessionID string             `json:"sessionId"`
 	ToolCall  permissionToolCall `json:"toolCall"`
