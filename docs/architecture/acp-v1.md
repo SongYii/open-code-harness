@@ -111,13 +111,16 @@ invent `rawOutput`.
 
 ## Clip bounds
 
-Incoming RPC frames remain `maxFrameBytes = 1 MiB` (`-32700` on exceed).
-Clip in the projector, at a UTF-8 code-point boundary, never in Domain.
+Incoming RPC frames remain `maxFrameBytes = 1 MiB`. An oversize line fails
+the codec (`token too long`) and tears down `Serve`; it is not a `-32700`
+frame. `-32700` is only for invalid JSON or a wrong `jsonrpc` version.
+Clip outgoing text in the projector, at a UTF-8 code-point boundary, never
+in Domain.
 
 | Bound | Limit | On exceed |
 | --- | --- | --- |
 | Outgoing `agent_message_chunk` / `user_message_chunk` text | 768 KiB | clip; conversation continues |
-| Outgoing tool `content` text | 16 KiB | clip; if clipped and the domain text does not already end with `\n[truncated]`, append that marker |
+| Outgoing tool `content` text | 16 KiB | clip; if the clipped prefix does not already end with `\n[truncated]`, append that marker |
 | Outgoing `rawInput` | 16 KiB compact JSON | clip encoded bytes at a UTF-8 boundary; if the result is no longer valid JSON, **omit** `rawInput`. Never append `\n[truncated]` to `rawInput` |
 
 ## Live fidelity gap
