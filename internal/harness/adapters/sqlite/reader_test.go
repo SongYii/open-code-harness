@@ -83,6 +83,48 @@ func TestOpenReaderRejectsInvalidBusyTimeout(t *testing.T) {
 	}
 }
 
+func TestOpenReaderDoesNotConvertNonWALDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delete-mode.db")
+	raw, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	if _, err := raw.Exec("CREATE TABLE t(x INTEGER)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	var before string
+	if err := raw.QueryRow("PRAGMA journal_mode").Scan(&before); err != nil {
+		t.Fatalf("read journal_mode: %v", err)
+	}
+	if before == "wal" {
+		t.Fatal("setup journal_mode is already wal")
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("raw close: %v", err)
+	}
+
+	_, err = OpenReader(context.Background(), ReaderConfig{Path: path})
+	if err == nil {
+		t.Fatal("OpenReader() on non-WAL database = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "not wal") {
+		t.Fatalf("error = %v, want journal-mode refusal", err)
+	}
+
+	check, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer check.Close()
+	var after string
+	if err := check.QueryRow("PRAGMA journal_mode").Scan(&after); err != nil {
+		t.Fatalf("read journal_mode after OpenReader: %v", err)
+	}
+	if after != before {
+		t.Fatalf("journal_mode changed from %q to %q", before, after)
+	}
+}
+
 func TestOpenReaderDoesNotCreateMissingDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.db")
 	_, err := OpenReader(context.Background(), ReaderConfig{Path: path})

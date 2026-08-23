@@ -209,14 +209,17 @@ func dataSourceName(path string, config Config) string {
 
 func dataSourceNamePragmas(path string, busyTimeout time.Duration, walAutoCheckpoint int, queryOnly bool) string {
 	values := url.Values{}
-	values.Add("_pragma", "journal_mode(WAL)")
-	values.Add("_pragma", "synchronous(FULL)")
+	if !queryOnly {
+		values.Add("_pragma", "journal_mode(WAL)")
+		values.Add("_pragma", "synchronous(FULL)")
+	}
 	values.Add("_pragma", "foreign_keys(1)")
 	values.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", busyTimeout.Milliseconds()))
 	values.Add("_pragma", fmt.Sprintf("wal_autocheckpoint(%d)", walAutoCheckpoint))
 	if queryOnly {
 		// mode=rw refuses a missing file (default rwc would create one).
 		// _query_only is applied after every _pragma; a query_only pragma is not.
+		// Do not set journal_mode: converting DELETE→WAL would mutate a "read-only" open.
 		values.Set("mode", "rw")
 		values.Set("_query_only", "1")
 	}
