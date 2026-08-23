@@ -34,5 +34,5 @@ go test ./internal/harness/adapters/acp/ ./internal/harness/tools/ ./internal/ha
 
 ## Remaining
 
-- No v2, resume, authenticate, or conversation projection into `RunTurn`.
+- No v2, resume, or authenticate. Catalog-backed `RunTurn` prefixes prior turns from the event log; there is no independent Context Engine or token-aware compaction.
 - Default gate does not spawn `cmd/och`.

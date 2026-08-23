@@ -109,13 +109,16 @@ load 不发 `session/request_permission`。
 入站 RPC 帧仍为 `maxFrameBytes = 1 MiB`。超长行使编解码器失败
 （`token too long`）并拆掉 `Serve`，不会写成 `-32700` 帧。`-32700` 只用于
 非法 JSON 或错误的 `jsonrpc` 版本。出站文本在投影器内按 UTF-8 码点边界
-裁剪，绝不在领域层裁剪。
+裁剪，绝不在领域层裁剪。JSON 编码之后（含换行与控制字符转义），
+`session/update` NDJSON 帧含尾随换行不得超过 `maxFrameBytes`。投影器会
+收缩文本直到编码后的帧放下。
 
 | 界限 | 上限 | 超出时 |
 | --- | --- | --- |
-| 出站 `agent_message_chunk` / `user_message_chunk` 文本 | 768 KiB | 裁剪；对话继续 |
-| 出站工具 `content` 文本 | 16 KiB | 裁剪；若裁剪后的前缀尚未以 `\n[truncated]` 结尾，则追加该标记 |
-| 出站 `rawInput` | 16 KiB 紧凑 JSON | 在 UTF-8 边界裁剪编码字节；若结果不再是合法 JSON，则 **省略** `rawInput`。绝不给 `rawInput` 追加 `\n[truncated]` |
+| 出站 `session/update` 帧 | 编码后 1 MiB | 收缩文本直到 marshal 后的帧放下 |
+| 出站 `agent_message_chunk` / `user_message_chunk` 文本 | 原文 768 KiB，再按编码帧适配 | 裁剪；对话继续 |
+| 出站工具 `content` 文本 | 原文 16 KiB，再按编码帧适配 | 裁剪；若裁剪后的前缀尚未以 `\n[truncated]` 结尾，则追加该标记 |
+| 出站 `rawInput` | 16 KiB 紧凑 JSON | 在 UTF-8 边界裁剪编码字节；若结果不再是合法 JSON，则 **省略** `rawInput`。绝不给 `rawInput` 追加 `\n[truncated]`。若工具调用帧仍超过 1 MiB 则整段省略 |
 
 ## 现场保真缺口
 
