@@ -408,6 +408,24 @@ func TestDecodeSkipsUnknownFactTypesOnly(t *testing.T) {
 	if skipped || !IsCode(err, CodeUnsupportedFormatVersion) {
 		t.Fatalf("future version skipped = %t, error = %v", skipped, err)
 	}
+
+	incomplete := `{"formatVersion":1,"type":"future.fact"}`
+	_, skipped, err = DecodeSkipsUnknown([]byte(incomplete))
+	if skipped || !IsCode(err, CodeInvalidLine) {
+		t.Fatalf("incomplete envelope skipped = %t, error = %v", skipped, err)
+	}
+
+	trailing := unknownFact + `{"extra":true}`
+	_, skipped, err = DecodeSkipsUnknown([]byte(trailing))
+	if skipped || !IsCode(err, CodeInvalidLine) {
+		t.Fatalf("trailing JSON skipped = %t, error = %v", skipped, err)
+	}
+
+	missingPayload := `{"formatVersion":1,"schema":"och.session.transcript","sessionId":"session-1","eventId":"event-1","commandId":"command-1","sequence":1,"occurredAt":"2026-08-23T12:00:00.000000000Z","type":"future.fact","payload":null}`
+	_, skipped, err = DecodeSkipsUnknown([]byte(missingPayload))
+	if skipped || !IsCode(err, CodeInvalidLine) {
+		t.Fatalf("null payload skipped = %t, error = %v", skipped, err)
+	}
 }
 
 func TestMarshalLineLimit(t *testing.T) {

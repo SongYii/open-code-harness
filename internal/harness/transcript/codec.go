@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -261,6 +262,9 @@ func DecodeSkipsUnknown(data []byte) (Decoded, bool, error) {
 		return decoded, false, err
 	}
 	if !knownFactType(typ) {
+		if err := validateUnknownFactEnvelope(data); err != nil {
+			return Decoded{}, false, err
+		}
 		return Decoded{}, true, nil
 	}
 	decoded, err := UnmarshalLine(data)
@@ -441,6 +445,26 @@ func marshalEncoded(line any, payload json.RawMessage) ([]byte, error) {
 		return nil, &Error{Code: CodeLineLimit, Message: "encoded line exceeds 2 MiB"}
 	}
 	return encoded, nil
+}
+
+func validateUnknownFactEnvelope(data []byte) error {
+	if err := validateJSONObjectKeys(data, factEnvelopeKeys, nil); err != nil {
+		return err
+	}
+	var line Line
+	if err := decodeStrict(data, &line); err != nil {
+		return err
+	}
+	if line.FormatVersion != FormatVersion {
+		return unsupportedFormatVersion()
+	}
+	if line.Schema != Schema {
+		return invalidLine("invalid schema")
+	}
+	if strings.TrimSpace(line.SessionID) == "" || strings.TrimSpace(line.EventID) == "" || strings.TrimSpace(line.CommandID) == "" || strings.TrimSpace(line.OccurredAt) == "" || strings.TrimSpace(line.Type) == "" {
+		return invalidLine("incomplete fact envelope")
+	}
+	return ensureObjectPayload(line.Payload)
 }
 
 func validateFactHeader(line Line) error {
