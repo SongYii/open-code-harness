@@ -291,8 +291,14 @@ func writeJSONL(w io.Writer, encoded []byte) error {
 	line := make([]byte, len(encoded)+1)
 	copy(line, encoded)
 	line[len(encoded)] = '\n'
-	_, err := w.Write(line)
-	return err
+	n, err := w.Write(line)
+	if err != nil {
+		return err
+	}
+	if n != len(line) {
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
 func contextErr(ctx context.Context) error {

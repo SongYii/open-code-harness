@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -319,6 +320,35 @@ func TestWriteSessionCancelAfterSnapshotOmitsComplete(t *testing.T) {
 	}
 }
 
+func TestWriteSessionShortWrite(t *testing.T) {
+	t.Parallel()
+
+	store := newExportStore(t)
+	sessionID := domain.SessionID("session-1")
+	appendEvents(t, store, sessionID, domain.SessionCreated{WorkspaceRoot: "/workspace"})
+
+	for _, shortOn := range []int{1, 2, 3} {
+		t.Run(fmt.Sprintf("write %d", shortOn), func(t *testing.T) {
+			writer := &shortWriter{shortOn: shortOn}
+			_, err := WriteSession(context.Background(), store, sessionID, exportNow, writer)
+			if !errors.Is(err, io.ErrShortWrite) {
+				t.Fatalf("WriteSession() error = %v, want io.ErrShortWrite", err)
+			}
+			if shortOn > 1 && !bytes.Contains(writer.buf.Bytes(), []byte(`"type":"transcript.snapshot"`)) {
+				t.Fatal("expected snapshot before later short write")
+			}
+			if bytes.Contains(writer.buf.Bytes(), []byte(`"type":"transcript.complete"`)) && shortOn <= 3 {
+				if shortOn < 3 {
+					t.Fatal("complete trailer must not be published after an earlier short write")
+				}
+			}
+			if _, _, _, acceptErr := consumerAccepts(writer.buf.Bytes()); acceptErr == nil {
+				t.Fatal("consumer accepted a short write")
+			}
+		})
+	}
+}
+
 func TestWriteSessionCorruptStoreWritesNothing(t *testing.T) {
 	t.Parallel()
 
@@ -483,6 +513,25 @@ func (r *appendAfterFirstRead) ReadStream(ctx context.Context, request applicati
 		appendEvents(r.t, r.store, r.sessionID, r.extra)
 	}
 	return page, nil
+}
+
+type shortWriter struct {
+	buf     bytes.Buffer
+	writes  int
+	shortOn int
+}
+
+func (w *shortWriter) Write(p []byte) (int, error) {
+	w.writes++
+	if w.writes == w.shortOn {
+		if len(p) == 0 {
+			return 0, nil
+		}
+		n := len(p) - 1
+		w.buf.Write(p[:n])
+		return n, nil
+	}
+	return w.buf.Write(p)
 }
 
 type cancelAfterWrite struct {
