@@ -87,3 +87,43 @@ func (config Config) validate() error {
 	}
 	return nil
 }
+
+// ReaderConfig is the read profile. It does not include RuntimeID or
+// LeaseDuration (those exist only for the writer lease).
+type ReaderConfig struct {
+	// Path is the database file location. DeniedPathPrefixes apply as in Config.
+	Path string
+
+	// BusyTimeout bounds how long a contended lock waits before failing.
+	// Default 5s; allowed range 100ms to 60s, same as Config.BusyTimeout.
+	BusyTimeout time.Duration
+
+	// DeniedPathPrefixes lists absolute path prefixes refused at open.
+	DeniedPathPrefixes []string
+
+	// WALAutoCheckpoint is applied as a read-side pragma only. Default 1000.
+	WALAutoCheckpoint int
+}
+
+func (config ReaderConfig) WithDefaults() ReaderConfig {
+	if config.BusyTimeout == 0 {
+		config.BusyTimeout = defaultBusyTimeout
+	}
+	if config.WALAutoCheckpoint == 0 {
+		config.WALAutoCheckpoint = defaultWALAutoCheckpoint
+	}
+	return config
+}
+
+func (config ReaderConfig) validate() error {
+	if config.Path == "" {
+		return fmt.Errorf("sqlite reader config: path is required")
+	}
+	if config.BusyTimeout < minBusyTimeout || config.BusyTimeout > maxBusyTimeout {
+		return fmt.Errorf("sqlite reader config: busy timeout %s outside [%s, %s]", config.BusyTimeout, minBusyTimeout, maxBusyTimeout)
+	}
+	if config.WALAutoCheckpoint < 1 {
+		return fmt.Errorf("sqlite reader config: WAL autocheckpoint %d must be at least 1", config.WALAutoCheckpoint)
+	}
+	return nil
+}
