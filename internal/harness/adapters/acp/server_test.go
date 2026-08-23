@@ -286,6 +286,79 @@ func TestServeLoadReplaysToolBearingHistory(t *testing.T) {
 	}
 }
 
+func TestServeLoadDegradesOversizeToolIdentity(t *testing.T) {
+	agentIn, clientOut := io.Pipe()
+	clientIn, agentOut := io.Pipe()
+	fake := newFake()
+	when := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	hugeName := strings.Repeat("x", maxFrameBytes)
+	hugeCallID := strings.Repeat("c", maxFrameBytes)
+	fake.sessions = map[domain.SessionID]domain.Session{
+		"session-acp-1": {ID: "session-acp-1", Status: domain.SessionStatusActive, WorkspaceRoot: "/workspace"},
+	}
+	fake.history = []domain.RecordedEvent{
+		{Event: domain.TurnStarted{TurnID: "turn-1", Input: "hello"}, OccurredAt: when},
+		{Event: domain.ToolCallStarted{TurnID: "turn-1", ItemID: "item-1", CallID: "call-1", Name: hugeName, Arguments: `{"path":"NOTES.md"}`, StepIndex: 1}, OccurredAt: when},
+		{Event: domain.ToolCallStarted{TurnID: "turn-1", ItemID: "item-2", CallID: hugeCallID, Name: "read_file", Arguments: `{"path":"SKIP.md"}`, StepIndex: 2}, OccurredAt: when},
+		{Event: domain.ToolCallCompleted{TurnID: "turn-1", ItemID: "item-2", CallID: hugeCallID, Content: "secret"}, OccurredAt: when},
+		{Event: domain.AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-3", Text: "world"}, OccurredAt: when},
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(context.Background(), Config{Sessions: fake, History: fake, Workspace: "/workspace"}, agentIn, agentOut)
+	}()
+	t.Cleanup(func() {
+		_ = agentIn.Close()
+		_ = clientOut.Close()
+		_ = clientIn.Close()
+		_ = agentOut.Close()
+		<-done
+	})
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	_ = readJSON(t, clientIn)
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":"session-acp-1"}}`)
+
+	var updates []map[string]any
+	var loadResult map[string]any
+	for {
+		message := readJSON(t, clientIn)
+		if message["method"] == methodSessionUpdate {
+			updates = append(updates, message["params"].(map[string]any)["update"].(map[string]any))
+			continue
+		}
+		loadResult = message
+		break
+	}
+	if loadResult["id"] != float64(2) || loadResult["error"] != nil {
+		t.Fatalf("load result error = %#v", loadResult["error"])
+	}
+	if len(updates) != 3 {
+		t.Fatalf("load updates = %d, want 3", len(updates))
+	}
+	if updates[0]["sessionUpdate"] != "user_message_chunk" {
+		t.Fatalf("first update = %#v", updates[0]["sessionUpdate"])
+	}
+	card := updates[1]
+	if card["sessionUpdate"] != "tool_call" || card["toolCallId"] != "turn-1/call-1" {
+		t.Fatalf("tool card id = %#v", card["toolCallId"])
+	}
+	title, _ := card["title"].(string)
+	if title == "" || len(title) >= len(hugeName) || !strings.HasPrefix(hugeName, title) {
+		t.Fatalf("tool title len = %d, want clipped prefix", len(title))
+	}
+	if _, ok := card["rawInput"]; ok {
+		t.Fatal("oversize title must omit rawInput")
+	}
+	if updates[2]["sessionUpdate"] != "agent_message_chunk" {
+		t.Fatalf("last update = %#v", updates[2]["sessionUpdate"])
+	}
+	for _, update := range updates {
+		if id, _ := update["toolCallId"].(string); strings.Contains(id, hugeCallID) {
+			t.Fatal("load emitted unsendable toolCallId")
+		}
+	}
+}
+
 func TestServeLoadFailsOnSessionUpdateWriteError(t *testing.T) {
 	agentIn, clientOut := io.Pipe()
 	clientIn, agentOut := io.Pipe()
