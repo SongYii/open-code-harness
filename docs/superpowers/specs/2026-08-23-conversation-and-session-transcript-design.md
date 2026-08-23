@@ -1,6 +1,5 @@
 # Conversation Surface and Session Transcript (Slices A / A′)
 
-- **Author:** TBD
 - **Date:** 2026-08-23
 - **Status:** Draft (pending human review)
 - **Stability:** `experimental` public surfaces; adapter and projector remain `internal`
@@ -134,10 +133,11 @@ The unused `transcript_entries` table is schema-only, reserved in the persistenc
 2. Emit ACP `tool_call` / `tool_call_update` with a session-unique `toolCallId`, a kind derived from the four builtins, and bounded `content` / `rawInput`.
 3. Keep ACP a transport adapter: no new Application port, no domain rules, no policy decisions. Shared mapping lives in `adapters/acp` as pure functions.
 4. Define an experimental session transcript JSONL schema (envelope, catalog, identity, evolution rules) that is not the audit replica and not the domain codec.
-5. Ship a library projector (`internal/harness/transcript`) and `och export-session` that read EventStore and write JSONL to an `io.Writer`.
+5. Ship a library projector (`internal/harness/transcript`) and `och export-session` that read EventStore and write JSONL to an `io.Writer`, with a `transcript.complete` trailer so a file is rejectable when truncated.
 6. Name resource bounds, failure semantics, and verification for both surfaces.
 7. Record the compaction-as-domain-events constraint and the parallel-tools honesty gap.
 8. Structure work as a real PR DAG so ACP and transcript proceed in parallel.
+9. Close the existing ACP workspace hole on `session/load` and `session/prompt` before Slice A puts tool arguments and results on the wire.
 
 ### 4.2 Non-goals (explicit exclusions)
 
@@ -158,6 +158,8 @@ The unused `transcript_entries` table is schema-only, reserved in the persistenc
 | Subagent origin, `origin` field | v0 has no subagent. |
 | Redacted export | Later, same as audit. |
 | Populating `docs/README.md` authority table | Draft, this writing pass. |
+| ACP `initialize` `protocolVersion` negotiation | Today `handleRequest` sets `initialized=true` and always reports `1` without reading the client's version (`server.go`). Out of scope. Follow-on ACP correctness PR; do not treat Slice A as covering it. |
+| Permission reverse-RPC waiter cleanup | `Decide` on `ctx.Done()` returns without deleting `s.pending[id]` (`server.go`). Cancelled approvals leak waiters. Out of scope. Follow-on ACP correctness PR. |
 
 ### 4.3 Follow-on sequence (not this spec's implementation)
 
@@ -165,6 +167,8 @@ The unused `transcript_entries` table is schema-only, reserved in the persistenc
 2. **Slice B** — ACP `session/resume` / `session/list` / `session/delete` over EventStore.
 3. **Compaction as domain events** — hard dependency before any context rewriting. Transcript and ACP then project those events. Until they exist, neither surface may claim compaction happened.
 4. **Community visualizer** — outside this repository (`och-trace-compare` or similar). Consumes Slice A′ JSONL.
+5. **ACP `initialize` protocolVersion negotiation** — not this slice (§4.2).
+6. **Permission waiter cleanup on cancel** — not this slice (§4.2).
 
 ---
 
@@ -259,6 +263,8 @@ sequenceDiagram
 ---
 
 ## 6. Slice A — ACP conversation projection
+
+`session/new` already rejects a non-empty `cwd` that does not equal the assembly workspace. `session/load` and `session/prompt` do not: load discards `LoadSession`'s `WorkspaceRoot` (`server.go` `sessionLoad`), and prompt never loads before `RunTurn`. That hole exists today (user/assistant text on load; foreign history prefixed into a catalog-backed prompt). Slice A enlarges it by putting tool arguments, results, and failure text on ACP. Workspace admission is specified in §6.11 and assigned to PR 2 so it lands **before** PR 5 replays tool payloads.
 
 ### 6.1 Placement
 
@@ -357,7 +363,7 @@ Source: pinned `History.ReadStream` (already in `server.replay`, page size 256, 
 
 `rawInput`: if `Arguments` is a JSON object or array, pass it as a JSON value; if it is not valid JSON, omit `rawInput` (transcript still has the string). `rawOutput` is an ACP object; tool `Content` is a string — **do not wrap it in a fake object**. Use `content: [{type:"content", content:{type:"text", text: ...}}]`.
 
-Replay of a **running** session is allowed (`LoadSession` succeeds on `active`). The last tool card may remain `in_progress`. That is a correct snapshot, not a torn conversation: pinned head protocol.
+Replay of an **open** session is allowed (`LoadSession` succeeds on `active`, including idle sessions with `ActiveTurn == nil`). Replay of a session whose `ActiveTurn != nil` is also allowed; the last tool card may remain `in_progress`. That is a correct pinned-head snapshot, not a torn conversation. A session whose `WorkspaceRoot` does not match the assembly workspace is **not** replayed (§6.11).
 
 Do not emit `session/request_permission` on load.
 
@@ -401,7 +407,7 @@ Transcript is the untruncated hang-point relative to ACP: it carries the domain 
 | --- | --- | --- |
 | Parse / non-object line | `-32700` | n/a |
 | Unknown method | `-32601` | n/a |
-| Bad params, unknown session on requests, cwd mismatch | `-32602` | n/a |
+| Bad params, unknown session on requests, cwd mismatch, **session `WorkspaceRoot` ≠ assembly workspace** | `-32602` `invalid params` | n/a |
 | Prompt already in flight | `-32600` `a prompt is already in flight for this session` | n/a |
 | Turn completed | `stopReason: end_turn` | settles |
 | Turn interrupted (implemented: any interrupted, or cancel category, or ctx done) | `stopReason: cancelled` | settles |
@@ -428,8 +434,22 @@ Raw engine and store messages never appear on the wire (unchanged).
 7. Clip tests: a tool content string over 16 KiB is clipped at a UTF-8 boundary and may gain `\n[truncated]`; a 768 KiB+ assistant chunk is clipped at a code-point boundary; a `rawInput` object whose compact JSON exceeds 16 KiB is omitted rather than truncated to invalid JSON.
 8. Existing initialize/new/busy/cancel tests remain green.
 9. Composition e2e (`end_to_end_test.go` pattern): catalog-backed turn with `read_file` produces at least one live `tool_call` on the duplex during `session/prompt` (assigned to PR 2, not only load).
+10. Workspace admission (PR 2): `session/load` and `session/prompt` of a session whose `WorkspaceRoot` is a different cleaned path than the assembly workspace return `-32602` and emit **no** `session/update`. Same-workspace sessions still load and prompt. Unknown session stays `-32602`. Do not distinguish “missing” from “foreign” in the wire message.
 
 Default gate stays keyless, in-memory duplex, no subprocess.
+
+### 6.11 Session workspace admission
+
+`session/new` already requires `filepath.Clean(cwd) == server.workspace` when `cwd` is non-empty. `session/load` and `session/prompt` must apply the same assembly workspace as a **session ownership** check.
+
+**Rule:** admit the RPC only when `filepath.Clean(loaded.WorkspaceRoot) == server.workspace`. Otherwise respond `-32602` `invalid params` and do not replay, do not `RunTurn`, and do not leak the foreign path or the fact that the session id exists in this store.
+
+- **`session/load`:** use the `domain.Session` already returned by `LoadSession` (today the adapter ignores it). Compare, then `replay`. Mismatch skips `replay`.
+- **`session/prompt`:** `LoadSession` (or the same compact load `RunTurn` would do) **before** `RunTurn`. Compare, then start the prompt goroutine. A foreign session must not have its history prefixed into the model (`projectPriorTurns`) and must not execute tools in the current jail under that history.
+
+This is adapter policy over an existing return value, not a new Application port. One EventStore file can hold sessions from more than one workspace (audit import, reused `-database` with a different `-workspace`, tests). Typical one-workspace deployments are not a reason to leave the invariant untested.
+
+Assigned to **PR 2** so the hole closes before PR 5 puts tool arguments and results on load replay. PR 5 keeps a regression test.
 
 ---
 
@@ -465,7 +485,7 @@ Without this owner, a new package that later imported sqlite would be caught by 
 
 One UTF-8 JSON object per line. No embedded raw newlines (same NDJSON discipline as ACP and audit). Schema name `och.session.transcript`. `formatVersion` 1.
 
-Two wire structs. One `Line` with `omitempty` cannot satisfy both key sets: empty `eventId`/`commandId` and `sequence: 0` would appear on snapshots, and `omitempty` on `Sequence` would also drop a legitimate fact sequence if it were ever zero (fact `sequence` is never omitted; EventStore sequences start at 1).
+Three wire structs (`Line`, `SnapshotLine`, `CompleteLine`). One `Line` with `omitempty` cannot satisfy the integrity-line key set: empty `eventId`/`commandId` and `sequence: 0` would appear on snapshot/complete, and `omitempty` on `Sequence` would also drop a legitimate fact sequence if it were ever zero (fact `sequence` is never omitted; EventStore sequences start at 1).
 
 Frozen key order for **fact lines** (byte-stable `encoding/json` struct field order):
 
@@ -494,6 +514,15 @@ type SnapshotLine struct {
     Type          string          `json:"type"`          // "transcript.snapshot"
     Payload       json.RawMessage `json:"payload"`
 }
+
+type CompleteLine struct {
+    FormatVersion int             `json:"formatVersion"`
+    Schema        string          `json:"schema"`
+    SessionID     string          `json:"sessionId"`
+    OccurredAt    string          `json:"occurredAt"`    // same exporter instant as the snapshot
+    Type          string          `json:"type"`          // "transcript.complete"
+    Payload       json.RawMessage `json:"payload"`
+}
 ```
 
 `sequence` is the **EventStore sequence**, not a dense transcript counter. Omitted domain types (e.g. `model.request.recorded`) appear as **gaps**. Consumers must not assume density. `eventId` / `commandId` join to the audit replica without mixing codecs. Fact lines never omit `sequence`.
@@ -501,12 +530,29 @@ type SnapshotLine struct {
 First line of every export is a snapshot, not a domain fact. Frozen keys: `formatVersion, schema, sessionId, occurredAt, type, payload`. Golden fixture (RFC3339Nano, nanoseconds present):
 
 ```json
-{"formatVersion":1,"schema":"och.session.transcript","sessionId":"session-1","occurredAt":"2026-08-23T12:00:00.000000000Z","type":"transcript.snapshot","payload":{"headSequence":12,"running":true,"stability":"experimental"}}
+{"formatVersion":1,"schema":"och.session.transcript","sessionId":"session-1","occurredAt":"2026-08-23T12:00:00.000000000Z","type":"transcript.snapshot","payload":{"headSequence":12,"open":true,"running":false,"stability":"experimental"}}
 ```
 
-`occurredAt` on the snapshot is the exporter's UTC time (RFC3339Nano) from a clock the composition injects — **not** a fabricated domain clock. Library tests pass a frozen clock. `headSequence` is the pinned `ReadStream` head. `running` is true when the pinned snapshot does not include `session.closed` and is not an empty session.
+`occurredAt` on the snapshot is the exporter's UTC time (RFC3339Nano) from a clock the composition injects — **not** a fabricated domain clock. Library tests pass a frozen clock. `headSequence` is the pinned `ReadStream` head.
 
-`UnmarshalLine` is two-arm: peek `type`; if `transcript.snapshot`, strict-decode `SnapshotLine`; otherwise strict-decode `Line`. Wrong keys for that arm fail. Trailing JSON rejected. Unknown `formatVersion` is a hard error for **our** decoder. Unknown fact `type` is skippable by **external** consumers (evolution rule in §7.5) via `DecodeSkipsUnknown`; the golden decoder for our encoder remains strict. Tests pin a snapshot golden and a fact golden.
+Snapshot payload bits are **not** “Session has no `session.closed`”. Domain sessions stay `active` after turns complete (`ActiveTurn == nil`); ACP never exposes `session/close`, so that definition would be true for almost every export. The first pinned pass reconstructs compact `domain.Session` with `domain.Apply` (existing pure replay, O(page) memory):
+
+| Field | True when | False when |
+| --- | --- | --- |
+| `open` | `Status == active` (no `session.closed` in the pinned snapshot) | `Status == closed` |
+| `running` | `ActiveTurn != nil` | idle `active` session, or closed |
+
+A finished ACP conversation is typically `open: true`, `running: false`. A turn in flight is `open: true`, `running: true`. Both bits are required; do not collapse them.
+
+Last line of every **successful** export is `transcript.complete`, same envelope as the snapshot (no `eventId` / `commandId` / `sequence`). Golden (RFC3339Nano):
+
+```json
+{"formatVersion":1,"schema":"och.session.transcript","sessionId":"session-1","occurredAt":"2026-08-23T12:00:00.000000000Z","type":"transcript.complete","payload":{"headSequence":12,"factLines":9,"open":true,"running":false}}
+```
+
+`complete.headSequence` must equal `snapshot.headSequence`. `factLines` is the number of fact lines between snapshot and complete (not counting those two integrity lines). `open` / `running` on complete echo the snapshot (same pinned head). `occurredAt` on complete is the same exporter clock instant as the snapshot (one `now` for the export).
+
+`UnmarshalLine` is three-arm: peek `type`; `transcript.snapshot` → strict-decode `SnapshotLine`; `transcript.complete` → strict-decode `CompleteLine`; otherwise strict-decode `Line`. Wrong keys for that arm fail. Trailing JSON rejected. Unknown `formatVersion` is a hard error for **our** decoder. Unknown **fact** `type` is skippable by **external** consumers (evolution rule in §7.5) via `DecodeSkipsUnknown`; `transcript.snapshot` and `transcript.complete` are **not** skippable integrity types. The golden decoder for our encoder remains strict. Tests pin snapshot, complete, and fact goldens.
 
 ### 7.3 Event type catalog (experimental)
 
@@ -514,7 +560,8 @@ Public `type` values. These coincide with **our** domain event type strings for 
 
 | `type` | Payload fields | Source domain event |
 | --- | --- | --- |
-| `transcript.snapshot` | `headSequence`, `running`, `stability` | exporter (not domain) |
+| `transcript.snapshot` | `headSequence`, `open`, `running`, `stability` | exporter (not domain) |
+| `transcript.complete` | `headSequence`, `factLines`, `open`, `running` | exporter (not domain); last line of a successful export |
 | `session.created` | `workspaceRoot` | `session.created` |
 | `session.closed` | `{}` | `session.closed` |
 | `turn.started` | `turnID`, `input` | `turn.started` |
@@ -560,7 +607,7 @@ Wall-clock: `occurredAt` is `RecordedEvent.OccurredAt` of that line. Start/end o
 
 - Surface stability: **`experimental`** until v1.0 (same language as tool-runtime / EventStore contracts).
 - Additive only: new `type` values may be added; existing names and payload keys are never reused for a different meaning.
-- External consumers **must skip unknown `type` values** (and unknown payload keys inside a known type, once we document open content). This repository's golden decoder for *our* encoder remains strict so we cannot accidentally rename a field.
+- External consumers **must skip unknown fact `type` values** (and unknown payload keys inside a known type, once we document open content). Skip-unknown does **not** apply to `transcript.snapshot` or `transcript.complete`. A consumer that implements this contract **rejects** a file whose first line is not snapshot or whose last line is not complete, even if it skips unknown facts in between. This repository's golden decoder for *our* encoder remains strict so we cannot accidentally rename a field.
 - `formatVersion` increments only for breaking envelope changes. Payload additive fields on an existing type do not bump `formatVersion`; they require a spec amendment and new fixtures.
 - Domain schemaVersion stays 1 and is **not** the transcript `formatVersion`.
 
@@ -573,7 +620,8 @@ type StreamReader interface {
 
 type Result struct {
     HeadSequence uint64
-    Lines        uint64
+    FactLines    uint64
+    Open         bool
     Running      bool
 }
 
@@ -581,27 +629,28 @@ func WriteSession(ctx context.Context, src StreamReader, sessionID domain.Sessio
 func ProjectRecord(record domain.RecordedEvent, steps map[domain.TurnID]uint32) (Line, bool, error)
 func MarshalLine(Line) ([]byte, error)
 func MarshalSnapshot(SnapshotLine) ([]byte, error)
-func UnmarshalLine([]byte) (Decoded, error) // two-arm: SnapshotLine or Line
+func MarshalComplete(CompleteLine) ([]byte, error)
+func UnmarshalLine([]byte) (Decoded, error) // three-arm: SnapshotLine, CompleteLine, or Line
 ```
 
-`ProjectRecord` returns a fact `Line`. It does not emit snapshots. Explicit `ok=false` omit for `model.request.recorded` and `policy.decision.recorded` only. Any other domain type not in the catalog table is `unsupported_event_type` (fail closed) — not a silent skip. `steps` is the per-turn `assistant.message.started` counter used for assistant rows and for tool terminals (§7.4).
+`ProjectRecord` returns a fact `Line`. It does not emit snapshots or the complete trailer. Explicit `ok=false` omit for `model.request.recorded` and `policy.decision.recorded` only. Any other domain type not in the catalog table is `unsupported_event_type` (fail closed) — not a silent skip. `steps` is the per-turn `assistant.message.started` counter used for assistant rows and for tool terminals (§7.4).
 
 `WriteSession`:
 
-1. Parse session id; invalid → error `invalid_session_id`.
+1. Parse session id; invalid → error `invalid_session_id`. Write nothing.
 2. Pin head on the first page (`AfterSequence=0`, `Limit=256`, then pass `HeadVersion`) — same protocol as ACP `replay` and `ReadWholeStreamPinned`.
 3. If the first page is empty and `HeadVersion==0`, fail `session_not_found` (do not write a snapshot of nothing).
-4. Write `transcript.snapshot`.
-5. For each record in order: `ProjectRecord`; if `ok`, `MarshalLine`, check size, write line + `\n`.
-6. Do not buffer the whole session in memory beyond one page (256 records). Snapshot `running` can be computed on the fly (`session.closed` seen or not); if `session.closed` arrives on a later page, the snapshot already said `running: true` only if we did not yet know — **fix:** first walk is streaming, so snapshot cannot know `session.closed` at the end without a second pass or deferring the snapshot.
+4. **Double pinned read**, both passes the same `HeadVersion`, memory O(page), no payload buffer:
+   1. First pass: `domain.Apply` each record onto a compact `Session`; count fact lines that `ProjectRecord` would emit (`ok=true`); fail closed on corrupt/unreadable canonical payloads. Then `open = (session.Status == active)`, `running = (session.ActiveTurn != nil)`.
+   2. Second pass: write `transcript.snapshot`; write each fact line; write `transcript.complete`.
+5. If any step after snapshot starts fails (ctx cancel, `line_limit`, store corrupt), **do not** write `transcript.complete`. Return error. The writer may already contain a snapshot and a prefix of facts — that prefix is **not** a successful export.
+6. Return nil only after the complete line is written. `Result.FactLines` equals `complete.factLines`.
 
-**Snapshot placement decision:** write the snapshot **last** would break “header first” consumers. Write it **first** with `running` derived without a second pass as: `running = !(last event of the pinned snapshot is session.closed)` requires knowing the last event.
-
-Default (this spec): **two-phase without buffering payloads** — (a) pin head; (b) if `HeadVersion==0` fail; (c) optionally `Load`-less: we do not have compact state on a reader. Cheap check: page until end counting only whether any `session.closed` exists **or** peek by streaming twice. Double ReadStream of a pinned head is consistent and acceptable (sessions are small; 8 steps × a few dozen events). Implementation: `WriteSession` may scan once for closed/head then write snapshot then scan again for lines, **or** buffer only booleans. It must not buffer all payloads.
-
-Chosen algorithm: single streaming pass that **buffers projected lines in a bounded spill** is rejected (unbounded). **Double pinned read** is the default: first pass computes `running` and validates contiguity; second pass writes snapshot then lines. Both passes use the same `HeadVersion`. Memory stays O(page).
+Omitted types still create `sequence` gaps. Completeness is the trailer, not “max fact sequence == headSequence”.
 
 Do not write back into EventStore. `StreamReader` has no `Append`. Tests using `adapters/memory` are in `_test.go` only.
+
+**Consumer contract:** treat a stream or file as valid iff (a) first line is `transcript.snapshot`, (b) last line is `transcript.complete`, (c) `complete.headSequence == snapshot.headSequence`, (d) the number of intervening fact lines equals `complete.factLines`, (e) no bytes follow the complete newline. Otherwise reject the whole artifact; do not interpret a prefix. Sequence gaps do not excuse a missing trailer.
 
 ### 7.7 Resource bounds
 
@@ -627,18 +676,20 @@ Do not write back into EventStore. `StreamReader` has no `Append`. Tests using `
 | Invalid session id | `invalid_session_id` |
 | Session never created (`HeadVersion==0`) | `session_not_found` |
 | Pinned head unservable | store `InvalidRead`; fail closed |
-| Mid-export ctx cancel | stop; incomplete output; non-zero exit; no `.ok` sidecar (there is none) |
-| Line over 2 MiB | `line_limit`; non-zero exit |
+| Mid-export ctx cancel | stop; **do not** write `transcript.complete`; non-zero exit. Stdout may contain a snapshot-prefixed prefix — consumers reject it. `-output` must not rename the temp file onto the destination (§7.9) |
+| Line over 2 MiB | `line_limit`; do not write complete; non-zero exit |
 | Unknown / unreadable canonical domain payload (`UnmarshalRecordedEvent` fails, including unknown event type) | fail closed (`unsupported event type` / store corrupt). `sqlite.ReadStream` already maps this to `StoreCodeCorrupt` (`read.go`). Do **not** skip. Skip-unknown applies only to *external* transcript JSONL `type` values (§7.5), not to EventStore records. Export-time tolerance for future domain types is a domain/sqlite codec change with its own spec |
 | Known domain type not in the transcript catalog (`model.request.recorded`, `policy.decision.recorded`) | omit the line (gap in `sequence`); not an error |
 | Unknown domain schemaVersion on a record | fail closed (`unsupported_schema_version`) — same as domain codec |
-| Session still running (no `session.closed`) | success; snapshot `running: true`; last facts may be a running turn |
+| Session `open` with `ActiveTurn == nil` | success; snapshot `open: true`, `running: false` |
+| Session with `ActiveTurn != nil` | success; snapshot `open: true`, `running: true`; last facts may be a running turn |
+| Session closed | success; snapshot `open: false`, `running: false` |
 | Live writer holds `runtime_leases` | does not fence the reader (no `AcquireLease`). The reader waits up to `BusyTimeout` (default 5s) on `SQLITE_BUSY` rather than failing immediately |
-| Torn write of the output file | operator sees non-zero exit; no digest chain (this is not audit) |
+| Torn / partial output file | no `transcript.complete` trailer → consumers reject. `-output` leaves the destination untouched (temp file removed). Not an audit digest chain |
 
 CLI writes JSONL to stdout by default, or `-output PATH`. Diagnostics only on stderr (same stdout discipline as `-acp`, inverted: here stdout *is* the transcript).
 
-Export is not crash-convergent like Slice 3. It is a one-shot projection. Retry is the operator's.
+Export is not crash-convergent like Slice 3. Completeness is the `transcript.complete` line plus, for `-output`, atomic publish. Retry is the operator's.
 
 ### 7.9 CLI and composition
 
@@ -656,21 +707,31 @@ If `args[0] == "export-session"`, parse a dedicated `FlagSet`. The existing no-s
 func ExportSession(ctx context.Context, databasePath string, sessionID domain.SessionID, out io.Writer) (transcript.Result, error)
 ```
 
-Composition is a library and must not print. cmd uses `:=` on the result (no `transcript` import) and formats stderr `och: exported session SESSION lines=N head=M running=bool` from `Result.Lines`, `HeadSequence`, and `Running`. An equivalent struct defined in composition is acceptable if returning `transcript.Result` is awkward at the cmd boundary; the numbers must not be dropped.
+Composition is a library and must not print. cmd uses `:=` on the result (no `transcript` import) and formats stderr `och: exported session SESSION facts=N head=M open=bool running=bool` from `Result.FactLines`, `HeadSequence`, `Open`, and `Running`. An equivalent struct defined in composition is acceptable if returning `transcript.Result` is awkward at the cmd boundary; the numbers must not be dropped.
 
-Do not call `composition.Open` / `runtime.Launch` on this path.
+**Atomic `-output`:** `ExportSession` writes to an `io.Writer` and does not rename. When `-output PATH` is set, `cmd/och` must:
+
+1. Create a temporary file in the same directory as `PATH` (so `rename` is atomic on the same filesystem).
+2. Pass that file to `ExportSession`.
+3. On success: `Sync` the file, close it, `Rename` onto `PATH`.
+4. On error or cancel: close, remove the temp file, leave `PATH` untouched (absent or previous complete file).
+
+Stdout mode writes directly to stdout. A cancelled stdout export has no complete line; consumers reject it. Do not call `composition.Open` / `runtime.Launch` on this path.
 
 ### 7.10 Tests (Slice A′)
 
-1. Golden JSONL fixtures under `internal/harness/transcript/testdata/`, encoded and decoded byte-stable (copy the discipline of `internal/harness/domain/codec_test.go` and `testdata/*.jsonl`), including a **snapshot-line** golden with RFC3339Nano and no `eventId`/`commandId`/`sequence` keys.
+1. Golden JSONL fixtures under `internal/harness/transcript/testdata/`, encoded and decoded byte-stable (copy the discipline of `internal/harness/domain/codec_test.go` and `testdata/*.jsonl`), including **snapshot** and **complete** goldens with RFC3339Nano and no `eventId`/`commandId`/`sequence` keys.
 2. `ProjectRecord` table: every domain type either produces a frozen payload, is explicitly omitted (`model.request.recorded`, `policy.decision.recorded`), or is not constructible; do not treat unknown types as skip.
 3. `stepRef` / `stepIndex` alignment on a two-step `read_file` history (use domain events, not a live model): started copies `ToolCallStarted.StepIndex`; completed uses `steps[turnID]`; both match.
 4. Usage line present when `model.usage.recorded` exists; absent when it does not (no zero fill).
-5. Unknown future transcript JSONL `type` in a consumer helper `DecodeSkipsUnknown` (small exported skip-decoder for tests / docs). Our encoder's strict decoder still rejects it.
+5. Unknown future **fact** `type` in a consumer helper `DecodeSkipsUnknown`. Snapshot/complete are never skipped. Our encoder's strict decoder still rejects unknown types.
 6. Double-pinned read: appending after the first page's pin is not visible (memory store: project a clone at a fixed head).
 7. Empty store / unknown session → `session_not_found`, zero bytes written after error.
-8. Line-limit test with an oversized assistant text fixture.
+8. Line-limit test with an oversized assistant text fixture: error, no `transcript.complete` line.
 9. Architecture tests: production `transcript` files do not import adapters; composition may import transcript; domain/application/acp/sqlite/runtime/engine/policy/tools must not.
+10. Idle completed session (turns done, no `session.closed`): snapshot `open: true`, `running: false`. In-flight turn: `running: true`. Closed session: `open: false`, `running: false`.
+11. Cancel after snapshot is written: `WriteSession` returns error and the writer has **no** complete line. A helper that implements the consumer contract rejects that buffer.
+12. Successful export's last line is complete; `factLines` matches the intervening count.
 
 ---
 
@@ -751,8 +812,9 @@ Tool runtime contract: sequential execution; compact Session allows one active I
 - `permissionToolCall.ToolCallID` format change (experimental).
 - `updateSink` holds one outstanding `LiveTool`, maps more `RuntimeEventType`s, and swallows `session/update` write errors.
 - `server.project` uses `ProjectRecordedEvent`.
+- `session/load` and `session/prompt` compare `LoadSession`'s `WorkspaceRoot` to the assembly workspace (§6.11).
 
-No change to `Sessions` / `History` interfaces in `server.go`.
+No change to `Sessions` / `History` interfaces in `server.go`. The adapter starts using the `Session` value `LoadSession` already returns.
 
 ### 10.2 Transcript (new)
 
@@ -834,6 +896,8 @@ If a consumer wants to persist JSONL, they copy the file. Re-import into EventSt
 | Pathological transcript line | 2 MiB fail-closed |
 | Confused deputy: treating JSONL as re-importable history | No import API; docs state not writable to EventStore |
 | `workspaceRoot` in `session.created` | Already a domain fact; not newly introduced |
+| ACP `session/load` / `session/prompt` of a foreign-workspace session | Adapter compares `LoadSession.WorkspaceRoot` to the assembly workspace before replay or `RunTurn` (§6.11). `-32602`, no updates, no leaked path |
+| Partial transcript file looking complete | `transcript.complete` trailer required; `-output` temp+fsync+rename; consumers reject missing trailer |
 | Redaction of secrets in tool output | Out of slice (same as audit redacted export) |
 
 Auth: none. `authMethods` stays empty. Export is whoever can read the SQLite file.
@@ -845,7 +909,7 @@ Auth: none. `authMethods` stays empty. Export is whoever can read the SQLite fil
 No OpenTelemetry in this slice (milestone 10).
 
 - ACP: existing stderr diagnostics from `cmd/och -acp` only; protocol writer remains ACP-only.
-- Transcript CLI: progress is not printed per line (would drown stderr). On success, one-line stderr from `composition.ExportSession`'s `transcript.Result`: `och: exported session SESSION lines=N head=M running=bool`. On failure, `och: …` + non-zero exit. Composition does not print.
+- Transcript CLI: progress is not printed per line (would drown stderr). On success, one-line stderr from `composition.ExportSession`'s `transcript.Result`: `och: exported session SESSION facts=N head=M open=bool running=bool`. On failure, `och: …` + non-zero exit. Composition does not print.
 - Metrics: none required. Tests count lines and types.
 - Alerting: none (single-process CLI / stdio agent).
 
@@ -897,9 +961,10 @@ Only genuine remaining forks. Defaults are proposed; the two-surface split is **
 
 1. **Live ACP `rawInput` / result content.** Default: omit until an engine-contract follow-on enriches `RuntimeEvent`. Alternative: ACP tails EventStore on `RuntimeAppendCompleted` (rejected as mixed-path complexity).
 2. **`stopReason` spec/code drift.** Milestone 6 required `cancelled` only for `caller_canceled`; implemented `stopReason()` treats every `TurnStatusInterrupted` as `cancelled`. Default: **do not change in this slice** (not a conversation-projection bug). Slice B or a tiny follow-on may restore the spec.
-3. **Snapshot line vs stderr-only metadata.** Default: first JSONL line is `transcript.snapshot` so a file is self-describing. Alternative: no snapshot type (pure domain facts only). Prefer the snapshot.
-4. **`stepIndex` on assistant lines is projected, not stored.** Default: count `assistant.message.started` per turn. Alternative: add `StepIndex` to domain assistant events (rejected: would change the domain contract).
-5. **CLI shape.** Default: subcommand `export-session`. Alternative: `-export-session` on the serve binary (rejected: pulls in `Open` requirements).
+3. **`stepIndex` on assistant lines is projected, not stored.** Default: count `assistant.message.started` per turn. Alternative: add `StepIndex` to domain assistant events (rejected: would change the domain contract).
+4. **CLI shape.** Default: subcommand `export-session`. Alternative: `-export-session` on the serve binary (rejected: pulls in `Open` requirements).
+
+Resolved during review (no longer open): snapshot is the first line **and** `transcript.complete` is the last line of a successful export; `running` is `ActiveTurn != nil`, not “not closed”.
 
 ---
 
@@ -917,6 +982,9 @@ Only genuine remaining forks. Defaults are proposed; the two-surface split is **
 | Copying DSH names “for compatibility with dsh-trace-compare” | High | Own catalog; community tools adapt to us |
 | Double ReadStream cost on large sessions | Low | Page size 256; v0 sessions are small; bound is honest |
 | 768 KiB ACP clip surprises clients that expected full 1 MiB assistant text | Low | Transcript has the domain text; document the bound |
+| `running: true` on every idle ACP session | High | `open` vs `running` from compact `domain.Apply` (§7.2) |
+| Truncated JSONL accepted as a full trajectory | High | `transcript.complete` trailer; `-output` atomic publish; consumers reject missing trailer |
+| Slice A enlarges foreign-workspace history on ACP | High | Workspace admission on load and prompt before tool replay (§6.11) |
 
 ---
 
@@ -956,10 +1024,14 @@ Only genuine remaining forks. Defaults are proposed; the two-surface split is **
 | C-18 | `sqlite.OpenReader(ReaderConfig)` reuses WAL, `busy_timeout`, foreign keys, deny-list; no lease, no migrate, `query_only` | Must not fence a live `cmd/och -acp`; must not `SQLITE_BUSY` immediately |
 | C-19 | `och export-session` via `composition.ExportSession(...) (transcript.Result, error)` | cmd stays thin and formats the diagnostic from `Result`; composition does not print |
 | C-20 | Do not write `transcript_entries` or change audit codec | Different products; schema-only table is not this JSONL |
-| C-21 | Double pinned ReadStream for snapshot `running` | Avoid buffering the session; head is immutable for the export |
-| C-22 | External consumers skip unknown **transcript JSONL** `type`s; our encoder tests stay strict. Unknown **canonical domain** types fail closed (`StoreCorrupt`) | EventStore codec unchanged; skip-unknown is not a second decoder |
+| C-21 | Double pinned ReadStream; first pass `domain.Apply` for `open`/`running` | Avoid buffering payloads; head is immutable; `running` is `ActiveTurn != nil`, not “not closed” |
+| C-22 | External consumers skip unknown **fact** JSONL `type`s; snapshot/complete are required. Unknown **canonical domain** types fail closed (`StoreCorrupt`) | EventStore codec unchanged; skip-unknown is not a second decoder and does not waive the trailer |
 | C-23 | `updateSink` remembers one `LiveTool` so Code-only `tool.execution.failed` still gets `toolCallId` | Sequential `executeOneTool`; do not enrich `RuntimeEvent` |
-| C-24 | Two wire structs: `Line` (facts) and `SnapshotLine` (no `eventId`/`commandId`/`sequence`) | One struct cannot satisfy both strict key sets |
+| C-24 | Three wire structs: `Line` (facts), `SnapshotLine`, `CompleteLine` | Integrity lines must not grow empty `eventId`/`sequence` keys |
+| C-25 | `session/load` and `session/prompt` require `WorkspaceRoot` = assembly workspace | Existing hole; Slice A would enlarge tool args/results onto ACP. PR 2, before PR 5 replay |
+| C-26 | Successful export ends with `transcript.complete`; consumers reject files without it | Sequence gaps make `headSequence` insufficient; CLI exit code does not travel with the file |
+| C-27 | `-output` is temp + fsync + rename; stdout completeness is the trailer only | Same-directory rename is atomic; failed export must not replace a previous good file |
+| C-28 | ACP `protocolVersion` negotiation and permission waiter cleanup stay out of this slice | Milestone 6 leftovers; named in §4.2 so PR 2 is not assumed to cover them |
 
 ---
 
@@ -984,12 +1056,12 @@ PR4 (sqlite reader) ────────────────────
 ### PR 2: ACP live tool_call mapping, shared projector functions, permission id, notification swallow
 - **Files/components affected:** `internal/harness/adapters/acp/project.go`, `internal/harness/adapters/acp/project_test.go`, `internal/harness/adapters/acp/protocol.go`, `internal/harness/adapters/acp/server.go`, `internal/harness/adapters/acp/server_test.go`, `internal/harness/composition/end_to_end_test.go`
 - **Dependencies:** None
-- **Description:** Add `LiveTool` / `ProjectRuntimeEvent` / `ProjectRecordedEvent` / `ToolCallID` / `ToolKind` and wire `updateSink` to remember one outstanding tool and emit `tool_call` / `tool_call_update` for live `session/prompt`. A Code-only `tool.execution.failed` must still update the namespaced `toolCallId` (table-test; do not skip). Change permission `toolCallId` to the namespaced form. Swallow `session/update` write errors so they cannot `CodeDelivery` the turn; prompt result writes stay `_ = writeResult`. Table-test every runtime event type. Add a composition duplex e2e that a catalog-backed `read_file` turn produces at least one live `tool_call` during `session/prompt`. Leave `session/load` behavior on the old `project()` switch until PR 5 so this PR stays reviewable as live mapping only (extracting `ProjectRecordedEvent` is allowed; `replay` may keep calling the old function).
+- **Description:** Add `LiveTool` / `ProjectRuntimeEvent` / `ProjectRecordedEvent` / `ToolCallID` / `ToolKind` and wire `updateSink` to remember one outstanding tool and emit `tool_call` / `tool_call_update` for live `session/prompt`. A Code-only `tool.execution.failed` must still update the namespaced `toolCallId` (table-test; do not skip). Change permission `toolCallId` to the namespaced form. Swallow `session/update` write errors so they cannot `CodeDelivery` the turn; prompt result writes stay `_ = writeResult`. Table-test every runtime event type. Add a composition duplex e2e that a catalog-backed `read_file` turn produces at least one live `tool_call` during `session/prompt`. **Workspace admission (§6.11):** `session/load` and `session/prompt` reject a session whose cleaned `WorkspaceRoot` ≠ assembly workspace with `-32602` and no `session/update` / no `RunTurn`. Same-workspace sessions still work. Leave `session/load` *projection* on the old `project()` switch until PR 5 so this PR stays reviewable as live mapping plus the ownership gate (extracting `ProjectRecordedEvent` is allowed; `replay` may keep calling the old function after the workspace check).
 
 ### PR 3: Transcript schema, codec, golden fixtures, architecture owner
 - **Files/components affected:** `internal/harness/transcript/` (`codec.go`, `codec_test.go`, `testdata/*.jsonl`), `internal/harness/architecture/dependencies_test.go`
 - **Dependencies:** None
-- **Description:** Introduce `ownerTranscript` with the §7.1 outbound **and reverse** import matrix, and add `ownerTranscript` to the `TestOnlyCompositionAndRuntimeMayNameAnAdapter` owners slice (not the adapters list). Package ships `Line`, `SnapshotLine`, `MarshalLine`, `MarshalSnapshot`, two-arm `UnmarshalLine`, `ProjectRecord` (single-record, in-memory), frozen fact **and snapshot** fixtures (RFC3339Nano), `DecodeSkipsUnknown` for external JSONL types, and line-limit tests. No CLI, no sqlite, no composition import yet. Production files import only domain/application/stdlib.
+- **Description:** Introduce `ownerTranscript` with the §7.1 outbound **and reverse** import matrix, and add `ownerTranscript` to the `TestOnlyCompositionAndRuntimeMayNameAnAdapter` owners slice (not the adapters list). Package ships `Line`, `SnapshotLine`, `CompleteLine`, `MarshalLine`, `MarshalSnapshot`, `MarshalComplete`, three-arm `UnmarshalLine`, `ProjectRecord` (single-record, in-memory), frozen fact **and snapshot and complete** fixtures (RFC3339Nano), `DecodeSkipsUnknown` for unknown *fact* types only (snapshot/complete are never skipped), and line-limit tests. No CLI, no sqlite, no composition import yet. Production files import only domain/application/stdlib.
 
 ### PR 4: SQLite read-only opener
 - **Files/components affected:** `internal/harness/adapters/sqlite/open.go` (or `reader.go`), `internal/harness/adapters/sqlite/reader_test.go`
@@ -999,17 +1071,17 @@ PR4 (sqlite reader) ────────────────────
 ### PR 5: ACP session/load replay through the same projector
 - **Files/components affected:** `internal/harness/adapters/acp/server.go`, `internal/harness/adapters/acp/server_test.go`, `internal/harness/composition/end_to_end_test.go`
 - **Dependencies:** PR 2
-- **Description:** Point `replay`/`project` at `ProjectRecordedEvent` so `session/load` emits tool cards, failed/interrupted assistant text, and still omits usage/policy/model-request/audit. Add NDJSON tests for a tool-bearing history and a composition e2e that `session/load` after a catalog-backed `read_file` turn **in addition to** the live `tool_call` e2e landed in PR 2. Load write failure still fails the RPC with the existing `-32603` `session prompt failed` constant (do not rename).
+- **Description:** Point `replay`/`project` at `ProjectRecordedEvent` so `session/load` emits tool cards, failed/interrupted assistant text, and still omits usage/policy/model-request/audit. Add NDJSON tests for a tool-bearing history and a composition e2e that `session/load` after a catalog-backed `read_file` turn **in addition to** the live `tool_call` e2e landed in PR 2. Keep a regression test that a foreign-workspace session still gets `-32602` and no tool-card updates after this replay lands. Load write failure still fails the RPC with the existing `-32603` `session prompt failed` constant (do not rename).
 
 ### PR 6: EventStore → transcript session writer
 - **Files/components affected:** `internal/harness/transcript/export.go`, `internal/harness/transcript/export_test.go`
 - **Dependencies:** PR 3
-- **Description:** Implement `WriteSession` over `StreamReader` with double pinned read, `MarshalSnapshot` first line, streaming pages of 256, `session_not_found`, ctx cancel, and `stepRef` alignment tests against a two-step recorded history (started copies `ToolCallStarted.StepIndex`; terminals use `steps[turnID]`). Fail closed if `ReadStream` returns store corrupt / unreadable canonical payload. Memory EventStore is used from `_test.go` only.
+- **Description:** Implement `WriteSession` over `StreamReader` with double pinned read, first pass `domain.Apply` for `open`/`running`, `MarshalSnapshot` first line, fact lines, `MarshalComplete` last line, streaming pages of 256, `session_not_found`, ctx cancel (no complete line), idle-vs-in-flight snapshot bits, and `stepRef` alignment tests against a two-step recorded history (started copies `ToolCallStarted.StepIndex`; terminals use `steps[turnID]`). Fail closed if `ReadStream` returns store corrupt / unreadable canonical payload. Memory EventStore is used from `_test.go` only.
 
 ### PR 7: `composition.ExportSession` and `och export-session`
 - **Files/components affected:** `internal/harness/composition/export.go`, `internal/harness/composition/export_test.go`, `cmd/och/main.go`, `cmd/och/main_test.go` (if present)
 - **Dependencies:** PR 4, PR 6
-- **Description:** Wire read-only sqlite + `transcript.WriteSession` as `composition.ExportSession(...) (transcript.Result, error)`. `cmd/och` parses subcommand `export-session -database -session [-output]`, does not call `composition.Open`, does not import `transcript`, and prints the §14 one-liner from `Result`. Tests cover missing DB, unknown session, stdout JSONL starting with `transcript.snapshot`, the stderr diagnostic, and cmd import restrictions. Serve-mode flags including `-acp` remain valid.
+- **Description:** Wire read-only sqlite + `transcript.WriteSession` as `composition.ExportSession(...) (transcript.Result, error)`. `cmd/och` parses subcommand `export-session -database -session [-output]`, does not call `composition.Open`, does not import `transcript`, and prints the §14 one-liner from `Result`. `-output PATH` uses a same-directory temp file, `Sync`, and `Rename`; a failed export must leave `PATH` untouched and must not produce a destination file without `transcript.complete`. Tests cover missing DB, unknown session, stdout JSONL starting with snapshot and ending with complete, cancelled `-output` leaving dest absent, the stderr diagnostic, and cmd import restrictions. Serve-mode flags including `-acp` remain valid.
 
 ### PR 8: Implemented-contract docs and Chinese reading copies
 - **Files/components affected:** `docs/architecture/acp-v1.md`, `docs/architecture/acp-v1.zh-CN.md`, `docs/architecture/session-transcript.md`, `docs/architecture/session-transcript.zh-CN.md`, `docs/architecture/sqlite-eventstore.md` (OpenReader subsection), `docs/architecture/sqlite-eventstore.zh-CN.md`, `docs/architecture/conversation-and-transcript-evidence.md`, `docs/README.md` (authority rows — only in this PR, after implementation)

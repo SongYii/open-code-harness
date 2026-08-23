@@ -126,10 +126,11 @@ SQLite 是唯一在线提交权威。`sqlite.Open` 总会 `AcquireLease`（`open
 2. 发出带会话唯一 `toolCallId`、由四个内置工具导出的 kind、以及有界 `content` / `rawInput` 的 ACP `tool_call` / `tool_call_update`。
 3. ACP 保持传输适配器：无新 Application 端口，无领域规则。共享映射作为纯函数住在 `adapters/acp`。
 4. 定义 experimental 会话转录 JSONL schema（信封、目录、身份、演进规则），它既不是审计副本也不是领域编解码器。
-5. 交付库投影器（`internal/harness/transcript`）与 `och export-session`，从 EventStore 读并向 `io.Writer` 写 JSONL。
+5. 交付库投影器（`internal/harness/transcript`）与 `och export-session`，从 EventStore 读并向 `io.Writer` 写 JSONL，并以 `transcript.complete` 尾行使截断文件可被拒收。
 6. 为两个面命名资源上限、失败语义与验证方法。
 7. 记录“压缩必须是领域事件”约束以及并行工具的诚实缺口。
 8. 把工作结构化为真实 PR DAG，使 ACP 与转录可并行。
+9. 在切片 A 把工具参数与结果送上 ACP 线之前，先关上既有的 `session/load` / `session/prompt` 工作区漏洞。
 
 ### 4.2 非目标（显式排除）
 
@@ -150,6 +151,8 @@ SQLite 是唯一在线提交权威。`sqlite.Open` 总会 `AcquireLease`（`open
 | 子代理 origin / `origin` 字段 | v0 无子代理。 |
 | 脱敏导出 | 更后，与审计相同。 |
 | 填入 `docs/README.md` 权威表 | 本写作回合为草稿。 |
+| ACP `initialize` 的 `protocolVersion` 协商 | 今日 `handleRequest` 把 `initialized=true` 并一律回报 `1`，不读客户端版本（`server.go`）。本切片范围外。后续 ACP 正确性 PR；不要把切片 A 当成已覆盖。 |
+| 权限反向 RPC waiter 清理 | `Decide` 在 `ctx.Done()` 时返回而不删除 `s.pending[id]`（`server.go`）。取消的审批会泄漏 waiter。本切片范围外。后续 ACP 正确性 PR。 |
 
 ### 4.3 后续顺序（非本规格的实现）
 
@@ -157,6 +160,8 @@ SQLite 是唯一在线提交权威。`sqlite.Open` 总会 `AcquireLease`（`open
 2. **切片 B** — 在 EventStore 上的 ACP `session/resume` / `session/list` / `session/delete`。
 3. **作为领域事件的压缩** — 任何上下文改写之前的硬依赖。然后转录与 ACP 投影那些事件。在它们存在之前，任一表面都不得声称发生过压缩。
 4. **社区可视化器** — 本仓库之外（`och-trace-compare` 或类似）。消费切片 A′ JSONL。
+5. **ACP `initialize` protocolVersion 协商** — 非本切片（§4.2）。
+6. **取消时的权限 waiter 清理** — 非本切片（§4.2）。
 
 ---
 
@@ -205,6 +210,8 @@ flowchart TB
 ---
 
 ## 6. 切片 A — ACP 对话投影
+
+`session/new` 已拒绝不等于组合根工作区的非空 `cwd`。`session/load` 与 `session/prompt` 没有：load 丢弃 `LoadSession` 的 `WorkspaceRoot`（`server.go` `sessionLoad`），prompt 在 `RunTurn` 之前从不加载。该洞今天就在（load 上的用户/助手文本；目录启用的 prompt 会把外来历史前缀进模型）。切片 A 会把工具参数、结果和失败文本送上 ACP，从而放大它。工作区准入见 §6.11，归入 PR 2，使它在 PR 5 回放工具载荷**之前**落地。
 
 ### 6.1 放置
 
@@ -303,7 +310,7 @@ Kind 映射（封闭，仅内置名）：
 
 `rawInput`：若 `Arguments` 是 JSON 对象或数组，作为 JSON 值传递；若不是合法 JSON，省略 `rawInput`（转录仍有该字符串）。`rawOutput` 是 ACP 对象；工具 `Content` 是字符串——**不要包一层假对象**。使用 `content: [{type:"content", content:{type:"text", text: ...}}]`。
 
-**运行中**会话的回放是允许的（`LoadSession` 在 `active` 上成功）。最后一张工具卡片可以保持 `in_progress`。那是正确快照，不是撕裂的对话：钉住 head 协议。
+**未关闭**会话的回放是允许的（`LoadSession` 在 `active` 上成功，包括 `ActiveTurn == nil` 的空闲会话）。`ActiveTurn != nil` 的会话也可回放；最后一张工具卡片可以保持 `in_progress`。那是正确的钉住 head 快照，不是撕裂的对话。`WorkspaceRoot` 与组合根工作区不匹配的会话**不**回放（§6.11）。
 
 Load 上不发出 `session/request_permission`。
 
@@ -347,7 +354,7 @@ Load 上不发出 `session/request_permission`。
 | --- | --- | --- |
 | 解析 / 非对象行 | `-32700` | n/a |
 | 未知方法 | `-32601` | n/a |
-| 坏参数、请求上未知 session、cwd 不匹配 | `-32602` | n/a |
+| 坏参数、请求上未知 session、cwd 不匹配、**session `WorkspaceRoot` ≠ 组合根工作区** | `-32602` `invalid params` | n/a |
 | prompt 已在飞行 | `-32600` `a prompt is already in flight for this session` | n/a |
 | 轮次 completed | `stopReason: end_turn` | 结算 |
 | 轮次 interrupted（已实现：任何 interrupted，或取消类别，或 ctx 结束） | `stopReason: cancelled` | 结算 |
@@ -374,8 +381,22 @@ Load 上不发出 `session/request_permission`。
 7. 裁剪测试：超过 16 KiB 的工具内容在 UTF-8 边界裁剪并可获得 `\n[truncated]`；768 KiB+ 助手块在码点边界裁剪；compact JSON 超过 16 KiB 的 `rawInput` 对象被省略而不是截成非法 JSON。
 8. 既有 initialize/new/busy/cancel 测试保持绿色。
 9. 组合根 e2e（`end_to_end_test.go` 模式）：目录启用的 `read_file` 轮次在 `session/prompt` 期间于双工上至少产生一次现场 `tool_call`（归入 PR 2，不只是 load）。
+10. 工作区准入（PR 2）：`session/load` 与 `session/prompt` 对 cleaned `WorkspaceRoot` 不同于组合根工作区的会话返回 `-32602`，且**不**发出任何 `session/update`。同工作区会话仍可 load 与 prompt。未知 session 仍是 `-32602`。电文上不区分“缺失”与“外来”。
 
 默认门仍无密钥、内存双工、无子进程。
+
+### 6.11 会话工作区准入
+
+`session/new` 在 `cwd` 非空时已要求 `filepath.Clean(cwd) == server.workspace`。`session/load` 与 `session/prompt` 必须把同一组合根工作区当作**会话所有权**检查。
+
+**规则：** 仅当 `filepath.Clean(loaded.WorkspaceRoot) == server.workspace` 时准入该 RPC。否则响应 `-32602` `invalid params`，不回放，不 `RunTurn`，不泄漏外来路径，也不泄漏该 session id 存在于本 store。
+
+- **`session/load`：** 使用 `LoadSession` 已经返回的 `domain.Session`（今日适配器忽略它）。比较，然后 `replay`。不匹配则跳过 `replay`。
+- **`session/prompt`：** 在 `RunTurn` **之前** `LoadSession`（或 `RunTurn` 会做的同一紧凑加载）。比较，然后启动 prompt goroutine。外来会话的历史不得前缀进模型（`projectPriorTurns`），也不得在当前 jail 下按那套历史执行工具。
+
+这是适配器对既有返回值的策略，不是新的 Application 端口。一个 EventStore 文件可以容纳多个工作区的会话（审计导入、换 `-workspace` 复用 `-database`、测试）。典型一工作区部署不是让该不变量不测的理由。
+
+归入 **PR 2**，使该洞在 PR 5 把工具参数与结果送上 load 回放之前关上。PR 5 保留回归测试。
 
 ---
 
@@ -411,7 +432,7 @@ Load 上不发出 `session/request_permission`。
 
 每行一个 UTF-8 JSON 对象。无嵌入原始换行（与 ACP、审计相同的 NDJSON 纪律）。Schema 名 `och.session.transcript`。`formatVersion` 1。
 
-两套电文结构体。带 `omitempty` 的单一 `Line` 无法同时满足两套键集：快照会冒出空的 `eventId`/`commandId` 和 `sequence: 0`，而对 `Sequence` 使用 `omitempty` 也会在合法事实序列若为 0 时丢掉它（事实行永不省略 `sequence`；EventStore 序列从 1 起）。
+三套电文结构体（`Line`、`SnapshotLine`、`CompleteLine`）。带 `omitempty` 的单一 `Line` 无法满足完整性行的键集：快照/完成行会冒出空的 `eventId`/`commandId` 和 `sequence: 0`，而对 `Sequence` 使用 `omitempty` 也会在合法事实序列若为 0 时丢掉它（事实行永不省略 `sequence`；EventStore 序列从 1 起）。
 
 **事实行**冻结键序（字节稳定的 `encoding/json` 结构体字段序）：
 
@@ -421,7 +442,8 @@ formatVersion, schema, sessionId, eventId, commandId, sequence, occurredAt, type
 
 ```go
 type Line struct { /* formatVersion, schema, sessionId, eventId, commandId, sequence, occurredAt, type, payload；sequence 无 omitempty */ }
-type SnapshotLine struct { /* formatVersion, schema, sessionId, occurredAt, type, payload */ }
+type SnapshotLine struct { /* formatVersion, schema, sessionId, occurredAt, type, payload；type=transcript.snapshot */ }
+type CompleteLine struct { /* 与 SnapshotLine 相同的信封键；type=transcript.complete */ }
 ```
 
 `sequence` 是 **EventStore 序列**，不是稠密转录计数器。被省略的领域类型（如 `model.request.recorded`）表现为**缺口**。消费者不得假设稠密。`eventId` / `commandId` 可与审计副本连接而不混用编解码器。事实行永不省略 `sequence`。
@@ -429,12 +451,29 @@ type SnapshotLine struct { /* formatVersion, schema, sessionId, occurredAt, type
 每次导出的第一行是快照，不是领域事实。冻结键：`formatVersion, schema, sessionId, occurredAt, type, payload`。黄金夹具（RFC3339Nano，含纳秒）：
 
 ```json
-{"formatVersion":1,"schema":"och.session.transcript","sessionId":"session-1","occurredAt":"2026-08-23T12:00:00.000000000Z","type":"transcript.snapshot","payload":{"headSequence":12,"running":true,"stability":"experimental"}}
+{"formatVersion":1,"schema":"och.session.transcript","sessionId":"session-1","occurredAt":"2026-08-23T12:00:00.000000000Z","type":"transcript.snapshot","payload":{"headSequence":12,"open":true,"running":false,"stability":"experimental"}}
 ```
 
-快照上的 `occurredAt` 是组合根注入的时钟给出的导出 UTC 时间（RFC3339Nano）——**不是**编造的领域时钟。库测试传入冻结时钟。`headSequence` 是钉住的 `ReadStream` head。`running` 在钉住快照不含 `session.closed` 且不是空会话时为 true。
+快照上的 `occurredAt` 是组合根注入的时钟给出的导出 UTC 时间（RFC3339Nano）——**不是**编造的领域时钟。库测试传入冻结时钟。`headSequence` 是钉住的 `ReadStream` head。
 
-`UnmarshalLine` 为双臂：先看 `type`；若是 `transcript.snapshot`，严格解码 `SnapshotLine`；否则严格解码 `Line`。该臂键集不对则失败。拒绝尾随 JSON。对我们的解码器而言未知 `formatVersion` 是硬错误。未知事实 `type` 由**外部**消费者经 `DecodeSkipsUnknown` 跳过（§7.5）；我们编码器的黄金解码器保持严格。测试钉住快照黄金与事实黄金。
+快照载荷位**不是**“会话没有 `session.closed`”。领域会话在轮次完成后仍是 `active`（`ActiveTurn == nil`）；ACP 从不暴露 `session/close`，因此该定义对几乎每次导出都为真。第一遍钉住扫描用 `domain.Apply` 重建紧凑 `domain.Session`（既有纯回放，内存 O(页)）：
+
+| 字段 | 为 true | 为 false |
+| --- | --- | --- |
+| `open` | `Status == active`（钉住快照中无 `session.closed`） | `Status == closed` |
+| `running` | `ActiveTurn != nil` | 空闲的 `active` 会话，或已关闭 |
+
+一次已完成的 ACP 对话通常是 `open: true`、`running: false`。进行中的轮次是 `open: true`、`running: true`。两个 bit 都要；不要合成一个。
+
+每次**成功**导出的最后一行是 `transcript.complete`，信封与快照相同（无 `eventId` / `commandId` / `sequence`）。黄金（RFC3339Nano）：
+
+```json
+{"formatVersion":1,"schema":"och.session.transcript","sessionId":"session-1","occurredAt":"2026-08-23T12:00:00.000000000Z","type":"transcript.complete","payload":{"headSequence":12,"factLines":9,"open":true,"running":false}}
+```
+
+`complete.headSequence` 必须等于 `snapshot.headSequence`。`factLines` 是快照与完成行之间的事实行数（不含这两条完整性行）。complete 上的 `open` / `running` 回显快照（同一钉住 head）。complete 的 `occurredAt` 与快照是同一次导出时钟瞬间。
+
+`UnmarshalLine` 为三臂：先看 `type`；`transcript.snapshot` → 严格解码 `SnapshotLine`；`transcript.complete` → 严格解码 `CompleteLine`；否则严格解码 `Line`。该臂键集不对则失败。拒绝尾随 JSON。对我们的解码器而言未知 `formatVersion` 是硬错误。未知**事实** `type` 由**外部**消费者经 `DecodeSkipsUnknown` 跳过（§7.5）；`transcript.snapshot` 与 `transcript.complete` **不是**可跳过的完整性类型。我们编码器的黄金解码器保持严格。测试钉住快照、完成与事实黄金。
 
 ### 7.3 事件类型目录（experimental）
 
@@ -442,7 +481,8 @@ type SnapshotLine struct { /* formatVersion, schema, sessionId, occurredAt, type
 
 | `type` | 载荷字段 | 来源领域事件 |
 | --- | --- | --- |
-| `transcript.snapshot` | `headSequence`、`running`、`stability` | 导出器（非领域） |
+| `transcript.snapshot` | `headSequence`、`open`、`running`、`stability` | 导出器（非领域） |
+| `transcript.complete` | `headSequence`、`factLines`、`open`、`running` | 导出器（非领域）；成功导出的最后一行 |
 | `session.created` | `workspaceRoot` | `session.created` |
 | `session.closed` | `{}` | `session.closed` |
 | `turn.started` | `turnID`、`input` | `turn.started` |
@@ -488,7 +528,7 @@ type SnapshotLine struct { /* formatVersion, schema, sessionId, occurredAt, type
 
 - 表面稳定性：直到 v1.0 为 **`experimental`**（与 tool-runtime / EventStore 合同相同用语）。
 - 只加法：可以增加新 `type`；既有名字与载荷键永不改义重用。
-- 外部消费者**必须跳过未知 `type` 值**。本仓库针对*我们*编码器的黄金解码器保持严格，以免意外改名。
+- 外部消费者**必须跳过未知事实 `type` 值**。跳过未知**不**适用于 `transcript.snapshot` 或 `transcript.complete`。实现本合同时，消费者**拒绝**第一行不是快照或最后一行不是 complete 的文件，即使中间跳过了未知事实。本仓库针对*我们*编码器的黄金解码器保持严格，以免意外改名。
 - 仅破坏性信封变更才递增 `formatVersion`。既有类型上的加法字段不升 `formatVersion`；它们需要规格修订与新夹具。
 - 领域 schemaVersion 仍为 1，**不是**转录 `formatVersion`。
 
@@ -499,25 +539,39 @@ type StreamReader interface {
     ReadStream(context.Context, application.ReadStreamRequest) (application.StreamPage, error)
 }
 
+type Result struct {
+    HeadSequence uint64
+    FactLines    uint64
+    Open         bool
+    Running      bool
+}
+
 func WriteSession(ctx context.Context, src StreamReader, sessionID domain.SessionID, now time.Time, w io.Writer) (Result, error)
 func ProjectRecord(record domain.RecordedEvent, steps map[domain.TurnID]uint32) (Line, bool, error)
 func MarshalLine(Line) ([]byte, error)
 func MarshalSnapshot(SnapshotLine) ([]byte, error)
-func UnmarshalLine([]byte) (Decoded, error) // 双臂：SnapshotLine 或 Line
+func MarshalComplete(CompleteLine) ([]byte, error)
+func UnmarshalLine([]byte) (Decoded, error) // 三臂：SnapshotLine、CompleteLine 或 Line
 ```
 
-`ProjectRecord` 返回事实 `Line`。它不发出快照。仅对 `model.request.recorded` 与 `policy.decision.recorded` 显式 `ok=false` 省略。目录表中没有的任何其他领域类型是 `unsupported_event_type`（fail-closed）——不是静默跳过。`steps` 是按轮次的 `assistant.message.started` 计数器，用于助手行与工具终态（§7.4）。
+`ProjectRecord` 返回事实 `Line`。它不发出快照或完成尾行。仅对 `model.request.recorded` 与 `policy.decision.recorded` 显式 `ok=false` 省略。目录表中没有的任何其他领域类型是 `unsupported_event_type`（fail-closed）——不是静默跳过。`steps` 是按轮次的 `assistant.message.started` 计数器，用于助手行与工具终态（§7.4）。
 
 `WriteSession`：
 
-1. 解析 session id；非法 → `invalid_session_id`。
+1. 解析 session id；非法 → `invalid_session_id`。什么也不写。
 2. 在第一页钉住 head（`AfterSequence=0`，`Limit=256`，随后传 `HeadVersion`）——与 ACP `replay` 和 `ReadWholeStreamPinned` 相同协议。
 3. 若第一页为空且 `HeadVersion==0`，失败 `session_not_found`（不为虚无写快照）。
-4. **默认算法：双次钉住读** — 第一遍计算 `running` 并校验连续性；第二遍写 snapshot 再写各行。两遍使用同一 `HeadVersion`。内存保持 O(页)。不缓冲全部载荷。
-5. 对每条记录：`ProjectRecord`；若 `ok`，`MarshalLine`，检查大小，写行 + `\n`。
-6. 不把整段会话缓冲在内存中（超出一页 256 条之外）。
+4. **双次钉住读**，两遍同一 `HeadVersion`，内存 O(页)，不缓冲载荷：
+   1. 第一遍：对每条记录 `domain.Apply` 到紧凑 `Session`；统计 `ProjectRecord` 会发出的事实行（`ok=true`）；规范载荷损坏则 fail-closed。然后 `open = (session.Status == active)`，`running = (session.ActiveTurn != nil)`。
+   2. 第二遍：写 `transcript.snapshot`；写各事实行；写 `transcript.complete`。
+5. 快照开始写之后任一步失败（ctx 取消、`line_limit`、store 损坏）：**不要**写 `transcript.complete`。返回错误。writer 里可能已有快照和一段事实前缀——那**不是**成功导出。
+6. 仅在 complete 行写出之后返回 nil。`Result.FactLines` 等于 `complete.factLines`。
+
+省略类型仍造成 `sequence` 缺口。完整性靠尾行，不是“最大事实 sequence == headSequence”。
 
 不写回 EventStore。`StreamReader` 没有 `Append`。使用 `adapters/memory` 的测试仅在 `_test.go`。
+
+**消费者合同：** 仅当 (a) 第一行是 `transcript.snapshot`，(b) 最后一行是 `transcript.complete`，(c) `complete.headSequence == snapshot.headSequence`，(d) 中间事实行数等于 `complete.factLines`，(e) complete 换行之后无字节，才把流或文件当作有效。否则拒绝整个产物，不要解释前缀。序列缺口不能为缺失尾行开脱。
 
 ### 7.7 资源上限
 
@@ -543,18 +597,20 @@ func UnmarshalLine([]byte) (Decoded, error) // 双臂：SnapshotLine 或 Line
 | 非法 session id | `invalid_session_id` |
 | 会话从未创建（`HeadVersion==0`） | `session_not_found` |
 | 钉住 head 无法服务 | store `InvalidRead`；fail-closed |
-| 导出中途 ctx 取消 | 停止；输出不完整；非零退出；无 `.ok` 侧车（本来就没有） |
-| 行超过 2 MiB | `line_limit`；非零退出 |
+| 导出中途 ctx 取消 | 停止；**不要**写 `transcript.complete`；非零退出。stdout 可能含以快照开头的前缀——消费者拒绝它。`-output` 不得把临时文件 rename 到目标（§7.9） |
+| 行超过 2 MiB | `line_limit`；不写 complete；非零退出 |
 | 未知 / 不可读的规范领域载荷（`UnmarshalRecordedEvent` 失败，包括未知事件类型） | fail-closed（`unsupported event type` / store corrupt）。`sqlite.ReadStream` 已把它映射为 `StoreCodeCorrupt`（`read.go`）。**不要跳过**。跳过未知只适用于*外部*转录 JSONL 的 `type`（§7.5），不适用于 EventStore 记录。导出时容忍未来领域类型是带自己规格的 domain/sqlite 编解码变更 |
 | 目录中未收录的已知领域类型（`model.request.recorded`、`policy.decision.recorded`） | 省略该行（`sequence` 缺口）；不是错误 |
 | 记录上未知领域 schemaVersion | fail-closed（`unsupported_schema_version`）——与领域编解码器相同 |
-| 会话仍在运行（无 `session.closed`） | 成功；快照 `running: true`；最后事实可能是运行中的轮次 |
+| 会话 `open` 且 `ActiveTurn == nil` | 成功；快照 `open: true`、`running: false` |
+| 会话 `ActiveTurn != nil` | 成功；快照 `open: true`、`running: true`；最后事实可能是运行中的轮次 |
+| 会话已关闭 | 成功；快照 `open: false`、`running: false` |
 | 现场写入器持有 `runtime_leases` | 不围栏读取器（无 `AcquireLease`）。读取器在 `SQLITE_BUSY` 上等待最多 `BusyTimeout`（默认 5s），而不是立即失败 |
-| 输出文件撕裂写 | 操作员看到非零退出；无摘要链（这不是审计） |
+| 撕裂 / 部分输出文件 | 无 `transcript.complete` 尾行 → 消费者拒绝。`-output` 保持目标未改动（删除临时文件）。不是审计摘要链 |
 
 CLI 默认把 JSONL 写到 stdout，或 `-output PATH`。诊断只在 stderr（与 `-acp` 的 stdout 纪律相同，方向相反：此处 stdout *就是* 转录）。
 
-导出不像切片 3 那样崩溃收敛。它是一次性投影。重试是操作员的事。
+导出不像切片 3 那样崩溃收敛。完整性是 `transcript.complete` 行，加上 `-output` 的原子发布。重试是操作员的事。
 
 ### 7.9 CLI 与组合根
 
@@ -572,21 +628,31 @@ och export-session -database PATH -session SESSION_ID [-output FILE]
 func ExportSession(ctx context.Context, databasePath string, sessionID domain.SessionID, out io.Writer) (transcript.Result, error)
 ```
 
-组合根是库，不得打印。cmd 对结果使用 `:=`（不导入 `transcript`），并从 `Result.Lines`、`HeadSequence`、`Running` 格式化 stderr `och: exported session SESSION lines=N head=M running=bool`。若在 cmd 边界返回 `transcript.Result` 别扭，组合根内的等价结构体也可；数字不得丢掉。
+组合根是库，不得打印。cmd 对结果使用 `:=`（不导入 `transcript`），并从 `Result.FactLines`、`HeadSequence`、`Open`、`Running` 格式化 stderr `och: exported session SESSION facts=N head=M open=bool running=bool`。若在 cmd 边界返回 `transcript.Result` 别扭，组合根内的等价结构体也可；数字不得丢掉。
 
-此路径不调用 `composition.Open` / `runtime.Launch`。
+**原子 `-output`：** `ExportSession` 写到 `io.Writer`，不做 rename。当设置了 `-output PATH` 时，`cmd/och` 必须：
+
+1. 在 `PATH` 同一目录创建临时文件（使 `rename` 在同一文件系统上原子）。
+2. 把该文件交给 `ExportSession`。
+3. 成功：`Sync` 文件、关闭、`Rename` 到 `PATH`。
+4. 错误或取消：关闭、删除临时文件，`PATH` 保持未改动（不存在或仍是上一份完整文件）。
+
+stdout 模式直接写 stdout。被取消的 stdout 导出没有 complete 行；消费者拒绝它。此路径不调用 `composition.Open` / `runtime.Launch`。
 
 ### 7.10 测试（切片 A′）
 
-1. `internal/harness/transcript/testdata/` 下的黄金 JSONL 夹具，编码与解码字节稳定（复制 `internal/harness/domain/codec_test.go` 与 `testdata/*.jsonl` 的纪律），包括带 RFC3339Nano、不含 `eventId`/`commandId`/`sequence` 键的**快照行**黄金。
+1. `internal/harness/transcript/testdata/` 下的黄金 JSONL 夹具，编码与解码字节稳定（复制 `internal/harness/domain/codec_test.go` 与 `testdata/*.jsonl` 的纪律），包括带 RFC3339Nano、不含 `eventId`/`commandId`/`sequence` 键的**快照**与**完成**黄金。
 2. `ProjectRecord` 表：每个领域类型要么产生冻结载荷，要么被显式省略（`model.request.recorded`、`policy.decision.recorded`），要么不可构造；不要把未知类型当作跳过。
 3. 两步 `read_file` 历史上的 `stepRef` / `stepIndex` 对齐（用领域事件，不用现场模型）：started 复制 `ToolCallStarted.StepIndex`；completed 使用 `steps[turnID]`；二者匹配。
 4. 存在 `model.usage.recorded` 时有用量行；不存在时缺席（不填零）。
-5. 消费者辅助 `DecodeSkipsUnknown` 对未知未来转录 JSONL `type` 的跳过。我们编码器的严格解码器仍拒绝它。
+5. 消费者辅助 `DecodeSkipsUnknown` 跳过未知未来**事实** `type`。快照/完成永不跳过。我们编码器的严格解码器仍拒绝未知类型。
 6. 双次钉住读：第一页钉住之后的追加不可见。
 7. 空 store / 未知会话 → `session_not_found`，出错后零字节写出。
-8. 超大助手文本夹具的行上限测试。
+8. 超大助手文本夹具的行上限测试：出错，无 `transcript.complete` 行。
 9. 架构测试：生产 `transcript` 文件不导入 adapter；composition 可以导入 transcript；domain/application/acp/sqlite/runtime/engine/policy/tools 不得导入。
+10. 空闲已完成会话（轮次结束、无 `session.closed`）：快照 `open: true`、`running: false`。进行中轮次：`running: true`。已关闭会话：`open: false`、`running: false`。
+11. 快照写出后取消：`WriteSession` 返回错误，writer **没有** complete 行。实现消费者合同的辅助函数拒绝该缓冲。
+12. 成功导出的最后一行是 complete；`factLines` 与中间计数匹配。
 
 ---
 
@@ -663,8 +729,9 @@ Tool runtime 合同：顺序执行；紧凑 Session 允许最多一个活跃 Ite
 - `permissionToolCall.ToolCallID` 格式变更（experimental）。
 - `updateSink` 记住一个未完成的 `LiveTool`，映射更多 `RuntimeEventType`，并吞掉 `session/update` 写错误。
 - `server.project` 使用 `ProjectRecordedEvent`。
+- `session/load` 与 `session/prompt` 把 `LoadSession` 的 `WorkspaceRoot` 与组合根工作区比较（§6.11）。
 
-`server.go` 中的 `Sessions` / `History` 接口不变。
+`server.go` 中的 `Sessions` / `History` 接口不变。适配器开始使用 `LoadSession` 已经返回的 `Session` 值。
 
 ### 10.2 转录（新建）
 
@@ -746,6 +813,8 @@ func ExportSession(ctx context.Context, databasePath string, sessionID domain.Se
 | 病态转录行 | 2 MiB fail-closed |
 | 迷糊代理：把 JSONL 当作可再导入历史 | 无导入 API；文档声明不可写入 EventStore |
 | `session.created` 中的 `workspaceRoot` | 已是领域事实；不是新引入 |
+| ACP `session/load` / `session/prompt` 外来工作区会话 | 适配器在回放或 `RunTurn` 之前比较 `LoadSession.WorkspaceRoot` 与组合根工作区（§6.11）。`-32602`，无更新，不泄漏路径 |
+| 部分转录文件看起来完整 | 要求 `transcript.complete` 尾行；`-output` 临时文件 + fsync + rename；消费者拒绝缺失尾行 |
 | 工具输出中的密钥脱敏 | 本切片不做（与审计脱敏导出相同） |
 
 鉴权：无。`authMethods` 保持为空。导出权限等于谁能读 SQLite 文件。
@@ -757,7 +826,7 @@ func ExportSession(ctx context.Context, databasePath string, sessionID domain.Se
 本切片无 OpenTelemetry（里程碑 10）。
 
 - ACP：仅既有 `cmd/och -acp` 的 stderr 诊断；协议 writer 仍只写 ACP。
-- 转录 CLI：不按行打印进度（会淹没 stderr）。成功时由 `composition.ExportSession` 的 `transcript.Result` 打一行 stderr：`och: exported session SESSION lines=N head=M running=bool`。失败时 `och: …` + 非零退出。组合根不打印。
+- 转录 CLI：不按行打印进度（会淹没 stderr）。成功时由 `composition.ExportSession` 的 `transcript.Result` 打一行 stderr：`och: exported session SESSION facts=N head=M open=bool running=bool`。失败时 `och: …` + 非零退出。组合根不打印。
 - 指标：不要求。测试计行与类型。
 - 告警：无（单进程 CLI / stdio agent）。
 
@@ -809,9 +878,10 @@ go test -race ./internal/harness/adapters/acp/ ./internal/harness/transcript/ -c
 
 1. **现场 ACP 的 `rawInput` / 结果内容。** 默认：省略，直到后续 engine 合同丰富 `RuntimeEvent`。替代：ACP 在 `RuntimeAppendCompleted` 上尾随 EventStore（因混路径复杂度而拒绝）。
 2. **`stopReason` 规格与代码漂移。** 里程碑 6 要求仅 `caller_canceled` 为 `cancelled`；已实现 `stopReason()` 把每个 `TurnStatusInterrupted` 当作 `cancelled`。默认：**本切片不改**（不是对话投影缺陷）。切片 B 或极小后续可恢复规格。
-3. **快照行 vs 仅 stderr 元数据。** 默认：JSONL 第一行是 `transcript.snapshot`，使文件自描述。替代：无快照类型（纯领域事实）。倾向快照。
-4. **助手行上的 `stepIndex` 是投影的，不是存储的。** 默认：按轮次计数 `assistant.message.started`。替代：给领域助手事件加 `StepIndex`（拒绝：会改变领域合同）。
-5. **CLI 形状。** 默认：子命令 `export-session`。替代：serve 二进制上的 `-export-session`（拒绝：会拉入 `Open` 的要求）。
+3. **助手行上的 `stepIndex` 是投影的，不是存储的。** 默认：按轮次计数 `assistant.message.started`。替代：给领域助手事件加 `StepIndex`（拒绝：会改变领域合同）。
+4. **CLI 形状。** 默认：子命令 `export-session`。替代：serve 二进制上的 `-export-session`（拒绝：会拉入 `Open` 的要求）。
+
+评审中已决议（不再开放）：快照是第一行，**并且**成功导出的最后一行是 `transcript.complete`；`running` 是 `ActiveTurn != nil`，不是“未关闭”。
 
 ---
 
@@ -829,6 +899,9 @@ go test -race ./internal/harness/adapters/acp/ ./internal/harness/transcript/ -c
 | 为了与 `dsh-trace-compare` “兼容”而复制 DSH 名称 | 高 | 自有目录；社区工具适配我们 |
 | 大会话上双次 ReadStream 成本 | 低 | 页大小 256；v0 会话很小；上限诚实 |
 | 768 KiB ACP 裁剪让期望完整 1 MiB 助手文本的客户端惊讶 | 低 | 转录有领域文本；记录该上限 |
+| 每个空闲 ACP 会话都是 `running: true` | 高 | 由紧凑 `domain.Apply` 得到 `open` vs `running`（§7.2） |
+| 截断 JSONL 被当成完整轨迹 | 高 | `transcript.complete` 尾行；`-output` 原子发布；消费者拒绝缺失尾行 |
+| 切片 A 放大 ACP 上的外来工作区历史 | 高 | load 与 prompt 的工作区准入先于工具回放（§6.11） |
 
 ---
 
@@ -868,10 +941,14 @@ go test -race ./internal/harness/adapters/acp/ ./internal/harness/transcript/ -c
 | C-18 | `sqlite.OpenReader(ReaderConfig)` 复用 WAL、`busy_timeout`、外键、deny-list；无租约、无迁移、`query_only` | 不得围栏现场 `cmd/och -acp`；不得立即 `SQLITE_BUSY` |
 | C-19 | `och export-session` 经 `composition.ExportSession(...) (transcript.Result, error)` | cmd 保持瘦并从 `Result` 格式化诊断；组合根不打印 |
 | C-20 | 不写 `transcript_entries` 或改审计编解码器 | 不同产品；仅 schema 的表不是这份 JSONL |
-| C-21 | 为快照 `running` 做双次钉住 ReadStream | 避免缓冲整段会话；导出期间 head 不可变 |
-| C-22 | 外部消费者跳过未知**转录 JSONL** `type`；我们的编码器测试保持严格。未知**规范领域**类型 fail-closed（`StoreCorrupt`） | EventStore 编解码器不变；跳过未知不是第二套解码器 |
+| C-21 | 双次钉住 ReadStream；第一遍 `domain.Apply` 得到 `open`/`running` | 避免缓冲载荷；head 不可变；`running` 是 `ActiveTurn != nil`，不是“未关闭” |
+| C-22 | 外部消费者跳过未知**事实** JSONL `type`；快照/完成是必需的。未知**规范领域**类型 fail-closed（`StoreCorrupt`） | EventStore 编解码器不变；跳过未知不是第二套解码器，也不能免除尾行 |
 | C-23 | `updateSink` 记住一个 `LiveTool`，使仅含 Code 的 `tool.execution.failed` 仍有 `toolCallId` | 顺序 `executeOneTool`；不丰富 `RuntimeEvent` |
-| C-24 | 两套电文结构体：`Line`（事实）与 `SnapshotLine`（无 `eventId`/`commandId`/`sequence`） | 一个结构体无法同时满足两套严格键集 |
+| C-24 | 三套电文结构体：`Line`（事实）、`SnapshotLine`、`CompleteLine` | 完整性行不得长出空的 `eventId`/`sequence` 键 |
+| C-25 | `session/load` 与 `session/prompt` 要求 `WorkspaceRoot` = 组合根工作区 | 既有漏洞；切片 A 会把工具参数/结果送上 ACP。PR 2，先于 PR 5 回放 |
+| C-26 | 成功导出以 `transcript.complete` 结束；消费者拒绝没有它的文件 | 序列缺口使 `headSequence` 不够；CLI 退出码不随文件走 |
+| C-27 | `-output` 为临时文件 + fsync + rename；stdout 完整性只靠尾行 | 同目录 rename 是原子的；失败导出不得覆盖上一份好文件 |
+| C-28 | ACP `protocolVersion` 协商与权限 waiter 清理留在本切片之外 | 里程碑 6 遗留；写进 §4.2，以免被当成 PR 2 已覆盖 |
 
 ---
 
@@ -896,12 +973,12 @@ PR4（sqlite 读取器）─────────────┴► PR7（CLI
 ### PR 2: ACP 现场 tool_call 映射、共享投影函数、权限 id、通知吞咽
 - **Files/components affected:** `internal/harness/adapters/acp/project.go`, `internal/harness/adapters/acp/project_test.go`, `internal/harness/adapters/acp/protocol.go`, `internal/harness/adapters/acp/server.go`, `internal/harness/adapters/acp/server_test.go`, `internal/harness/composition/end_to_end_test.go`
 - **Dependencies:** None
-- **Description:** 增加 `LiveTool` / `ProjectRuntimeEvent` / `ProjectRecordedEvent` / `ToolCallID` / `ToolKind`，让 `updateSink` 记住一个未完成工具，并为现场 `session/prompt` 发出 `tool_call` / `tool_call_update`。仅含 Code 的 `tool.execution.failed` 必须仍更新命名空间 `toolCallId`（表测试；不得跳过）。把权限 `toolCallId` 改为命名空间形式。吞掉 `session/update` 写错误，使它们不能 `CodeDelivery` 轮次；prompt 结果写保持 `_ = writeResult`。表测试每个运行时事件类型。增加组合根双工 e2e：目录启用的 `read_file` 轮次在 `session/prompt` 期间至少产生一次现场 `tool_call`。在 PR 5 之前让 `session/load` 留在旧的 `project()` switch 上，使本 PR 可作为现场映射独立评审（允许抽出 `ProjectRecordedEvent`；`replay` 可以暂仍调用旧函数）。
+- **Description:** 增加 `LiveTool` / `ProjectRuntimeEvent` / `ProjectRecordedEvent` / `ToolCallID` / `ToolKind`，让 `updateSink` 记住一个未完成工具，并为现场 `session/prompt` 发出 `tool_call` / `tool_call_update`。仅含 Code 的 `tool.execution.failed` 必须仍更新命名空间 `toolCallId`（表测试；不得跳过）。把权限 `toolCallId` 改为命名空间形式。吞掉 `session/update` 写错误，使它们不能 `CodeDelivery` 轮次；prompt 结果写保持 `_ = writeResult`。表测试每个运行时事件类型。增加组合根双工 e2e：目录启用的 `read_file` 轮次在 `session/prompt` 期间至少产生一次现场 `tool_call`。**工作区准入（§6.11）：** `session/load` 与 `session/prompt` 对 cleaned `WorkspaceRoot` ≠ 组合根工作区的会话以 `-32602` 拒绝，且无 `session/update` / 无 `RunTurn`。同工作区会话仍可用。在 PR 5 之前让 `session/load` 的*投影*留在旧的 `project()` switch 上，使本 PR 可作为现场映射加所有权门独立评审（允许抽出 `ProjectRecordedEvent`；`replay` 可在工作区检查之后暂仍调用旧函数）。
 
 ### PR 3: 转录 schema、编解码器、黄金夹具、架构所有者
 - **Files/components affected:** `internal/harness/transcript/`（`codec.go`、`codec_test.go`、`testdata/*.jsonl`）, `internal/harness/architecture/dependencies_test.go`
 - **Dependencies:** None
-- **Description:** 引入带 §7.1 出站**与反向**导入矩阵的 `ownerTranscript`，并把 `ownerTranscript` 加进 `TestOnlyCompositionAndRuntimeMayNameAnAdapter` 的 owners 切片（不是 adapters 列表）。包装运 `Line`、`SnapshotLine`、`MarshalLine`、`MarshalSnapshot`、双臂 `UnmarshalLine`、`ProjectRecord`（单记录、内存）、冻结事实**与快照**夹具（RFC3339Nano）、面向外部 JSONL 类型的 `DecodeSkipsUnknown`，以及行上限测试。尚无 CLI、无 sqlite、无 composition 导入。生产文件只导入 domain/application/stdlib。
+- **Description:** 引入带 §7.1 出站**与反向**导入矩阵的 `ownerTranscript`，并把 `ownerTranscript` 加进 `TestOnlyCompositionAndRuntimeMayNameAnAdapter` 的 owners 切片（不是 adapters 列表）。包装运 `Line`、`SnapshotLine`、`CompleteLine`、`MarshalLine`、`MarshalSnapshot`、`MarshalComplete`、三臂 `UnmarshalLine`、`ProjectRecord`（单记录、内存）、冻结事实**以及快照与完成**夹具（RFC3339Nano）、仅对未知*事实*类型的 `DecodeSkipsUnknown`（快照/完成永不跳过），以及行上限测试。尚无 CLI、无 sqlite、无 composition 导入。生产文件只导入 domain/application/stdlib。
 
 ### PR 4: SQLite 只读打开器
 - **Files/components affected:** `internal/harness/adapters/sqlite/open.go`（或 `reader.go`）, `internal/harness/adapters/sqlite/reader_test.go`
@@ -911,17 +988,17 @@ PR4（sqlite 读取器）─────────────┴► PR7（CLI
 ### PR 5: 经同一投影器的 ACP session/load 回放
 - **Files/components affected:** `internal/harness/adapters/acp/server.go`, `internal/harness/adapters/acp/server_test.go`, `internal/harness/composition/end_to_end_test.go`
 - **Dependencies:** PR 2
-- **Description:** 把 `replay`/`project` 指向 `ProjectRecordedEvent`，使 `session/load` 发出工具卡片、失败/中断助手文本，并仍省略用量/策略/模型请求/审计。为带工具的历史增加 NDJSON 测试，以及目录启用的 `read_file` 轮次之后 `session/load` 的组合根 e2e（**附加于** PR 2 已落地的现场 `tool_call` e2e）。Load 写失败仍使 RPC 失败，使用既有 `-32603` `session prompt failed` 常量（不改名）。
+- **Description:** 把 `replay`/`project` 指向 `ProjectRecordedEvent`，使 `session/load` 发出工具卡片、失败/中断助手文本，并仍省略用量/策略/模型请求/审计。为带工具的历史增加 NDJSON 测试，以及目录启用的 `read_file` 轮次之后 `session/load` 的组合根 e2e（**附加于** PR 2 已落地的现场 `tool_call` e2e）。保留回归测试：外来工作区会话在本回放落地后仍得 `-32602` 且无工具卡片更新。Load 写失败仍使 RPC 失败，使用既有 `-32603` `session prompt failed` 常量（不改名）。
 
 ### PR 6: EventStore → 转录会话写出器
 - **Files/components affected:** `internal/harness/transcript/export.go`, `internal/harness/transcript/export_test.go`
 - **Dependencies:** PR 3
-- **Description:** 在 `StreamReader` 上实现 `WriteSession`：双次钉住读、先写 `MarshalSnapshot`、256 条一页的流式分页、`session_not_found`、ctx 取消，以及对照两步已记录历史的 `stepRef` 对齐测试（started 复制 `ToolCallStarted.StepIndex`；终态使用 `steps[turnID]`）。若 `ReadStream` 返回 store corrupt / 不可读规范载荷则 fail-closed。Memory EventStore 仅从 `_test.go` 使用。
+- **Description:** 在 `StreamReader` 上实现 `WriteSession`：双次钉住读、第一遍 `domain.Apply` 得到 `open`/`running`、先写 `MarshalSnapshot`、再写事实行、最后 `MarshalComplete`、256 条一页的流式分页、`session_not_found`、ctx 取消（无 complete 行）、空闲 vs 进行中的快照 bit，以及对照两步已记录历史的 `stepRef` 对齐测试（started 复制 `ToolCallStarted.StepIndex`；终态使用 `steps[turnID]`）。若 `ReadStream` 返回 store corrupt / 不可读规范载荷则 fail-closed。Memory EventStore 仅从 `_test.go` 使用。
 
 ### PR 7: `composition.ExportSession` 与 `och export-session`
 - **Files/components affected:** `internal/harness/composition/export.go`, `internal/harness/composition/export_test.go`, `cmd/och/main.go`, `cmd/och/main_test.go`（若存在）
 - **Dependencies:** PR 4, PR 6
-- **Description:** 把只读 sqlite + `transcript.WriteSession` 接成 `composition.ExportSession(...) (transcript.Result, error)`。`cmd/och` 解析子命令 `export-session -database -session [-output]`，不调用 `composition.Open`，不导入 `transcript`，并从 `Result` 打印 §14 的一行诊断。测试覆盖缺失 DB、未知会话、以 `transcript.snapshot` 开头的 stdout JSONL、stderr 诊断，以及 cmd 导入限制。含 `-acp` 的 serve 模式旗标保持有效。
+- **Description:** 把只读 sqlite + `transcript.WriteSession` 接成 `composition.ExportSession(...) (transcript.Result, error)`。`cmd/och` 解析子命令 `export-session -database -session [-output]`，不调用 `composition.Open`，不导入 `transcript`，并从 `Result` 打印 §14 的一行诊断。`-output PATH` 使用同目录临时文件、`Sync` 与 `Rename`；失败导出必须保持 `PATH` 未改动，且不得产生没有 `transcript.complete` 的目标文件。测试覆盖缺失 DB、未知会话、以 snapshot 开头并以 complete 结尾的 stdout JSONL、取消的 `-output` 不留下目标、stderr 诊断，以及 cmd 导入限制。含 `-acp` 的 serve 模式旗标保持有效。
 
 ### PR 8: 已实现合同文档与中文阅读版
 - **Files/components affected:** `docs/architecture/acp-v1.md`, `docs/architecture/acp-v1.zh-CN.md`, `docs/architecture/session-transcript.md`, `docs/architecture/session-transcript.zh-CN.md`, `docs/architecture/sqlite-eventstore.md`（OpenReader 小节）, `docs/architecture/sqlite-eventstore.zh-CN.md`, `docs/architecture/conversation-and-transcript-evidence.md`, `docs/README.md`（权威行——仅本 PR，实现之后）
