@@ -93,7 +93,10 @@ internal/harness/adapters/memory       ----实现----> application.EventStore
 ## Application 拥有的 Step 循环
 
 空目录保持原先的一次尝试路径：`Messages==nil`、`Tools==nil`、一次 `Run`、
-`CompleteAssistantTurn`（`TestEmptyCatalogKeepsNilMessagesAndTools`）。非空
+`CompleteAssistantTurn`（`TestEmptyCatalogKeepsNilMessagesAndTools`）。有目录
+时，`RunTurn` 会把事件日志里先前 turn 的 user/assistant/tool 消息接到当前
+用户输入前面（`TestSecondRunTurnSeesPriorTurnMessages`）。紧凑 Session
+聚合仍丢弃已完成 turn。非空
 目录要求 `RequestIdentity != nil` 且 `NativeTools ∈ {supported, required}`。
 `required` 加空目录、`unsupported` 加目录、或目录缺少 `FileSystem` /
 `CommandRunner`，都是 `CategoryPolicy` / `invalid_configuration`

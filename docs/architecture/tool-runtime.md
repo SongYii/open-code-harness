@@ -97,7 +97,10 @@ enforces these directions (`TestProductionDependencyBoundaries`,
 
 Empty catalog keeps the previous one-attempt path: `Messages==nil`,
 `Tools==nil`, one `Run`, `CompleteAssistantTurn`
-(`TestEmptyCatalogKeepsNilMessagesAndTools`). A non-empty catalog requires
+(`TestEmptyCatalogKeepsNilMessagesAndTools`). With a catalog, `RunTurn`
+prefixes the current user input with prior turns projected from the
+session event log (`TestSecondRunTurnSeesPriorTurnMessages`). The compact
+Session aggregate still discards completed turns. A non-empty catalog requires
 `RequestIdentity != nil` and `NativeTools ∈ {supported, required}`.
 `required` plus empty catalog, `unsupported` plus a catalog, or a catalog
 missing `FileSystem` / `CommandRunner` is `CategoryPolicy` /

@@ -26,9 +26,10 @@ writes diagnostics only to stderr.
 - `session/load` replays `turn.started` and `assistant.message.completed`
   as `session/update` before the RPC result.
 - `session/prompt` runs `RunTurn`. `model.text.delta` becomes
-  `agent_message_chunk`. Settlement is the committed turn: `completed` →
-  `end_turn`; caller-canceled interrupt → `cancelled`; anything else →
-  `-32603` `session prompt failed`.
+  `agent_message_chunk`. A catalog-backed turn prefixes the model prompt
+  with prior user/assistant/tool messages from the event log. Settlement
+  is the committed turn: `completed` → `end_turn`; caller-canceled
+  interrupt → `cancelled`; anything else → `-32603` `session prompt failed`.
 - Concurrent prompts on one session are `-32600`.
 - `session/cancel` cancels the in-flight prompt context; unknown IDs are ignored.
 - Permission bridging is `tools.Slot`: allow-once grants, every other
@@ -36,5 +37,5 @@ writes diagnostics only to stderr.
 
 ## Exclusions
 
-ACP v2, resume, terminals, slash commands, authenticate, conversation
-projection into `RunTurn`, and subprocess stdio as the default test gate.
+ACP v2, resume, terminals, slash commands, authenticate, token-aware
+compaction, and subprocess stdio as the default test gate.
