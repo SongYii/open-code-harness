@@ -51,7 +51,13 @@ The numbered milestone list lives in
 
 - ACP v1 adapter (`adapters/acp`): implemented and verified; not GA. JSON-RPC
   2.0 over NDJSON on the composition root (`ServeACP`, `cmd/och -acp`).
-  Conversation memory, v2, and authenticate are not included.
+  Live and load `session/update` include tool cards with clip bounds and
+  workspace admission. ACP v2, resume, and authenticate are not included.
+
+- Session transcript (`internal/harness/transcript`, `och export-session`):
+  implemented and verified; not GA. Experimental `och.session.transcript`
+  JSONL projection of one EventStore session, read through `sqlite.OpenReader`
+  without taking the runtime lease.
 
 TUI, MCP, the Context Engine, evaluation, and OpenTelemetry are not yet
 implemented. The project remains pre-v0.
@@ -87,6 +93,11 @@ The ACP v1 adapter contract is documented in
 and its [Chinese reading copy](docs/architecture/acp-v1.zh-CN.md),
 with auditable results in the
 [ACP v1 adapter evidence ledger](docs/architecture/acp-v1-evidence.md).
+The session transcript contract is documented in
+[Implemented Session Transcript](docs/architecture/session-transcript.md)
+and its [Chinese reading copy](docs/architecture/session-transcript.zh-CN.md),
+with auditable results in the
+[conversation and session transcript evidence ledger](docs/architecture/conversation-and-transcript-evidence.md).
 The durable Store adapter is documented in
 [Implemented SQLite Canonical EventStore](docs/architecture/sqlite-eventstore.md)
 and its [Chinese reading copy](docs/architecture/sqlite-eventstore.zh-CN.md),

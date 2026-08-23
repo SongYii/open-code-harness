@@ -98,6 +98,41 @@ copy (via `VACUUM INTO`, because the pure-Go driver does not export the
 Online Backup API) and verifies the copy's schema version, contiguity, and
 invariant counts against the live database before reporting success.
 
+## OpenReader
+
+`OpenReader(ctx, ReaderConfig) (*Reader, error)` opens Path for pinned
+`ReadStream` only. It is additive: existing `Open` is unchanged. `Reader`
+is not a second EventStore — `Append`, `ResolveAppend`, and
+`FindCommandRequest` are absent.
+
+`ReaderConfig` is the read profile: `Path`, `BusyTimeout` (default 5s;
+allowed range 100ms–60s, same as `Config.BusyTimeout`),
+`DeniedPathPrefixes` (same diagnosis as `Open`), and `WALAutoCheckpoint`
+(default 1000; applied as a read-side pragma only). It does not include
+`RuntimeID` or `LeaseDuration`.
+
+Open profile, verified before return:
+
+- WAL. Does **not** set `immutable=1` (must see the live writer's last commit).
+- `synchronous=FULL`, `foreign_keys=1`, bounded `busy_timeout`.
+- `query_only=1` and `mode=rw` (a missing file is refused, never created).
+- `DeniedPathPrefixes` — a network or synchronized location `Open` would
+  refuse is also refused here.
+- `user_version` must equal this binary's latest migration. Newer is
+  `FormatNewerError`. Older is refused with “writer must migrate first”.
+  OpenReader does not run `migrate`.
+- Fail-closed on corrupt metadata the same as `Open` reads.
+
+OpenReader does not acquire `runtime_leases` or `export_leases`. A live
+writer may keep the fencing lease; the reader waits up to `BusyTimeout`
+on `SQLITE_BUSY` rather than failing immediately. `ReadStream` is the
+same pinned-head page function the writer uses.
+
+`composition.ExportSession` passes `ReaderConfig{Path: databasePath}` and
+takes defaults. Session transcript JSONL is documented in
+[session transcript](session-transcript.md); it is not this adapter's
+audit replica and does not populate `transcript_entries`.
+
 ## Exclusions
 
 - Audit envelope, digest chain, and outbox maintenance — Slice 3 (columns
@@ -105,7 +140,9 @@ invariant counts against the live database before reporting success.
 - Runtime Host lifecycle: heartbeat scheduling, takeover, crash
   reconciliation, graceful shutdown — Slice 4.
 - `transcript_entries`, `snapshots`, `export_checkpoints` — schema only.
-- JSONL, import/export, ACP, TUI — out of scope.
+  Session transcript JSONL is an export projection, not those tables.
+- JSONL audit replica, ACP, TUI — out of scope of this adapter's writer
+  contract. `OpenReader` is the additive read path used by session export.
 - GA blockers: no crash-injection harness at the process level, no
   long-running soak or corruption fuzzing, no concurrent multi-process
   writer evidence beyond the lease predicate tests.
