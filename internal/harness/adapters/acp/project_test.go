@@ -364,6 +364,160 @@ func TestClipBounds(t *testing.T) {
 	})
 }
 
+func TestOversizeToolIdentityDegradesToSendableFrame(t *testing.T) {
+	sessionID := "session-1"
+	hugeName := strings.Repeat("x", maxFrameBytes)
+	hugeCallID := strings.Repeat("c", maxFrameBytes)
+	correlation := engine.Correlation{TurnID: "turn-1"}
+
+	t.Run("live name clips title keeps id", func(t *testing.T) {
+		updates := ProjectRuntimeEvent(sessionID, engine.RuntimeEvent{
+			Correlation: correlation,
+			Type:        engine.RuntimeModelToolCall,
+			Text:        hugeName + ":call-1",
+		}, LiveTool{})
+		if len(updates) != 1 {
+			t.Fatalf("updates = %d, want 1", len(updates))
+		}
+		card, ok := updates[0].(toolCallUpdate)
+		if !ok {
+			t.Fatalf("update type %T", updates[0])
+		}
+		if card.ToolCallID != "turn-1/call-1" {
+			t.Fatalf("toolCallId = %q", card.ToolCallID)
+		}
+		if card.Kind != "other" {
+			t.Fatalf("kind = %q", card.Kind)
+		}
+		if card.Title == "" || len(card.Title) >= len(hugeName) || !strings.HasPrefix(hugeName, card.Title) {
+			t.Fatalf("title len = %d, want clipped prefix", len(card.Title))
+		}
+		requireSendable(t, sessionID, updates)
+	})
+
+	t.Run("live callID omitted", func(t *testing.T) {
+		updates := ProjectRuntimeEvent(sessionID, engine.RuntimeEvent{
+			Correlation: correlation,
+			Type:        engine.RuntimeModelToolCall,
+			Text:        "read_file:" + hugeCallID,
+		}, LiveTool{})
+		if len(updates) != 0 {
+			t.Fatalf("updates = %d, want omitted", len(updates))
+		}
+		started := ProjectRuntimeEvent(sessionID, engine.RuntimeEvent{
+			Correlation: correlation,
+			Type:        engine.RuntimeToolExecutionStarted,
+			Text:        "read_file:" + hugeCallID,
+		}, LiveTool{})
+		if len(started) != 0 {
+			t.Fatalf("started updates = %d, want omitted", len(started))
+		}
+	})
+
+	t.Run("load name clips title keeps id", func(t *testing.T) {
+		updates := ProjectRecordedEvent(sessionID, domain.RecordedEvent{
+			Event: domain.ToolCallStarted{
+				TurnID: "turn-1", ItemID: "item-1", CallID: "call-1",
+				Name: hugeName, Arguments: `{"path":"NOTES.md"}`, StepIndex: 1,
+			},
+		})
+		if len(updates) != 1 {
+			t.Fatalf("updates = %d, want 1", len(updates))
+		}
+		card, ok := updates[0].(toolCallUpdate)
+		if !ok {
+			t.Fatalf("update type %T", updates[0])
+		}
+		if card.ToolCallID != "turn-1/call-1" {
+			t.Fatalf("toolCallId = %q", card.ToolCallID)
+		}
+		if card.RawInput != nil {
+			t.Fatal("oversize title must drop rawInput before clipping")
+		}
+		if card.Title == "" || len(card.Title) >= len(hugeName) || !strings.HasPrefix(hugeName, card.Title) {
+			t.Fatalf("title len = %d, want clipped prefix", len(card.Title))
+		}
+		requireSendable(t, sessionID, updates)
+	})
+
+	t.Run("load callID omitted", func(t *testing.T) {
+		started := ProjectRecordedEvent(sessionID, domain.RecordedEvent{
+			Event: domain.ToolCallStarted{
+				TurnID: "turn-1", ItemID: "item-1", CallID: hugeCallID,
+				Name: "read_file", Arguments: `{"path":"a"}`, StepIndex: 1,
+			},
+		})
+		if len(started) != 0 {
+			t.Fatalf("started updates = %d, want omitted", len(started))
+		}
+		completed := ProjectRecordedEvent(sessionID, domain.RecordedEvent{
+			Event: domain.ToolCallCompleted{
+				TurnID: "turn-1", ItemID: "item-1", CallID: hugeCallID, Content: "ok",
+			},
+		})
+		if len(completed) != 0 {
+			t.Fatalf("completed updates = %d, want omitted", len(completed))
+		}
+	})
+
+	t.Run("load skips huge id and still projects later chat", func(t *testing.T) {
+		var updates []any
+		for _, record := range []domain.RecordedEvent{
+			{Event: domain.TurnStarted{TurnID: "turn-1", Input: "hello"}},
+			{Event: domain.ToolCallStarted{TurnID: "turn-1", ItemID: "item-1", CallID: hugeCallID, Name: "read_file", Arguments: `{}`, StepIndex: 1}},
+			{Event: domain.AssistantMessageCompleted{TurnID: "turn-1", ItemID: "item-2", Text: "world"}},
+		} {
+			updates = append(updates, ProjectRecordedEvent(sessionID, record)...)
+		}
+		assertUpdates(t, updates, []any{
+			agentMessageChunk{SessionUpdate: "user_message_chunk", Content: textContent{Type: "text", Text: "hello"}},
+			agentMessageChunk{SessionUpdate: "agent_message_chunk", Content: textContent{Type: "text", Text: "world"}},
+		})
+		requireSendable(t, sessionID, updates)
+	})
+
+	t.Run("permission name clips title keeps id", func(t *testing.T) {
+		params, ok := fitPermission(json.RawMessage("1"), permissionParams{
+			SessionID: sessionID,
+			ToolCall:  permissionToolCall{ToolCallID: "turn-1/call-1", Title: hugeName, Kind: "other", Status: "pending"},
+			Options: []permissionOption{
+				{OptionID: optionAllowOnce, Name: "Allow once", Kind: "allow_once"},
+			},
+		})
+		if !ok {
+			t.Fatal("permission with oversize title must still fit after clip")
+		}
+		if params.ToolCall.ToolCallID != "turn-1/call-1" {
+			t.Fatalf("toolCallId = %q", params.ToolCall.ToolCallID)
+		}
+		if params.ToolCall.Title == "" || len(params.ToolCall.Title) >= len(hugeName) || !strings.HasPrefix(hugeName, params.ToolCall.Title) {
+			t.Fatalf("permission title len = %d, want clipped prefix", len(params.ToolCall.Title))
+		}
+		if !permissionFrameFits(json.RawMessage("1"), params) {
+			t.Fatal("clipped permission frame does not fit")
+		}
+	})
+
+	t.Run("permission callID omitted", func(t *testing.T) {
+		_, ok := fitPermission(json.RawMessage("1"), permissionParams{
+			SessionID: sessionID,
+			ToolCall:  permissionToolCall{ToolCallID: ToolCallID("turn-1", hugeCallID), Title: "write_file", Kind: "edit", Status: "pending"},
+		})
+		if ok {
+			t.Fatal("permission with oversize toolCallId must not be sendable")
+		}
+	})
+}
+
+func requireSendable(t *testing.T, sessionID string, updates []any) {
+	t.Helper()
+	for index, update := range updates {
+		if !frameFits(sessionID, update) {
+			t.Fatalf("update %d encoded frame exceeds %d", index, maxFrameBytes)
+		}
+	}
+}
+
 func TestOutgoingFrameFitsAfterJSONEscaping(t *testing.T) {
 	sessionID := "session-1"
 	cases := []struct {

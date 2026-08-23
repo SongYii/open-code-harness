@@ -245,6 +245,73 @@ func TestServePermissionGrantAndDeny(t *testing.T) {
 	}
 }
 
+func TestServePermissionClipsOversizeTitleAndDeniesUnsendableID(t *testing.T) {
+	agentIn, clientOut := io.Pipe()
+	clientIn, agentOut := io.Pipe()
+	slot := tools.NewSlot(nil)
+	hugeName := strings.Repeat("x", maxFrameBytes)
+	hugeCallID := strings.Repeat("c", maxFrameBytes)
+	fake := newFake()
+	var round int
+	fake.run = func(ctx context.Context, request application.RunTurnRequest) (application.RunTurnResult, error) {
+		round++
+		req := tools.ApprovalRequest{SessionID: request.SessionID, TurnID: "turn-1", CallID: "call-1", Name: hugeName}
+		if round == 2 {
+			req.CallID = hugeCallID
+			req.Name = "write_file"
+		}
+		answer, err := slot.Decide(ctx, req)
+		if err != nil || !answer.Granted {
+			return application.RunTurnResult{SessionID: request.SessionID, Status: domain.TurnStatusFailed}, &application.Error{Category: application.CategoryInternal, Code: "denied"}
+		}
+		return application.RunTurnResult{SessionID: request.SessionID, Status: domain.TurnStatusCompleted}, nil
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(context.Background(), Config{Sessions: fake, History: fake, Workspace: "/workspace", Approver: slot}, agentIn, agentOut)
+	}()
+	t.Cleanup(func() {
+		_ = agentIn.Close()
+		_ = clientOut.Close()
+		_ = clientIn.Close()
+		_ = agentOut.Close()
+		<-done
+	})
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	_ = readJSON(t, clientIn)
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":2,"method":"session/new","params":{}}`)
+	created := readJSON(t, clientIn)
+	sessionID := created["result"].(map[string]any)["sessionId"].(string)
+
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"`+sessionID+`","prompt":[{"text":"write"}]}}`)
+	perm := readJSON(t, clientIn)
+	if perm["method"] != methodRequestPermission {
+		t.Fatalf("want permission request, got method %#v", perm["method"])
+	}
+	toolCall := perm["params"].(map[string]any)["toolCall"].(map[string]any)
+	if toolCall["toolCallId"] != "turn-1/call-1" {
+		t.Fatalf("toolCallId = %#v", toolCall["toolCallId"])
+	}
+	title, _ := toolCall["title"].(string)
+	if title == "" || len(title) >= len(hugeName) || !strings.HasPrefix(hugeName, title) {
+		t.Fatalf("permission title len = %d, want clipped prefix", len(title))
+	}
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":`+mustJSON(perm["id"])+`,"result":{"outcome":{"outcome":"selected","optionId":"allow-once"}}}`)
+	final := readJSON(t, clientIn)
+	if final["result"].(map[string]any)["stopReason"] != stopReasonEndTurn {
+		t.Fatalf("granted prompt = %#v", final["result"])
+	}
+
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"`+sessionID+`","prompt":[{"text":"write"}]}}`)
+	denied := readJSON(t, clientIn)
+	if denied["method"] == methodRequestPermission {
+		t.Fatal("unsendable permission toolCallId must not be written")
+	}
+	if denied["error"].(map[string]any)["code"] != float64(codeInternalError) {
+		t.Fatalf("unsendable permission prompt = %#v", denied["error"])
+	}
+}
+
 func TestCodecRejectsNonACPAndRequiresInitialize(t *testing.T) {
 	agentIn, clientOut := io.Pipe()
 	clientIn, agentOut := io.Pipe()
@@ -281,6 +348,7 @@ func writeLine(t *testing.T, w io.Writer, line string) {
 func readJSON(t *testing.T, r io.Reader) map[string]any {
 	t.Helper()
 	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxFrameBytes)
 	if !scanner.Scan() {
 		t.Fatalf("read: %v", scanner.Err())
 	}
@@ -379,6 +447,74 @@ func TestServePromptProjectsLiveToolCallsAndCodeOnlyFailed(t *testing.T) {
 		if step.sessionUpdate != "agent_message_chunk" && updates[index]["toolCallId"] != "turn-1/call-1" {
 			t.Fatalf("update %d toolCallId = %#v", index, updates[index]["toolCallId"])
 		}
+	}
+}
+
+func TestServePromptProjectsOversizeToolName(t *testing.T) {
+	agentIn, clientOut := io.Pipe()
+	clientIn, agentOut := io.Pipe()
+	hugeName := strings.Repeat("x", maxFrameBytes)
+	fake := newFake()
+	fake.run = func(ctx context.Context, request application.RunTurnRequest) (application.RunTurnResult, error) {
+		correlation := engine.Correlation{TurnID: "turn-1"}
+		events := []engine.RuntimeEvent{
+			{Type: engine.RuntimeModelToolCall, Text: hugeName + ":call-1", Correlation: correlation},
+			{Type: engine.RuntimeToolExecutionFailed, Code: "unknown_tool", Correlation: correlation},
+		}
+		for _, event := range events {
+			if err := request.Sink.Emit(ctx, event); err != nil {
+				return application.RunTurnResult{SessionID: request.SessionID, Status: domain.TurnStatusFailed}, err
+			}
+		}
+		return application.RunTurnResult{SessionID: request.SessionID, Status: domain.TurnStatusCompleted}, nil
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(context.Background(), Config{Sessions: fake, History: fake, Workspace: "/workspace"}, agentIn, agentOut)
+	}()
+	t.Cleanup(func() {
+		_ = agentIn.Close()
+		_ = clientOut.Close()
+		_ = clientIn.Close()
+		_ = agentOut.Close()
+		<-done
+	})
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	_ = readJSON(t, clientIn)
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":2,"method":"session/new","params":{}}`)
+	created := readJSON(t, clientIn)
+	sessionID := created["result"].(map[string]any)["sessionId"].(string)
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"`+sessionID+`","prompt":[{"text":"read"}]}}`)
+
+	var updates []map[string]any
+	var promptResult map[string]any
+	for {
+		message := readJSON(t, clientIn)
+		if message["method"] == methodSessionUpdate {
+			updates = append(updates, message["params"].(map[string]any)["update"].(map[string]any))
+			continue
+		}
+		promptResult = message
+		break
+	}
+	if promptResult["error"] != nil {
+		t.Fatalf("prompt error = %#v", promptResult["error"])
+	}
+	if promptResult["result"].(map[string]any)["stopReason"] != stopReasonEndTurn {
+		t.Fatalf("prompt result = %#v", promptResult["result"])
+	}
+	if len(updates) != 2 {
+		t.Fatalf("updates = %d, want 2", len(updates))
+	}
+	if updates[0]["sessionUpdate"] != "tool_call" || updates[0]["toolCallId"] != "turn-1/call-1" {
+		t.Fatalf("tool_call id = %#v", updates[0]["toolCallId"])
+	}
+	title, _ := updates[0]["title"].(string)
+	if title == "" || len(title) >= len(hugeName) || !strings.HasPrefix(hugeName, title) {
+		t.Fatalf("live title len = %d, want clipped prefix", len(title))
+	}
+	if updates[1]["sessionUpdate"] != "tool_call_update" || updates[1]["status"] != "failed" || updates[1]["toolCallId"] != "turn-1/call-1" {
+		t.Fatalf("failed update = %#v", updates[1]["status"])
 	}
 }
 
