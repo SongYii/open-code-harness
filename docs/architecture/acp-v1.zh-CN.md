@@ -24,7 +24,8 @@ stderr。
   返回 `-32602`。
 - `session/load` 在 RPC 结果之前把 `turn.started` 与
   `assistant.message.completed` 投影为 `session/update`。
-- `session/prompt` 调用 `RunTurn`。`completed → end_turn`；调用方取消 →
-  `cancelled`；其余 `-32603` `session prompt failed`。
+- `session/prompt` 调用 `RunTurn`。带工具目录时，模型提示会带上事件日志里
+  先前 turn 的消息。`completed → end_turn`；调用方取消 → `cancelled`；
+  其余 `-32603` `session prompt failed`。
 - 同会话并发 prompt 为 `-32600`。权限桥为 `tools.Slot`，仅 `allow-once`
   授予，其余拒绝。

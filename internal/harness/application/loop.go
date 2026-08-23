@@ -44,11 +44,74 @@ type turnProjection struct {
 }
 
 func newTurnProjection(input string) *turnProjection {
+	return newTurnProjectionWithPrefix(nil, input)
+}
+
+func newTurnProjectionWithPrefix(prefix []domain.ModelPromptMessage, input string) *turnProjection {
+	messages := make([]domain.ModelPromptMessage, 0, len(prefix)+1)
+	messages = append(messages, clonePromptMessages(prefix)...)
+	messages = append(messages, domain.ModelPromptMessage{Role: domain.PromptRoleUser, Text: input})
 	return &turnProjection{
-		messages:    []domain.ModelPromptMessage{{Role: domain.PromptRoleUser, Text: input}},
-		suffixStart: 1,
+		messages:    messages,
+		suffixStart: len(messages),
 		names:       make(map[string]string),
 	}
+}
+
+// projectPriorTurns folds committed events from earlier turns into model
+// messages. The compact Session aggregate discards completed turns; the
+// event log is the authority. The current turn is excluded because its
+// user input is appended separately.
+func projectPriorTurns(records []domain.RecordedEvent, current domain.TurnID) []domain.ModelPromptMessage {
+	var messages []domain.ModelPromptMessage
+	names := make(map[string]string)
+	for _, record := range records {
+		switch event := record.Event.(type) {
+		case domain.TurnStarted:
+			if event.TurnID == current || event.Input == "" {
+				continue
+			}
+			messages = append(messages, domain.ModelPromptMessage{Role: domain.PromptRoleUser, Text: event.Input})
+		case domain.AssistantMessageCompleted:
+			if event.TurnID == current {
+				continue
+			}
+			if len(event.ToolCalls) == 0 && event.Text == "" {
+				continue
+			}
+			messages = append(messages, domain.ModelPromptMessage{
+				Role:      domain.PromptRoleAssistant,
+				Text:      event.Text,
+				ToolCalls: cloneToolCallOffers(event.ToolCalls),
+			})
+		case domain.ToolCallStarted:
+			if event.TurnID == current {
+				continue
+			}
+			names[event.CallID] = event.Name
+		case domain.ToolCallCompleted:
+			if event.TurnID == current {
+				continue
+			}
+			messages = append(messages, domain.ModelPromptMessage{
+				Role:       domain.PromptRoleTool,
+				Text:       event.Content,
+				ToolCallID: event.CallID,
+				Name:       names[event.CallID],
+			})
+		case domain.ToolCallFailed:
+			if event.TurnID == current {
+				continue
+			}
+			messages = append(messages, domain.ModelPromptMessage{
+				Role:       domain.PromptRoleTool,
+				Text:       event.Message,
+				ToolCallID: event.CallID,
+				Name:       names[event.CallID],
+			})
+		}
+	}
+	return messages
 }
 
 func (projection *turnProjection) Messages() []domain.ModelPromptMessage {
@@ -120,7 +183,11 @@ func (service *Service) runAfterAdmission(ctx context.Context, request RunTurnRe
 	if err := contextError(ctx); err != nil {
 		return service.cancelOwnedTurn(ctx, owned, domain.InterruptionCallerCanceled)
 	}
-	owned.projection = newTurnProjection(request.Input)
+	records, err := ReadWholeStreamPinned(ctx, service.store, request.SessionID, 256)
+	if err != nil {
+		return cloneRunTurnResult(owned.result), err
+	}
+	owned.projection = newTurnProjectionWithPrefix(projectPriorTurns(records, result.TurnID), request.Input)
 	return service.runStepLoop(ctx, owned)
 }
 

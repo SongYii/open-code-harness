@@ -127,6 +127,83 @@ func TestTwoStepReadFileSuccess(t *testing.T) {
 	if result.ItemID != "item-1" || result.Text != "done" || result.Status != domain.TurnStatusCompleted || !result.TerminalCommitted {
 		t.Fatalf("result = %#v", result)
 	}
+}
+
+func TestSecondRunTurnSeesPriorTurnMessages(t *testing.T) {
+	fs := testkit.NewMemFS("/workspace")
+	model := newSequenceModel(
+		[]engine.StreamEvent{
+			{Type: engine.StreamEventTextDelta, Text: "first-answer"},
+			{Type: engine.StreamEventCompleted},
+		},
+		[]engine.StreamEvent{
+			{Type: engine.StreamEventTextDelta, Text: "second-answer"},
+			{Type: engine.StreamEventCompleted},
+		},
+	)
+	service, _ := newToolService(t, model, fs, nil, nil, application.DefaultConfig())
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+		SessionID: created.SessionID, RequestID: "request-turn-1", Input: "hello", Sink: &testkit.RecordingSink{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+		SessionID: created.SessionID, RequestID: "request-turn-2", Input: "again", Sink: &testkit.RecordingSink{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	calls := model.Calls()
+	if len(calls) != 2 {
+		t.Fatalf("model calls = %d, want 2", len(calls))
+	}
+	first := calls[0].Messages
+	if len(first) != 1 || first[0].Role != domain.PromptRoleUser || first[0].Text != "hello" {
+		t.Fatalf("first turn messages = %#v", first)
+	}
+	second := calls[1].Messages
+	if len(second) != 3 {
+		t.Fatalf("second turn messages = %#v, want user/assistant/user", second)
+	}
+	if second[0].Role != domain.PromptRoleUser || second[0].Text != "hello" {
+		t.Fatalf("history user = %#v", second[0])
+	}
+	if second[1].Role != domain.PromptRoleAssistant || second[1].Text != "first-answer" {
+		t.Fatalf("history assistant = %#v", second[1])
+	}
+	if second[2].Role != domain.PromptRoleUser || second[2].Text != "again" {
+		t.Fatalf("current user = %#v", second[2])
+	}
+}
+
+func TestTwoStepReadFileForwardsToolResult(t *testing.T) {
+	fs := testkit.NewMemFS("/workspace")
+	fs.AddFile("README.md", []byte("hello from fixture"))
+	model := newSequenceModel(
+		[]engine.StreamEvent{
+			{Type: engine.StreamEventTextDelta, Text: "reading"},
+			{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "call-read", Name: tools.NameReadFile, Arguments: `{"path":"README.md"}`}},
+			{Type: engine.StreamEventCompleted},
+		},
+		[]engine.StreamEvent{
+			{Type: engine.StreamEventTextDelta, Text: "done"},
+			{Type: engine.StreamEventCompleted},
+		},
+	)
+	service, _ := newToolService(t, model, fs, nil, nil, application.DefaultConfig())
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+		SessionID: created.SessionID, RequestID: "request-two-step-tool", Input: "inspect", Sink: &testkit.RecordingSink{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	calls := model.Calls()
 	if len(calls) != 2 {
 		t.Fatalf("streams = %d, want 2", len(calls))
@@ -154,7 +231,7 @@ func TestTwoStepReadFileSuccess(t *testing.T) {
 	}
 
 	second, secondErr := service.RunTurn(context.Background(), application.RunTurnRequest{
-		SessionID: created.SessionID, RequestID: "request-two-step", Input: "inspect", Sink: &testkit.RecordingSink{},
+		SessionID: created.SessionID, RequestID: "request-two-step-tool", Input: "inspect", Sink: &testkit.RecordingSink{},
 	})
 	if secondErr != nil || second.Text != "done" || len(model.Calls()) != 2 {
 		t.Fatalf("second invocation streams again: result=%#v err=%v calls=%d", second, secondErr, len(model.Calls()))
