@@ -186,6 +186,143 @@ func TestServeLoadReplaysHistoryAndUnknownSessionErrors(t *testing.T) {
 	}
 }
 
+func TestServeLoadReplaysToolBearingHistory(t *testing.T) {
+	agentIn, clientOut := io.Pipe()
+	clientIn, agentOut := io.Pipe()
+	fake := newFake()
+	when := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	turn := domain.TurnID("turn-1")
+	fake.sessions = map[domain.SessionID]domain.Session{
+		"session-acp-1": {ID: "session-acp-1", Status: domain.SessionStatusActive, WorkspaceRoot: "/workspace"},
+	}
+	fake.history = []domain.RecordedEvent{
+		{Event: domain.SessionCreated{WorkspaceRoot: "/workspace"}, OccurredAt: when},
+		{Event: domain.TurnStarted{TurnID: turn, Input: "hello"}, OccurredAt: when},
+		{Event: domain.AssistantMessageCompleted{TurnID: turn, ItemID: "item-1", Text: "world", ToolCalls: []domain.ToolCallOffer{{ID: "call-1", Name: "read_file"}}}, OccurredAt: when},
+		{Event: domain.ModelRequestRecorded{TurnID: turn, ItemID: "item-1"}, OccurredAt: when},
+		{Event: domain.ModelUsageRecorded{TurnID: turn, ItemID: "item-1", InputTokens: 3}, OccurredAt: when},
+		{Event: domain.PolicyDecisionRecorded{TurnID: turn, ItemID: "item-2", CallID: "call-1", Effect: "allow"}, OccurredAt: when},
+		{Event: domain.ToolCallStarted{TurnID: turn, ItemID: "item-2", CallID: "call-1", Name: "read_file", Arguments: `{"path":"NOTES.md"}`, StepIndex: 1}, OccurredAt: when},
+		{Event: domain.ToolCallCompleted{TurnID: turn, ItemID: "item-2", CallID: "call-1", Content: "file body"}, OccurredAt: when},
+		{Event: domain.ToolCallStarted{TurnID: turn, ItemID: "item-3", CallID: "call-2", Name: "write_file", Arguments: `{"path":"OUT.md"}`}, OccurredAt: when},
+		{Event: domain.ToolCallFailed{TurnID: turn, ItemID: "item-3", CallID: "call-2", Code: "policy_denied", Message: "denied"}, OccurredAt: when},
+		{Event: domain.ToolCallStarted{TurnID: turn, ItemID: "item-4", CallID: "call-3", Name: "exec", Arguments: "echo hi"}, OccurredAt: when},
+		{Event: domain.ToolCallInterrupted{TurnID: turn, ItemID: "item-4", CallID: "call-3", Code: "canceled", Message: "stopped"}, OccurredAt: when},
+		{Event: domain.AssistantMessageFailed{TurnID: turn, ItemID: "item-5", Code: "model_stream", Message: "partial"}, OccurredAt: when},
+		{Event: domain.AssistantMessageInterrupted{TurnID: turn, ItemID: "item-6", Code: "canceled", Message: "stop"}, OccurredAt: when},
+		{Event: domain.TurnCompleted{TurnID: turn}, OccurredAt: when},
+		{Event: domain.ApprovalRequested{TurnID: turn, ItemID: "item-3", CallID: "call-2", Name: "write_file"}, OccurredAt: when},
+		{Event: domain.ApprovalResolved{TurnID: turn, ItemID: "item-3", Decision: "denied"}, OccurredAt: when},
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(context.Background(), Config{Sessions: fake, History: fake, Workspace: "/workspace"}, agentIn, agentOut)
+	}()
+	t.Cleanup(func() {
+		_ = agentIn.Close()
+		_ = clientOut.Close()
+		_ = clientIn.Close()
+		_ = agentOut.Close()
+		<-done
+	})
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	_ = readJSON(t, clientIn)
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":"session-acp-1"}}`)
+
+	var updates []map[string]any
+	var loadResult map[string]any
+	for {
+		message := readJSON(t, clientIn)
+		if message["method"] == methodSessionUpdate {
+			if loadResult != nil {
+				t.Fatalf("session/update after load result: %#v", message)
+			}
+			params := message["params"].(map[string]any)
+			if params["sessionId"] != "session-acp-1" {
+				t.Fatalf("load update sessionId = %#v", params["sessionId"])
+			}
+			updates = append(updates, params["update"].(map[string]any))
+			continue
+		}
+		loadResult = message
+		break
+	}
+	if loadResult["id"] != float64(2) || loadResult["error"] != nil {
+		t.Fatalf("load result = %#v", loadResult)
+	}
+	want := []map[string]any{
+		{"sessionUpdate": "user_message_chunk", "content": map[string]any{"type": "text", "text": "hello"}},
+		{"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text", "text": "world"}},
+		{"sessionUpdate": "tool_call", "toolCallId": "turn-1/call-1", "title": "read_file", "kind": "read", "status": "in_progress", "rawInput": map[string]any{"path": "NOTES.md"}},
+		{"sessionUpdate": "tool_call_update", "toolCallId": "turn-1/call-1", "status": "completed", "content": []any{map[string]any{"type": "content", "content": map[string]any{"type": "text", "text": "file body"}}}},
+		{"sessionUpdate": "tool_call", "toolCallId": "turn-1/call-2", "title": "write_file", "kind": "edit", "status": "in_progress", "rawInput": map[string]any{"path": "OUT.md"}},
+		{"sessionUpdate": "tool_call_update", "toolCallId": "turn-1/call-2", "status": "failed", "content": []any{map[string]any{"type": "content", "content": map[string]any{"type": "text", "text": "denied"}}}},
+		{"sessionUpdate": "tool_call", "toolCallId": "turn-1/call-3", "title": "exec", "kind": "execute", "status": "in_progress"},
+		{"sessionUpdate": "tool_call_update", "toolCallId": "turn-1/call-3", "status": "failed"},
+		{"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text", "text": "partial"}},
+		{"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text", "text": "stop"}},
+	}
+	gotJSON, err := json.Marshal(updates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantJSON, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotJSON) != string(wantJSON) {
+		t.Fatalf("load updates = %s, want %s", gotJSON, wantJSON)
+	}
+	for _, update := range updates {
+		payload := mustJSON(update)
+		if strings.Contains(payload, "interrupted") {
+			t.Fatalf("load emitted interrupted status: %s", payload)
+		}
+		if update["sessionUpdate"] == "tool_call_update" && update["status"] == "failed" && update["toolCallId"] == "turn-1/call-3" {
+			if _, ok := update["content"]; ok {
+				t.Fatalf("interrupted tool card must not carry content: %#v", update)
+			}
+		}
+	}
+}
+
+func TestServeLoadFailsOnSessionUpdateWriteError(t *testing.T) {
+	agentIn, clientOut := io.Pipe()
+	clientIn, agentOut := io.Pipe()
+	fake := newFake()
+	fake.sessions = map[domain.SessionID]domain.Session{
+		"session-acp-1": {ID: "session-acp-1", Status: domain.SessionStatusActive, WorkspaceRoot: "/workspace"},
+	}
+	fake.history = []domain.RecordedEvent{
+		{Event: domain.TurnStarted{TurnID: "turn-1", Input: "hello"}, OccurredAt: time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)},
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(context.Background(), Config{Sessions: fake, History: fake, Workspace: "/workspace"}, agentIn, dropSessionUpdates{writer: agentOut})
+	}()
+	t.Cleanup(func() {
+		_ = agentIn.Close()
+		_ = clientOut.Close()
+		_ = clientIn.Close()
+		_ = agentOut.Close()
+		<-done
+	})
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	_ = readJSON(t, clientIn)
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":"session-acp-1"}}`)
+	result := readJSON(t, clientIn)
+	if result["method"] == methodSessionUpdate {
+		t.Fatalf("failed load wrote session/update: %#v", result)
+	}
+	rpcErr, _ := result["error"].(map[string]any)
+	if rpcErr["code"] != float64(codeInternalError) {
+		t.Fatalf("load write failure = %#v", result)
+	}
+	if rpcErr["message"] != promptFailedMessage {
+		t.Fatalf("load write failure message = %#v, want %q", rpcErr["message"], promptFailedMessage)
+	}
+}
+
 func TestServePermissionGrantAndDeny(t *testing.T) {
 	agentIn, clientOut := io.Pipe()
 	clientIn, agentOut := io.Pipe()
@@ -560,6 +697,8 @@ func TestServeLoadAndPromptRejectForeignWorkspace(t *testing.T) {
 	}
 	fake.history = []domain.RecordedEvent{
 		{Event: domain.TurnStarted{TurnID: "turn-1", Input: "hello"}, OccurredAt: time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)},
+		{Event: domain.ToolCallStarted{TurnID: "turn-1", ItemID: "item-2", CallID: "call-1", Name: "read_file", Arguments: `{"path":"secret.md"}`}, OccurredAt: time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)},
+		{Event: domain.ToolCallCompleted{TurnID: "turn-1", ItemID: "item-2", CallID: "call-1", Content: "classified"}, OccurredAt: time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)},
 	}
 	done := make(chan error, 1)
 	go func() {
@@ -589,6 +728,9 @@ func TestServeLoadAndPromptRejectForeignWorkspace(t *testing.T) {
 	if strings.Contains(mustJSON(foreignLoad), "/other-workspace") {
 		t.Fatalf("leaked foreign workspace: %#v", foreignLoad)
 	}
+	if strings.Contains(mustJSON(foreignLoad), "tool_call") {
+		t.Fatalf("foreign load leaked tool card: %#v", foreignLoad)
+	}
 
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"session-foreign","prompt":[{"text":"hi"}]}}`)
 	foreignPrompt := readJSON(t, clientIn)
@@ -616,11 +758,16 @@ func TestServeLoadAndPromptRejectForeignWorkspace(t *testing.T) {
 	}
 
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":6,"method":"session/load","params":{"sessionId":"`+sessionID+`"}}`)
+	sawToolCard := false
 	loadUpdates := 0
 	for {
 		message := readJSON(t, clientIn)
 		if message["method"] == methodSessionUpdate {
 			loadUpdates++
+			update := message["params"].(map[string]any)["update"].(map[string]any)
+			if update["sessionUpdate"] == "tool_call" || update["sessionUpdate"] == "tool_call_update" {
+				sawToolCard = true
+			}
 			continue
 		}
 		if message["id"] != float64(6) || message["error"] != nil {
@@ -628,8 +775,11 @@ func TestServeLoadAndPromptRejectForeignWorkspace(t *testing.T) {
 		}
 		break
 	}
-	if loadUpdates != 1 {
-		t.Fatalf("same-workspace load updates = %d, want 1", loadUpdates)
+	if loadUpdates != 3 {
+		t.Fatalf("same-workspace load updates = %d, want 3", loadUpdates)
+	}
+	if !sawToolCard {
+		t.Fatal("same-workspace load of tool-bearing history produced no tool cards")
 	}
 
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":7,"method":"session/prompt","params":{"sessionId":"`+sessionID+`","prompt":[{"text":"hi"}]}}`)
