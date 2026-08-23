@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -79,6 +80,20 @@ func TestOpenReaderRejectsInvalidBusyTimeout(t *testing.T) {
 	config := ReaderConfig{Path: filepath.Join(t.TempDir(), "harness.db"), BusyTimeout: time.Millisecond}
 	if _, err := OpenReader(context.Background(), config); err == nil {
 		t.Fatal("OpenReader() with out-of-range busy timeout = nil, want error")
+	}
+}
+
+func TestOpenReaderDoesNotCreateMissingDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.db")
+	_, err := OpenReader(context.Background(), ReaderConfig{Path: path})
+	if err == nil {
+		t.Fatal("OpenReader() on missing path = nil, want error")
+	}
+	if strings.Contains(err.Error(), "writer must migrate first") {
+		t.Fatalf("error = %v, want open failure not older-format diagnosis", err)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("OpenReader created %q: %v", path, statErr)
 	}
 }
 

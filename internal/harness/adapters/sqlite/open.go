@@ -215,9 +215,10 @@ func dataSourceNamePragmas(path string, busyTimeout time.Duration, walAutoCheckp
 	values.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", busyTimeout.Milliseconds()))
 	values.Add("_pragma", fmt.Sprintf("wal_autocheckpoint(%d)", walAutoCheckpoint))
 	if queryOnly {
-		// Applied last so WAL conversion can still run before the connection
-		// becomes unable to mutate the file.
-		values.Add("_pragma", "query_only(1)")
+		// mode=rw refuses a missing file (default rwc would create one).
+		// _query_only is applied after every _pragma; a query_only pragma is not.
+		values.Set("mode", "rw")
+		values.Set("_query_only", "1")
 	}
 	return "file:" + filepath.ToSlash(path) + "?" + values.Encode()
 }
