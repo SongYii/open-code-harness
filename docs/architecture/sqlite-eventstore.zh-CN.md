@@ -88,12 +88,44 @@ fence。SQLite 的 `unixepoch('subsec')` 是唯一租约时钟。每次追加在
 `VACUUM INTO`），并在报告成功前校验副本的模式版本、连续性与不变量
 计数是否与活库一致。
 
+## OpenReader
+
+`OpenReader(ctx, ReaderConfig) (*Reader, error)` 仅为钉住的 `ReadStream`
+打开 Path。它是加法接口：既有 `Open` 不变。`Reader` 不是第二个
+EventStore——没有 `Append`、`ResolveAppend`、`FindCommandRequest`。
+
+`ReaderConfig` 是读画像：`Path`、`BusyTimeout`（默认 5s；允许范围
+100ms–60s，与 `Config.BusyTimeout` 相同）、`DeniedPathPrefixes`（与
+`Open` 同一诊断）以及 `WALAutoCheckpoint`（默认 1000；仅作为读侧
+pragma）。它不含 `RuntimeID` 或 `LeaseDuration`。
+
+打开画像在返回前校验：
+
+- WAL。**不**设置 `immutable=1`（必须看见活写者的最近一次提交）。
+- `synchronous=FULL`、`foreign_keys=1`、有界 `busy_timeout`。
+- `query_only=1` 与 `mode=rw`（缺失文件被拒绝，绝不创建）。
+- `DeniedPathPrefixes`——`Open` 会拒绝的网络或同步位置在此同样拒绝。
+- `user_version` 必须等于本二进制的最新迁移。更新为
+  `FormatNewerError`。更旧以 “writer must migrate first” 拒绝。
+  OpenReader 不运行 `migrate`。
+- 损坏元数据与 `Open` 读路径一样失败封闭。
+
+OpenReader 不获取 `runtime_leases` 或 `export_leases`。活写者可继续持有
+fencing 租约；读者在 `SQLITE_BUSY` 上等待至多 `BusyTimeout`，而不是立即
+失败。`ReadStream` 与写者使用同一钉住头分页函数。
+
+`composition.ExportSession` 传入 `ReaderConfig{Path: databasePath}` 并取
+默认值。会话转录 JSONL 记载于 [会话转录](session-transcript.md)；它不是
+本适配器的审计副本，也不填充 `transcript_entries`。
+
 ## 排除项
 
 - 审计信封、摘要链与 outbox 维护——Slice 3（列以零值存在）。
 - Runtime Host 生命周期：心跳调度、接管、崩溃调和、优雅关停——
   Slice 4。
 - `transcript_entries`、`snapshots`、`export_checkpoints`——仅模式。
-- JSONL、导入/导出、ACP、TUI——不在范围内。
+  会话转录 JSONL 是导出投影，不是这些表。
+- JSONL 审计副本、ACP、TUI——不在本适配器写者合同范围内。
+  `OpenReader` 是会话导出使用的加法读路径。
 - GA 阻塞项：没有进程级崩溃注入框架、没有长时间浸泡或损坏模糊
   测试、除租约谓词测试外没有多进程写者证据。
