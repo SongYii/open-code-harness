@@ -25,6 +25,9 @@ const (
 	CodeLineLimit                = "line_limit"
 	CodeInvalidLine              = "invalid_line"
 	CodeUnsupportedFormatVersion = "unsupported_format_version"
+	CodeInvalidSessionID         = "invalid_session_id"
+	CodeSessionNotFound          = "session_not_found"
+	CodeUnsupportedSchemaVersion = "unsupported_schema_version"
 
 	maxLineBytes = 2 << 20
 	// 9-digit fraction keeps nanoseconds present on the wire (RFC3339Nano goldens).
