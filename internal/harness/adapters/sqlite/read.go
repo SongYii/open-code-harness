@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 
 	"github.com/SongYii/open-code-harness/internal/harness/application"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
@@ -12,6 +13,14 @@ import (
 // A pinned head that cannot be served consistently is an invalid read, never
 // a silent empty page.
 func (store *Store) ReadStream(ctx context.Context, request application.ReadStreamRequest) (application.StreamPage, error) {
+	return readStream(ctx, store.db, request)
+}
+
+func (reader *Reader) ReadStream(ctx context.Context, request application.ReadStreamRequest) (application.StreamPage, error) {
+	return readStream(ctx, reader.db, request)
+}
+
+func readStream(ctx context.Context, db *sql.DB, request application.ReadStreamRequest) (application.StreamPage, error) {
 	if err := contextError(ctx); err != nil {
 		return application.StreamPage{}, readRejected(request.SessionID, err)
 	}
@@ -19,7 +28,7 @@ func (store *Store) ReadStream(ctx context.Context, request application.ReadStre
 		return application.StreamPage{}, readRejected(request.SessionID, err)
 	}
 
-	tx, err := store.db.BeginTx(ctx, nil)
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return application.StreamPage{}, mapStorageError(err, request.SessionID)
 	}

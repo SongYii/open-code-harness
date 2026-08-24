@@ -134,8 +134,12 @@ func (store *Store) upsertMetadataAfterMigration(ctx context.Context, conn *sql.
 // head position. The audit digest stays NULL until Slice 3 activates the
 // chain.
 func (store *Store) verifyMetadata(ctx context.Context) error {
+	return verifyMetadata(ctx, store.db)
+}
+
+func verifyMetadata(ctx context.Context, db *sql.DB) error {
 	var rows int
-	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM store_metadata").Scan(&rows); err != nil {
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM store_metadata").Scan(&rows); err != nil {
 		return fmt.Errorf("sqlite open: verify metadata count: %w", err)
 	}
 	if rows != 1 {
@@ -144,7 +148,7 @@ func (store *Store) verifyMetadata(ctx context.Context) error {
 	var formatVersion int
 	var headPosition int
 	var headAuditDigest []byte
-	err := store.db.QueryRowContext(ctx,
+	err := db.QueryRowContext(ctx,
 		"SELECT storage_format_version, head_commit_position, head_audit_digest FROM store_metadata WHERE id = 1").Scan(
 		&formatVersion, &headPosition, &headAuditDigest)
 	if err != nil {

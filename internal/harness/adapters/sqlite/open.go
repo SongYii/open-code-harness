@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/application"
 
@@ -55,18 +56,8 @@ func Open(ctx context.Context, config Config) (*Store, error) {
 		return nil, err
 	}
 
-	location, err := resolveLocation(config.Path)
-	if err != nil {
-		return nil, fmt.Errorf("sqlite open: resolve %q: %w", config.Path, err)
-	}
-	for _, prefix := range config.DeniedPathPrefixes {
-		denied, err := resolveLocation(prefix)
-		if err != nil {
-			return nil, fmt.Errorf("sqlite open: resolve denied prefix %q: %w", prefix, err)
-		}
-		if location == denied || strings.HasPrefix(location, denied+string(filepath.Separator)) {
-			return nil, fmt.Errorf("sqlite open: database location %q is denied by configuration; live databases are supported only on a local filesystem", location)
-		}
+	if err := rejectDeniedPath(config.Path, config.DeniedPathPrefixes); err != nil {
+		return nil, err
 	}
 
 	db, err := sql.Open("sqlite", dataSourceName(config.Path, config))
@@ -141,41 +132,58 @@ func verifyJournalMode(mode string) error {
 	return nil
 }
 
+type pragmaQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 func (store *Store) verifyProfile(ctx context.Context) error {
+	return verifyOperatingProfile(ctx, store.writer, store.config.BusyTimeout, false)
+}
+
+func verifyOperatingProfile(ctx context.Context, querier pragmaQuerier, busyTimeout time.Duration, queryOnly bool) error {
 	var mode string
-	if err := store.writer.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode); err != nil {
+	if err := querier.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode); err != nil {
 		return fmt.Errorf("sqlite open: read journal mode: %w", err)
 	}
 	if err := verifyJournalMode(mode); err != nil {
 		return err
 	}
 	var synchronous int
-	if err := store.writer.QueryRowContext(ctx, "PRAGMA synchronous").Scan(&synchronous); err != nil {
+	if err := querier.QueryRowContext(ctx, "PRAGMA synchronous").Scan(&synchronous); err != nil {
 		return fmt.Errorf("sqlite open: read synchronous: %w", err)
 	}
 	if synchronous != 2 {
 		return fmt.Errorf("sqlite open: synchronous = %d, want 2 (FULL)", synchronous)
 	}
 	var foreignKeys int
-	if err := store.writer.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&foreignKeys); err != nil {
+	if err := querier.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&foreignKeys); err != nil {
 		return fmt.Errorf("sqlite open: read foreign_keys: %w", err)
 	}
 	if foreignKeys != 1 {
 		return fmt.Errorf("sqlite open: foreign_keys = %d, want 1", foreignKeys)
 	}
 	var busyTimeoutMS int
-	if err := store.writer.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&busyTimeoutMS); err != nil {
+	if err := querier.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&busyTimeoutMS); err != nil {
 		return fmt.Errorf("sqlite open: read busy_timeout: %w", err)
 	}
-	if busyTimeoutMS != int(store.config.BusyTimeout.Milliseconds()) {
-		return fmt.Errorf("sqlite open: busy_timeout = %d ms, want %d", busyTimeoutMS, store.config.BusyTimeout.Milliseconds())
+	if busyTimeoutMS != int(busyTimeout.Milliseconds()) {
+		return fmt.Errorf("sqlite open: busy_timeout = %d ms, want %d", busyTimeoutMS, busyTimeout.Milliseconds())
 	}
-	return store.verifySQLiteVersion(ctx)
+	if queryOnly {
+		var only int
+		if err := querier.QueryRowContext(ctx, "PRAGMA query_only").Scan(&only); err != nil {
+			return fmt.Errorf("sqlite open: read query_only: %w", err)
+		}
+		if only != 1 {
+			return fmt.Errorf("sqlite open: query_only = %d, want 1", only)
+		}
+	}
+	return verifySQLiteVersion(ctx, querier)
 }
 
-func (store *Store) verifySQLiteVersion(ctx context.Context) error {
+func verifySQLiteVersion(ctx context.Context, querier pragmaQuerier) error {
 	var version string
-	if err := store.writer.QueryRowContext(ctx, "SELECT sqlite_version()").Scan(&version); err != nil {
+	if err := querier.QueryRowContext(ctx, "SELECT sqlite_version()").Scan(&version); err != nil {
 		return fmt.Errorf("sqlite open: read sqlite version: %w", err)
 	}
 	var major, minor, patch int
@@ -186,7 +194,7 @@ func (store *Store) verifySQLiteVersion(ctx context.Context) error {
 		return fmt.Errorf("sqlite open: bundled sqlite %s predates unixepoch subsec support (need >= 3.42.0)", version)
 	}
 	var stamp float64
-	if err := store.writer.QueryRowContext(ctx, "SELECT unixepoch('subsec')").Scan(&stamp); err != nil {
+	if err := querier.QueryRowContext(ctx, "SELECT unixepoch('subsec')").Scan(&stamp); err != nil {
 		return fmt.Errorf("sqlite open: unixepoch('subsec') unavailable: %w", err)
 	}
 	if stamp <= 0 {
@@ -196,13 +204,43 @@ func (store *Store) verifySQLiteVersion(ctx context.Context) error {
 }
 
 func dataSourceName(path string, config Config) string {
+	return dataSourceNamePragmas(path, config.BusyTimeout, config.WALAutoCheckpoint, false)
+}
+
+func dataSourceNamePragmas(path string, busyTimeout time.Duration, walAutoCheckpoint int, queryOnly bool) string {
 	values := url.Values{}
-	values.Add("_pragma", "journal_mode(WAL)")
-	values.Add("_pragma", "synchronous(FULL)")
+	if !queryOnly {
+		values.Add("_pragma", "journal_mode(WAL)")
+		values.Add("_pragma", "synchronous(FULL)")
+	}
 	values.Add("_pragma", "foreign_keys(1)")
-	values.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", config.BusyTimeout.Milliseconds()))
-	values.Add("_pragma", fmt.Sprintf("wal_autocheckpoint(%d)", config.WALAutoCheckpoint))
+	values.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", busyTimeout.Milliseconds()))
+	values.Add("_pragma", fmt.Sprintf("wal_autocheckpoint(%d)", walAutoCheckpoint))
+	if queryOnly {
+		// mode=rw refuses a missing file (default rwc would create one).
+		// _query_only is applied after every _pragma; a query_only pragma is not.
+		// Do not set journal_mode: converting DELETE→WAL would mutate a "read-only" open.
+		values.Set("mode", "rw")
+		values.Set("_query_only", "1")
+	}
 	return "file:" + filepath.ToSlash(path) + "?" + values.Encode()
+}
+
+func rejectDeniedPath(path string, prefixes []string) error {
+	location, err := resolveLocation(path)
+	if err != nil {
+		return fmt.Errorf("sqlite open: resolve %q: %w", path, err)
+	}
+	for _, prefix := range prefixes {
+		denied, err := resolveLocation(prefix)
+		if err != nil {
+			return fmt.Errorf("sqlite open: resolve denied prefix %q: %w", prefix, err)
+		}
+		if location == denied || strings.HasPrefix(location, denied+string(filepath.Separator)) {
+			return fmt.Errorf("sqlite open: database location %q is denied by configuration; live databases are supported only on a local filesystem", location)
+		}
+	}
+	return nil
 }
 
 // resolveLocation returns the most resolved absolute form of path by
