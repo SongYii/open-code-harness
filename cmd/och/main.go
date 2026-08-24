@@ -1,9 +1,10 @@
 // Command och runs one Open Code Harness assembly until it is signalled to
-// stop.
+// stop, or exports a session transcript.
 //
-// It contains flag parsing and signal handling and nothing else. Every
-// decision belongs to internal/harness/composition, which is a library so
-// that assembly can be asserted by tests rather than by launching a process.
+// It contains flag parsing, signal handling, and the atomic -output publish
+// for export-session. Every other decision belongs to
+// internal/harness/composition, which is a library so that assembly can be
+// asserted by tests rather than by launching a process.
 package main
 
 import (
@@ -11,12 +12,15 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/composition"
+	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/policy"
 )
 
@@ -28,6 +32,12 @@ func main() {
 }
 
 func run(arguments []string) error {
+	if len(arguments) > 0 && arguments[0] == "export-session" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return exportSession(ctx, arguments[1:], os.Stdout, os.Stderr)
+	}
+
 	flags := flag.NewFlagSet("och", flag.ContinueOnError)
 	config := composition.Config{}
 	var policyMode string
@@ -78,5 +88,72 @@ func run(arguments []string) error {
 	if err := assembly.Close(); err != nil {
 		return fmt.Errorf("shutdown after %s: %w", time.Since(start).Round(time.Millisecond), err)
 	}
+	return nil
+}
+
+func exportSession(ctx context.Context, arguments []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("och export-session", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	database := flags.String("database", "", "absolute path to the SQLite database (required)")
+	session := flags.String("session", "", "session id to export (required)")
+	output := flags.String("output", "", "write JSONL to PATH instead of stdout")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if *database == "" {
+		return fmt.Errorf("database is required")
+	}
+	if *session == "" {
+		return fmt.Errorf("session is required")
+	}
+
+	sessionID := domain.SessionID(*session)
+	if *output == "" {
+		result, err := composition.ExportSession(ctx, *database, sessionID, stdout)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(stderr, "och: exported session %s facts=%d head=%d open=%t running=%t\n",
+			*session, result.FactLines, result.HeadSequence, result.Open, result.Running)
+		return nil
+	}
+	return exportSessionToPath(ctx, *database, sessionID, *session, *output, stderr)
+}
+
+func exportSessionToPath(ctx context.Context, databasePath string, sessionID domain.SessionID, session, outputPath string, stderr io.Writer) error {
+	dir := filepath.Dir(outputPath)
+	temp, err := os.CreateTemp(dir, ".och-export-session-*.tmp")
+	if err != nil {
+		return err
+	}
+	tempName := temp.Name()
+	published := false
+	defer func() {
+		if temp != nil {
+			_ = temp.Close()
+		}
+		if !published {
+			_ = os.Remove(tempName)
+		}
+	}()
+
+	result, err := composition.ExportSession(ctx, databasePath, sessionID, temp)
+	if err != nil {
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		temp = nil
+		return err
+	}
+	temp = nil
+	if err := os.Rename(tempName, outputPath); err != nil {
+		return err
+	}
+	published = true
+	fmt.Fprintf(stderr, "och: exported session %s facts=%d head=%d open=%t running=%t\n",
+		session, result.FactLines, result.HeadSequence, result.Open, result.Running)
 	return nil
 }
