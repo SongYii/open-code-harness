@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -184,7 +185,8 @@ func (s *server) sessionLoad(message rpcRequest) error {
 	if err != nil {
 		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
 	}
-	if _, err := s.config.Sessions.LoadSession(s.ctx, sessionID); err != nil {
+	session, err := s.config.Sessions.LoadSession(s.ctx, sessionID)
+	if err != nil || filepath.Clean(session.WorkspaceRoot) != s.workspace {
 		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
 	}
 	if s.config.History != nil {
@@ -222,32 +224,15 @@ func (s *server) replay(sessionID domain.SessionID) error {
 }
 
 func (s *server) project(sessionID string, record domain.RecordedEvent) error {
-	switch event := record.Event.(type) {
-	case domain.TurnStarted:
-		if event.Input == "" {
-			return nil
-		}
-		return s.out.writeNotification(methodSessionUpdate, sessionUpdateParams{
+	for _, update := range ProjectRecordedEvent(sessionID, record) {
+		if err := s.out.writeNotification(methodSessionUpdate, sessionUpdateParams{
 			SessionID: sessionID,
-			Update: agentMessageChunk{ // user history uses the same text-chunk shape with a distinct tag
-				SessionUpdate: "user_message_chunk",
-				Content:       textContent{Type: "text", Text: event.Input},
-			},
-		})
-	case domain.AssistantMessageCompleted:
-		if event.Text == "" {
-			return nil
+			Update:    update,
+		}); err != nil {
+			return err
 		}
-		return s.out.writeNotification(methodSessionUpdate, sessionUpdateParams{
-			SessionID: sessionID,
-			Update: agentMessageChunk{
-				SessionUpdate: "agent_message_chunk",
-				Content:       textContent{Type: "text", Text: event.Text},
-			},
-		})
-	default:
-		return nil
 	}
+	return nil
 }
 
 func (s *server) sessionPrompt(message rpcRequest) error {
@@ -261,6 +246,10 @@ func (s *server) sessionPrompt(message rpcRequest) error {
 	}
 	input := concatenatePrompt(params.Prompt)
 	if strings.TrimSpace(input) == "" {
+		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
+	}
+	session, err := s.config.Sessions.LoadSession(s.ctx, sessionID)
+	if err != nil || filepath.Clean(session.WorkspaceRoot) != s.workspace {
 		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
 	}
 
@@ -335,20 +324,20 @@ func newRequestID() (domain.RunTurnRequestID, error) {
 // Decide implements tools.Approver as a reverse RPC.
 func (s *server) Decide(ctx context.Context, req tools.ApprovalRequest) (tools.ApprovalAnswer, error) {
 	id, waiter := s.nextID()
-	params := permissionParams{
+	params, ok := fitPermission(id, permissionParams{
 		SessionID: string(req.SessionID),
-		ToolCall:  permissionToolCall{ToolCallID: req.CallID, Title: req.Name, Kind: "other", Status: "pending"},
+		ToolCall:  permissionToolCall{ToolCallID: ToolCallID(req.TurnID, req.CallID), Title: req.Name, Kind: ToolKind(req.Name), Status: "pending"},
 		Options: []permissionOption{
 			{OptionID: optionAllowOnce, Name: "Allow once", Kind: "allow_once"},
 			{OptionID: optionRejectOnce, Name: "Reject once", Kind: "reject_once"},
 		},
+	})
+	if !ok {
+		s.forgetWaiter(id)
+		return tools.ApprovalAnswer{}, nil
 	}
-	if err := s.out.write(struct {
-		JSONRPC string           `json:"jsonrpc"`
-		ID      json.RawMessage  `json:"id"`
-		Method  string           `json:"method"`
-		Params  permissionParams `json:"params"`
-	}{JSONRPC: jsonRPCVersion, ID: id, Method: methodRequestPermission, Params: params}); err != nil {
+	if err := s.out.write(permissionRequest{JSONRPC: jsonRPCVersion, ID: id, Method: methodRequestPermission, Params: params}); err != nil {
+		s.forgetWaiter(id)
 		return tools.ApprovalAnswer{}, nil
 	}
 	select {
@@ -379,6 +368,39 @@ func (s *server) nextID() (json.RawMessage, chan rpcRequest) {
 	return id, waiter
 }
 
+func (s *server) forgetWaiter(id json.RawMessage) {
+	s.mu.Lock()
+	delete(s.pending, idKey(id))
+	s.mu.Unlock()
+}
+
+type permissionRequest struct {
+	JSONRPC string           `json:"jsonrpc"`
+	ID      json.RawMessage  `json:"id"`
+	Method  string           `json:"method"`
+	Params  permissionParams `json:"params"`
+}
+
+func fitPermission(id json.RawMessage, params permissionParams) (permissionParams, bool) {
+	if permissionFrameFits(id, params) {
+		return params, true
+	}
+	title := params.ToolCall.Title
+	params.ToolCall.Title = shrinkUntil(title, func(s string) bool {
+		next := params
+		next.ToolCall.Title = s
+		return permissionFrameFits(id, next)
+	})
+	return params, permissionFrameFits(id, params)
+}
+
+func permissionFrameFits(id json.RawMessage, params permissionParams) bool {
+	payload, err := json.Marshal(permissionRequest{
+		JSONRPC: jsonRPCVersion, ID: id, Method: methodRequestPermission, Params: params,
+	})
+	return err == nil && !bytes.Contains(payload, []byte{'\n'}) && len(payload)+1 <= maxFrameBytes
+}
+
 func mustMarshal(value any) []byte {
 	payload, err := json.Marshal(value)
 	if err != nil {
@@ -390,19 +412,37 @@ func mustMarshal(value any) []byte {
 type updateSink struct {
 	sessionID string
 	out       *frameWriter
+	live      LiveTool
 }
 
 func (sink *updateSink) Emit(_ context.Context, event engine.RuntimeEvent) error {
-	if event.Type != engine.RuntimeModelTextDelta || event.Text == "" {
-		return nil
+	live := sink.remember(event)
+	for _, update := range ProjectRuntimeEvent(sink.sessionID, event, live) {
+		_ = sink.out.writeNotification(methodSessionUpdate, sessionUpdateParams{
+			SessionID: sink.sessionID,
+			Update:    update,
+		})
 	}
-	return sink.out.writeNotification(methodSessionUpdate, sessionUpdateParams{
-		SessionID: sink.sessionID,
-		Update: agentMessageChunk{
-			SessionUpdate: "agent_message_chunk",
-			Content:       textContent{Type: "text", Text: event.Text},
-		},
-	})
+	return nil
+}
+
+func (sink *updateSink) remember(event engine.RuntimeEvent) LiveTool {
+	switch event.Type {
+	case engine.RuntimeModelToolCall, engine.RuntimeToolExecutionStarted:
+		name, callID := splitToolText(event.Text)
+		sink.live = LiveTool{TurnID: event.TurnID, CallID: callID, Name: name}
+		return sink.live
+	case engine.RuntimeToolExecutionCompleted, engine.RuntimeToolExecutionFailed:
+		live := sink.live
+		if event.Text != "" {
+			name, callID := splitToolText(event.Text)
+			live = LiveTool{TurnID: event.TurnID, CallID: callID, Name: name}
+		}
+		sink.live = LiveTool{}
+		return live
+	default:
+		return sink.live
+	}
 }
 
 var _ tools.Approver = (*server)(nil)

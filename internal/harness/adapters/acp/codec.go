@@ -51,6 +51,9 @@ func (w *frameWriter) write(message any) error {
 	if bytes.Contains(payload, []byte{'\n'}) {
 		return fmt.Errorf("acp: encoded frame contains a newline")
 	}
+	if len(payload)+1 > maxFrameBytes {
+		return fmt.Errorf("acp: encoded frame exceeds %d bytes", maxFrameBytes)
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	_, err = w.writer.Write(append(payload, '\n'))

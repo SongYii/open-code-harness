@@ -166,9 +166,19 @@ func TestAssemblyServesACPTurnEndToEnd(t *testing.T) {
 		t.Fatalf("session/new = %#v", created)
 	}
 	writeACP(t, clientOut, fmt.Sprintf(`{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":%q,"prompt":[{"type":"text","text":%q}]}}`, sessionID, "what is in "+fileName+"?"))
+	sawToolCall := false
 	for {
 		message := readACP(t, clientIn)
 		if message["method"] == "session/update" {
+			params, _ := message["params"].(map[string]any)
+			update, _ := params["update"].(map[string]any)
+			if update["sessionUpdate"] == "tool_call" {
+				sawToolCall = true
+				toolCallID, _ := update["toolCallId"].(string)
+				if !strings.Contains(toolCallID, "/") {
+					t.Fatalf("live toolCallId = %q, want namespaced turn/call", toolCallID)
+				}
+			}
 			continue
 		}
 		if message["id"] != float64(3) {
@@ -181,6 +191,9 @@ func TestAssemblyServesACPTurnEndToEnd(t *testing.T) {
 			t.Fatalf("session/prompt = %#v", message)
 		}
 		break
+	}
+	if !sawToolCall {
+		t.Fatal("catalog-backed read_file turn produced no live tool_call during session/prompt")
 	}
 }
 
