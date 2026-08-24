@@ -59,6 +59,8 @@ func TestClassifyProductionDirectory(t *testing.T) {
 		{name: "acp production subpackage", directory: "internal/harness/adapters/acp/internal", want: ownerACP, inspect: true, hasOwner: true},
 		{name: "composition root", directory: "internal/harness/composition", want: ownerComposition, inspect: true, hasOwner: true},
 		{name: "composition production subpackage", directory: "internal/harness/composition/wiring", want: ownerComposition, inspect: true, hasOwner: true},
+		{name: "transcript root", directory: "internal/harness/transcript", want: ownerTranscript, inspect: true, hasOwner: true},
+		{name: "transcript production subpackage", directory: "internal/harness/transcript/internal", want: ownerTranscript, inspect: true, hasOwner: true},
 		{name: "unowned adapter still inspected", directory: "internal/harness/adapters/other", inspect: true},
 		{name: "unowned nested adapter still inspected", directory: "internal/harness/adapters/other/internal", inspect: true},
 		{name: "harness root still inspected", directory: "internal/harness", inspect: true},
@@ -243,6 +245,30 @@ func TestForbiddenImport(t *testing.T) {
 		{name: "runtime cannot import openaicompat", owner: ownerRuntime, importPath: modulePath + "/internal/harness/adapters/openaicompat", forbidden: true},
 		{name: "sqlite cannot import os/exec", owner: ownerSQLite, importPath: "os/exec", forbidden: true},
 		{name: "sqlite cannot import net", owner: ownerSQLite, importPath: "net", forbidden: true},
+		{name: "transcript may import domain", owner: ownerTranscript, importPath: modulePath + "/internal/harness/domain", forbidden: false},
+		{name: "transcript may import application", owner: ownerTranscript, importPath: modulePath + "/internal/harness/application", forbidden: false},
+		{name: "transcript may import encoding/json", owner: ownerTranscript, importPath: "encoding/json", forbidden: false},
+		{name: "transcript cannot import engine", owner: ownerTranscript, importPath: modulePath + "/internal/harness/engine", forbidden: true},
+		{name: "transcript cannot import policy", owner: ownerTranscript, importPath: modulePath + "/internal/harness/policy", forbidden: true},
+		{name: "transcript cannot import tools", owner: ownerTranscript, importPath: modulePath + "/internal/harness/tools", forbidden: true},
+		{name: "transcript cannot import runtime", owner: ownerTranscript, importPath: modulePath + "/internal/harness/runtime", forbidden: true},
+		{name: "transcript cannot import testkit", owner: ownerTranscript, importPath: modulePath + "/internal/harness/testkit", forbidden: true},
+		{name: "transcript cannot import sqlite", owner: ownerTranscript, importPath: modulePath + "/internal/harness/adapters/sqlite", forbidden: true},
+		{name: "transcript cannot import acp", owner: ownerTranscript, importPath: modulePath + "/internal/harness/adapters/acp", forbidden: true},
+		{name: "transcript cannot import memory", owner: ownerTranscript, importPath: modulePath + "/internal/harness/adapters/memory", forbidden: true},
+		{name: "transcript cannot import os", owner: ownerTranscript, importPath: "os", forbidden: true},
+		{name: "transcript cannot import os/exec", owner: ownerTranscript, importPath: "os/exec", forbidden: true},
+		{name: "transcript cannot import net", owner: ownerTranscript, importPath: "net", forbidden: true},
+		{name: "transcript cannot import net/http", owner: ownerTranscript, importPath: "net/http", forbidden: true},
+		{name: "composition may import transcript", owner: ownerComposition, importPath: modulePath + "/internal/harness/transcript", forbidden: false},
+		{name: "domain cannot import transcript", owner: ownerDomain, importPath: modulePath + "/internal/harness/transcript", forbidden: true},
+		{name: "engine cannot import transcript", owner: ownerEngine, importPath: modulePath + "/internal/harness/transcript", forbidden: true},
+		{name: "application cannot import transcript", owner: ownerApplication, importPath: modulePath + "/internal/harness/transcript", forbidden: true},
+		{name: "policy cannot import transcript", owner: ownerPolicy, importPath: modulePath + "/internal/harness/transcript", forbidden: true},
+		{name: "tools cannot import transcript", owner: ownerTools, importPath: modulePath + "/internal/harness/transcript", forbidden: true},
+		{name: "acp cannot import transcript", owner: ownerACP, importPath: modulePath + "/internal/harness/transcript", forbidden: true},
+		{name: "sqlite cannot import transcript", owner: ownerSQLite, importPath: modulePath + "/internal/harness/transcript", forbidden: true},
+		{name: "runtime cannot import transcript", owner: ownerRuntime, importPath: modulePath + "/internal/harness/transcript", forbidden: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -350,6 +376,7 @@ const (
 	ownerSystem       packageOwner = "system"
 	ownerACP          packageOwner = "acp"
 	ownerComposition  packageOwner = "composition"
+	ownerTranscript   packageOwner = "transcript"
 )
 
 var excludedTestSupportDirectories = []string{
@@ -388,6 +415,7 @@ func packageOwnership(directory string) (packageOwner, bool) {
 		{root: "internal/harness/adapters/system", owner: ownerSystem},
 		{root: "internal/harness/adapters/acp", owner: ownerACP},
 		{root: "internal/harness/composition", owner: ownerComposition},
+		{root: "internal/harness/transcript", owner: ownerTranscript},
 		{root: "internal/harness/tools", owner: ownerTools},
 	} {
 		if directoryWithin(directory, candidate.root) {
@@ -414,6 +442,7 @@ func unownedImport(importPath string) string {
 	for _, prefix := range []string{
 		modulePath + "/internal/harness/adapters",
 		modulePath + "/internal/harness/testkit",
+		modulePath + "/internal/harness/transcript",
 	} {
 		if withinPackage(importPath, prefix) {
 			return "forbidden package dependency from an unowned package"
@@ -434,6 +463,7 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/testkit",
 			modulePath+"/internal/harness/tools",
 			modulePath+"/internal/harness/policy",
+			modulePath+"/internal/harness/transcript",
 		)
 	case ownerEngine:
 		forbidden = append(forbidden,
@@ -442,6 +472,7 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/testkit",
 			modulePath+"/internal/harness/tools",
 			modulePath+"/internal/harness/policy",
+			modulePath+"/internal/harness/transcript",
 		)
 	case ownerTools:
 		forbidden = append(forbidden,
@@ -450,11 +481,13 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/adapters",
 			modulePath+"/internal/harness/testkit",
 			modulePath+"/internal/harness/engine",
+			modulePath+"/internal/harness/transcript",
 		)
 	case ownerApplication:
 		forbidden = append(forbidden,
 			modulePath+"/internal/harness/adapters",
 			modulePath+"/internal/harness/testkit",
+			modulePath+"/internal/harness/transcript",
 		)
 	case ownerOpenAICompat:
 		forbidden = append(forbidden,
@@ -469,6 +502,7 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/tools",
 			modulePath+"/internal/harness/adapters",
 			modulePath+"/internal/harness/testkit",
+			modulePath+"/internal/harness/transcript",
 		)
 	case ownerSQLite:
 		forbidden = append(forbidden,
@@ -476,6 +510,7 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/tools",
 			modulePath+"/internal/harness/policy",
 			modulePath+"/internal/harness/testkit",
+			modulePath+"/internal/harness/transcript",
 		)
 	case ownerRuntime:
 		// Runtime is denied the adapters root as a whole, with sqlite carved
@@ -488,6 +523,7 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/policy",
 			modulePath+"/internal/harness/testkit",
 			modulePath+"/internal/harness/adapters",
+			modulePath+"/internal/harness/transcript",
 		)
 	case ownerSystem:
 		forbidden = append(forbidden,
@@ -503,6 +539,16 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/testkit",
 			modulePath+"/internal/harness/policy",
 			modulePath+"/internal/harness/runtime",
+			modulePath+"/internal/harness/transcript",
+		)
+	case ownerTranscript:
+		forbidden = append(forbidden,
+			modulePath+"/internal/harness/engine",
+			modulePath+"/internal/harness/policy",
+			modulePath+"/internal/harness/tools",
+			modulePath+"/internal/harness/runtime",
+			modulePath+"/internal/harness/testkit",
+			modulePath+"/internal/harness/adapters",
 		)
 	case ownerComposition:
 		// The composition root may name every adapter. That is the whole
@@ -542,7 +588,7 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			}
 		}
 	}
-	if owner == ownerDomain || owner == ownerApplication || owner == ownerEngine || owner == ownerMemory || owner == ownerPolicy || owner == ownerTools {
+	if owner == ownerDomain || owner == ownerApplication || owner == ownerEngine || owner == ownerMemory || owner == ownerPolicy || owner == ownerTools || owner == ownerTranscript {
 		switch importPath {
 		case "os", "os/exec", "net", "net/http":
 			return "forbidden host/network dependency"
@@ -752,6 +798,8 @@ func TestUnownedPackagesCannotImportAdapters(t *testing.T) {
 		{name: "adapter subpackage", importPath: modulePath + "/internal/harness/adapters/sqlite/internal", forbidden: true},
 		{name: "adapters parent", importPath: modulePath + "/internal/harness/adapters", forbidden: true},
 		{name: "test support", importPath: modulePath + "/internal/harness/testkit", forbidden: true},
+		{name: "transcript", importPath: modulePath + "/internal/harness/transcript", forbidden: true},
+		{name: "transcript subpackage", importPath: modulePath + "/internal/harness/transcript/internal", forbidden: true},
 		{name: "similarly named package is not an adapter", importPath: modulePath + "/internal/harness/adaptersx", forbidden: false},
 		{name: "domain stays permitted", importPath: modulePath + "/internal/harness/domain", forbidden: false},
 		{name: "standard library stays permitted", importPath: "time", forbidden: false},
@@ -788,6 +836,7 @@ func TestOnlyCompositionAndRuntimeMayNameAnAdapter(t *testing.T) {
 		ownerDomain, ownerEngine, ownerApplication, ownerPolicy, ownerTools,
 		ownerRuntime, ownerMemory, ownerOpenAICompat, ownerSQLite,
 		ownerWorkspaceFS, ownerLocalExec, ownerSystem, ownerACP,
+		ownerTranscript,
 	}
 	permitted := func(owner packageOwner, adapter string) bool {
 		if selfRoot, ok := adapterOwnerRoot(owner); ok && adapter == selfRoot {
