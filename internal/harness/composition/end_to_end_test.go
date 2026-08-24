@@ -195,6 +195,56 @@ func TestAssemblyServesACPTurnEndToEnd(t *testing.T) {
 	if !sawToolCall {
 		t.Fatal("catalog-backed read_file turn produced no live tool_call during session/prompt")
 	}
+
+	writeACP(t, clientOut, fmt.Sprintf(`{"jsonrpc":"2.0","id":4,"method":"session/load","params":{"sessionId":%q}}`, sessionID))
+	sawLoadToolCall := false
+	sawLoadToolContent := false
+	for {
+		message := readACP(t, clientIn)
+		if message["method"] == "session/update" {
+			params, _ := message["params"].(map[string]any)
+			update, _ := params["update"].(map[string]any)
+			switch update["sessionUpdate"] {
+			case "user_message_chunk", "agent_message_chunk":
+			case "tool_call":
+				sawLoadToolCall = true
+				toolCallID, _ := update["toolCallId"].(string)
+				if !strings.Contains(toolCallID, "/") {
+					t.Fatalf("load toolCallId = %q, want namespaced turn/call", toolCallID)
+				}
+				if update["status"] != "in_progress" {
+					t.Fatalf("load tool_call status = %#v, want in_progress", update["status"])
+				}
+				rawInput, _ := update["rawInput"].(map[string]any)
+				if rawInput["path"] != fileName {
+					t.Fatalf("load rawInput = %#v, want path %q", update["rawInput"], fileName)
+				}
+			case "tool_call_update":
+				sawLoadToolCall = true
+				if update["status"] == "completed" {
+					if contentHasText(update["content"], fileBody) {
+						sawLoadToolContent = true
+					}
+				}
+			default:
+				t.Fatalf("unexpected session/load update %#v", update)
+			}
+			continue
+		}
+		if message["id"] != float64(4) {
+			t.Fatalf("unexpected ACP frame %#v", message)
+		}
+		if message["error"] != nil {
+			t.Fatalf("session/load error = %#v", message["error"])
+		}
+		break
+	}
+	if !sawLoadToolCall {
+		t.Fatal("session/load after catalog-backed read_file produced no tool cards")
+	}
+	if !sawLoadToolContent {
+		t.Fatal("session/load after catalog-backed read_file produced no completed tool content")
+	}
 }
 
 func writeACP(t *testing.T, w io.Writer, line string) {
@@ -311,6 +361,22 @@ func extractToolResult(body []byte) string {
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func contentHasText(content any, want string) bool {
+	blocks, ok := content.([]any)
+	if !ok {
+		return false
+	}
+	for _, block := range blocks {
+		item, _ := block.(map[string]any)
+		inner, _ := item["content"].(map[string]any)
+		text, _ := inner["text"].(string)
+		if strings.Contains(text, want) {
 			return true
 		}
 	}
