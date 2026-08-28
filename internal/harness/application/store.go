@@ -67,6 +67,32 @@ type EventStore interface {
 	FindCommandRequest(context.Context, FindCommandRequestRequest) (CommandRequestLookup, error)
 }
 
+type ListSessionHeadsRequest struct {
+	WorkspaceRoot string
+	Cursor        string
+	Limit         uint32
+}
+
+type SessionHeadStatus string
+
+const (
+	SessionHeadStatusIdle    SessionHeadStatus = "idle"
+	SessionHeadStatusRunning SessionHeadStatus = "running"
+	SessionHeadStatusClosed  SessionHeadStatus = "closed"
+)
+
+type SessionHead struct {
+	SessionID     domain.SessionID
+	WorkspaceRoot string
+	Status        SessionHeadStatus
+	UpdatedAt     time.Time
+}
+
+type SessionHeadPage struct {
+	Sessions   []SessionHead
+	NextCursor string
+}
+
 type ReadStreamRequest struct {
 	SessionID     domain.SessionID
 	AfterSequence uint64

@@ -1,9 +1,15 @@
 package memory
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
+	"sort"
 	"sync"
+	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/application"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
@@ -43,6 +49,7 @@ type storedAppend struct {
 	commitPosition uint64
 	firstSequence  uint64
 	eventCount     uint64
+	committedAt    time.Time
 }
 
 // eventStoreV2State owns every fact changed by a successful append. Append
@@ -216,7 +223,7 @@ func (store *EventStore) Append(ctx context.Context, request application.AppendR
 	receipt := application.CommitReceipt{AppendID: request.AppendID, CommitPosition: position, FirstSequence: batch[0].Sequence, LastSequence: batch[len(batch)-1].Sequence}
 	candidateState.streams[request.SessionID] = candidate
 	candidateState.commitPosition = position
-	candidateState.appends[request.AppendID] = storedAppend{digest: digest, receipt: receipt, sessionID: request.SessionID, commitPosition: position, firstSequence: receipt.FirstSequence, eventCount: uint64(len(batch))}
+	candidateState.appends[request.AppendID] = storedAppend{digest: digest, receipt: receipt, sessionID: request.SessionID, commitPosition: position, firstSequence: receipt.FirstSequence, eventCount: uint64(len(batch)), committedAt: request.Events[len(request.Events)-1].OccurredAt.UTC()}
 	for _, record := range batch {
 		candidateState.eventIDs[record.ID] = struct{}{}
 	}
@@ -355,6 +362,153 @@ func (store *EventStore) ReadStream(ctx context.Context, request application.Rea
 		next = records[len(records)-1].Sequence
 	}
 	return application.StreamPage{Records: records, HeadVersion: head, NextAfterSequence: next, End: next == head}, nil
+}
+
+type sessionHeadCursor struct {
+	Version  int    `json:"v"`
+	Position uint64 `json:"p"`
+	Session  string `json:"s"`
+}
+
+type memorySessionHead struct {
+	head     application.SessionHead
+	position uint64
+}
+
+func (store *EventStore) ListSessionHeads(ctx context.Context, request application.ListSessionHeadsRequest) (application.SessionHeadPage, error) {
+	if err := contextError(ctx); err != nil {
+		return application.SessionHeadPage{}, readError("", err)
+	}
+	root, err := application.CanonicalWorkspaceRoot(request.WorkspaceRoot)
+	if err != nil || root != request.WorkspaceRoot || request.Limit == 0 || request.Limit > 256 {
+		return application.SessionHeadPage{}, readError("", fmt.Errorf("invalid session head request"))
+	}
+	cursor, hasCursor, err := decodeSessionHeadCursor(request.Cursor)
+	if err != nil {
+		return application.SessionHeadPage{}, readError("", err)
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := contextError(ctx); err != nil {
+		return application.SessionHeadPage{}, readError("", err)
+	}
+
+	heads := make([]memorySessionHead, 0, len(store.state.streams))
+	for sessionID, records := range store.state.streams {
+		state, replayErr := domain.Replay(records)
+		if replayErr != nil {
+			return application.SessionHeadPage{}, storeError(application.StoreCodeCorrupt, sessionID, 0, 0, "", replayErr)
+		}
+		workspaceRoot, rootErr := application.CanonicalWorkspaceRoot(state.WorkspaceRoot)
+		if rootErr != nil {
+			return application.SessionHeadPage{}, storeError(application.StoreCodeCorrupt, sessionID, 0, 0, "", rootErr)
+		}
+		if workspaceRoot != root || state.Status == domain.SessionStatusDeleted {
+			continue
+		}
+		status := application.SessionHeadStatusIdle
+		switch state.Status {
+		case domain.SessionStatusActive:
+			if state.ActiveTurn != nil {
+				status = application.SessionHeadStatusRunning
+			}
+		case domain.SessionStatusClosed:
+			status = application.SessionHeadStatusClosed
+		default:
+			return application.SessionHeadPage{}, storeError(application.StoreCodeCorrupt, sessionID, 0, 0, "", fmt.Errorf("invalid session status"))
+		}
+		var latest storedAppend
+		for _, appendRecord := range store.state.appends {
+			if appendRecord.sessionID == sessionID && appendRecord.commitPosition > latest.commitPosition {
+				latest = appendRecord
+			}
+		}
+		if latest.commitPosition == 0 || latest.committedAt.IsZero() {
+			return application.SessionHeadPage{}, storeError(application.StoreCodeCorrupt, sessionID, 0, 0, "", fmt.Errorf("missing session head commit"))
+		}
+		heads = append(heads, memorySessionHead{
+			head: application.SessionHead{
+				SessionID:     sessionID,
+				WorkspaceRoot: workspaceRoot,
+				Status:        status,
+				UpdatedAt:     latest.committedAt.UTC(),
+			},
+			position: latest.commitPosition,
+		})
+	}
+	sort.Slice(heads, func(i, j int) bool {
+		if heads[i].position != heads[j].position {
+			return heads[i].position > heads[j].position
+		}
+		return heads[i].head.SessionID > heads[j].head.SessionID
+	})
+	if hasCursor {
+		filtered := heads[:0]
+		for _, head := range heads {
+			if head.position < cursor.Position || (head.position == cursor.Position && string(head.head.SessionID) < cursor.Session) {
+				filtered = append(filtered, head)
+			}
+		}
+		heads = filtered
+	}
+
+	count := int(request.Limit)
+	hasMore := len(heads) > count
+	if len(heads) < count {
+		count = len(heads)
+	}
+	page := application.SessionHeadPage{Sessions: make([]application.SessionHead, count)}
+	for index := 0; index < count; index++ {
+		page.Sessions[index] = heads[index].head
+	}
+	if hasMore {
+		last := heads[count-1]
+		page.NextCursor, err = encodeSessionHeadCursor(sessionHeadCursor{
+			Version: 1, Position: last.position, Session: string(last.head.SessionID),
+		})
+		if err != nil {
+			return application.SessionHeadPage{}, storeError(application.StoreCodeCorrupt, "", 0, 0, "", err)
+		}
+	}
+	return page, nil
+}
+
+func decodeSessionHeadCursor(encoded string) (sessionHeadCursor, bool, error) {
+	if encoded == "" {
+		return sessionHeadCursor{}, false, nil
+	}
+	if len(encoded) > 512 {
+		return sessionHeadCursor{}, false, fmt.Errorf("session head cursor exceeds limit")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil || len(raw) == 0 || len(raw) > 512 {
+		return sessionHeadCursor{}, false, fmt.Errorf("invalid session head cursor")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var cursor sessionHeadCursor
+	if err := decoder.Decode(&cursor); err != nil {
+		return sessionHeadCursor{}, false, fmt.Errorf("invalid session head cursor")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return sessionHeadCursor{}, false, fmt.Errorf("invalid session head cursor")
+	}
+	if cursor.Version != 1 || cursor.Position == 0 {
+		return sessionHeadCursor{}, false, fmt.Errorf("invalid session head cursor")
+	}
+	if _, err := domain.ParseSessionID(cursor.Session); err != nil {
+		return sessionHeadCursor{}, false, fmt.Errorf("invalid session head cursor")
+	}
+	return cursor, true, nil
+}
+
+func encodeSessionHeadCursor(cursor sessionHeadCursor) (string, error) {
+	raw, err := json.Marshal(cursor)
+	if err != nil || len(raw) > 512 {
+		return "", fmt.Errorf("invalid session head cursor")
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
 func (store *EventStore) ResolveAppend(ctx context.Context, request application.ResolveAppendRequest) (application.AppendResolution, error) {

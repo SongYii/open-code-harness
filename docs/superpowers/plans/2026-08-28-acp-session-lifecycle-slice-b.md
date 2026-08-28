@@ -138,11 +138,11 @@ type SessionHeadPage struct {
 }
 ```
 
-- [ ] Add failing service tests for fixed `Limit = 50`, defensive result slices, catalog-store error mapping, bad cursor as `CategoryValidation`, and canonical root forwarding.
+- [x] Add failing service tests for fixed `Limit = 50`, defensive result slices, catalog-store error mapping, bad cursor as `CategoryValidation`, and canonical root forwarding.
 - [x] Add failing resume tests for active-idle success without append, and absent/foreign/closed/running/deleted rejection.
 - [x] Add failing delete tests for the normal append path, canonical workspace admission, absent/foreign/already-deleted public `session_not_found`, running rejection, unknown-outcome resolution, and second-delete internal replay.
 - [x] Add a channel-driven race test where `RunTurn` admission and `DeleteSession` start from the same head and exactly one CAS append wins.
-- [ ] Implement:
+- [x] Implement:
 
 ```go
 func CanonicalWorkspaceRoot(root string) (string, error)
@@ -173,10 +173,10 @@ go test -race ./internal/harness/application -count=1
 - Modify: `internal/harness/testkit/v2_store.go`
 
 - [ ] Add shared failing cases for workspace filtering, deleted omission, idle/running/closed mapping, descending commit-position/session-ID tie order, `Limit + 1`, next cursor, invalid/oversize cursor, UTC timestamps, and defensive returned slices.
-- [ ] Add a private strict cursor value matching `{"v":1,"p":123,"s":"session-id"}`. Encode with `base64.RawURLEncoding`; reject decoded payloads over 512 bytes, padding, unknown/missing fields, non-positive positions, and invalid Session IDs.
-- [ ] Extend in-memory state with the minimum immutable metadata needed to list heads at one mutex-protected snapshot. Update it only at the same single publish point as append.
-- [ ] Derive status through canonical domain replay or a shared memory projection: active with no turn is idle, active with a turn is running, closed is closed, and deleted is omitted before limiting.
-- [ ] Keep cursor comparison on `(commitPosition, sessionID)` and use the last returned visible row for `NextCursor`.
+- [x] Add a private strict cursor value matching `{"v":1,"p":123,"s":"session-id"}`. Encode with `base64.RawURLEncoding`; reject decoded payloads over 512 bytes, padding, unknown/missing fields, non-positive positions, and invalid Session IDs.
+- [x] Extend in-memory state with the minimum immutable metadata needed to list heads at one mutex-protected snapshot. Update it only at the same single publish point as append.
+- [x] Derive status through canonical domain replay or a shared memory projection: active with no turn is idle, active with a turn is running, closed is closed, and deleted is omitted before limiting.
+- [x] Keep cursor comparison on `(commitPosition, sessionID)` and use the last returned visible row for `NextCursor`.
 - [ ] Run:
 
 ```bash

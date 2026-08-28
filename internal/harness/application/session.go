@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
@@ -15,6 +16,22 @@ func CanonicalWorkspaceRoot(root string) (string, error) {
 		return "", errors.New("workspace root must be an absolute path without surrounding whitespace")
 	}
 	return filepath.Clean(root), nil
+}
+
+type ListSessionsRequest struct {
+	WorkspaceRoot string
+	Cursor        string
+}
+
+type ListedSession struct {
+	SessionID     domain.SessionID
+	WorkspaceRoot string
+	UpdatedAt     time.Time
+}
+
+type ListSessionsResult struct {
+	Sessions   []ListedSession
+	NextCursor string
 }
 
 type CreateSessionRequest struct{ WorkspaceRoot string }
@@ -36,6 +53,74 @@ type CloseSessionRequest struct{ SessionID domain.SessionID }
 type CloseSessionResult struct {
 	Session domain.Session
 	Records []domain.RecordedEvent
+}
+
+type sessionHeadCatalog interface {
+	ListSessionHeads(context.Context, ListSessionHeadsRequest) (SessionHeadPage, error)
+}
+
+func (service *Service) ListSessions(ctx context.Context, request ListSessionsRequest) (ListSessionsResult, error) {
+	if service == nil {
+		return ListSessionsResult{}, applicationError(CategoryValidation, "invalid_request", false, nil)
+	}
+	workspaceRoot, err := CanonicalWorkspaceRoot(request.WorkspaceRoot)
+	if err != nil {
+		return ListSessionsResult{}, applicationError(CategoryValidation, "invalid_request", false, err)
+	}
+	if err := contextError(ctx); err != nil {
+		return ListSessionsResult{}, err
+	}
+	catalog, ok := service.store.(sessionHeadCatalog)
+	if !ok {
+		return ListSessionsResult{}, storeContractViolation(errors.New("event store does not implement session head catalog"))
+	}
+	page, err := catalog.ListSessionHeads(ctx, ListSessionHeadsRequest{
+		WorkspaceRoot: workspaceRoot,
+		Cursor:        request.Cursor,
+		Limit:         50,
+	})
+	if err != nil {
+		if contextErr := contextError(ctx); contextErr != nil {
+			return ListSessionsResult{}, contextErr
+		}
+		if IsStoreCode(err, StoreCodeInvalidRead) {
+			return ListSessionsResult{}, applicationError(CategoryValidation, "invalid_request", false, err)
+		}
+		return ListSessionsResult{}, applicationError(CategoryPersistence, "list_failed", false, err)
+	}
+	if err := contextError(ctx); err != nil {
+		return ListSessionsResult{}, err
+	}
+	if len(page.Sessions) > 50 || (len(page.Sessions) == 0 && page.NextCursor != "") {
+		return ListSessionsResult{}, storeContractViolation(errors.New("invalid session head page"))
+	}
+	result := ListSessionsResult{
+		Sessions:   make([]ListedSession, len(page.Sessions)),
+		NextCursor: page.NextCursor,
+	}
+	for index, head := range page.Sessions {
+		if _, err := domain.ParseSessionID(string(head.SessionID)); err != nil {
+			return ListSessionsResult{}, storeContractViolation(err)
+		}
+		root, err := CanonicalWorkspaceRoot(head.WorkspaceRoot)
+		if err != nil || root != workspaceRoot || head.WorkspaceRoot != root {
+			return ListSessionsResult{}, storeContractViolation(errors.New("invalid session head workspace"))
+		}
+		switch head.Status {
+		case SessionHeadStatusIdle, SessionHeadStatusRunning, SessionHeadStatusClosed:
+		default:
+			return ListSessionsResult{}, storeContractViolation(errors.New("invalid session head status"))
+		}
+		if head.UpdatedAt.IsZero() || head.UpdatedAt.Location() != time.UTC {
+			return ListSessionsResult{}, storeContractViolation(errors.New("invalid session head timestamp"))
+		}
+		result.Sessions[index] = ListedSession{
+			SessionID:     head.SessionID,
+			WorkspaceRoot: root,
+			UpdatedAt:     head.UpdatedAt,
+		}
+	}
+	return result, nil
 }
 
 func (service *Service) CreateSession(ctx context.Context, request CreateSessionRequest) (CreateSessionResult, error) {

@@ -15,6 +15,69 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/testkit"
 )
 
+func TestListSessionsUsesCanonicalFixedPageAndMapsCatalogErrors(t *testing.T) {
+	t.Parallel()
+
+	updated := time.Date(2026, 8, 28, 2, 3, 4, 567000000, time.UTC)
+	store := &sessionStore{listPage: application.SessionHeadPage{
+		Sessions: []application.SessionHead{{
+			SessionID:     "session-list",
+			WorkspaceRoot: "/workspace",
+			Status:        application.SessionHeadStatusIdle,
+			UpdatedAt:     updated,
+		}},
+		NextCursor: "next-cursor",
+	}}
+	service := newSessionServiceWithStore(t, store, testkit.NewSequenceIDs())
+	got, err := service.ListSessions(context.Background(), application.ListSessionsRequest{
+		WorkspaceRoot: "/workspace/.", Cursor: "incoming-cursor",
+	})
+	if err != nil {
+		t.Fatalf("ListSessions() error = %v", err)
+	}
+	want := application.ListSessionsResult{
+		Sessions: []application.ListedSession{{
+			SessionID: "session-list", WorkspaceRoot: "/workspace", UpdatedAt: updated,
+		}},
+		NextCursor: "next-cursor",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ListSessions() = %#v, want %#v", got, want)
+	}
+	if store.listCalls != 1 || store.listRequest.WorkspaceRoot != "/workspace" ||
+		store.listRequest.Cursor != "incoming-cursor" || store.listRequest.Limit != 50 {
+		t.Fatalf("ListSessionHeads request = %#v, calls = %d", store.listRequest, store.listCalls)
+	}
+	got.Sessions[0].WorkspaceRoot = "/mutated"
+	if store.listPage.Sessions[0].WorkspaceRoot != "/workspace" {
+		t.Fatal("ListSessions() result aliases store page")
+	}
+
+	invalidCursor, buildErr := application.NewStoreError(application.StoreError{
+		Code: application.StoreCodeInvalidRead,
+	})
+	if buildErr != nil {
+		t.Fatal(buildErr)
+	}
+	store.listErr = invalidCursor
+	_, err = service.ListSessions(context.Background(), application.ListSessionsRequest{
+		WorkspaceRoot: "/workspace", Cursor: "bad",
+	})
+	assertApplicationError(t, err, application.CategoryValidation, "invalid_request")
+
+	store.listErr = errors.New("catalog unavailable")
+	_, err = service.ListSessions(context.Background(), application.ListSessionsRequest{
+		WorkspaceRoot: "/workspace",
+	})
+	assertApplicationError(t, err, application.CategoryPersistence, "list_failed")
+
+	store.listErr = nil
+	_, err = service.ListSessions(context.Background(), application.ListSessionsRequest{
+		WorkspaceRoot: "workspace",
+	})
+	assertApplicationError(t, err, application.CategoryValidation, "invalid_request")
+}
+
 func TestCanonicalWorkspaceRootRequiresAbsoluteLexicallyCleanPath(t *testing.T) {
 	t.Parallel()
 
@@ -698,8 +761,22 @@ type sessionStore struct {
 	ignoreContextErr bool
 	appendReceipt    *application.CommitReceipt
 	appendErr        error
+	listPage         application.SessionHeadPage
+	listErr          error
+	listRequest      application.ListSessionHeadsRequest
 	loadCalls        int
 	appendCalls      int
+	listCalls        int
+}
+
+func (store *sessionStore) ListSessionHeads(_ context.Context, request application.ListSessionHeadsRequest) (application.SessionHeadPage, error) {
+	store.listCalls++
+	store.listRequest = request
+	if store.listErr != nil {
+		return application.SessionHeadPage{}, store.listErr
+	}
+	sessions := append([]application.SessionHead(nil), store.listPage.Sessions...)
+	return application.SessionHeadPage{Sessions: sessions, NextCursor: store.listPage.NextCursor}, nil
 }
 
 func (store *sessionStore) ReadStream(ctx context.Context, request application.ReadStreamRequest) (application.StreamPage, error) {
