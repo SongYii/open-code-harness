@@ -295,6 +295,81 @@ func TestConcurrentRunTurnAcrossServicesReconcilesDurableAdmissionWinner(t *test
 	}
 }
 
+func TestRunTurnAndDeleteSessionHaveOneCASWinner(t *testing.T) {
+	authority := application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1}
+	base, err := memory.NewEventStore(authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := newAcceptanceService(t, base, newPrefixedIDs("seed-delete-race"), &acceptanceSuccessModel{text: "seed"})
+	created, err := seed.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	barrier := newAcceptanceLoadBarrier(base, created.SessionID, 2)
+	model := &acceptanceSuccessModel{text: "done"}
+	runService := newAcceptanceService(t, barrier, newPrefixedIDs("run-delete-race"), model)
+	deleteService := newAcceptanceService(t, barrier, newPrefixedIDs("delete-race"), &acceptanceSuccessModel{text: "unused"})
+
+	runDone := make(chan error, 1)
+	deleteDone := make(chan error, 1)
+	go func() {
+		_, runErr := runService.RunTurn(context.Background(), application.RunTurnRequest{
+			SessionID: created.SessionID,
+			RequestID: "request-delete-race",
+			Input:     "inspect",
+			Sink:      &testkit.RecordingSink{},
+		})
+		runDone <- runErr
+	}()
+	go func() {
+		deleteDone <- deleteService.DeleteSession(context.Background(), application.DeleteSessionRequest{
+			SessionID: created.SessionID, WorkspaceRoot: "/workspace",
+		})
+	}()
+
+	await(t, barrier.entered, "run/delete first load")
+	await(t, barrier.entered, "run/delete second load")
+	barrier.Release()
+	runErr := awaitOutcome(t, runDone, "RunTurn/DeleteSession run outcome")
+	deleteErr := awaitOutcome(t, deleteDone, "RunTurn/DeleteSession delete outcome")
+
+	successes := 0
+	if runErr == nil {
+		successes++
+	}
+	if deleteErr == nil {
+		successes++
+	}
+	if successes != 1 {
+		t.Fatalf("RunTurn error = %v, DeleteSession error = %v; want exactly one success", runErr, deleteErr)
+	}
+
+	records, err := application.ReadWholeStreamPinned(context.Background(), base, created.SessionID, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deletes, starts := 0, 0
+	for _, record := range records {
+		switch record.Event.EventType() {
+		case domain.EventSessionDeleted:
+			deletes++
+		case domain.EventTurnStarted:
+			starts++
+		}
+	}
+	if deletes+starts != 1 {
+		t.Fatalf("event types = %v, want exactly one delete or turn admission", acceptanceEventTypes(records))
+	}
+	if deletes == 1 && len(model.Calls()) != 0 {
+		t.Fatalf("delete winner still called model %d times", len(model.Calls()))
+	}
+	if starts == 1 && len(model.Calls()) != 1 {
+		t.Fatalf("turn winner model calls = %d, want 1", len(model.Calls()))
+	}
+}
+
 func mustRunTurnDigest(t *testing.T, sessionID domain.SessionID, input string) application.Digest {
 	t.Helper()
 	digest, err := application.DigestRunTurnRequestV1(sessionID, input)

@@ -107,7 +107,7 @@ go test ./internal/harness/domain -count=1
 - Modify: `internal/harness/application/store_test.go`
 - Modify: every test double that implements `application.EventStore`
 
-- [ ] Add failing table tests for `CanonicalWorkspaceRoot`: reject blank, padded/invalid UTF-8, and relative paths; return `filepath.Clean` for absolute paths without evaluating symlinks.
+- [x] Add failing table tests for `CanonicalWorkspaceRoot`: reject blank, padded/invalid UTF-8, and relative paths; return `filepath.Clean` for absolute paths without evaluating symlinks.
 - [ ] Add the catalog port types exactly as specified and extend `EventStore`:
 
 ```go
@@ -139,9 +139,9 @@ type SessionHeadPage struct {
 ```
 
 - [ ] Add failing service tests for fixed `Limit = 50`, defensive result slices, catalog-store error mapping, bad cursor as `CategoryValidation`, and canonical root forwarding.
-- [ ] Add failing resume tests for active-idle success without append, and absent/foreign/closed/running/deleted rejection.
-- [ ] Add failing delete tests for the normal append path, canonical workspace admission, absent/foreign/already-deleted public `session_not_found`, running rejection, unknown-outcome resolution, and second-delete internal replay.
-- [ ] Add a channel-driven race test where `RunTurn` admission and `DeleteSession` start from the same head and exactly one CAS append wins.
+- [x] Add failing resume tests for active-idle success without append, and absent/foreign/closed/running/deleted rejection.
+- [x] Add failing delete tests for the normal append path, canonical workspace admission, absent/foreign/already-deleted public `session_not_found`, running rejection, unknown-outcome resolution, and second-delete internal replay.
+- [x] Add a channel-driven race test where `RunTurn` admission and `DeleteSession` start from the same head and exactly one CAS append wins.
 - [ ] Implement:
 
 ```go
@@ -151,8 +151,8 @@ func (s *Service) ResumeSession(context.Context, ResumeSessionRequest) (domain.S
 func (s *Service) DeleteSession(context.Context, DeleteSessionRequest) error
 ```
 
-- [ ] Make `CreateSession` persist the canonical root. Split loading into a private lifecycle replay and the public `LoadSession`; public load maps deleted state to `session_not_found`, while delete can inspect deleted state before returning the same public code.
-- [ ] Keep `DeleteSession` on `appendCompact` so ID generation, authority lookup, digesting, CAS, and unknown-outcome resolution remain unchanged.
+- [x] Make `CreateSession` persist the canonical root. Split loading into a private lifecycle replay and the public `LoadSession`; public load maps deleted state to `session_not_found`, while delete can inspect deleted state before returning the same public code.
+- [x] Keep `DeleteSession` on the existing `BuildAppendIntent` / `CommitAppendIntent` / `ResolveAppendIntent` path so ID generation, authority lookup, digesting, CAS, and unknown-outcome resolution remain unchanged.
 - [ ] Run:
 
 ```bash

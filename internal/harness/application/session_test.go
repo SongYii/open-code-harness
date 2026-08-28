@@ -15,6 +15,63 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/testkit"
 )
 
+func TestCanonicalWorkspaceRootRequiresAbsoluteLexicallyCleanPath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "clean", input: "/workspace", want: "/workspace"},
+		{name: "dot segment", input: "/workspace/./nested/..", want: "/workspace"},
+		{name: "root", input: "/", want: "/"},
+		{name: "blank", input: ""},
+		{name: "relative", input: "workspace"},
+		{name: "padded", input: "/workspace "},
+		{name: "invalid UTF-8", input: string([]byte{'/', 0xff})},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := application.CanonicalWorkspaceRoot(test.input)
+			if test.want == "" {
+				if err == nil || got != "" {
+					t.Fatalf("CanonicalWorkspaceRoot(%q) = (%q, %v), want rejection", test.input, got, err)
+				}
+				return
+			}
+			if err != nil || got != test.want {
+				t.Fatalf("CanonicalWorkspaceRoot(%q) = (%q, %v), want (%q, nil)", test.input, got, err, test.want)
+			}
+		})
+	}
+}
+
+func TestCreateSessionPersistsCanonicalWorkspaceRoot(t *testing.T) {
+	t.Parallel()
+
+	service, store := newSessionServiceForTest(t, testkit.NewSequenceIDs())
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace/."})
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+	loaded, err := service.LoadSession(context.Background(), created.SessionID)
+	if err != nil {
+		t.Fatalf("LoadSession() error = %v", err)
+	}
+	if loaded.WorkspaceRoot != "/workspace" {
+		t.Fatalf("LoadSession().WorkspaceRoot = %q, want /workspace", loaded.WorkspaceRoot)
+	}
+	records, err := application.ReadWholeStreamPinned(context.Background(), store, created.SessionID, 256)
+	if err != nil {
+		t.Fatalf("ReadWholeStreamPinned() error = %v", err)
+	}
+	event, ok := records[0].Event.(domain.SessionCreated)
+	if !ok || event.WorkspaceRoot != "/workspace" {
+		t.Fatalf("session.created = %#v, want canonical root", records[0].Event)
+	}
+}
+
 func TestCreateLoadCloseSession(t *testing.T) {
 	service, store := newSessionServiceForTest(t, testkit.NewSequenceIDs())
 	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
@@ -67,6 +124,20 @@ func TestLoadSessionMapsMissingCorruptAndStoreFailure(t *testing.T) {
 		service, _ := newSessionServiceForTest(t, testkit.NewSequenceIDs())
 		_, err := service.LoadSession(context.Background(), "session-missing")
 		assertApplicationError(t, err, application.CategoryValidation, "session_not_found")
+	})
+
+	t.Run("deleted", func(t *testing.T) {
+		service, store := newSessionServiceForTest(t, testkit.NewSequenceIDs())
+		seedV2Event(t, store, "session-deleted", 0, "command-create", domain.SessionCreated{WorkspaceRoot: "/workspace"})
+		seedV2Event(t, store, "session-deleted", 1, "command-delete", domain.SessionDeleted{})
+
+		_, err := service.LoadSession(context.Background(), "session-deleted")
+		assertApplicationError(t, err, application.CategoryValidation, "session_not_found")
+
+		records, readErr := application.ReadWholeStreamPinned(context.Background(), store, "session-deleted", 256)
+		if readErr != nil || len(records) != 2 || records[1].Event.EventType() != domain.EventSessionDeleted {
+			t.Fatalf("authoritative stream after deletion = (%#v, %v), want deletion evidence", records, readErr)
+		}
 	})
 
 	t.Run("corrupt replay", func(t *testing.T) {
@@ -122,6 +193,132 @@ func TestLoadSessionMapsMissingCorruptAndStoreFailure(t *testing.T) {
 		_, err := service.LoadSession(ctx, "session-load-canceled-page")
 		assertApplicationError(t, err, application.CategoryCanceled, "canceled")
 	})
+}
+
+func TestDeleteSessionUsesCanonicalAppendAndNonEnumeratingBoundary(t *testing.T) {
+	t.Run("active idle resolves unknown outcome and becomes hidden", func(t *testing.T) {
+		service, store := newSessionServiceForTest(t, testkit.NewSequenceIDs())
+		seedV2Event(t, store, "session-delete", 0, "command-create", domain.SessionCreated{WorkspaceRoot: "/workspace"})
+		store.FailNext(memory.FaultAfterCommitBeforeAck, errors.New("ack lost"))
+
+		err := service.DeleteSession(context.Background(), application.DeleteSessionRequest{
+			SessionID: "session-delete", WorkspaceRoot: "/workspace/.",
+		})
+		if err != nil {
+			t.Fatalf("DeleteSession() error = %v", err)
+		}
+		records, readErr := application.ReadWholeStreamPinned(context.Background(), store, "session-delete", 256)
+		if readErr != nil || len(records) != 2 || records[1].Event.EventType() != domain.EventSessionDeleted {
+			t.Fatalf("stream after DeleteSession() = (%#v, %v)", records, readErr)
+		}
+		_, loadErr := service.LoadSession(context.Background(), "session-delete")
+		assertApplicationError(t, loadErr, application.CategoryValidation, "session_not_found")
+
+		err = service.DeleteSession(context.Background(), application.DeleteSessionRequest{
+			SessionID: "session-delete", WorkspaceRoot: "/workspace",
+		})
+		assertApplicationError(t, err, application.CategoryValidation, "session_not_found")
+		records, readErr = application.ReadWholeStreamPinned(context.Background(), store, "session-delete", 256)
+		if readErr != nil || len(records) != 2 {
+			t.Fatalf("second DeleteSession() mutated stream = (%#v, %v)", records, readErr)
+		}
+	})
+
+	t.Run("closed idle deletes", func(t *testing.T) {
+		service, store := newSessionServiceForTest(t, testkit.NewSequenceIDs())
+		seedV2Event(t, store, "session-closed-delete", 0, "command-create", domain.SessionCreated{WorkspaceRoot: "/workspace"})
+		seedV2Event(t, store, "session-closed-delete", 1, "command-close", domain.SessionClosed{})
+		if err := service.DeleteSession(context.Background(), application.DeleteSessionRequest{
+			SessionID: "session-closed-delete", WorkspaceRoot: "/workspace",
+		}); err != nil {
+			t.Fatalf("DeleteSession(closed) error = %v", err)
+		}
+		records, err := application.ReadWholeStreamPinned(context.Background(), store, "session-closed-delete", 256)
+		if err != nil || len(records) != 3 || records[2].Event.EventType() != domain.EventSessionDeleted {
+			t.Fatalf("closed delete stream = (%#v, %v)", records, err)
+		}
+	})
+
+	t.Run("absent foreign and deleted have the same public result", func(t *testing.T) {
+		service, store := newSessionServiceForTest(t, testkit.NewSequenceIDs())
+		seedV2Event(t, store, "session-foreign", 0, "command-create", domain.SessionCreated{WorkspaceRoot: "/workspace"})
+
+		for _, request := range []application.DeleteSessionRequest{
+			{SessionID: "session-missing", WorkspaceRoot: "/workspace"},
+			{SessionID: "session-foreign", WorkspaceRoot: "/foreign"},
+		} {
+			err := service.DeleteSession(context.Background(), request)
+			assertApplicationError(t, err, application.CategoryValidation, "session_not_found")
+		}
+		records, err := application.ReadWholeStreamPinned(context.Background(), store, "session-foreign", 256)
+		if err != nil || len(records) != 1 {
+			t.Fatalf("foreign delete mutated stream = (%#v, %v)", records, err)
+		}
+	})
+
+	t.Run("running is rejected without append", func(t *testing.T) {
+		service, store := newSessionServiceForTest(t, testkit.NewSequenceIDs())
+		seedV2Event(t, store, "session-running-delete", 0, "command-create", domain.SessionCreated{WorkspaceRoot: "/workspace"})
+		seedV2Event(t, store, "session-running-delete", 1, "command-turn", domain.TurnStarted{TurnID: "turn-1", Input: "hello"})
+
+		err := service.DeleteSession(context.Background(), application.DeleteSessionRequest{
+			SessionID: "session-running-delete", WorkspaceRoot: "/workspace",
+		})
+		assertApplicationError(t, err, application.CategoryValidation, "domain_rejected")
+		records, readErr := application.ReadWholeStreamPinned(context.Background(), store, "session-running-delete", 256)
+		if readErr != nil || len(records) != 2 {
+			t.Fatalf("running delete mutated stream = (%#v, %v)", records, readErr)
+		}
+	})
+}
+
+func TestResumeSessionRequiresSameWorkspaceAndActiveIdleState(t *testing.T) {
+	t.Parallel()
+
+	service, store := newSessionServiceForTest(t, testkit.NewSequenceIDs())
+	seedV2Event(t, store, "session-idle", 0, "command-idle-create", domain.SessionCreated{WorkspaceRoot: "/workspace"})
+	seedV2Event(t, store, "session-closed", 0, "command-closed-create", domain.SessionCreated{WorkspaceRoot: "/workspace"})
+	seedV2Event(t, store, "session-closed", 1, "command-close", domain.SessionClosed{})
+	seedV2Event(t, store, "session-running", 0, "command-running-create", domain.SessionCreated{WorkspaceRoot: "/workspace"})
+	seedV2Event(t, store, "session-running", 1, "command-turn", domain.TurnStarted{TurnID: "turn-1", Input: "hello"})
+	seedV2Event(t, store, "session-deleted", 0, "command-deleted-create", domain.SessionCreated{WorkspaceRoot: "/workspace"})
+	seedV2Event(t, store, "session-deleted", 1, "command-delete", domain.SessionDeleted{})
+
+	resumed, err := service.ResumeSession(context.Background(), application.ResumeSessionRequest{
+		SessionID: "session-idle", WorkspaceRoot: "/workspace/.",
+	})
+	if err != nil {
+		t.Fatalf("ResumeSession() error = %v", err)
+	}
+	if resumed.ID != "session-idle" || resumed.Status != domain.SessionStatusActive || resumed.ActiveTurn != nil || resumed.WorkspaceRoot != "/workspace" {
+		t.Fatalf("ResumeSession() = %#v", resumed)
+	}
+	records, err := application.ReadWholeStreamPinned(context.Background(), store, "session-idle", 256)
+	if err != nil || len(records) != 1 {
+		t.Fatalf("ResumeSession() mutated stream = (%#v, %v)", records, err)
+	}
+
+	tests := []struct {
+		name      string
+		sessionID domain.SessionID
+		workspace string
+		code      string
+	}{
+		{name: "missing", sessionID: "session-missing", workspace: "/workspace", code: "session_not_found"},
+		{name: "foreign", sessionID: "session-idle", workspace: "/foreign", code: "session_not_found"},
+		{name: "closed", sessionID: "session-closed", workspace: "/workspace", code: "domain_rejected"},
+		{name: "running", sessionID: "session-running", workspace: "/workspace", code: "domain_rejected"},
+		{name: "deleted", sessionID: "session-deleted", workspace: "/workspace", code: "session_not_found"},
+		{name: "relative workspace", sessionID: "session-idle", workspace: "workspace", code: "invalid_request"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := service.ResumeSession(context.Background(), application.ResumeSessionRequest{
+				SessionID: test.sessionID, WorkspaceRoot: test.workspace,
+			})
+			assertApplicationError(t, err, application.CategoryValidation, test.code)
+		})
+	}
 }
 
 func TestCloseSessionRejectsMissingAndRunningSession(t *testing.T) {
@@ -487,8 +684,8 @@ func seedV2Event(t *testing.T, store application.EventStore, sessionID domain.Se
 	if err != nil {
 		t.Fatal(err)
 	}
-	intent.Request.AppendID = domain.AppendID(fmt.Sprintf("seed-append-%d", version))
-	intent.Request.Events[0].ID = domain.EventID(fmt.Sprintf("seed-event-%d", version))
+	intent.Request.AppendID = domain.AppendID(fmt.Sprintf("seed-append-%s-%d", sessionID, version))
+	intent.Request.Events[0].ID = domain.EventID(fmt.Sprintf("seed-event-%s-%d", sessionID, version))
 	if _, err := store.Append(context.Background(), intent.Request); err != nil {
 		t.Fatal(err)
 	}
