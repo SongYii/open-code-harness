@@ -143,6 +143,8 @@ func marshalEvent(event Event) (json.RawMessage, string, error) {
 		return marshalEventData(event, EventTurnInterrupted)
 	case SessionClosed:
 		return marshalEventData(event, EventSessionClosed)
+	case SessionDeleted:
+		return marshalEventData(event, EventSessionDeleted)
 	case AssistantMessageStarted:
 		if err := validateAssistantMessageIDs(event.TurnID, event.ItemID); err != nil {
 			return nil, "", err
@@ -256,6 +258,9 @@ func unmarshalEvent(eventType string, data json.RawMessage) (Event, error) {
 	case EventSessionClosed:
 		event = SessionClosed{}
 		required = []string{}
+	case EventSessionDeleted:
+		event = SessionDeleted{}
+		required = []string{}
 	case EventAssistantMessageStarted:
 		event = AssistantMessageStarted{}
 		required = []string{"turnID", "itemID"}
@@ -333,6 +338,11 @@ func unmarshalEvent(eventType string, data json.RawMessage) (Event, error) {
 		}
 		event = target
 	case SessionClosed:
+		if err := decoder.Decode(&target); err != nil {
+			return nil, invalidEventError("invalid event data")
+		}
+		event = target
+	case SessionDeleted:
 		if err := decoder.Decode(&target); err != nil {
 			return nil, invalidEventError("invalid event data")
 		}

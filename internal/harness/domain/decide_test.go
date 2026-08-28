@@ -75,6 +75,57 @@ func TestStartAssistantTurnEligibilityIsSharedWithDecide(t *testing.T) {
 	}
 }
 
+func TestDecideDeleteSessionAcceptsOnlyIdleActiveOrClosedSession(t *testing.T) {
+	t.Parallel()
+
+	idle := Session{ID: "session-1", Status: SessionStatusActive, Version: 1, WorkspaceRoot: "/workspace"}
+	running := idle.Clone()
+	running.ActiveTurn = &Turn{
+		ID:               "turn-1",
+		Input:            "hello",
+		StartedAt:        time.Date(2026, 8, 28, 1, 0, 0, 0, time.UTC),
+		LastTransitionAt: time.Date(2026, 8, 28, 1, 0, 0, 0, time.UTC),
+	}
+	closed := idle.Clone()
+	closed.Status = SessionStatusClosed
+	deleted := idle.Clone()
+	deleted.Status = SessionStatusDeleted
+
+	tests := []struct {
+		name  string
+		state Session
+		id    SessionID
+		code  ErrorCode
+	}{
+		{name: "active idle", state: idle, id: idle.ID},
+		{name: "closed idle", state: closed, id: closed.ID},
+		{name: "missing", state: Session{}, id: "session-1", code: CodeSessionNotFound},
+		{name: "wrong session", state: idle, id: "session-2", code: CodeInvalidCommand},
+		{name: "running", state: running, id: running.ID, code: CodeTurnAlreadyRunning},
+		{name: "deleted", state: deleted, id: deleted.ID, code: CodeSessionDeleted},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			before := test.state.Clone()
+			events, err := Decide(test.state, DeleteSession{SessionID: test.id})
+			if test.code != "" {
+				if events != nil || !IsCode(err, test.code) {
+					t.Fatalf("Decide() = (%#v, %v), want code %q", events, err, test.code)
+				}
+			} else {
+				want := []UncommittedEvent{{Event: SessionDeleted{}}}
+				if err != nil || !reflect.DeepEqual(events, want) {
+					t.Fatalf("Decide() = (%#v, %v), want (%#v, nil)", events, err, want)
+				}
+			}
+			if !reflect.DeepEqual(test.state, before) {
+				t.Fatalf("Decide() mutated state: got %#v, want %#v", test.state, before)
+			}
+		})
+	}
+}
+
 func TestDecideStartAssistantTurnReturnsAtomicOrderedBatch(t *testing.T) {
 	t.Parallel()
 

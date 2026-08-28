@@ -12,6 +12,7 @@ const (
 	CommandFailTurn      = "turn.fail"
 	CommandInterruptTurn = "turn.interrupt"
 	CommandCloseSession  = "session.close"
+	CommandDeleteSession = "session.delete"
 
 	CommandStartAssistantTurn       = "assistant.turn.start"
 	CommandStartAssistantMessage    = "assistant.message.start"
@@ -172,6 +173,13 @@ type CloseSession struct {
 
 func (CloseSession) CommandType() string          { return CommandCloseSession }
 func (c CloseSession) TargetSessionID() SessionID { return c.SessionID }
+
+type DeleteSession struct {
+	SessionID SessionID
+}
+
+func (DeleteSession) CommandType() string          { return CommandDeleteSession }
+func (c DeleteSession) TargetSessionID() SessionID { return c.SessionID }
 
 type RecordModelRequest struct {
 	SessionID SessionID

@@ -69,11 +69,11 @@
 - Test: `internal/harness/domain/historical_oracle_test.go`
 - Testdata: `internal/harness/domain/testdata/session_lifecycle.jsonl`
 
-- [ ] Add failing decision tests proving active-idle and durable-closed states emit exactly one `SessionDeleted{}`, while pristine, wrong-ID, running, and already-deleted states return their stable domain codes.
-- [ ] Add failing apply/replay tests proving `SessionDeleted` is accepted only from idle active-or-closed state, sets `Status = SessionStatusDeleted`, advances the version, and makes every later event fail closed.
-- [ ] Add failing codec/clone fixtures for the exact canonical envelope type `session.deleted` and `{}` payload, including strict rejection of null/unknown payload fields.
-- [ ] Extend the historical oracle independently so compact/historical equivalence covers both active-idle deletion and durable-close-then-delete.
-- [ ] Add these exact public declarations and route them through `Decide`, `Apply`, codec, and clone switches:
+- [x] Add failing decision tests proving active-idle and durable-closed states emit exactly one `SessionDeleted{}`, while pristine, wrong-ID, running, and already-deleted states return their stable domain codes.
+- [x] Add failing apply/replay tests proving `SessionDeleted` is accepted only from idle active-or-closed state, sets `Status = SessionStatusDeleted`, advances the version, and makes every later event fail closed.
+- [x] Add failing codec/clone fixtures for the exact canonical envelope type `session.deleted` and `{}` payload, including strict rejection of null/unknown payload fields.
+- [x] Extend the historical oracle independently so compact/historical equivalence covers both active-idle deletion and durable-close-then-delete.
+- [x] Add these exact public declarations and route them through `Decide`, `Apply`, codec, and clone switches:
 
 ```go
 const SessionStatusDeleted SessionStatus = "deleted"
@@ -85,15 +85,15 @@ type DeleteSession struct{ SessionID SessionID }
 type SessionDeleted struct{}
 ```
 
-- [ ] Implement `decideDeleteSession` and `applySessionDeleted` without weakening existing close/start eligibility. Deleted-state rejection must be explicit before generic status validation so callers receive `session_deleted`.
-- [ ] Run the focused tests before and after implementation:
+- [x] Implement `decideDeleteSession` and `applySessionDeleted` without weakening existing close/start eligibility. Deleted-state rejection must be explicit before generic status validation so callers receive `session_deleted`.
+- [x] Run the focused tests before and after implementation:
 
 ```bash
 go test ./internal/harness/domain -run 'Test(DecideDeleteSession|ApplySessionDeleted|RecordedEventCodec|Compact.*Delete|Historical.*Delete)' -count=1
 go test ./internal/harness/domain -count=1
 ```
 
-- [ ] Commit: `feat(domain): add logical session deletion fact`.
+- [x] Commit: `feat(domain): add logical session deletion fact`.
 
 ### Task 2: Add canonical workspace and Application lifecycle use cases
 

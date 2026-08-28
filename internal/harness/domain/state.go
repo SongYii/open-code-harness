@@ -5,8 +5,9 @@ import "time"
 type SessionStatus string
 
 const (
-	SessionStatusActive SessionStatus = "active"
-	SessionStatusClosed SessionStatus = "closed"
+	SessionStatusActive  SessionStatus = "active"
+	SessionStatusClosed  SessionStatus = "closed"
+	SessionStatusDeleted SessionStatus = "deleted"
 )
 
 type TurnStatus string

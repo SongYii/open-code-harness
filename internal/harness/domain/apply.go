@@ -62,6 +62,8 @@ func Apply(state Session, record RecordedEvent) (Session, error) {
 		return applyTerminalItemKind(state, record, event.TurnID, event.ItemID, ItemKindAssistantMessage)
 	case SessionClosed:
 		return applySessionClosed(state, record)
+	case SessionDeleted:
+		return applySessionDeleted(state, record)
 	case ModelRequestRecorded:
 		if err := validateModelRequestPayload(event, CodeInvalidEvent); err != nil {
 			return Session{}, err
@@ -156,6 +158,28 @@ func applySessionClosed(state Session, record RecordedEvent) (Session, error) {
 	}
 	next := state.Clone()
 	next.Status = SessionStatusClosed
+	next.Version = record.Sequence
+	return next, nil
+}
+
+func applySessionDeleted(state Session, record RecordedEvent) (Session, error) {
+	if !state.Exists() {
+		return Session{}, domainError(CodeSessionNotFound, "session not found")
+	}
+	if record.SessionID != state.ID {
+		return Session{}, domainError(CodeInvalidEvent, "event session ID does not match state")
+	}
+	if state.Status == SessionStatusDeleted {
+		return Session{}, domainError(CodeSessionDeleted, "session is deleted")
+	}
+	if state.Status != SessionStatusActive && state.Status != SessionStatusClosed {
+		return Session{}, domainError(CodeInvalidEvent, "session cannot be deleted")
+	}
+	if state.ActiveTurn != nil {
+		return Session{}, domainError(CodeTurnAlreadyRunning, "a turn is already running")
+	}
+	next := state.Clone()
+	next.Status = SessionStatusDeleted
 	next.Version = record.Sequence
 	return next, nil
 }
