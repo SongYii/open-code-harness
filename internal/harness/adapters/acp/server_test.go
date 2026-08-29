@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -23,9 +24,21 @@ type fakeSessions struct {
 	created  int
 	runs     int
 	reads    int
+	lists    int
+	resumes  int
+	deletes  int
 	sessions map[domain.SessionID]domain.Session
 	run      func(context.Context, application.RunTurnRequest) (application.RunTurnResult, error)
+	list     func(context.Context, application.ListSessionsRequest) (application.ListSessionsResult, error)
+	resume   func(context.Context, application.ResumeSessionRequest) (domain.Session, error)
+	del      func(context.Context, application.DeleteSessionRequest) error
 	history  []domain.RecordedEvent
+}
+
+var fakeUpdatedAt = time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+
+func sessionNotFoundError() error {
+	return &application.Error{Category: application.CategoryValidation, Code: "session_not_found"}
 }
 
 func newFake() *fakeSessions {
@@ -45,8 +58,8 @@ func (f *fakeSessions) LoadSession(_ context.Context, id domain.SessionID) (doma
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	session, ok := f.sessions[id]
-	if !ok {
-		return domain.Session{}, &application.Error{Category: application.CategoryValidation, Code: "session_not_found"}
+	if !ok || session.Status == domain.SessionStatusDeleted {
+		return domain.Session{}, sessionNotFoundError()
 	}
 	return session, nil
 }
@@ -61,6 +74,62 @@ func (f *fakeSessions) RunTurn(ctx context.Context, request application.RunTurnR
 	}
 	_ = request.Sink.Emit(ctx, engine.RuntimeEvent{Type: engine.RuntimeModelTextDelta, Text: "hello"})
 	return application.RunTurnResult{SessionID: request.SessionID, Status: domain.TurnStatusCompleted, Text: "hello", TerminalCommitted: true}, nil
+}
+
+func (f *fakeSessions) ListSessions(ctx context.Context, req application.ListSessionsRequest) (application.ListSessionsResult, error) {
+	f.mu.Lock()
+	f.lists++
+	list := f.list
+	f.mu.Unlock()
+	if list != nil {
+		return list(ctx, req)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var sessions []application.ListedSession
+	for id, session := range f.sessions {
+		if session.Status == domain.SessionStatusDeleted || session.WorkspaceRoot != req.WorkspaceRoot {
+			continue
+		}
+		sessions = append(sessions, application.ListedSession{SessionID: id, WorkspaceRoot: session.WorkspaceRoot, UpdatedAt: fakeUpdatedAt})
+	}
+	return application.ListSessionsResult{Sessions: sessions}, nil
+}
+
+func (f *fakeSessions) ResumeSession(ctx context.Context, req application.ResumeSessionRequest) (domain.Session, error) {
+	f.mu.Lock()
+	f.resumes++
+	resume := f.resume
+	f.mu.Unlock()
+	if resume != nil {
+		return resume(ctx, req)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	session, ok := f.sessions[req.SessionID]
+	if !ok || session.WorkspaceRoot != req.WorkspaceRoot || session.Status != domain.SessionStatusActive {
+		return domain.Session{}, sessionNotFoundError()
+	}
+	return session, nil
+}
+
+func (f *fakeSessions) DeleteSession(ctx context.Context, req application.DeleteSessionRequest) error {
+	f.mu.Lock()
+	f.deletes++
+	del := f.del
+	f.mu.Unlock()
+	if del != nil {
+		return del(ctx, req)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	session, ok := f.sessions[req.SessionID]
+	if !ok || session.WorkspaceRoot != req.WorkspaceRoot || session.Status == domain.SessionStatusDeleted {
+		return sessionNotFoundError()
+	}
+	session.Status = domain.SessionStatusDeleted
+	f.sessions[req.SessionID] = session
+	return nil
 }
 
 func (f *fakeSessions) ReadStream(context.Context, application.ReadStreamRequest) (application.StreamPage, error) {
@@ -870,6 +939,481 @@ func TestServeLoadAndPromptRejectForeignWorkspace(t *testing.T) {
 	defer fake.mu.Unlock()
 	if fake.runs != 1 {
 		t.Fatalf("RunTurn calls = %d, want 1", fake.runs)
+	}
+}
+
+func TestServeInitializeAdvertisesSessionLifecycleCapabilities(t *testing.T) {
+	agentIn, clientOut := io.Pipe()
+	clientIn, agentOut := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(context.Background(), Config{Sessions: newFake(), Workspace: "/workspace"}, agentIn, agentOut)
+	}()
+	t.Cleanup(func() {
+		_ = agentIn.Close()
+		_ = clientOut.Close()
+		_ = clientIn.Close()
+		_ = agentOut.Close()
+		<-done
+	})
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}`)
+	init := readJSON(t, clientIn)
+	want := map[string]any{
+		"protocolVersion": float64(1),
+		"agentCapabilities": map[string]any{
+			"loadSession": true,
+			"promptCapabilities": map[string]any{
+				"image": false, "audio": false, "embeddedContext": false,
+			},
+			"sessionCapabilities": map[string]any{
+				"list": map[string]any{}, "resume": map[string]any{}, "close": map[string]any{}, "delete": map[string]any{},
+			},
+		},
+		"agentInfo":   map[string]any{"name": agentName, "version": agentVersion},
+		"authMethods": []any{},
+	}
+	if !reflect.DeepEqual(init["result"], want) {
+		t.Fatalf("initialize result = %#v, want %#v", init["result"], want)
+	}
+}
+
+func TestServeSessionListReturnsWorkspaceSessions(t *testing.T) {
+	agentIn, clientOut := io.Pipe()
+	clientIn, agentOut := io.Pipe()
+	fake := newFake()
+	fake.sessions["session-a"] = domain.Session{ID: "session-a", Status: domain.SessionStatusActive, WorkspaceRoot: "/workspace"}
+	fake.sessions["session-foreign"] = domain.Session{ID: "session-foreign", Status: domain.SessionStatusActive, WorkspaceRoot: "/other-workspace"}
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(context.Background(), Config{Sessions: fake, Workspace: "/workspace"}, agentIn, agentOut)
+	}()
+	t.Cleanup(func() {
+		_ = agentIn.Close()
+		_ = clientOut.Close()
+		_ = clientIn.Close()
+		_ = agentOut.Close()
+		<-done
+	})
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	_ = readJSON(t, clientIn)
+
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":2,"method":"session/list","params":{"cwd":"/other-workspace"}}`)
+	foreign := readJSON(t, clientIn)
+	if foreign["error"].(map[string]any)["code"] != float64(codeInvalidParams) {
+		t.Fatalf("foreign cwd list = %#v", foreign)
+	}
+
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":3,"method":"session/list","params":{"cwd":"/workspace"}}`)
+	listed := readJSON(t, clientIn)
+	result, _ := listed["result"].(map[string]any)
+	sessions, _ := result["sessions"].([]any)
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %#v, want 1 workspace-scoped session", sessions)
+	}
+	entry, _ := sessions[0].(map[string]any)
+	if entry["sessionId"] != "session-a" || entry["cwd"] != "/workspace" {
+		t.Fatalf("entry = %#v", entry)
+	}
+	updatedAt, _ := entry["updatedAt"].(string)
+	if _, err := time.Parse(time.RFC3339Nano, updatedAt); err != nil {
+		t.Fatalf("updatedAt = %q, want RFC3339Nano: %v", updatedAt, err)
+	}
+	if _, ok := result["nextCursor"]; ok {
+		t.Fatalf("nextCursor present with no more pages: %#v", result)
+	}
+	if strings.Contains(mustJSON(listed), "/other-workspace") {
+		t.Fatalf("list leaked a foreign-workspace session: %#v", listed)
+	}
+
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":4,"method":"session/list","params":{}}`)
+	assemblyDefault := readJSON(t, clientIn)
+	defaultResult, _ := assemblyDefault["result"].(map[string]any)
+	if len(defaultResult["sessions"].([]any)) != 1 {
+		t.Fatalf("default-workspace list = %#v, want 1", defaultResult)
+	}
+}
+
+func TestServeSessionResumeReattachesAndRejectsIneligible(t *testing.T) {
+	agentIn, clientOut := io.Pipe()
+	clientIn, agentOut := io.Pipe()
+	fake := newFake()
+	fake.sessions["session-active"] = domain.Session{ID: "session-active", Status: domain.SessionStatusActive, WorkspaceRoot: "/workspace"}
+	fake.sessions["session-closed"] = domain.Session{ID: "session-closed", Status: domain.SessionStatusClosed, WorkspaceRoot: "/workspace"}
+	fake.sessions["session-foreign"] = domain.Session{ID: "session-foreign", Status: domain.SessionStatusActive, WorkspaceRoot: "/other-workspace"}
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(context.Background(), Config{Sessions: fake, History: fake, Workspace: "/workspace"}, agentIn, agentOut)
+	}()
+	t.Cleanup(func() {
+		_ = agentIn.Close()
+		_ = clientOut.Close()
+		_ = clientIn.Close()
+		_ = agentOut.Close()
+		<-done
+	})
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	_ = readJSON(t, clientIn)
+
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":2,"method":"session/resume","params":{"sessionId":"missing","cwd":"/workspace"}}`)
+	if missing := readJSON(t, clientIn); missing["error"].(map[string]any)["code"] != float64(codeInvalidParams) {
+		t.Fatalf("resume missing = %#v", missing)
+	}
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":3,"method":"session/resume","params":{"sessionId":"session-closed","cwd":"/workspace"}}`)
+	if closedResp := readJSON(t, clientIn); closedResp["error"].(map[string]any)["code"] != float64(codeInvalidParams) {
+		t.Fatalf("resume closed = %#v", closedResp)
+	}
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":4,"method":"session/resume","params":{"sessionId":"session-foreign","cwd":"/workspace"}}`)
+	foreignResp := readJSON(t, clientIn)
+	if foreignResp["error"].(map[string]any)["code"] != float64(codeInvalidParams) {
+		t.Fatalf("resume foreign = %#v", foreignResp)
+	}
+	if strings.Contains(mustJSON(foreignResp), "/other-workspace") {
+		t.Fatalf("resume leaked foreign workspace: %#v", foreignResp)
+	}
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":5,"method":"session/resume","params":{"sessionId":"session-active","cwd":"/workspace","mcpServers":[{"name":"x"}]}}`)
+	if mcpRejected := readJSON(t, clientIn); mcpRejected["error"].(map[string]any)["code"] != float64(codeInvalidParams) {
+		t.Fatalf("resume with non-empty mcpServers = %#v", mcpRejected)
+	}
+
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":6,"method":"session/resume","params":{"sessionId":"session-active","cwd":"/workspace","mcpServers":[],"additionalDirectories":[]}}`)
+	resumed := readJSON(t, clientIn)
+	if resumed["method"] == methodSessionUpdate {
+		t.Fatalf("resume emitted a replay notification: %#v", resumed)
+	}
+	if resumed["error"] != nil || len(resumed["result"].(map[string]any)) != 0 {
+		t.Fatalf("resume active = %#v", resumed)
+	}
+	fake.mu.Lock()
+	reads := fake.reads
+	fake.mu.Unlock()
+	if reads != 0 {
+		t.Fatalf("resume read history = %d calls, want 0", reads)
+	}
+
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":7,"method":"session/prompt","params":{"sessionId":"session-active","prompt":[{"text":"hi"}]}}`)
+	for {
+		message := readJSON(t, clientIn)
+		if message["method"] == methodSessionUpdate {
+			continue
+		}
+		if message["result"].(map[string]any)["stopReason"] != stopReasonEndTurn {
+			t.Fatalf("prompt after resume = %#v", message)
+		}
+		break
+	}
+}
+
+// TestServeSessionCloseCancelsSettlesAndDetaches proves close-cancel-terminal
+// ordering (the prompt's terminal frame settles before close's own result),
+// that ACP close never mutates durable Session status, that a detached
+// session rejects a prompt until reattached, that duplicate close is
+// rejected, and that load reattaches a detached session to idle.
+func TestServeSessionCloseCancelsSettlesAndDetaches(t *testing.T) {
+	agentIn, clientOut := io.Pipe()
+	clientIn, agentOut := io.Pipe()
+	fake := newFake()
+	blocked := make(chan struct{})
+	fake.run = func(ctx context.Context, request application.RunTurnRequest) (application.RunTurnResult, error) {
+		close(blocked)
+		<-ctx.Done()
+		return application.RunTurnResult{SessionID: request.SessionID, Status: domain.TurnStatusInterrupted}, ctx.Err()
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(context.Background(), Config{Sessions: fake, History: fake, Workspace: "/workspace"}, agentIn, agentOut)
+	}()
+	t.Cleanup(func() {
+		_ = agentIn.Close()
+		_ = clientOut.Close()
+		_ = clientIn.Close()
+		_ = agentOut.Close()
+		<-done
+	})
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	_ = readJSON(t, clientIn)
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":2,"method":"session/new","params":{}}`)
+	created := readJSON(t, clientIn)
+	sessionID := created["result"].(map[string]any)["sessionId"].(string)
+
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"`+sessionID+`","prompt":[{"text":"hi"}]}}`)
+	<-blocked
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":4,"method":"session/close","params":{"sessionId":"`+sessionID+`"}}`)
+
+	promptTerminal := readJSON(t, clientIn)
+	if promptTerminal["id"] != float64(3) || promptTerminal["result"].(map[string]any)["stopReason"] != stopReasonCancelled {
+		t.Fatalf("cancelled prompt terminal frame = %#v", promptTerminal)
+	}
+	closeResult := readJSON(t, clientIn)
+	if closeResult["id"] != float64(4) || closeResult["error"] != nil {
+		t.Fatalf("close result = %#v", closeResult)
+	}
+	if len(closeResult["result"].(map[string]any)) != 0 {
+		t.Fatalf("close result body = %#v, want an empty object", closeResult["result"])
+	}
+
+	fake.mu.Lock()
+	status := fake.sessions[domain.SessionID(sessionID)].Status
+	fake.mu.Unlock()
+	if status != domain.SessionStatusActive {
+		t.Fatalf("session status after ACP close = %q, want active: close must never append session.closed", status)
+	}
+
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":5,"method":"session/close","params":{"sessionId":"`+sessionID+`"}}`)
+	if dup := readJSON(t, clientIn); dup["error"].(map[string]any)["code"] != float64(codeInvalidParams) {
+		t.Fatalf("duplicate close = %#v", dup)
+	}
+
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":6,"method":"session/prompt","params":{"sessionId":"`+sessionID+`","prompt":[{"text":"hi"}]}}`)
+	if detachedPrompt := readJSON(t, clientIn); detachedPrompt["error"].(map[string]any)["code"] != float64(codeInvalidRequest) {
+		t.Fatalf("detached prompt = %#v", detachedPrompt)
+	}
+
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":7,"method":"session/load","params":{"sessionId":"`+sessionID+`"}}`)
+	if reloaded := readJSON(t, clientIn); reloaded["error"] != nil {
+		t.Fatalf("reload after close = %#v", reloaded)
+	}
+
+	fake.mu.Lock()
+	fake.run = nil
+	fake.mu.Unlock()
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":8,"method":"session/prompt","params":{"sessionId":"`+sessionID+`","prompt":[{"text":"hi"}]}}`)
+	for {
+		message := readJSON(t, clientIn)
+		if message["method"] == methodSessionUpdate {
+			continue
+		}
+		if message["result"].(map[string]any)["stopReason"] != stopReasonEndTurn {
+			t.Fatalf("prompt after reattach = %#v", message)
+		}
+		break
+	}
+}
+
+// TestServeSessionLifecycleRejectsDuringClosingAndDeleting proves that while
+// an entry is closing, resume/load/delete are all rejected, and that close
+// itself still settles once the cancelled prompt's terminal frame is
+// published.
+func TestServeSessionLifecycleRejectsDuringClosingAndDeleting(t *testing.T) {
+	agentIn, clientOut := io.Pipe()
+	clientIn, agentOut := io.Pipe()
+	fake := newFake()
+	blocked := make(chan struct{})
+	releaseRun := make(chan struct{})
+	fake.run = func(ctx context.Context, request application.RunTurnRequest) (application.RunTurnResult, error) {
+		close(blocked)
+		<-ctx.Done()
+		// Held open until the test has driven resume/load/delete through the
+		// closing window, so the entry is deterministically still closing
+		// rather than racing finishClose's own completion.
+		<-releaseRun
+		return application.RunTurnResult{SessionID: request.SessionID, Status: domain.TurnStatusInterrupted}, ctx.Err()
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(context.Background(), Config{Sessions: fake, History: fake, Workspace: "/workspace"}, agentIn, agentOut)
+	}()
+	t.Cleanup(func() {
+		_ = agentIn.Close()
+		_ = clientOut.Close()
+		_ = clientIn.Close()
+		_ = agentOut.Close()
+		<-done
+	})
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	_ = readJSON(t, clientIn)
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":2,"method":"session/new","params":{}}`)
+	created := readJSON(t, clientIn)
+	sessionID := created["result"].(map[string]any)["sessionId"].(string)
+
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"`+sessionID+`","prompt":[{"text":"hi"}]}}`)
+	<-blocked
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":4,"method":"session/close","params":{"sessionId":"`+sessionID+`"}}`)
+
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":5,"method":"session/resume","params":{"sessionId":"`+sessionID+`","cwd":"/workspace"}}`)
+	if resumeRejected := readJSON(t, clientIn); resumeRejected["error"].(map[string]any)["code"] != float64(codeInvalidParams) {
+		t.Fatalf("resume during closing = %#v", resumeRejected)
+	}
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":6,"method":"session/load","params":{"sessionId":"`+sessionID+`"}}`)
+	if loadRejected := readJSON(t, clientIn); loadRejected["error"].(map[string]any)["code"] != float64(codeInvalidParams) {
+		t.Fatalf("load during closing = %#v", loadRejected)
+	}
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":7,"method":"session/delete","params":{"sessionId":"`+sessionID+`"}}`)
+	if deleteRejected := readJSON(t, clientIn); deleteRejected["error"].(map[string]any)["code"] != float64(codeInvalidParams) {
+		t.Fatalf("delete during closing = %#v", deleteRejected)
+	}
+
+	close(releaseRun)
+	promptTerminal := readJSON(t, clientIn)
+	if promptTerminal["id"] != float64(3) || promptTerminal["result"].(map[string]any)["stopReason"] != stopReasonCancelled {
+		t.Fatalf("cancelled prompt = %#v", promptTerminal)
+	}
+	closeResult := readJSON(t, clientIn)
+	if closeResult["id"] != float64(4) || closeResult["error"] != nil {
+		t.Fatalf("close result = %#v", closeResult)
+	}
+}
+
+// TestServeSessionDeleteBlocksPromptEntryAndIsIdempotent proves that once
+// deleting is installed under the mutex, a prompt cannot enter before the
+// Application call returns, and that absent, foreign, and already-deleted
+// sessions are all indistinguishable idempotent successes.
+func TestServeSessionDeleteBlocksPromptEntryAndIsIdempotent(t *testing.T) {
+	agentIn, clientOut := io.Pipe()
+	clientIn, agentOut := io.Pipe()
+	fake := newFake()
+	fake.sessions["session-foreign"] = domain.Session{ID: "session-foreign", Status: domain.SessionStatusActive, WorkspaceRoot: "/other-workspace"}
+	releaseDelete := make(chan struct{})
+	deleteEntered := make(chan struct{})
+	var enterOnce sync.Once
+	fake.del = func(_ context.Context, req application.DeleteSessionRequest) error {
+		enterOnce.Do(func() { close(deleteEntered) })
+		<-releaseDelete
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		session, ok := fake.sessions[req.SessionID]
+		if !ok || session.WorkspaceRoot != req.WorkspaceRoot || session.Status == domain.SessionStatusDeleted {
+			return sessionNotFoundError()
+		}
+		session.Status = domain.SessionStatusDeleted
+		fake.sessions[req.SessionID] = session
+		return nil
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(context.Background(), Config{Sessions: fake, History: fake, Workspace: "/workspace"}, agentIn, agentOut)
+	}()
+	t.Cleanup(func() {
+		_ = agentIn.Close()
+		_ = clientOut.Close()
+		_ = clientIn.Close()
+		_ = agentOut.Close()
+		<-done
+	})
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	_ = readJSON(t, clientIn)
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":2,"method":"session/new","params":{}}`)
+	created := readJSON(t, clientIn)
+	sessionID := created["result"].(map[string]any)["sessionId"].(string)
+
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":3,"method":"session/delete","params":{"sessionId":"`+sessionID+`"}}`)
+	<-deleteEntered
+
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"`+sessionID+`","prompt":[{"text":"hi"}]}}`)
+	blockedPrompt := readJSON(t, clientIn)
+	if blockedPrompt["id"] != float64(4) || blockedPrompt["error"].(map[string]any)["code"] != float64(codeInvalidRequest) {
+		t.Fatalf("prompt admitted while deleting = %#v", blockedPrompt)
+	}
+
+	close(releaseDelete)
+	deleteResult := readJSON(t, clientIn)
+	if deleteResult["id"] != float64(3) || deleteResult["error"] != nil {
+		t.Fatalf("delete result = %#v", deleteResult)
+	}
+
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":5,"method":"session/delete","params":{"sessionId":"`+sessionID+`"}}`)
+	if dup := readJSON(t, clientIn); dup["error"] != nil {
+		t.Fatalf("duplicate delete of an already-deleted session = %#v", dup)
+	}
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":6,"method":"session/delete","params":{"sessionId":"session-missing"}}`)
+	if missingResult := readJSON(t, clientIn); missingResult["error"] != nil {
+		t.Fatalf("delete of an absent session = %#v", missingResult)
+	}
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":7,"method":"session/delete","params":{"sessionId":"session-foreign"}}`)
+	if foreignResult := readJSON(t, clientIn); foreignResult["error"] != nil {
+		t.Fatalf("delete of a foreign-workspace session = %#v", foreignResult)
+	}
+
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":8,"method":"session/load","params":{"sessionId":"`+sessionID+`"}}`)
+	if loadDeleted := readJSON(t, clientIn); loadDeleted["error"].(map[string]any)["code"] != float64(codeInvalidParams) {
+		t.Fatalf("load of a deleted session = %#v", loadDeleted)
+	}
+}
+
+// TestServeSessionDeleteRestoresStateAfterInternalFailure proves that an
+// internal (non-validation) DeleteSession failure restores the entry to its
+// exact prior idle state rather than leaving it stuck deleting.
+func TestServeSessionDeleteRestoresStateAfterInternalFailure(t *testing.T) {
+	agentIn, clientOut := io.Pipe()
+	clientIn, agentOut := io.Pipe()
+	fake := newFake()
+	fake.del = func(context.Context, application.DeleteSessionRequest) error {
+		return &application.Error{Category: application.CategoryPersistence, Code: "list_failed"}
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(context.Background(), Config{Sessions: fake, History: fake, Workspace: "/workspace"}, agentIn, agentOut)
+	}()
+	t.Cleanup(func() {
+		_ = agentIn.Close()
+		_ = clientOut.Close()
+		_ = clientIn.Close()
+		_ = agentOut.Close()
+		<-done
+	})
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	_ = readJSON(t, clientIn)
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":2,"method":"session/new","params":{}}`)
+	created := readJSON(t, clientIn)
+	sessionID := created["result"].(map[string]any)["sessionId"].(string)
+
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":3,"method":"session/delete","params":{"sessionId":"`+sessionID+`"}}`)
+	failed := readJSON(t, clientIn)
+	failedErr, _ := failed["error"].(map[string]any)
+	if failedErr["code"] != float64(codeInternalError) || failedErr["message"] != sessionOperationFailedMessage {
+		t.Fatalf("delete internal failure = %#v", failed)
+	}
+	if strings.Contains(mustJSON(failed), sessionID) {
+		t.Fatalf("delete internal failure leaked the session id: %#v", failed)
+	}
+
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"`+sessionID+`","prompt":[{"text":"hi"}]}}`)
+	for {
+		message := readJSON(t, clientIn)
+		if message["method"] == methodSessionUpdate {
+			continue
+		}
+		if message["result"].(map[string]any)["stopReason"] != stopReasonEndTurn {
+			t.Fatalf("prompt after a failed delete = %#v, want the entry restored to idle", message)
+		}
+		break
+	}
+}
+
+// TestServeSessionLifecycleErrorsDoNotLeakDetails checks the fixed,
+// non-leaking error strings the lifecycle methods use for validation and
+// internal failures: no session ID, workspace root, or lifecycle state name
+// ever appears in a rejection.
+func TestServeSessionLifecycleErrorsDoNotLeakDetails(t *testing.T) {
+	agentIn, clientOut := io.Pipe()
+	clientIn, agentOut := io.Pipe()
+	fake := newFake()
+	fake.sessions["session-foreign"] = domain.Session{ID: "session-foreign", Status: domain.SessionStatusActive, WorkspaceRoot: "/other-workspace"}
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(context.Background(), Config{Sessions: fake, History: fake, Workspace: "/workspace"}, agentIn, agentOut)
+	}()
+	t.Cleanup(func() {
+		_ = agentIn.Close()
+		_ = clientOut.Close()
+		_ = clientIn.Close()
+		_ = agentOut.Close()
+		<-done
+	})
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	_ = readJSON(t, clientIn)
+
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":2,"method":"session/resume","params":{"sessionId":"session-foreign","cwd":"/workspace"}}`)
+	resumeRejected := readJSON(t, clientIn)
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":3,"method":"session/close","params":{"sessionId":"session-foreign"}}`)
+	closeRejected := readJSON(t, clientIn)
+
+	for _, rejected := range []map[string]any{resumeRejected, closeRejected} {
+		payload := mustJSON(rejected)
+		for _, leak := range []string{"session-foreign", "/other-workspace", "/workspace"} {
+			if strings.Contains(payload, leak) {
+				t.Fatalf("rejection leaked %q: %s", leak, payload)
+			}
+		}
 	}
 }
 
