@@ -189,15 +189,25 @@ func TestListSessionHeadsUsesOneSnapshotDuringConcurrentAppend(t *testing.T) {
 		appended <- err
 	}()
 
-	result := <-listed
+	var result listResult
+	select {
+	case result = <-listed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ListSessionHeads did not complete while append was awaiting publish")
+	}
 	if result.err != nil {
 		t.Fatalf("ListSessionHeads during append error = %v", result.err)
 	}
 	if got, want := sessionHeadIDs(result.page.Sessions), []domain.SessionID{"session-catalog-before"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("snapshot page IDs = %v, want %v", got, want)
 	}
-	if err := <-appended; err != nil {
-		t.Fatalf("concurrent Append error = %v", err)
+	select {
+	case err := <-appended:
+		if err != nil {
+			t.Fatalf("concurrent Append error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("concurrent append did not publish after ListSessionHeads completed")
 	}
 
 	after, err := store.ListSessionHeads(context.Background(), application.ListSessionHeadsRequest{WorkspaceRoot: "/snapshot", Limit: 2})

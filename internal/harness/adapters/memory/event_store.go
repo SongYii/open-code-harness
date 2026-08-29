@@ -481,7 +481,7 @@ func decodeSessionHeadCursor(encoded string) (sessionHeadCursor, bool, error) {
 	if len(encoded) > 512 {
 		return sessionHeadCursor{}, false, fmt.Errorf("session head cursor exceeds limit")
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(encoded)
+	raw, err := base64.RawURLEncoding.Strict().DecodeString(encoded)
 	if err != nil || len(raw) == 0 || len(raw) > 512 {
 		return sessionHeadCursor{}, false, fmt.Errorf("invalid session head cursor")
 	}
