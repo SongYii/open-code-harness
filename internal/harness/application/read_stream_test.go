@@ -168,6 +168,9 @@ func (store *headMutatingSpy) ReadStream(_ context.Context, request ReadStreamRe
 	*request.HeadVersion = 3
 	return StreamPage{Records: []domain.RecordedEvent{readRecord(2)}, HeadVersion: 3, NextAfterSequence: 2}, nil
 }
+func (*headMutatingSpy) ListSessionHeads(context.Context, ListSessionHeadsRequest) (SessionHeadPage, error) {
+	return SessionHeadPage{}, nil
+}
 func (*headMutatingSpy) Append(context.Context, AppendRequest) (CommitReceipt, error) {
 	return CommitReceipt{}, nil
 }
@@ -186,6 +189,9 @@ type errorReadSpy struct {
 func (store *errorReadSpy) ReadStream(context.Context, ReadStreamRequest) (StreamPage, error) {
 	store.cancel()
 	return StreamPage{}, store.err
+}
+func (*errorReadSpy) ListSessionHeads(context.Context, ListSessionHeadsRequest) (SessionHeadPage, error) {
+	return SessionHeadPage{}, nil
 }
 func (*errorReadSpy) Append(context.Context, AppendRequest) (CommitReceipt, error) {
 	return CommitReceipt{}, nil
@@ -209,6 +215,9 @@ func (store *pagingSpy) ReadStream(_ context.Context, request ReadStreamRequest)
 	page := store.pages[0]
 	store.pages = store.pages[1:]
 	return page, nil
+}
+func (*pagingSpy) ListSessionHeads(context.Context, ListSessionHeadsRequest) (SessionHeadPage, error) {
+	return SessionHeadPage{}, nil
 }
 
 func (*pagingSpy) Append(context.Context, AppendRequest) (CommitReceipt, error) {

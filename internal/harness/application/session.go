@@ -55,10 +55,6 @@ type CloseSessionResult struct {
 	Records []domain.RecordedEvent
 }
 
-type sessionHeadCatalog interface {
-	ListSessionHeads(context.Context, ListSessionHeadsRequest) (SessionHeadPage, error)
-}
-
 func (service *Service) ListSessions(ctx context.Context, request ListSessionsRequest) (ListSessionsResult, error) {
 	if service == nil {
 		return ListSessionsResult{}, applicationError(CategoryValidation, "invalid_request", false, nil)
@@ -70,11 +66,7 @@ func (service *Service) ListSessions(ctx context.Context, request ListSessionsRe
 	if err := contextError(ctx); err != nil {
 		return ListSessionsResult{}, err
 	}
-	catalog, ok := service.store.(sessionHeadCatalog)
-	if !ok {
-		return ListSessionsResult{}, storeContractViolation(errors.New("event store does not implement session head catalog"))
-	}
-	page, err := catalog.ListSessionHeads(ctx, ListSessionHeadsRequest{
+	page, err := service.store.ListSessionHeads(ctx, ListSessionHeadsRequest{
 		WorkspaceRoot: workspaceRoot,
 		Cursor:        request.Cursor,
 		Limit:         50,

@@ -14,21 +14,43 @@ import (
 type V2Store struct {
 	mu          sync.Mutex
 	ReadFn      func(context.Context, application.ReadStreamRequest) (application.StreamPage, error)
+	ListFn      func(context.Context, application.ListSessionHeadsRequest) (application.SessionHeadPage, error)
 	AppendFn    func(context.Context, application.AppendRequest) (application.CommitReceipt, error)
 	ResolveFn   func(context.Context, application.ResolveAppendRequest) (application.AppendResolution, error)
 	FindFn      func(context.Context, application.FindCommandRequestRequest) (application.CommandRequestLookup, error)
 	Reads       []application.ReadStreamRequest
+	Lists       []application.ListSessionHeadsRequest
 	Appends     []application.AppendRequest
 	Resolves    []application.ResolveAppendRequest
 	Finds       []application.FindCommandRequestRequest
 	ReadPages   []application.StreamPage
 	ReadErrs    []error
+	ListPages   []application.SessionHeadPage
+	ListErrs    []error
 	Receipts    []application.CommitReceipt
 	AppendErrs  []error
 	Resolutions []application.AppendResolution
 	ResolveErrs []error
 	Lookups     []application.CommandRequestLookup
 	FindErrs    []error
+}
+
+func (store *V2Store) ListSessionHeads(ctx context.Context, request application.ListSessionHeadsRequest) (application.SessionHeadPage, error) {
+	store.mu.Lock()
+	store.Lists = append(store.Lists, request)
+	fn := store.ListFn
+	store.mu.Unlock()
+	page := application.SessionHeadPage{}
+	var err error
+	if fn != nil {
+		page, err = fn(ctx, request)
+	}
+	page.Sessions = append([]application.SessionHead(nil), page.Sessions...)
+	store.mu.Lock()
+	store.ListPages = append(store.ListPages, application.SessionHeadPage{Sessions: append([]application.SessionHead(nil), page.Sessions...), NextCursor: page.NextCursor})
+	store.ListErrs = append(store.ListErrs, err)
+	store.mu.Unlock()
+	return page, err
 }
 
 func (store *V2Store) ReadStream(ctx context.Context, request application.ReadStreamRequest) (application.StreamPage, error) {

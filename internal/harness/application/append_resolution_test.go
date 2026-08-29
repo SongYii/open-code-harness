@@ -118,6 +118,10 @@ func (store *resolutionScript) ReadStream(context.Context, ReadStreamRequest) (S
 	return StreamPage{}, errors.New("unexpected read")
 }
 
+func (store *resolutionScript) ListSessionHeads(context.Context, ListSessionHeadsRequest) (SessionHeadPage, error) {
+	return SessionHeadPage{}, errors.New("unexpected list")
+}
+
 func (store *resolutionScript) Append(_ context.Context, request AppendRequest) (CommitReceipt, error) {
 	store.appendCalls++
 	store.lastAppend = request

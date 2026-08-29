@@ -62,6 +62,7 @@ type AuthoritySource interface {
 // EventStore is the authoritative per-Session event-stream boundary.
 type EventStore interface {
 	ReadStream(context.Context, ReadStreamRequest) (StreamPage, error)
+	ListSessionHeads(context.Context, ListSessionHeadsRequest) (SessionHeadPage, error)
 	Append(context.Context, AppendRequest) (CommitReceipt, error)
 	ResolveAppend(context.Context, ResolveAppendRequest) (AppendResolution, error)
 	FindCommandRequest(context.Context, FindCommandRequestRequest) (CommandRequestLookup, error)

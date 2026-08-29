@@ -46,6 +46,7 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("proposed metadata preservation", func(t *testing.T) { testProposedMetadataPreservation(t, factory) })
 	t.Run("exact receipt retry", func(t *testing.T) { testExactReceiptRetry(t, factory) })
 	t.Run("pinned pagination", func(t *testing.T) { testPinnedPagination(t, factory) })
+	t.Run("session head catalog", func(t *testing.T) { testSessionHeadCatalog(t, factory) })
 	t.Run("admission identity", func(t *testing.T) { testAdmissionIdentity(t, factory) })
 	t.Run("writer fencing", func(t *testing.T) { testWriterFencing(t, factory) })
 	t.Run("unknown outcome", func(t *testing.T) { testUnknownOutcome(t, factory) })

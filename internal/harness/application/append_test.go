@@ -205,6 +205,9 @@ type receiptSpy struct {
 func (*receiptSpy) ReadStream(context.Context, ReadStreamRequest) (StreamPage, error) {
 	return StreamPage{}, nil
 }
+func (*receiptSpy) ListSessionHeads(context.Context, ListSessionHeadsRequest) (SessionHeadPage, error) {
+	return SessionHeadPage{}, nil
+}
 func (store *receiptSpy) Append(_ context.Context, request AppendRequest) (CommitReceipt, error) {
 	store.calls++
 	if store.mutate != nil {
