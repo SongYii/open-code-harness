@@ -453,9 +453,21 @@ func (s *server) sessionResume(message rpcRequest) error {
 	return s.out.writeResult(message.ID, struct{}{})
 }
 
-// sessionClose admits idle or running entries under the mutex, then finishes
-// off the dispatch loop: cancelling running work and waiting for its terminal
-// response never holds the mutex and never blocks frames for other sessions.
+// sessionClose fast-fails obviously ineligible entries under the mutex, then
+// hands off to a goroutine for everything that can block: the durable
+// LoadSession check (confirming the session still exists in this workspace,
+// so close cannot outlive an externally deleted or foreign session) and
+// cancelling/waiting for running work. Neither step holds the mutex or
+// blocks frames for other sessions.
+//
+// The durable check is unlocked and can race a concurrently settling or
+// restarting prompt on the same entry, so admission is decided exactly once,
+// fresh under the mutex, immediately before the wireClosing transition — the
+// cancel/promptDone pair used below is read at that same instant, never
+// captured before the durable call. Reusing an earlier snapshot would let
+// close cancel a prompt that already finished while a different prompt that
+// started in the interim ran on uncancelled.
+//
 // It never calls the durable Application close use case and never appends
 // session.closed: a resumable persistent Session survives.
 func (s *server) sessionClose(message rpcRequest) error {
@@ -463,22 +475,46 @@ func (s *server) sessionClose(message rpcRequest) error {
 	if json.Unmarshal(message.Params, &params) != nil || params.SessionID == "" {
 		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
 	}
-	if _, err := domain.ParseSessionID(params.SessionID); err != nil {
+	sessionID, err := domain.ParseSessionID(params.SessionID)
+	if err != nil {
 		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
 	}
 	s.mu.Lock()
 	entry := s.sessions[params.SessionID]
+	fastEligible := entry != nil && (entry.state == wireIdle || entry.state == wireRunning)
+	s.mu.Unlock()
+	if !fastEligible {
+		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
+	}
+
+	go s.durableCloseAdmission(message.ID, sessionID, params.SessionID)
+	return nil
+}
+
+// durableCloseAdmission runs off the dispatch goroutine so its LoadSession
+// call cannot block other sessions on the same duplex. It takes the one
+// authoritative admission decision fresh, under the mutex, right after that
+// call returns.
+func (s *server) durableCloseAdmission(id json.RawMessage, sessionID domain.SessionID, wireID string) {
+	session, err := s.config.Sessions.LoadSession(s.ctx, sessionID)
+	if err != nil || !s.sessionWorkspaceMatches(session.WorkspaceRoot) {
+		_ = s.out.writeError(id, codeInvalidParams, "invalid params")
+		return
+	}
+
+	s.mu.Lock()
+	entry := s.sessions[wireID]
 	if entry == nil || (entry.state != wireIdle && entry.state != wireRunning) {
 		s.mu.Unlock()
-		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
+		_ = s.out.writeError(id, codeInvalidParams, "invalid params")
+		return
 	}
 	entry.state = wireClosing
 	cancel := entry.cancel
 	done := entry.promptDone
 	s.mu.Unlock()
 
-	go s.finishClose(message.ID, params.SessionID, cancel, done)
-	return nil
+	s.finishClose(id, wireID, cancel, done)
 }
 
 func (s *server) finishClose(id json.RawMessage, wireID string, cancel context.CancelFunc, done chan struct{}) {

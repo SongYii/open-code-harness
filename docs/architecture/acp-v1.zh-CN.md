@@ -114,7 +114,7 @@ load 不发 `session/request_permission`。
 | --- | --- | --- | --- |
 | `session/list` | 可选 `cwd`、可选不透明 `cursor` | `{sessions:[{sessionId,cwd,updatedAt}], nextCursor?}` | 非空的外来 `cwd` 或坏 cursor → `-32602` |
 | `session/resume` | 必需 `sessionId`、必需 `cwd`；非空 `mcpServers` 或 `additionalDirectories` 被拒绝，空列表可容忍 | `{}`，不发 `session/update` | 缺失、外来、领域已关闭、正在运行或已删除 → `-32602` |
-| `session/close` | 必需 `sessionId` | 取消/结算并 detach 该现场条目后返回 `{}`；无领域追加 | 未附着（该 id 没有 idle/running 现场条目），或该会话已在 closing/detached/deleting → `-32602` |
+| `session/close` | 必需 `sessionId` | 取消/结算并 detach 该现场条目后返回 `{}`；无领域追加 | 未附着（该 id 没有 idle/running 现场条目）、该会话已在 closing/detached/deleting，或 durable 校验失败（缺失、外来工作区或已删除）→ `-32602` |
 | `session/delete` | 必需 `sessionId` | 持久 `session.deleted` 追加成功后返回 `{}`，或幂等空操作 | 同工作区条目处于 running、closing 或 deleting → `-32602`；缺失、外来或已删除 → 无变更地返回 `{}` |
 
 这四个方法里任何内部（非校验）失败都是 `-32603`
@@ -124,7 +124,16 @@ load 不发 `session/request_permission`。
 
 **ACP close 不是持久的 `session.closed` 事实。** close 只取消该 duplex
 拥有的工作并 detach 现场条目；持久 Session 仍可恢复，绝不调用
-`application.CloseSession`。delete 是本切片新增的唯一持久生命周期事实：
+`application.CloseSession`。close 确实会执行一次持久的*读*——
+`LoadSession`——在接纳这次转换之前确认该会话在本工作区仍然存在：一个已被
+外部删除或已被其他路径持久关闭的会话是 `-32602`，而不是静默地成功 detach。
+这次读取不持锁，且运行在 dispatch goroutine 之外（这样一次缓慢的读取不会
+阻塞其他会话的帧）；最终的接纳决定——重新查找现场条目、转到 `wireClosing`、
+以及被实际使用的那对 `cancel`/`promptDone`——只在该读取返回之后、在锁内、
+恰好做一次。这个决定里没有任何东西是在读取之前捕获的：如果读取进行期间某
+个 prompt 结算了、或又有新 prompt 开始了，都会被正确地看到，因为 close
+取消的永远是它真正提交 closing 那一刻实际在跑的 prompt，绝不是更早捕获的
+那个。delete 是本切片新增的唯一持久生命周期事实：
 它经由与其他命令相同的 CAS 保护追加路径写入 `session.deleted`，是逻辑删除
 （不物理擦除任何行——见[会话转录](session-transcript.md)），并把缺失、
 外来工作区与已删除会话都当作同一个不可区分的成功空操作，因而绝不会成为

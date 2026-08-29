@@ -121,7 +121,7 @@ invent `rawOutput`.
 | --- | --- | --- | --- |
 | `session/list` | optional `cwd`, optional opaque `cursor` | `{sessions:[{sessionId,cwd,updatedAt}], nextCursor?}` | non-empty foreign `cwd` or bad cursor → `-32602` |
 | `session/resume` | required `sessionId`, required `cwd`; a non-empty `mcpServers` or `additionalDirectories` is rejected, empty lists are tolerated | `{}`, no `session/update` | absent, foreign, domain-closed, running, or deleted → `-32602` |
-| `session/close` | required `sessionId` | `{}` after the wire entry cancels/settles and detaches; no domain append | unattached (no idle/running wire entry for this id), or a session already closing/detached/deleting → `-32602` |
+| `session/close` | required `sessionId` | `{}` after the wire entry cancels/settles and detaches; no domain append | unattached (no idle/running wire entry for this id), a session already closing/detached/deleting, or a durable-check failure (absent, foreign-workspace, or deleted) → `-32602` |
 | `session/delete` | required `sessionId` | `{}` after a durable `session.deleted` append, or an idempotent no-op | a same-workspace entry that is running, closing, or deleting → `-32602`; absent, foreign, or already-deleted → `{}` with no mutation |
 
 Every internal (non-validation) failure in these four methods is `-32603`
@@ -133,6 +133,18 @@ or `_meta`.
 **ACP close is not the durable `session.closed` fact.** Close only cancels
 work owned by this duplex and detaches the wire entry; the persistent
 Session remains resumable and `application.CloseSession` is never called.
+Close does perform one durable *read*, `LoadSession`, to confirm the session
+still exists in this workspace before admitting the transition — a session
+externally deleted or durably closed by some other path is `-32602`, not a
+silent successful detach. That read is unlocked and runs off the dispatch
+goroutine (so a slow read cannot block frames for other sessions); the final
+admission decision — the fresh entry lookup, the `wireClosing` transition,
+and the `cancel`/`promptDone` pair that get acted on — is made exactly once,
+under the mutex, immediately after the read returns. Nothing about that
+decision is captured before the read: a prompt that settles or a new one
+that starts while the read is outstanding is picked up correctly, because
+close always cancels whichever prompt is actually running at the moment it
+commits to closing, never one captured earlier.
 Delete is the sole new durable lifecycle fact this slice adds: it appends
 `session.deleted` through the same CAS-guarded append path as every other
 command, is logical (no row is physically erased — see

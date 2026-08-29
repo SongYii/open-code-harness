@@ -241,6 +241,65 @@ func TestAppendVersionConflictRollsBackEveryIndex(t *testing.T) {
 	}
 }
 
+// TestAppendSessionHeadCorruptionRollsBackWholeCanonicalAppend proves that a
+// synchronous session_heads projection failure does not just surface
+// StoreCodeCorrupt: the whole canonical append that triggered it — including
+// events in the same batch that would have inserted cleanly on their own —
+// rolls back completely, leaving every table exactly as it was before the
+// attempt.
+func TestAppendSessionHeadCorruptionRollsBackWholeCanonicalAppend(t *testing.T) {
+	store := openStore(t, tempStoreConfig(t))
+	mustAppend(t, store, appendRequest("append-open", "session-corrupt", 0, "command-open",
+		domain.SessionCreated{WorkspaceRoot: "/w"}))
+
+	beforeVersion, beforeHeadStatus, beforeHeadPosition, beforeStoreHead := readSessionCorruptSnapshot(t, store)
+
+	// The batch's first event (turn.started) would insert and project
+	// cleanly on its own. The second — a duplicate session.created — is what
+	// applyHeadTransition rejects, since the head's workspace root is
+	// already set. Both events already have canonical event/append rows
+	// written by the time updateSessionHead runs and fails.
+	_, err := store.Append(context.Background(), appendRequest("append-corrupt", "session-corrupt", 1, "command-corrupt",
+		domain.TurnStarted{TurnID: "turn-corrupt", Input: "hi"},
+		domain.SessionCreated{WorkspaceRoot: "/w"}))
+	requireStoreCode(t, err, application.StoreCodeCorrupt)
+
+	afterVersion, afterHeadStatus, afterHeadPosition, afterStoreHead := readSessionCorruptSnapshot(t, store)
+	if afterVersion != beforeVersion || afterHeadStatus != beforeHeadStatus ||
+		afterHeadPosition != beforeHeadPosition || afterStoreHead != beforeStoreHead {
+		t.Fatalf("session-corrupt state changed after a rolled-back corrupt append: "+
+			"version %d->%d, head status %q->%q, head position %d->%d, store head %d->%d",
+			beforeVersion, afterVersion, beforeHeadStatus, afterHeadStatus,
+			beforeHeadPosition, afterHeadPosition, beforeStoreHead, afterStoreHead)
+	}
+	if got := tableCount(t, store, "event_appends"); got != 1 {
+		t.Fatalf("event_appends rows = %d, want 1 (only the first, successful append)", got)
+	}
+	if got := tableCount(t, store, "events"); got != 1 {
+		t.Fatalf("events rows = %d, want 1 (only the first, successful append); the corrupt batch's own turn.started row must not survive", got)
+	}
+	if got := tableCount(t, store, "event_streams"); got != 1 {
+		t.Fatalf("event_streams rows = %d, want 1", got)
+	}
+}
+
+func readSessionCorruptSnapshot(t *testing.T, store *Store) (version uint64, headStatus string, headPosition uint64, storeHead uint64) {
+	t.Helper()
+	if err := store.db.QueryRowContext(context.Background(),
+		"SELECT version FROM event_streams WHERE session_id = 'session-corrupt'").Scan(&version); err != nil {
+		t.Fatalf("read event_streams: %v", err)
+	}
+	if err := store.db.QueryRowContext(context.Background(),
+		"SELECT status, updated_at_commit_position FROM session_heads WHERE session_id = 'session-corrupt'").Scan(&headStatus, &headPosition); err != nil {
+		t.Fatalf("read session_heads: %v", err)
+	}
+	if err := store.db.QueryRowContext(context.Background(),
+		"SELECT head_commit_position FROM store_metadata WHERE id = 1").Scan(&storeHead); err != nil {
+		t.Fatalf("read store_metadata: %v", err)
+	}
+	return version, headStatus, headPosition, storeHead
+}
+
 func TestAppendAdmissionIdentity(t *testing.T) {
 	store := openStore(t, tempStoreConfig(t))
 	first := admission(appendRequest("append-adm", "session-adm", 0, "command-adm",
