@@ -4,7 +4,7 @@
 
 **Authority:** [SQLite Canonical EventStore (Slice 2) design](../superpowers/specs/2026-08-16-sqlite-canonical-eventstore-design.md)
 
-**Port:** the unchanged `application.EventStore` interface and `StoreError` algebra from [EventStore v2](eventstore-v2.md)
+**Port:** the unchanged `application.EventStore` interface and `StoreError` algebra from [EventStore v2](eventstore-v2.md); `ListSessionHeads` added by [ACP session lifecycle (Slice B)](acp-session-lifecycle-evidence.md)
 
 **Package:** `internal/harness/adapters/sqlite`
 
@@ -44,6 +44,29 @@ identity_kind, identity_id)`), `runtime_leases` (singleton),
 A database stamped by a newer format is refused with an upgrade-direction
 error; a `user_version`/history disagreement is corruption; tampered
 metadata fails closed.
+
+Migration 4 (`session head catalog`, Slice B) replaces `session_heads` in
+place. A populated table cannot gain a no-default `NOT NULL` column, so
+migration 4 creates a shadow `session_heads_v4` table with the final shape —
+`session_id`, `workspace_root NOT NULL`, `status CHECK (idle|running|closed|
+deleted)`, `active_turn_id`, `active_item_id`, `updated_at_commit_position
+NOT NULL REFERENCES event_appends(commit_position)` — scans every
+`event_streams` row in stable `session_id` order, canonical-replays each
+stream with `domain.Replay`, and inserts the derived row. When a version-3
+row already exists for that session it is cross-checked against the
+replayed row: legacy `active` compares equal only to derived `running`;
+`idle` and `closed` compare exactly; active turn/item IDs and
+`updated_at_commit_position` must also agree; any other disagreement, or an
+orphan legacy row with no matching `event_streams` row, is
+`sqlite database corrupt`. A version-3 session with no legacy head row is
+simply rebuilt. After every stream is verified, the migration drops the old
+table, renames the shadow table onto `session_heads`, and creates:
+
+```sql
+CREATE INDEX session_heads_visible_by_workspace
+ON session_heads (workspace_root, updated_at_commit_position DESC, session_id DESC)
+WHERE status <> 'deleted';
+```
 
 ## Append transaction
 
@@ -93,10 +116,46 @@ policy, startup reconciliation) is Slice 4 and intentionally absent.
 `session_heads` is the one synchronous projection, derived through the same
 event-type transition walk used by `RebuildAndVerifySessionHeads`, which
 replays canonical streams and reports any disagreement as corruption. The
-projection is never authoritative. `Backup` produces a consistent snapshot
-copy (via `VACUUM INTO`, because the pure-Go driver does not export the
-Online Backup API) and verifies the copy's schema version, contiguity, and
-invariant counts against the live database before reporting success.
+projection is never authoritative. Every append derives `workspace_root`
+from the replayed `session.created` root (never from a caller-supplied
+value) and upserts it alongside `status`/`active_turn_id`/`active_item_id`/
+`updated_at_commit_position` inside the same `BEGIN IMMEDIATE` transaction
+that writes the canonical append; a `session.deleted` event transitions
+`status` to `deleted` in that same write. `Backup` produces a consistent
+snapshot copy (via `VACUUM INTO`, because the pure-Go driver does not export
+the Online Backup API) and verifies the copy's schema version, contiguity,
+and invariant counts against the live database before reporting success.
+
+## Session head catalog (`ListSessionHeads`, Slice B)
+
+`ListSessionHeads(ctx, ListSessionHeadsRequest{WorkspaceRoot, Cursor,
+Limit}) (SessionHeadPage, error)` opens one normal read transaction and
+never leaks SQL to a caller. `WorkspaceRoot` must already be canonical
+(`application.CanonicalWorkspaceRoot` applied and unchanged); `Limit` must
+be `1..256`; the service caller fixes `Limit` at 50. It filters
+`status <> 'deleted'` in SQL — `SessionHeadStatus` never has a `deleted`
+value on the wire — joins `event_appends` on `updated_at_commit_position`
+for `committed_at_unix`, converts that to UTC, and requests `Limit + 1` rows
+in descending `(updated_at_commit_position, session_id)` order using the
+partial index above. The extra row decides whether `NextCursor` is set and
+is never returned to the caller.
+
+The cursor is opaque outside this package: base64url (strict decode, no
+padding) of the JSON object `{"v":1,"p":<last returned commit position>,
+"s":"<its session id>"}`, bounded to 512 bytes and built only from the last
+row actually returned. A malformed, oversize, non-canonical-base64, or
+wrong-version cursor is a validation error, not a silent empty page. Each
+page is one SQLite snapshot; the port makes no multi-page snapshot
+guarantee, so a concurrent append can move a session between pages.
+
+Every EventStore implementation (SQLite and the shared memory/conformance
+adapter) implements `ListSessionHeads` against the identical port contract
+and fixture suite, so ACP `session/list` sees the same visible-status and
+cursor behavior regardless of adapter.
+
+`ActiveSessions`, used by Runtime Host startup reconciliation, enumerates
+`status = 'running'` — the v4 spelling — not the legacy `active` value
+migration 4 rewrites away.
 
 ## OpenReader
 

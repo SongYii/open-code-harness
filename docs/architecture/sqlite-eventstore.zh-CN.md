@@ -4,7 +4,7 @@
 
 **权威：** [SQLite 规范 EventStore（Slice 2）设计](../superpowers/specs/2026-08-16-sqlite-canonical-eventstore-design.md)
 
-**端口：** [EventStore v2](eventstore-v2.md) 中不变的 `application.EventStore` 接口与 `StoreError` 代数
+**端口：** [EventStore v2](eventstore-v2.md) 中不变的 `application.EventStore` 接口与 `StoreError` 代数；`ListSessionHeads` 由 [ACP 会话生命周期（切片 B）](acp-session-lifecycle-evidence.md) 新增
 
 **包：** `internal/harness/adapters/sqlite`
 
@@ -42,6 +42,26 @@ EventStore v2 端口之后的纯 Go（`CGO_ENABLED=0`）SQLite 适配器。SQLit
 
 由更新格式标记的数据库以指向升级的错误拒绝；`user_version` 与历史
 不一致是损坏；篡改的元数据失败封闭。
+
+迁移 4（`session head catalog`，切片 B）原地替换 `session_heads`。已有数据
+的表无法直接新增无默认值的 `NOT NULL` 列，因此迁移 4 先建一张具备最终形态
+的影子表 `session_heads_v4`——`session_id`、`workspace_root NOT NULL`、
+`status CHECK (idle|running|closed|deleted)`、`active_turn_id`、
+`active_item_id`、`updated_at_commit_position NOT NULL REFERENCES
+event_appends(commit_position)`——按稳定的 `session_id` 顺序扫描每一行
+`event_streams`，用 `domain.Replay` 对每条流做规范重放，再插入推导出的行。
+若该会话已有版本 3 的旧行，则与重放结果交叉核对：旧的 `active` 只与推导出
+的 `running` 比较相等；`idle` 与 `closed` 精确比较；active turn/item ID 与
+`updated_at_commit_position` 也必须一致；任何其他不一致，或没有匹配
+`event_streams` 行的孤儿旧行，都是 `sqlite database corrupt`。没有旧头行的
+版本 3 会话则直接重建。每条流都验证完毕后，迁移丢弃旧表、把影子表改名为
+`session_heads`，并创建：
+
+```sql
+CREATE INDEX session_heads_visible_by_workspace
+ON session_heads (workspace_root, updated_at_commit_position DESC, session_id DESC)
+WHERE status <> 'deleted';
+```
 
 ## 追加事务
 
@@ -83,10 +103,40 @@ fence。SQLite 的 `unixepoch('subsec')` 是唯一租约时钟。每次追加在
 
 `session_heads` 是唯一同步投影，通过与
 `RebuildAndVerifySessionHeads` 共享的事件类型转移走线推导；后者重放
-规范流并把任何不一致报告为损坏。投影绝不被当作权威。`Backup` 生成
-一致快照副本（因纯 Go 驱动未导出 Online Backup API 而使用
+规范流并把任何不一致报告为损坏。投影绝不被当作权威。每次追加都从重放出的
+`session.created` 根推导 `workspace_root`（绝不来自调用方传入的值），并在
+写入规范追加的同一个 `BEGIN IMMEDIATE` 事务里，连同
+`status`/`active_turn_id`/`active_item_id`/`updated_at_commit_position` 一起
+upsert；`session.deleted` 事件在同一次写入中把 `status` 转为 `deleted`。
+`Backup` 生成一致快照副本（因纯 Go 驱动未导出 Online Backup API 而使用
 `VACUUM INTO`），并在报告成功前校验副本的模式版本、连续性与不变量
 计数是否与活库一致。
+
+## 会话头目录（`ListSessionHeads`，切片 B）
+
+`ListSessionHeads(ctx, ListSessionHeadsRequest{WorkspaceRoot, Cursor,
+Limit}) (SessionHeadPage, error)` 打开一个普通读事务，绝不向调用方泄露
+SQL。`WorkspaceRoot` 必须已是规范值（已应用
+`application.CanonicalWorkspaceRoot` 且未改变）；`Limit` 必须在 `1..256`
+之间；Service 调用方把 `Limit` 固定为 50。它在 SQL 里过滤
+`status <> 'deleted'`——线上的 `SessionHeadStatus` 从不出现 `deleted`
+值——按 `updated_at_commit_position` 关联 `event_appends` 得到
+`committed_at_unix` 并转换为 UTC，再用上面那个部分索引按
+`(updated_at_commit_position, session_id)` 降序请求 `Limit + 1` 行。多出
+的那一行只用于判断是否要设置 `NextCursor`，绝不返回给调用方。
+
+cursor 对本包之外不透明：JSON 对象 `{"v":1,"p":<最后返回行的提交位置>,
+"s":"<其会话 id>"}` 的 base64url（严格解码，无 padding）编码，上限
+512 字节，且只由最后一行真正返回的行构造。畸形、超限、非规范 base64
+或版本不对的 cursor 是校验错误，不是静默空页。每一页都是一次 SQLite
+快照；该端口不保证多页快照，并发追加可以把某个会话移动到另一页。
+
+每个 EventStore 实现（SQLite 与共享的内存/一致性适配器）都针对同一个端口
+契约与夹具套件实现 `ListSessionHeads`，因此不论用哪个适配器，ACP
+`session/list` 看到的可见状态与 cursor 行为都一致。
+
+Runtime Host 启动调和使用的 `ActiveSessions` 枚举 `status = 'running'`——
+这是 v4 的拼写，不是迁移 4 已改写掉的旧 `active` 值。
 
 ## OpenReader
 

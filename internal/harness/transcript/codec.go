@@ -280,6 +280,8 @@ func ProjectRecord(record domain.RecordedEvent, steps map[domain.TurnID]uint32) 
 		return makeLine(record, domain.EventSessionCreated, sessionCreatedPayload{WorkspaceRoot: event.WorkspaceRoot})
 	case domain.SessionClosed:
 		return makeLine(record, domain.EventSessionClosed, struct{}{})
+	case domain.SessionDeleted:
+		return makeLine(record, domain.EventSessionDeleted, struct{}{})
 	case domain.TurnStarted:
 		return makeLine(record, domain.EventTurnStarted, turnStartedPayload{TurnID: string(event.TurnID), Input: event.Input})
 	case domain.TurnCompleted:
@@ -653,6 +655,8 @@ func factPayloadKeys(typ string) (required, optional []string, ok bool) {
 	case domain.EventSessionCreated:
 		return []string{"workspaceRoot"}, nil, true
 	case domain.EventSessionClosed:
+		return []string{}, nil, true
+	case domain.EventSessionDeleted:
 		return []string{}, nil, true
 	case domain.EventTurnStarted:
 		return []string{"turnID", "input"}, nil, true

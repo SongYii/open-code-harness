@@ -132,6 +132,7 @@ func TestProjectRecordFrozenPayloads(t *testing.T) {
 		{name: "tool interrupted", seq: 15, event: domain.ToolCallInterrupted{TurnID: "turn-1", ItemID: "item-1", CallID: "call-1", Code: "canceled", Message: "stopped"}, steps: map[domain.TurnID]uint32{"turn-1": 1}},
 		{name: "approval requested", seq: 16, event: domain.ApprovalRequested{TurnID: "turn-1", ItemID: "item-1", ApprovalID: "approval-1", CallID: "call-1", Name: "run_command", Reason: "exec"}},
 		{name: "approval resolved", seq: 17, event: domain.ApprovalResolved{TurnID: "turn-1", ItemID: "item-1", ApprovalID: "approval-1", Decision: "granted"}},
+		{name: "session deleted", seq: 18, event: domain.SessionDeleted{}},
 	}
 
 	wantLines := strings.Split(strings.TrimSpace(readFixture(t, "testdata/facts.jsonl")), "\n")

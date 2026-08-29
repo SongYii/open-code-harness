@@ -4,7 +4,7 @@
 
 **权威：** [ACP v1 Adapter（里程碑 6）设计](../superpowers/specs/2026-08-22-acp-v1-adapter-design.md)
 
-**证据：** [ACP v1 adapter 完成证据](acp-v1-evidence.md)；切片 A/A′ 映射见 [对话面与会话转录完成证据](conversation-and-transcript-evidence.md)
+**证据：** [ACP v1 adapter 完成证据](acp-v1-evidence.md)；切片 A/A′ 映射见 [对话面与会话转录完成证据](conversation-and-transcript-evidence.md)；会话生命周期（list/resume/close/delete）见 [ACP 会话生命周期（切片 B）完成证据](acp-session-lifecycle-evidence.md)
 
 英文版本 [acp-v1.md](acp-v1.md) 是规范文本；本文是与之同步的中文阅读版。两者若有分歧，以英文为准。
 
@@ -13,9 +13,10 @@
 ## 范围
 
 ACP v1 JSON-RPC 2.0，换行分隔 UTF-8。适配器把 initialize、session/new、
-session/load、session/prompt、session/cancel 与 session/request_permission
-翻译到已有 Application 服务。映射在适配器纯函数
-（`ProjectRuntimeEvent`、`ProjectRecordedEvent`）中，不含领域规则。
+session/load、session/prompt、session/cancel、session/request_permission、
+session/list、session/resume、session/close 与 session/delete 翻译到已有
+Application 服务。映射在适配器纯函数（`ProjectRuntimeEvent`、
+`ProjectRecordedEvent`）中，不含领域规则。
 
 组合根暴露 `ServeACP`。`cmd/och -acp` 在 stdin/stdout 上服务，诊断只写
 stderr。
@@ -26,14 +27,17 @@ stderr。
 
 ## Initialize 与会话 RPC
 
-- `protocolVersion` 为 `1`，宣告 `loadSession`，无鉴权方法。适配器不协商
-  客户端版本。
+- `protocolVersion` 为 `1`，宣告 `loadSession`，同时宣告
+  `sessionCapabilities: {list:{}, resume:{}, close:{}, delete:{}}`；无鉴权
+  方法。适配器不协商客户端版本。
 - `session/new` 在装配工作区创建 Session；非空且不等于该工作区的 `cwd`
   返回 `-32602`。
-- `session/load` 与 `session/prompt` 仅在
-  `filepath.Clean(loaded.WorkspaceRoot)` 等于装配工作区时接纳。不匹配或未知
-  会话为 `-32602` `invalid params`，不发 `session/update`、不调用 `RunTurn`。
-  报文不区分缺失与外来，不泄露外来路径。
+- `session/load` 与 `session/prompt` 仅在已加载 Session 的
+  `WorkspaceRoot`（用 `application.CanonicalWorkspaceRoot` 规范化：绝对路径、
+  `filepath.Clean`、不解析符号链接）等于同样规范化后的装配工作区时接纳。
+  不匹配或未知会话为 `-32602` `invalid params`，不发 `session/update`、不
+  调用 `RunTurn`。报文不区分缺失与外来，不泄露外来路径。在这个边界上，
+  已删除的会话与未知会话不可区分。
 - `session/prompt` 调用 `RunTurn`。带工具目录时，模型提示会带上事件日志里
   先前 turn 的消息。`completed → end_turn`；任何
   `TurnStatusInterrupted`、取消类别或已取消上下文 → `cancelled`；其余
@@ -104,6 +108,65 @@ load 不发 `session/request_permission`。
 `content: [{type:"content", content:{type:"text", text: ...}}]`。不发明
 `rawOutput`。
 
+## 会话生命周期（list / resume / close / delete）
+
+| 方法 | 请求 | 成功 | 拒绝 |
+| --- | --- | --- | --- |
+| `session/list` | 可选 `cwd`、可选不透明 `cursor` | `{sessions:[{sessionId,cwd,updatedAt}], nextCursor?}` | 非空的外来 `cwd` 或坏 cursor → `-32602` |
+| `session/resume` | 必需 `sessionId`、必需 `cwd`；非空 `mcpServers` 或 `additionalDirectories` 被拒绝，空列表可容忍 | `{}`，不发 `session/update` | 缺失、外来、领域已关闭、正在运行或已删除 → `-32602` |
+| `session/close` | 必需 `sessionId` | 取消/结算并 detach 该现场条目后返回 `{}`；无领域追加 | 未附着（该 id 没有 idle/running 现场条目），或该会话已在 closing/detached/deleting → `-32602` |
+| `session/delete` | 必需 `sessionId` | 持久 `session.deleted` 追加成功后返回 `{}`，或幂等空操作 | 同工作区条目处于 running、closing 或 deleting → `-32602`；缺失、外来或已删除 → 无变更地返回 `{}` |
+
+这四个方法里任何内部（非校验）失败都是 `-32603`
+`session operation failed`。`updatedAt` 为 RFC3339Nano UTC。即使省略
+`cwd`，`session/list` 也总是列出装配工作区；它绝不返回已删除的会话，也不带
+标题、`additionalDirectories` 或 `_meta`。
+
+**ACP close 不是持久的 `session.closed` 事实。** close 只取消该 duplex
+拥有的工作并 detach 现场条目；持久 Session 仍可恢复，绝不调用
+`application.CloseSession`。delete 是本切片新增的唯一持久生命周期事实：
+它经由与其他命令相同的 CAS 保护追加路径写入 `session.deleted`，是逻辑删除
+（不物理擦除任何行——见[会话转录](session-transcript.md)），并把缺失、
+外来工作区与已删除会话都当作同一个不可区分的成功空操作，因而绝不会成为
+存在性判定器。
+
+### 现场会话状态机
+
+一条 duplex 上每个已附着的会话都处于五种状态之一，只保存在适配器内存中
+（`internal/harness/adapters/acp/server.go`）：
+
+```text
+new / load(活动) / resume ────────────────────────────────────> idle
+idle ── prompt ──> running ── 终态响应结算 ────────────────────> idle
+idle / running ── close ─> closing ── 取消 + 结算 + 释放 ──────> detached
+detached ── load / resume ─────────────────────────────────────> idle
+idle / detached / absent ── delete ─> deleting ── 追加/空操作 ─> absent
+```
+
+`session/new`、活动会话的 `session/load` 与 `session/resume` 都会附着一个
+idle 条目；对一个已持久关闭的 Session 做 `session/load` 仍可重放其历史，
+但不留下条目，因此它保持不可 prompt——也无法用 `session/resume` 重新附着，
+因为 `ResumeSession` 本身会拒绝非 active 状态。`session/prompt` 要求已附着
+的 idle 条目并把它转为 `running`；该条目会在 prompt 的终态 JSON-RPC 响应
+**发布之前**回到 `idle`（这样一个在收到响应后立刻再次 prompt 的客户端绝不
+会读到仍处于 `running` 的陈旧状态），而一个被阻塞的 `session/close` 所等待
+的完成信号只在该响应写完**之后**才触发——所以 close 绝不会在被取消的
+prompt 自己的终态帧上线之前就报告 `{}`。`session/prompt`、`session/resume`
+与 `session/load` 在条目为 `running`、`closing` 或 `deleting` 时都被拒绝，
+唯一例外是 `session/close` 本身可以接纳 `running`（这正是 close 取消一个
+进行中 prompt 的方式）。`session/delete` 在调用 `DeleteSession` 之前，用与
+其他每一次转换相同的互斥锁安装 `deleting`，因此不会有 prompt 在删除许可与
+持久追加之间被接纳；除幂等的缺失/外来/已删除情形外，任何失败都会把条目
+恢复到其确切的先前状态。close 与 delete 都在各自互斥锁保护的许可检查之后
+把慢速工作（等待被取消的 prompt、调用 Application 层）交给一个 goroutine，
+因此都不会阻塞同一 duplex 上其他会话的帧。
+
+### 固定、不泄露的错误
+
+每个生命周期校验失败都使用两个固定字符串之一（`-32602` 的
+`invalid params`，或 `-32603` 的 `session operation failed`）；两者都不含
+会话 ID、工作区根路径或生命周期状态名。
+
 ## 裁剪界限
 
 入站 RPC 帧仍为 `maxFrameBytes = 1 MiB`。超长行使编解码器失败
@@ -140,6 +203,11 @@ diff、ACP v2 字段；裁决。
 
 ## 排除项
 
-ACP v2、resume / list / delete、终端、斜杠命令、authenticate、感知 token
-的压缩、protocolVersion 协商、取消时权限等待者清理、`RuntimeEvent`
-增富，以及默认测试门中的子进程 stdio。
+ACP v2、终端、斜杠命令、authenticate、感知 token 的压缩、protocolVersion
+协商、取消时权限等待者清理、`RuntimeEvent` 增富，以及默认测试门中的子进程
+stdio。`session/set_mode`、`session/set_config_option`、会话分叉、批量删除、
+撤销删除，以及对已删除会话的物理保留/垃圾回收。`session/load` /
+`session/resume` 上的 `additionalDirectories` 与会话级 MCP 配置仅接受空值
+且从不据此行动；不构造任何 MCP 客户端。不从提示词、搜索、标签或状态元数据
+生成标题，只用 ACP 要求的 `SessionInfo` 字段。`session/list` 不保证多页
+历史快照：每一页都是一次读事务,并发写入可以把某个会话移动到另一页。

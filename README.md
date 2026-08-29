@@ -52,7 +52,11 @@ The numbered milestone list lives in
 - ACP v1 adapter (`adapters/acp`): implemented and verified; not GA. JSON-RPC
   2.0 over NDJSON on the composition root (`ServeACP`, `cmd/och -acp`).
   Live and load `session/update` include tool cards with clip bounds and
-  workspace admission. ACP v2, resume, and authenticate are not included.
+  workspace admission. Capability-gated `session/list`, `session/resume`,
+  `session/close`, and `session/delete` add a non-enumerating, idempotent
+  logical delete (`session.deleted`) and a duplex wire-state machine that
+  never appends the durable `session.closed` fact on ACP close. ACP v2 and
+  authenticate are not included.
 
 - Session transcript (`internal/harness/transcript`, `och export-session`):
   implemented and verified; not GA. Experimental `och.session.transcript`
@@ -92,7 +96,11 @@ The ACP v1 adapter contract is documented in
 [Implemented ACP v1 Adapter](docs/architecture/acp-v1.md)
 and its [Chinese reading copy](docs/architecture/acp-v1.zh-CN.md),
 with auditable results in the
-[ACP v1 adapter evidence ledger](docs/architecture/acp-v1-evidence.md).
+[ACP v1 adapter evidence ledger](docs/architecture/acp-v1-evidence.md). Its
+session-lifecycle capabilities (`session/list`/`resume`/`close`/`delete`,
+the logical `session.deleted` fact, and the SQLite session head catalog) are
+documented with auditable results in the
+[ACP session lifecycle (Slice B) evidence ledger](docs/architecture/acp-session-lifecycle-evidence.md).
 The session transcript contract is documented in
 [Implemented Session Transcript](docs/architecture/session-transcript.md)
 and its [Chinese reading copy](docs/architecture/session-transcript.zh-CN.md),
