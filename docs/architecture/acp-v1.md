@@ -158,13 +158,17 @@ entry; a `session/load` of a durably closed Session may still replay its
 history but leaves no entry, so it stays unpromptable — and it cannot be
 reattached by `session/resume` either, since `ResumeSession` itself rejects
 a non-active status. `session/prompt`
-requires an attached idle entry and moves it to `running`; the entry returns
-to `idle` **before** the terminal JSON-RPC response for the prompt is
-published (so a client that immediately re-prompts on the same response
-never races a stale `running` read), while the completion signal a blocked
-`session/close` waits on only fires **after** that response write — so
-close never reports `{}` before the cancelled prompt's own terminal frame
-is on the wire. `session/prompt`, `session/resume`, and `session/load` are
+requires an attached idle entry and moves it to `running`. On ordinary prompt
+completion, an entry that is still `running` returns to `idle` **before** the
+terminal JSON-RPC response is published (so a client that immediately
+re-prompts on that response never races a stale `running` read). If close has
+already changed it to `closing`, prompt settlement preserves `closing` instead;
+in both paths the completion signal a blocked `session/close` waits on only
+fires **after** the terminal response write. Close therefore never reports
+`{}` before the cancelled prompt's own terminal frame is on the wire.
+`frameWriter` serializes each complete frame write across these goroutines, so
+the early idle transition cannot interleave JSON response bytes.
+`session/prompt`, `session/resume`, and `session/load` are
 all rejected while an entry is `running`, `closing`, or `deleting`, with the
 one exception that `session/close` itself admits `running` (that is how a
 close cancels an in-flight prompt). `session/delete` installs `deleting`

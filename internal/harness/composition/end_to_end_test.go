@@ -306,10 +306,9 @@ func TestAssemblyServesACPTurnEndToEnd(t *testing.T) {
 	}
 
 	// Deletion is logical, not physical: the durable stream this test reads
-	// directly (not through transcript.WriteSession, whose session.deleted
-	// projector lands in the next slice) still carries the deletion fact as
-	// append-only evidence, unreachable through ordinary load or transcript
-	// export until then.
+	// directly still carries the deletion fact as append-only evidence. The
+	// transcript export tests separately cover projection; this test keeps the
+	// durable-store assertion at the composition boundary.
 	records, err := application.ReadWholeStreamPinned(context.Background(), assembly.Store(), domain.SessionID(sessionID), 256)
 	if err != nil {
 		t.Fatalf("ReadWholeStreamPinned() after delete error = %v", err)

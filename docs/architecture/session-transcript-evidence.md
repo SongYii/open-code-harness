@@ -35,8 +35,7 @@ audit JSONL codec; redacted export; subagent `origin`; `RuntimeEvent`
 enrichment; import of transcript JSONL into EventStore. Surfaces remain
 `experimental`; not GA.
 
-**Update:** ACP session resume / list / delete, listed as excluded above at
-this ledger's 2026-08-23 date, are implemented as of the [ACP session
-lifecycle (Slice B) evidence ledger](acp-session-lifecycle-evidence.md),
-which also adds the `session.deleted` transcript fact this contract's fact
-catalog now documents.
+**Later update:** the [ACP session lifecycle (Slice B) evidence
+ledger](acp-session-lifecycle-evidence.md) records the subsequently implemented
+session lifecycle methods and the `session.deleted` transcript fact now
+documented by this contract.

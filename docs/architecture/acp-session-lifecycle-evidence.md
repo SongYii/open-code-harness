@@ -33,7 +33,7 @@ the evidence below, not from checkbox state.
 | 5 fix | `0d44866` | Strict base64url cursor decoding (reject noncanonical padding); bounded race-test waits |
 | 6 | `484088d` | ACP: `session/list`/`resume`/`close`/`delete`, explicit five-state wire machine, workspace canonicalization at `Serve` construction |
 | 6 fix | `6da3e2a` | `session/load` gains the same `CanonicalWorkspaceRoot`/empty-MCP-list validation as `session/resume`; lock-scoped reads of shared wire-entry fields |
-| 7 | this commit | `session.deleted` transcript fact, implemented-contract and evidence publication |
+| 7 | `6bb3c05` | `session.deleted` transcript fact, implemented-contract and evidence publication |
 
 ## Mapping-table tests
 
@@ -105,12 +105,31 @@ ok   github.com/SongYii/open-code-harness/internal/harness/adapters/sqlite
 ok   github.com/SongYii/open-code-harness/internal/harness/transcript
 ok   github.com/SongYii/open-code-harness/internal/harness/composition
 
+$ go test -race -count=1 ./...
+ok   (every listed package)
+
+$ go test -race -count=5 ./internal/harness/adapters/sqlite -timeout 300s
+ok   github.com/SongYii/open-code-harness/internal/harness/adapters/sqlite
+
+$ git diff --check
+(clean)
+
+$ git status --short
+(clean at `6bb3c05`)
+
 $ GOOS=windows GOARCH=amd64 go build ./...
 (clean)
 
 $ GOOS=darwin GOARCH=arm64 go build ./...
 (clean)
 ```
+
+The plan's literal cross-target `go test ./...` commands were also attempted.
+Both compiled the target test binaries and then failed when this linux/amd64
+host tried to execute them (`fork/exec ...: exec format error`). The two
+cross-target `go build ./...` commands above are the executable portability
+checks used in their place; the cross-target test attempts are not recorded as
+passing.
 
 ## Mutation check
 
@@ -123,16 +142,20 @@ committing; see the Task 6 report in the (gitignored) SDD ledger for detail.
 ## Design deviation from the literal state chart
 
 The design doc's wire diagram reads `running -> terminal response ->
-idle`. The implementation keeps `running -> idle -> terminal response ->
-promptDone closes`: the entry returns to idle *before* the terminal
-JSON-RPC response is published, and the completion signal a blocked
-`session/close` waits on closes only *after* that response write. This
-preserves the original synchronous guarantee that a client which reacts to
-a prompt's terminal response by immediately sending another prompt never
-races a stale `running` read (the literal ordering would reopen that race),
-while still guaranteeing `session/close` never reports `{}` before the
-cancelled prompt's own terminal frame is on the wire — the property the
-design's ordering exists to protect. `session/close` and `session/delete`
+idle`. On ordinary completion, the implementation keeps `running -> idle ->
+terminal response -> promptDone closes`; if close has already moved the entry
+to `closing`, prompt settlement preserves `closing`, writes the terminal
+response, and only then closes `promptDone` so close can transition to
+`detached`. This preserves the original synchronous guarantee that a client
+which reacts to an ordinarily completed prompt's terminal response by
+immediately sending another prompt never races a stale `running` read (the
+literal ordering would reopen that race), while still guaranteeing
+`session/close` never reports `{}` before the cancelled prompt's own terminal
+frame is on the wire — the property the design's ordering exists to protect.
+`frameWriter` serializes each complete frame write across the prompt, close,
+and delete goroutines, so this settlement order cannot interleave JSON response
+bytes.
+`session/close` and `session/delete`
 also had to become goroutine-dispatched off the shared frame-reading
 goroutine (mirroring the pre-existing `session/prompt`/`runPrompt` split)
 rather than fully synchronous: a synchronous implementation would block the
@@ -160,12 +183,6 @@ Recorded as out of this slice, not as deferred bugs inside it:
 
 ## Remaining
 
-- `docs/architecture/domain-events.md` (the domain event catalog and state
-  diagram) was not updated to add `session.deleted`/`DeleteSession`/
-  `SessionStatusDeleted`: it predates the evidence-ledger convention and is
-  exempted from `TestEveryImplementedContractHasEvidence`, and it was not in
-  this slice's declared file list. It is stale relative to the domain
-  package as of this commit; a future pass should reconcile it.
 - Stale attachment handling when a Session becomes externally
   durable-closed or deleted before an ACP `session/close` on the same wire
   entry is not specially handled beyond the existing idle/running admission

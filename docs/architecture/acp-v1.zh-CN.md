@@ -147,11 +147,15 @@ idle / detached / absent ── delete ─> deleting ── 追加/空操作 ─
 idle 条目；对一个已持久关闭的 Session 做 `session/load` 仍可重放其历史，
 但不留下条目，因此它保持不可 prompt——也无法用 `session/resume` 重新附着，
 因为 `ResumeSession` 本身会拒绝非 active 状态。`session/prompt` 要求已附着
-的 idle 条目并把它转为 `running`；该条目会在 prompt 的终态 JSON-RPC 响应
-**发布之前**回到 `idle`（这样一个在收到响应后立刻再次 prompt 的客户端绝不
-会读到仍处于 `running` 的陈旧状态），而一个被阻塞的 `session/close` 所等待
-的完成信号只在该响应写完**之后**才触发——所以 close 绝不会在被取消的
-prompt 自己的终态帧上线之前就报告 `{}`。`session/prompt`、`session/resume`
+的 idle 条目并把它转为 `running`。正常完成时，仍为 `running` 的条目会在
+prompt 的终态 JSON-RPC 响应**发布之前**回到 `idle`（这样一个在收到响应后
+立刻再次 prompt 的客户端绝不会读到仍处于 `running` 的陈旧状态）。若 close
+已把条目改成 `closing`，prompt 结算会保留 `closing`；两条路径中，一个被阻塞
+的 `session/close` 所等待的完成信号都只在终态响应写完**之后**才触发。因此
+close 绝不会在被取消的 prompt 自己的终态帧上线之前就报告 `{}`。
+`frameWriter` 会在这些 goroutine 之间串行写出每个完整帧，因此提前转为 idle
+不会使 JSON 响应字节相互交错。
+`session/prompt`、`session/resume`
 与 `session/load` 在条目为 `running`、`closing` 或 `deleting` 时都被拒绝，
 唯一例外是 `session/close` 本身可以接纳 `running`（这正是 close 取消一个
 进行中 prompt 的方式）。`session/delete` 在调用 `DeleteSession` 之前，用与

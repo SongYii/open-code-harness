@@ -4,7 +4,7 @@
 
 **Authority:** [SQLite Canonical EventStore (Slice 2) design](../superpowers/specs/2026-08-16-sqlite-canonical-eventstore-design.md)
 
-**Port:** the unchanged `application.EventStore` interface and `StoreError` algebra from [EventStore v2](eventstore-v2.md); `ListSessionHeads` added by [ACP session lifecycle (Slice B)](acp-session-lifecycle-evidence.md)
+**Port:** the `application.EventStore` interface and `StoreError` algebra from [EventStore v2](eventstore-v2.md), extended with `ListSessionHeads` by [ACP session lifecycle (Slice B)](acp-session-lifecycle-evidence.md)
 
 **Package:** `internal/harness/adapters/sqlite`
 
@@ -113,9 +113,9 @@ policy, startup reconciliation) is Slice 4 and intentionally absent.
 
 ## Projections, backup, rebuild
 
-`session_heads` is the one synchronous projection, derived through the same
-event-type transition walk used by `RebuildAndVerifySessionHeads`, which
-replays canonical streams and reports any disagreement as corruption. The
+`session_heads` is the one synchronous projection. Append applies the same
+domain transition semantics that `RebuildAndVerifySessionHeads` independently
+checks by replaying canonical streams; any disagreement is corruption. The
 projection is never authoritative. Every append derives `workspace_root`
 from the replayed `session.created` root (never from a caller-supplied
 value) and upserts it alongside `status`/`active_turn_id`/`active_item_id`/

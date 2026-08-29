@@ -4,7 +4,7 @@
 
 **权威：** [SQLite 规范 EventStore（Slice 2）设计](../superpowers/specs/2026-08-16-sqlite-canonical-eventstore-design.md)
 
-**端口：** [EventStore v2](eventstore-v2.md) 中不变的 `application.EventStore` 接口与 `StoreError` 代数；`ListSessionHeads` 由 [ACP 会话生命周期（切片 B）](acp-session-lifecycle-evidence.md) 新增
+**端口：** [EventStore v2](eventstore-v2.md) 中的 `application.EventStore` 接口与 `StoreError` 代数；[ACP 会话生命周期（切片 B）](acp-session-lifecycle-evidence.md) 为该接口新增 `ListSessionHeads`
 
 **包：** `internal/harness/adapters/sqlite`
 
@@ -101,9 +101,9 @@ fence。SQLite 的 `unixepoch('subsec')` 是唯一租约时钟。每次追加在
 
 ## 投影、备份、重建
 
-`session_heads` 是唯一同步投影，通过与
-`RebuildAndVerifySessionHeads` 共享的事件类型转移走线推导；后者重放
-规范流并把任何不一致报告为损坏。投影绝不被当作权威。每次追加都从重放出的
+`session_heads` 是唯一同步投影。追加路径应用领域转移语义；
+`RebuildAndVerifySessionHeads` 通过独立重放规范流来校验同一语义，并把任何
+不一致报告为损坏。投影绝不被当作权威。每次追加都从重放出的
 `session.created` 根推导 `workspace_root`（绝不来自调用方传入的值），并在
 写入规范追加的同一个 `BEGIN IMMEDIATE` 事务里，连同
 `status`/`active_turn_id`/`active_item_id`/`updated_at_commit_position` 一起
