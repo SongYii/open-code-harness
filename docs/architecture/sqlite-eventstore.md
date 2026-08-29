@@ -55,11 +55,15 @@ NOT NULL REFERENCES event_appends(commit_position)` — scans every
 stream with `domain.Replay`, and inserts the derived row. When a version-3
 row already exists for that session it is cross-checked against the
 replayed row: legacy `active` compares equal only to derived `running`;
-`idle` and `closed` compare exactly; active turn/item IDs and
-`updated_at_commit_position` must also agree; any other disagreement, or an
-orphan legacy row with no matching `event_streams` row, is
-`sqlite database corrupt`. A version-3 session with no legacy head row is
-simply rebuilt. After every stream is verified, the migration drops the old
+`idle` and `closed` compare exactly; derived `deleted` compares equal to
+legacy `idle` or `closed` — `session.deleted` predates this migration, and
+the pre-v4 per-append projection had no case for it, so a session deleted
+before migration 4 existed keeps whatever legacy status preceded its
+deletion (always idle or closed, since deletion requires an idle session,
+never `active`); active turn/item IDs and `updated_at_commit_position` must
+also agree; any other disagreement, or an orphan legacy row with no
+matching `event_streams` row, is `sqlite database corrupt`. A version-3
+session with no legacy head row is simply rebuilt. After every stream is verified, the migration drops the old
 table, renames the shadow table onto `session_heads`, and creates:
 
 ```sql

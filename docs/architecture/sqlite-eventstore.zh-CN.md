@@ -51,8 +51,12 @@ EventStore v2 端口之后的纯 Go（`CGO_ENABLED=0`）SQLite 适配器。SQLit
 event_appends(commit_position)`——按稳定的 `session_id` 顺序扫描每一行
 `event_streams`，用 `domain.Replay` 对每条流做规范重放，再插入推导出的行。
 若该会话已有版本 3 的旧行，则与重放结果交叉核对：旧的 `active` 只与推导出
-的 `running` 比较相等；`idle` 与 `closed` 精确比较；active turn/item ID 与
-`updated_at_commit_position` 也必须一致；任何其他不一致，或没有匹配
+的 `running` 比较相等；`idle` 与 `closed` 精确比较；推导出的 `deleted` 与
+旧的 `idle` 或 `closed` 比较相等——`session.deleted` 出现得比这次迁移早，
+迁移 4 之前的逐次追加投影根本没有处理它的分支，所以一个在迁移 4 存在之前
+就被删除的会话，其旧状态会停留在删除前的那个值（只可能是 idle 或
+closed，因为删除要求会话是 idle，绝不可能是 active）；active turn/item ID
+与 `updated_at_commit_position` 也必须一致；任何其他不一致，或没有匹配
 `event_streams` 行的孤儿旧行，都是 `sqlite database corrupt`。没有旧头行的
 版本 3 会话则直接重建。每条流都验证完毕后，迁移丢弃旧表、把影子表改名为
 `session_heads`，并创建：

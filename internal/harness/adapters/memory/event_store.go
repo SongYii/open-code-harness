@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"sort"
 	"sync"
 	"time"
@@ -494,7 +495,7 @@ func decodeSessionHeadCursor(encoded string) (sessionHeadCursor, bool, error) {
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return sessionHeadCursor{}, false, fmt.Errorf("invalid session head cursor")
 	}
-	if cursor.Version != 1 || cursor.Position == 0 {
+	if cursor.Version != 1 || cursor.Position == 0 || cursor.Position > math.MaxInt64 {
 		return sessionHeadCursor{}, false, fmt.Errorf("invalid session head cursor")
 	}
 	if _, err := domain.ParseSessionID(cursor.Session); err != nil {

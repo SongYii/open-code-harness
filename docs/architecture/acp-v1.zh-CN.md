@@ -114,7 +114,7 @@ load 不发 `session/request_permission`。
 | --- | --- | --- | --- |
 | `session/list` | 可选 `cwd`、可选不透明 `cursor` | `{sessions:[{sessionId,cwd,updatedAt}], nextCursor?}` | 非空的外来 `cwd` 或坏 cursor → `-32602` |
 | `session/resume` | 必需 `sessionId`、必需 `cwd`；非空 `mcpServers` 或 `additionalDirectories` 被拒绝，空列表可容忍 | `{}`，不发 `session/update` | 缺失、外来、领域已关闭、正在运行或已删除 → `-32602` |
-| `session/close` | 必需 `sessionId` | 取消/结算并 detach 该现场条目后返回 `{}`；无领域追加 | 未附着（该 id 没有 idle/running 现场条目）、该会话已在 closing/detached/deleting，或 durable 校验失败（缺失、外来工作区或已删除）→ `-32602` |
+| `session/close` | 必需 `sessionId` | 取消/结算并 detach 该现场条目后返回 `{}`；无领域追加 | 未附着（该 id 没有 idle/running 现场条目）、该会话已在 closing/detached/deleting，或 durable 校验失败（缺失、外来工作区、领域已关闭或已删除）→ `-32602` |
 | `session/delete` | 必需 `sessionId` | 持久 `session.deleted` 追加成功后返回 `{}`，或幂等空操作 | 同工作区条目处于 running、closing 或 deleting → `-32602`；缺失、外来或已删除 → 无变更地返回 `{}` |
 
 这四个方法里任何内部（非校验）失败都是 `-32603`

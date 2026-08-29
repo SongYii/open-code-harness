@@ -67,6 +67,7 @@ func testSessionHeadCatalog(t *testing.T, factory Factory) {
 		base64.RawURLEncoding.EncodeToString([]byte(`{"v":1,"p":1}`)),
 		base64.URLEncoding.EncodeToString([]byte(`{"v":1,"p":1,"s":"session-catalog-idle"}`)),
 		"eyJ2IjoxLCJwIjoxLCJzIjoic2Vzc2lvbi1jYXRhbG9nLWlkbGUifR",
+		base64.RawURLEncoding.EncodeToString([]byte(`{"v":1,"p":18446744073709551615,"s":"session-catalog-idle"}`)),
 	}
 	for _, request := range append([]application.ListSessionHeadsRequest{
 		{WorkspaceRoot: "/catalog", Limit: 0},

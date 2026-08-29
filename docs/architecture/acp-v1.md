@@ -121,7 +121,7 @@ invent `rawOutput`.
 | --- | --- | --- | --- |
 | `session/list` | optional `cwd`, optional opaque `cursor` | `{sessions:[{sessionId,cwd,updatedAt}], nextCursor?}` | non-empty foreign `cwd` or bad cursor → `-32602` |
 | `session/resume` | required `sessionId`, required `cwd`; a non-empty `mcpServers` or `additionalDirectories` is rejected, empty lists are tolerated | `{}`, no `session/update` | absent, foreign, domain-closed, running, or deleted → `-32602` |
-| `session/close` | required `sessionId` | `{}` after the wire entry cancels/settles and detaches; no domain append | unattached (no idle/running wire entry for this id), a session already closing/detached/deleting, or a durable-check failure (absent, foreign-workspace, or deleted) → `-32602` |
+| `session/close` | required `sessionId` | `{}` after the wire entry cancels/settles and detaches; no domain append | unattached (no idle/running wire entry for this id), a session already closing/detached/deleting, or a durable-check failure (absent, foreign-workspace, domain-closed, or deleted) → `-32602` |
 | `session/delete` | required `sessionId` | `{}` after a durable `session.deleted` append, or an idempotent no-op | a same-workspace entry that is running, closing, or deleting → `-32602`; absent, foreign, or already-deleted → `{}` with no mutation |
 
 Every internal (non-validation) failure in these four methods is `-32603`

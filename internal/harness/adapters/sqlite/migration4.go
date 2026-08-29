@@ -64,6 +64,13 @@ func migrateSessionHeadsV4(ctx context.Context, conn *sql.Conn) error {
 				statusMatches = legacy.status == "active"
 			case "idle", "closed":
 				statusMatches = legacy.status == expected.status
+			case "deleted":
+				// session.deleted predates this migration: the pre-v4
+				// per-append projection had no case for it, so it left the
+				// legacy row at whatever status preceded the deletion.
+				// Deletion requires an idle session, so that status is
+				// always "idle" or "closed", never "active".
+				statusMatches = legacy.status == "idle" || legacy.status == "closed"
 			}
 			if !statusMatches || legacy.turn != expected.turn || legacy.item != expected.item || legacy.position != expected.position {
 				return &CorruptError{Detail: fmt.Sprintf("legacy session_heads row for %q disagrees with canonical replay", stream.sessionID)}

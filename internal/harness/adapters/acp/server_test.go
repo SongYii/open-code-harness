@@ -1635,6 +1635,52 @@ func TestServeSessionCloseRevalidatesFreshStateAfterDurableCheck(t *testing.T) {
 	}
 }
 
+// TestServeSessionCloseRejectsDomainClosedSession proves that close's
+// durable check rejects a session whose domain status has become closed by
+// some other path since this duplex attached it idle, matching the
+// documented contract (session/close rejects unattached, foreign,
+// domain-closed, or deleted). LoadSession alone only ever filters deleted
+// sessions; the durable check must also require an active status.
+func TestServeSessionCloseRejectsDomainClosedSession(t *testing.T) {
+	agentIn, clientOut := io.Pipe()
+	clientIn, agentOut := io.Pipe()
+	fake := newFake()
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(context.Background(), Config{Sessions: fake, History: fake, Workspace: "/workspace"}, agentIn, agentOut)
+	}()
+	t.Cleanup(func() {
+		_ = agentIn.Close()
+		_ = clientOut.Close()
+		_ = clientIn.Close()
+		_ = agentOut.Close()
+		_ = awaitError(t, done, "server exit")
+	})
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	_ = readJSON(t, clientIn)
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":2,"method":"session/new","params":{}}`)
+	created := readJSON(t, clientIn)
+	sessionID := domain.SessionID(created["result"].(map[string]any)["sessionId"].(string))
+
+	// Simulate the session becoming durably closed by some other path (a
+	// future caller of application.Service.CloseSession) while this duplex's
+	// wire entry is still idle.
+	fake.mu.Lock()
+	session := fake.sessions[sessionID]
+	session.Status = domain.SessionStatusClosed
+	fake.sessions[sessionID] = session
+	fake.mu.Unlock()
+
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":3,"method":"session/close","params":{"sessionId":"`+string(sessionID)+`"}}`)
+	closeRejected := readJSON(t, clientIn)
+	if closeRejected["error"] == nil {
+		t.Fatalf("close of a domain-closed session = %#v, want rejected", closeRejected)
+	}
+	if closeRejected["error"].(map[string]any)["code"] != float64(codeInvalidParams) {
+		t.Fatalf("close of a domain-closed session = %#v", closeRejected)
+	}
+}
+
 type dropSessionUpdates struct {
 	writer io.Writer
 }

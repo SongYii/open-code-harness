@@ -496,8 +496,12 @@ func (s *server) sessionClose(message rpcRequest) error {
 // authoritative admission decision fresh, under the mutex, right after that
 // call returns.
 func (s *server) durableCloseAdmission(id json.RawMessage, sessionID domain.SessionID, wireID string) {
+	// LoadSession alone only ever filters a deleted session; a durably
+	// closed one loads successfully (ordinary load may still replay a
+	// closed Session's history). Close must reject both, matching the
+	// documented contract.
 	session, err := s.config.Sessions.LoadSession(s.ctx, sessionID)
-	if err != nil || !s.sessionWorkspaceMatches(session.WorkspaceRoot) {
+	if err != nil || session.Status != domain.SessionStatusActive || !s.sessionWorkspaceMatches(session.WorkspaceRoot) {
 		_ = s.out.writeError(id, codeInvalidParams, "invalid params")
 		return
 	}

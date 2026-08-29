@@ -142,6 +142,37 @@ func TestMigration4ReplaysPopulatedV3Head(t *testing.T) {
 	}
 }
 
+// TestMigration4AcceptsLegacyPreDeletionStatusForDeletedSession proves that a
+// v3 database containing a session that was already domain-deleted before
+// migration 4 existed can still migrate. domain.SessionDeleted predates this
+// slice's SQLite catalog work (Tasks 1-2 landed before Task 4), and the
+// pre-migration-4 per-append projection had no case for it, so it left the
+// legacy session_heads row at whatever status preceded the deletion (idle or
+// closed — deletion requires an idle session). Migration 4's canonical
+// replay correctly derives "deleted" for that same session; the legacy
+// compatibility check must accept idle/closed as legacy evidence of a
+// session that predates deletion tracking, not report it as corrupt.
+func TestMigration4AcceptsLegacyPreDeletionStatusForDeletedSession(t *testing.T) {
+	config := deletedV3Store(t)
+	store, err := Open(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Open(v3 with pre-tracked deletion) error = %v, want a successful migration", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	var root, status string
+	var turn, item sql.NullString
+	var position uint64
+	if err := store.db.QueryRowContext(context.Background(),
+		"SELECT workspace_root, status, active_turn_id, active_item_id, updated_at_commit_position FROM session_heads WHERE session_id = 'session-v3-deleted'").Scan(
+		&root, &status, &turn, &item, &position); err != nil {
+		t.Fatalf("read migrated head: %v", err)
+	}
+	if root != "/repo" || status != "deleted" || turn.Valid || item.Valid || position != 1 {
+		t.Fatalf("migrated head = %q/%q/turn=%v/item=%v/%d, want /repo/deleted/NULL/NULL/1", root, status, turn, item, position)
+	}
+}
+
 func TestMigration4MigratesEmptyV3Database(t *testing.T) {
 	config := emptyV3Store(t)
 	store, err := Open(context.Background(), config)
@@ -296,6 +327,94 @@ func emptyV3Store(t *testing.T) Config {
 	t.Helper()
 	config := tempStoreConfig(t).WithDefaults()
 	seedV3Store(t, config, false)
+	return config
+}
+
+// deletedV3Store seeds a v3-shaped database containing only a session whose
+// canonical stream is session.created then session.deleted, with its legacy
+// session_heads row left at "idle" — the status the pre-migration-4
+// per-append projection would have produced, since it had no case for
+// session.deleted and therefore never updated the row past whatever it held
+// beforehand.
+func deletedV3Store(t *testing.T) Config {
+	t.Helper()
+	config := tempStoreConfig(t).WithDefaults()
+	raw, err := sql.Open("sqlite", dataSourceName(config.Path, config))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	conn, err := raw.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+	for _, statement := range []string{migration1DDL, migration2DDL, migration3DDL, "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at_unix REAL NOT NULL)"} {
+		if _, err := conn.ExecContext(context.Background(), statement); err != nil {
+			t.Fatalf("create v3 fixture schema: %v", err)
+		}
+	}
+	if _, err := conn.ExecContext(context.Background(),
+		"INSERT INTO store_metadata (id, storage_format_version, head_commit_position, head_audit_digest, created_at_unix, last_migration_at_unix) VALUES (1, 3, 1, NULL, 0, 0)"); err != nil {
+		t.Fatal(err)
+	}
+
+	records := []domain.RecordedEvent{
+		{SchemaVersion: 1, ID: "event-v3-deleted-0", CommandID: "command-v3-deleted", SessionID: "session-v3-deleted", Sequence: 1, OccurredAt: testTime, Event: domain.SessionCreated{WorkspaceRoot: "/repo/."}},
+		{SchemaVersion: 1, ID: "event-v3-deleted-1", CommandID: "command-v3-deleted", SessionID: "session-v3-deleted", Sequence: 2, OccurredAt: testTime, Event: domain.SessionDeleted{}},
+	}
+	if _, err := conn.ExecContext(context.Background(),
+		"INSERT INTO event_streams (session_id, version, created_at_commit_position, last_append_commit_position) VALUES ('session-v3-deleted', 2, 1, 1)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(context.Background(),
+		"INSERT INTO event_appends (append_id, commit_position, session_id, expected_version, first_sequence, last_sequence, event_count, command_id, request_digest, writer_runtime_id, writer_fencing_token, committed_at_unix) VALUES ('append-v3-deleted', 1, 'session-v3-deleted', 0, 1, 2, 2, 'command-v3-deleted', ?, 'runtime-v3', 1, 0)",
+		make([]byte, 32)); err != nil {
+		t.Fatal(err)
+	}
+	for index, record := range records {
+		payload, err := domain.MarshalRecordedEvent(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		digest := auditEventPayloadDigest(payload)
+		if _, err := conn.ExecContext(context.Background(),
+			"INSERT INTO events (session_id, sequence, event_id, append_id, order_in_append, command_id, event_type, schema_version, occurred_at, payload, payload_digest) VALUES (?, ?, ?, 'append-v3-deleted', ?, 'command-v3-deleted', ?, 1, ?, ?, ?)",
+			"session-v3-deleted", record.Sequence, record.ID, index+1, record.Event.EventType(), record.OccurredAt.Format("2006-01-02T15:04:05Z07:00"), payload, digest[:]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The legacy per-append projection had no case for session.deleted, so it
+	// left the row at "idle" — the status session.created produced and
+	// nothing after it ever changed.
+	if _, err := conn.ExecContext(context.Background(),
+		"INSERT INTO session_heads (session_id, status, active_turn_id, active_item_id, updated_at_commit_position) VALUES ('session-v3-deleted', 'idle', NULL, NULL, 1)"); err != nil {
+		t.Fatal(err)
+	}
+	if err := backfillAuditChain(context.Background(), conn); err != nil {
+		t.Fatalf("backfill v3 fixture audit chain: %v", err)
+	}
+	for version, name := range map[int]string{1: "full target shape", 2: "append receipt verification index", 3: "audit chain backfill"} {
+		if _, err := conn.ExecContext(context.Background(), "INSERT INTO schema_migrations (version, name, applied_at_unix) VALUES (?, ?, 0)", version, name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := conn.ExecContext(context.Background(), "PRAGMA user_version = 3"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(context.Background(), "COMMIT"); err != nil {
+		t.Fatal(err)
+	}
+	committed = true
 	return config
 }
 
