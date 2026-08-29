@@ -71,6 +71,13 @@ type sessionIDParams struct {
 	SessionID string `json:"sessionId"`
 }
 
+type sessionLoadParams struct {
+	SessionID             string            `json:"sessionId"`
+	Cwd                   string            `json:"cwd,omitempty"`
+	MCPServers            []json.RawMessage `json:"mcpServers,omitempty"`
+	AdditionalDirectories []json.RawMessage `json:"additionalDirectories,omitempty"`
+}
+
 type sessionListParams struct {
 	Cwd    string `json:"cwd,omitempty"`
 	Cursor string `json:"cursor,omitempty"`

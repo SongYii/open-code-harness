@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -104,6 +103,19 @@ func admitBusy(entry *sessionState) bool {
 	return entry != nil && (entry.state == wireRunning || entry.state == wireClosing || entry.state == wireDeleting)
 }
 
+func (s *server) requestWorkspaceMatches(cwd string) bool {
+	if cwd == "" {
+		return true
+	}
+	workspace, err := application.CanonicalWorkspaceRoot(cwd)
+	return err == nil && workspace == s.workspace
+}
+
+func (s *server) sessionWorkspaceMatches(root string) bool {
+	workspace, err := application.CanonicalWorkspaceRoot(root)
+	return err == nil && workspace == s.workspace
+}
+
 func (s *server) dispatch(message rpcRequest) error {
 	if message.Error != nil && message.Method == "" {
 		if len(message.ID) > 0 {
@@ -144,11 +156,14 @@ func (s *server) handleNotification(message rpcRequest) {
 	if json.Unmarshal(message.Params, &params) != nil {
 		return
 	}
+	var cancel context.CancelFunc
 	s.mu.Lock()
-	state := s.sessions[params.SessionID]
+	if state := s.sessions[params.SessionID]; state != nil {
+		cancel = state.cancel
+	}
 	s.mu.Unlock()
-	if state != nil && state.cancel != nil {
-		state.cancel()
+	if cancel != nil {
+		cancel()
 	}
 }
 
@@ -199,7 +214,7 @@ func (s *server) sessionNew(message rpcRequest) error {
 	if len(message.Params) > 0 && json.Unmarshal(message.Params, &params) != nil {
 		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
 	}
-	if params.Cwd != "" && filepath.Clean(params.Cwd) != s.workspace {
+	if !s.requestWorkspaceMatches(params.Cwd) {
 		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
 	}
 	created, err := s.config.Sessions.CreateSession(s.ctx, application.CreateSessionRequest{WorkspaceRoot: s.workspace})
@@ -213,8 +228,14 @@ func (s *server) sessionNew(message rpcRequest) error {
 }
 
 func (s *server) sessionLoad(message rpcRequest) error {
-	var params sessionIDParams
+	var params sessionLoadParams
 	if json.Unmarshal(message.Params, &params) != nil || params.SessionID == "" {
+		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
+	}
+	if len(params.MCPServers) > 0 || len(params.AdditionalDirectories) > 0 {
+		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
+	}
+	if !s.requestWorkspaceMatches(params.Cwd) {
 		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
 	}
 	sessionID, err := domain.ParseSessionID(params.SessionID)
@@ -228,7 +249,7 @@ func (s *server) sessionLoad(message rpcRequest) error {
 	}
 	s.mu.Unlock()
 	session, err := s.config.Sessions.LoadSession(s.ctx, sessionID)
-	if err != nil || filepath.Clean(session.WorkspaceRoot) != s.workspace {
+	if err != nil || !s.sessionWorkspaceMatches(session.WorkspaceRoot) {
 		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
 	}
 	if s.config.History != nil {
@@ -298,15 +319,19 @@ func (s *server) sessionPrompt(message rpcRequest) error {
 		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
 	}
 	session, err := s.config.Sessions.LoadSession(s.ctx, sessionID)
-	if err != nil || filepath.Clean(session.WorkspaceRoot) != s.workspace {
+	if err != nil || !s.sessionWorkspaceMatches(session.WorkspaceRoot) {
 		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
 	}
 
 	s.mu.Lock()
 	entry := s.sessions[params.SessionID]
-	if entry == nil || entry.state != wireIdle {
+	var state wireSessionState
+	if entry != nil {
+		state = entry.state
+	}
+	if entry == nil || state != wireIdle {
 		s.mu.Unlock()
-		if entry != nil && entry.state == wireRunning {
+		if state == wireRunning {
 			return s.out.writeError(message.ID, codeInvalidRequest, promptInFlightMessage)
 		}
 		return s.out.writeError(message.ID, codeInvalidRequest, sessionNotAttachedMessage)
@@ -368,7 +393,7 @@ func (s *server) sessionList(message rpcRequest) error {
 	if len(message.Params) > 0 && json.Unmarshal(message.Params, &params) != nil {
 		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
 	}
-	if params.Cwd != "" && filepath.Clean(params.Cwd) != s.workspace {
+	if !s.requestWorkspaceMatches(params.Cwd) {
 		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
 	}
 	result, err := s.config.Sessions.ListSessions(s.ctx, application.ListSessionsRequest{
@@ -400,7 +425,7 @@ func (s *server) sessionResume(message rpcRequest) error {
 	if len(params.MCPServers) > 0 || len(params.AdditionalDirectories) > 0 {
 		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
 	}
-	if filepath.Clean(params.Cwd) != s.workspace {
+	if !s.requestWorkspaceMatches(params.Cwd) {
 		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
 	}
 	sessionID, err := domain.ParseSessionID(params.SessionID)

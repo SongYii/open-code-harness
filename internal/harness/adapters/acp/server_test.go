@@ -153,7 +153,7 @@ func TestServeInitializeNewPromptAndBusyReject(t *testing.T) {
 		_ = clientOut.Close()
 		_ = clientIn.Close()
 		_ = agentOut.Close()
-		<-done
+		_ = awaitError(t, done, "server exit")
 	})
 
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}`)
@@ -190,11 +190,15 @@ func TestServeInitializeNewPromptAndBusyReject(t *testing.T) {
 	blocked := make(chan struct{})
 	fake.run = func(ctx context.Context, request application.RunTurnRequest) (application.RunTurnResult, error) {
 		close(blocked)
-		<-ctx.Done()
+		select {
+		case <-ctx.Done():
+		case <-time.After(acpTestRendezvousTimeout):
+			return application.RunTurnResult{SessionID: request.SessionID, Status: domain.TurnStatusFailed}, errors.New("timed out waiting for prompt cancellation")
+		}
 		return application.RunTurnResult{SessionID: request.SessionID, Status: domain.TurnStatusInterrupted}, ctx.Err()
 	}
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"`+sessionID+`","prompt":[{"type":"text","text":"one"}]}}`)
-	<-blocked
+	awaitSignal(t, blocked, "first prompt to enter RunTurn")
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":5,"method":"session/prompt","params":{"sessionId":"`+sessionID+`","prompt":[{"type":"text","text":"two"}]}}`)
 	busy := readJSON(t, clientIn)
 	if busy["error"].(map[string]any)["code"] != float64(codeInvalidRequest) {
@@ -226,7 +230,7 @@ func TestServeLoadReplaysHistoryAndUnknownSessionErrors(t *testing.T) {
 		_ = clientOut.Close()
 		_ = clientIn.Close()
 		_ = agentOut.Close()
-		<-done
+		_ = awaitError(t, done, "server exit")
 	})
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	_ = readJSON(t, clientIn)
@@ -252,6 +256,59 @@ func TestServeLoadReplaysHistoryAndUnknownSessionErrors(t *testing.T) {
 	}
 	if updates != 2 {
 		t.Fatalf("load updates = %d, want 2", updates)
+	}
+}
+
+func TestServeLoadValidatesCompatibilityFields(t *testing.T) {
+	agentIn, clientOut := io.Pipe()
+	clientIn, agentOut := io.Pipe()
+	fake := newFake()
+	fake.sessions = map[domain.SessionID]domain.Session{
+		"session-acp-1": {ID: "session-acp-1", Status: domain.SessionStatusActive, WorkspaceRoot: "/workspace"},
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(context.Background(), Config{Sessions: fake, History: fake, Workspace: "/workspace"}, agentIn, agentOut)
+	}()
+	t.Cleanup(func() {
+		_ = agentIn.Close()
+		_ = clientOut.Close()
+		_ = clientIn.Close()
+		_ = agentOut.Close()
+		_ = awaitError(t, done, "server exit after load compatibility test cleanup")
+	})
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	_ = readJSON(t, clientIn)
+
+	rejections := []struct {
+		name   string
+		id     int
+		params string
+	}{
+		{name: "foreign cwd", id: 2, params: `{"sessionId":"session-acp-1","cwd":"/other-workspace"}`},
+		{name: "relative cwd", id: 3, params: `{"sessionId":"session-acp-1","cwd":"workspace"}`},
+		{name: "non-empty mcp servers", id: 4, params: `{"sessionId":"session-acp-1","mcpServers":[{"name":"x"}]}`},
+		{name: "non-empty additional directories", id: 5, params: `{"sessionId":"session-acp-1","additionalDirectories":["/tmp"]}`},
+	}
+	for _, test := range rejections {
+		writeLine(t, clientOut, `{"jsonrpc":"2.0","id":`+mustJSON(test.id)+`,"method":"session/load","params":`+test.params+`}`)
+		rejected := readJSON(t, clientIn)
+		rpcErr, _ := rejected["error"].(map[string]any)
+		if rejected["id"] != float64(test.id) || rpcErr["code"] != float64(codeInvalidParams) || rpcErr["message"] != "invalid params" {
+			t.Fatalf("%s load = %#v, want fixed invalid params", test.name, rejected)
+		}
+		payload := mustJSON(rejected)
+		for _, leak := range []string{"session-acp-1", "/workspace", "/other-workspace"} {
+			if strings.Contains(payload, leak) {
+				t.Fatalf("%s rejection leaked %q: %s", test.name, leak, payload)
+			}
+		}
+	}
+
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":6,"method":"session/load","params":{"sessionId":"session-acp-1","cwd":"/workspace/.","mcpServers":[],"additionalDirectories":[]}}`)
+	loaded := readJSON(t, clientIn)
+	if loaded["id"] != float64(6) || loaded["error"] != nil {
+		t.Fatalf("load with canonical cwd and empty compatibility lists = %#v", loaded)
 	}
 }
 
@@ -292,7 +349,7 @@ func TestServeLoadReplaysToolBearingHistory(t *testing.T) {
 		_ = clientOut.Close()
 		_ = clientIn.Close()
 		_ = agentOut.Close()
-		<-done
+		_ = awaitError(t, done, "server exit")
 	})
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	_ = readJSON(t, clientIn)
@@ -381,7 +438,7 @@ func TestServeLoadDegradesOversizeToolIdentity(t *testing.T) {
 		_ = clientOut.Close()
 		_ = clientIn.Close()
 		_ = agentOut.Close()
-		<-done
+		_ = awaitError(t, done, "server exit")
 	})
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	_ = readJSON(t, clientIn)
@@ -447,7 +504,7 @@ func TestServeLoadFailsOnSessionUpdateWriteError(t *testing.T) {
 		_ = clientOut.Close()
 		_ = clientIn.Close()
 		_ = agentOut.Close()
-		<-done
+		_ = awaitError(t, done, "server exit")
 	})
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	_ = readJSON(t, clientIn)
@@ -486,7 +543,7 @@ func TestServePermissionGrantAndDeny(t *testing.T) {
 		_ = clientOut.Close()
 		_ = clientIn.Close()
 		_ = agentOut.Close()
-		<-done
+		_ = awaitError(t, done, "server exit")
 	})
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	_ = readJSON(t, clientIn)
@@ -554,7 +611,7 @@ func TestServePermissionClipsOversizeTitleAndDeniesUnsendableID(t *testing.T) {
 		_ = clientOut.Close()
 		_ = clientIn.Close()
 		_ = agentOut.Close()
-		<-done
+		_ = awaitError(t, done, "server exit")
 	})
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	_ = readJSON(t, clientIn)
@@ -603,7 +660,7 @@ func TestCodecRejectsNonACPAndRequiresInitialize(t *testing.T) {
 		_ = clientOut.Close()
 		_ = clientIn.Close()
 		_ = agentOut.Close()
-		<-done
+		_ = awaitError(t, done, "server exit")
 	})
 	writeLine(t, clientOut, `{not-json`)
 	parse := readJSON(t, clientIn)
@@ -636,6 +693,28 @@ func readJSON(t *testing.T, r io.Reader) map[string]any {
 		t.Fatalf("unmarshal %q: %v", scanner.Text(), err)
 	}
 	return message
+}
+
+const acpTestRendezvousTimeout = 5 * time.Second
+
+func awaitSignal(t *testing.T, channel <-chan struct{}, description string) {
+	t.Helper()
+	select {
+	case <-channel:
+	case <-time.After(acpTestRendezvousTimeout):
+		t.Fatalf("timed out waiting for %s", description)
+	}
+}
+
+func awaitError(t *testing.T, channel <-chan error, description string) error {
+	t.Helper()
+	select {
+	case err := <-channel:
+		return err
+	case <-time.After(acpTestRendezvousTimeout):
+		t.Fatalf("timed out waiting for %s", description)
+		return nil
+	}
 }
 
 func mustJSON(value any) string {
@@ -681,7 +760,7 @@ func TestServePromptProjectsLiveToolCallsAndCodeOnlyFailed(t *testing.T) {
 		_ = clientOut.Close()
 		_ = clientIn.Close()
 		_ = agentOut.Close()
-		<-done
+		_ = awaitError(t, done, "server exit")
 	})
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	_ = readJSON(t, clientIn)
@@ -756,7 +835,7 @@ func TestServePromptProjectsOversizeToolName(t *testing.T) {
 		_ = clientOut.Close()
 		_ = clientIn.Close()
 		_ = agentOut.Close()
-		<-done
+		_ = awaitError(t, done, "server exit")
 	})
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	_ = readJSON(t, clientIn)
@@ -816,7 +895,7 @@ func TestServePromptSwallowsSessionUpdateWriteErrors(t *testing.T) {
 		_ = clientOut.Close()
 		_ = clientIn.Close()
 		_ = agentOut.Close()
-		<-done
+		_ = awaitError(t, done, "server exit")
 	})
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	_ = readJSON(t, clientIn)
@@ -851,7 +930,7 @@ func TestServeLoadAndPromptRejectForeignWorkspace(t *testing.T) {
 		_ = clientOut.Close()
 		_ = clientIn.Close()
 		_ = agentOut.Close()
-		<-done
+		_ = awaitError(t, done, "server exit")
 	})
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	_ = readJSON(t, clientIn)
@@ -954,7 +1033,7 @@ func TestServeInitializeAdvertisesSessionLifecycleCapabilities(t *testing.T) {
 		_ = clientOut.Close()
 		_ = clientIn.Close()
 		_ = agentOut.Close()
-		<-done
+		_ = awaitError(t, done, "server exit")
 	})
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}`)
 	init := readJSON(t, clientIn)
@@ -992,7 +1071,7 @@ func TestServeSessionListReturnsWorkspaceSessions(t *testing.T) {
 		_ = clientOut.Close()
 		_ = clientIn.Close()
 		_ = agentOut.Close()
-		<-done
+		_ = awaitError(t, done, "server exit")
 	})
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	_ = readJSON(t, clientIn)
@@ -1049,7 +1128,7 @@ func TestServeSessionResumeReattachesAndRejectsIneligible(t *testing.T) {
 		_ = clientOut.Close()
 		_ = clientIn.Close()
 		_ = agentOut.Close()
-		<-done
+		_ = awaitError(t, done, "server exit")
 	})
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	_ = readJSON(t, clientIn)
@@ -1115,7 +1194,11 @@ func TestServeSessionCloseCancelsSettlesAndDetaches(t *testing.T) {
 	blocked := make(chan struct{})
 	fake.run = func(ctx context.Context, request application.RunTurnRequest) (application.RunTurnResult, error) {
 		close(blocked)
-		<-ctx.Done()
+		select {
+		case <-ctx.Done():
+		case <-time.After(acpTestRendezvousTimeout):
+			return application.RunTurnResult{SessionID: request.SessionID, Status: domain.TurnStatusFailed}, errors.New("timed out waiting for prompt cancellation")
+		}
 		return application.RunTurnResult{SessionID: request.SessionID, Status: domain.TurnStatusInterrupted}, ctx.Err()
 	}
 	done := make(chan error, 1)
@@ -1127,7 +1210,7 @@ func TestServeSessionCloseCancelsSettlesAndDetaches(t *testing.T) {
 		_ = clientOut.Close()
 		_ = clientIn.Close()
 		_ = agentOut.Close()
-		<-done
+		_ = awaitError(t, done, "server exit")
 	})
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	_ = readJSON(t, clientIn)
@@ -1136,7 +1219,7 @@ func TestServeSessionCloseCancelsSettlesAndDetaches(t *testing.T) {
 	sessionID := created["result"].(map[string]any)["sessionId"].(string)
 
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"`+sessionID+`","prompt":[{"text":"hi"}]}}`)
-	<-blocked
+	awaitSignal(t, blocked, "prompt to enter RunTurn before close")
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":4,"method":"session/close","params":{"sessionId":"`+sessionID+`"}}`)
 
 	promptTerminal := readJSON(t, clientIn)
@@ -1201,11 +1284,19 @@ func TestServeSessionLifecycleRejectsDuringClosingAndDeleting(t *testing.T) {
 	releaseRun := make(chan struct{})
 	fake.run = func(ctx context.Context, request application.RunTurnRequest) (application.RunTurnResult, error) {
 		close(blocked)
-		<-ctx.Done()
+		select {
+		case <-ctx.Done():
+		case <-time.After(acpTestRendezvousTimeout):
+			return application.RunTurnResult{SessionID: request.SessionID, Status: domain.TurnStatusFailed}, errors.New("timed out waiting for prompt cancellation")
+		}
 		// Held open until the test has driven resume/load/delete through the
 		// closing window, so the entry is deterministically still closing
 		// rather than racing finishClose's own completion.
-		<-releaseRun
+		select {
+		case <-releaseRun:
+		case <-time.After(acpTestRendezvousTimeout):
+			return application.RunTurnResult{SessionID: request.SessionID, Status: domain.TurnStatusFailed}, errors.New("timed out waiting for closing-window release")
+		}
 		return application.RunTurnResult{SessionID: request.SessionID, Status: domain.TurnStatusInterrupted}, ctx.Err()
 	}
 	done := make(chan error, 1)
@@ -1217,7 +1308,7 @@ func TestServeSessionLifecycleRejectsDuringClosingAndDeleting(t *testing.T) {
 		_ = clientOut.Close()
 		_ = clientIn.Close()
 		_ = agentOut.Close()
-		<-done
+		_ = awaitError(t, done, "server exit")
 	})
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	_ = readJSON(t, clientIn)
@@ -1226,7 +1317,7 @@ func TestServeSessionLifecycleRejectsDuringClosingAndDeleting(t *testing.T) {
 	sessionID := created["result"].(map[string]any)["sessionId"].(string)
 
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"`+sessionID+`","prompt":[{"text":"hi"}]}}`)
-	<-blocked
+	awaitSignal(t, blocked, "prompt to enter RunTurn before closing-window checks")
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":4,"method":"session/close","params":{"sessionId":"`+sessionID+`"}}`)
 
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":5,"method":"session/resume","params":{"sessionId":"`+sessionID+`","cwd":"/workspace"}}`)
@@ -1267,7 +1358,11 @@ func TestServeSessionDeleteBlocksPromptEntryAndIsIdempotent(t *testing.T) {
 	var enterOnce sync.Once
 	fake.del = func(_ context.Context, req application.DeleteSessionRequest) error {
 		enterOnce.Do(func() { close(deleteEntered) })
-		<-releaseDelete
+		select {
+		case <-releaseDelete:
+		case <-time.After(acpTestRendezvousTimeout):
+			return &application.Error{Category: application.CategoryInternal, Code: "test_timeout"}
+		}
 		fake.mu.Lock()
 		defer fake.mu.Unlock()
 		session, ok := fake.sessions[req.SessionID]
@@ -1287,7 +1382,7 @@ func TestServeSessionDeleteBlocksPromptEntryAndIsIdempotent(t *testing.T) {
 		_ = clientOut.Close()
 		_ = clientIn.Close()
 		_ = agentOut.Close()
-		<-done
+		_ = awaitError(t, done, "server exit")
 	})
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	_ = readJSON(t, clientIn)
@@ -1296,7 +1391,7 @@ func TestServeSessionDeleteBlocksPromptEntryAndIsIdempotent(t *testing.T) {
 	sessionID := created["result"].(map[string]any)["sessionId"].(string)
 
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":3,"method":"session/delete","params":{"sessionId":"`+sessionID+`"}}`)
-	<-deleteEntered
+	awaitSignal(t, deleteEntered, "delete application call to start")
 
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"`+sessionID+`","prompt":[{"text":"hi"}]}}`)
 	blockedPrompt := readJSON(t, clientIn)
@@ -1348,7 +1443,7 @@ func TestServeSessionDeleteRestoresStateAfterInternalFailure(t *testing.T) {
 		_ = clientOut.Close()
 		_ = clientIn.Close()
 		_ = agentOut.Close()
-		<-done
+		_ = awaitError(t, done, "server exit")
 	})
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	_ = readJSON(t, clientIn)
@@ -1397,7 +1492,7 @@ func TestServeSessionLifecycleErrorsDoNotLeakDetails(t *testing.T) {
 		_ = clientOut.Close()
 		_ = clientIn.Close()
 		_ = agentOut.Close()
-		<-done
+		_ = awaitError(t, done, "server exit")
 	})
 	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	_ = readJSON(t, clientIn)
