@@ -185,7 +185,7 @@ func (store *Store) rotateAuthorityForTesting(authority application.WriterAuthor
 }
 
 // corruptReceiptForTesting moves one stored receipt to a different but
-// otherwise plausible position and range, mirroring the reference adapter's
+// otherwise plausible range, mirroring the reference adapter's
 // corruption seam. Receipt validation must detect it through cross-checks.
 func (store *Store) corruptReceiptForTesting(appendID domain.AppendID) error {
 	store.writeMu.Lock()
@@ -208,8 +208,7 @@ func (store *Store) corruptReceiptForTesting(appendID domain.AppendID) error {
 		return mapStorageError(err, "")
 	}
 	if _, err := store.writer.ExecContext(ctx,
-		"UPDATE event_appends SET commit_position = (SELECT head_commit_position + 1 FROM store_metadata WHERE id = 1), "+
-			"first_sequence = (SELECT version + 1 FROM event_streams WHERE session_id = event_appends.session_id), "+
+		"UPDATE event_appends SET first_sequence = (SELECT version + 1 FROM event_streams WHERE session_id = event_appends.session_id), "+
 			"last_sequence = (SELECT version + 1 FROM event_streams WHERE session_id = event_appends.session_id) "+
 			"WHERE append_id = ?", string(appendID)); err != nil {
 		return mapStorageError(err, "")
@@ -230,11 +229,11 @@ func (err *ErrLeaseHeld) Error() string {
 	return "sqlite lease: held by live runtime " + err.Owner
 }
 
-// ActiveSessions enumerates sessions whose heads projection says active.
+// ActiveSessions enumerates sessions whose heads projection says running.
 // The projection is never proof; callers confirm by stream replay.
 func (store *Store) ActiveSessions(ctx context.Context) ([]domain.SessionID, error) {
 	rows, err := store.db.QueryContext(ctx,
-		"SELECT session_id FROM session_heads WHERE status = 'active' ORDER BY session_id")
+		"SELECT session_id FROM session_heads WHERE status = 'running' ORDER BY session_id")
 	if err != nil {
 		return nil, mapStorageError(err, "")
 	}

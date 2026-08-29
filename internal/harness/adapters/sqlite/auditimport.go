@@ -217,10 +217,10 @@ func (store *Store) landReplica(ctx context.Context, replica *verifiedReplica) e
 	}()
 
 	position := uint64(0)
+	heads := make(map[string]sessionHeadState)
 	for _, batch := range replica.batches {
 		position = batch.CommitPosition
 		eventCount := 0
-		heads := make(map[string]sessionHeadState)
 		if err := upsertStream(ctx, conn, batch.SessionID, batch.LastSequence, position); err != nil {
 			return err
 		}
@@ -268,16 +268,20 @@ func (store *Store) landReplica(ctx context.Context, replica *verifiedReplica) e
 				}
 			}
 			head := heads[batch.SessionID]
-			head = applyHeadTransition(head, record.Event)
+			head, err = applyHeadTransition(head, record.Event)
+			if err != nil {
+				return newStoreError(application.StoreCodeCorrupt, domain.SessionID(batch.SessionID), err)
+			}
 			heads[batch.SessionID] = head
 		}
-		for sessionID, head := range heads {
-			if _, err := conn.ExecContext(ctx,
-				"INSERT INTO session_heads (session_id, status, active_turn_id, active_item_id, updated_at_commit_position) VALUES (?, ?, ?, ?, ?) "+
-					"ON CONFLICT(session_id) DO UPDATE SET status = excluded.status, active_turn_id = excluded.active_turn_id, active_item_id = excluded.active_item_id, updated_at_commit_position = excluded.updated_at_commit_position",
-				sessionID, head.status, head.turn, head.item, position); err != nil {
-				return mapStorageError(err, domain.SessionID(sessionID))
-			}
+		head := heads[batch.SessionID]
+		head.position = position
+		heads[batch.SessionID] = head
+		if _, err := conn.ExecContext(ctx,
+			"INSERT INTO session_heads (session_id, workspace_root, status, active_turn_id, active_item_id, updated_at_commit_position) VALUES (?, ?, ?, ?, ?, ?) "+
+				"ON CONFLICT(session_id) DO UPDATE SET workspace_root = excluded.workspace_root, status = excluded.status, active_turn_id = excluded.active_turn_id, active_item_id = excluded.active_item_id, updated_at_commit_position = excluded.updated_at_commit_position",
+			batch.SessionID, head.workspaceRoot, head.status, head.turn, head.item, position); err != nil {
+			return mapStorageError(err, domain.SessionID(batch.SessionID))
 		}
 	}
 	if _, err := conn.ExecContext(ctx,

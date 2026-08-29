@@ -146,3 +146,18 @@ CREATE TABLE export_leases (
 	last_heartbeat_at_unix REAL NOT NULL
 );
 `
+
+const migration4DDL = `
+CREATE TABLE session_heads_v4 (
+	session_id TEXT PRIMARY KEY REFERENCES event_streams (session_id),
+	workspace_root TEXT NOT NULL,
+	status TEXT NOT NULL CHECK (status IN ('idle', 'running', 'closed', 'deleted')),
+	active_turn_id TEXT,
+	active_item_id TEXT,
+	updated_at_commit_position INTEGER NOT NULL REFERENCES event_appends (commit_position) CHECK (updated_at_commit_position > 0),
+	CHECK (
+		(status = 'running' AND active_turn_id IS NOT NULL) OR
+		(status <> 'running' AND active_turn_id IS NULL AND active_item_id IS NULL)
+	)
+);
+`

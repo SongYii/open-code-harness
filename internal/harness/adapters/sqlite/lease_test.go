@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -12,6 +13,27 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+func TestActiveSessionsEnumeratesOnlyRunningHeads(t *testing.T) {
+	store := openStore(t, tempStoreConfig(t))
+	mustAppend(t, store, appendRequest("append-active-idle", "session-active-idle", 0, "command-active-idle",
+		domain.SessionCreated{WorkspaceRoot: "/w"}))
+	mustAppend(t, store, appendRequest("append-active-running", "session-active-running", 0, "command-active-running",
+		domain.SessionCreated{WorkspaceRoot: "/w"}, domain.TurnStarted{TurnID: "turn-active", Input: "hi"}))
+	mustAppend(t, store, appendRequest("append-active-closed", "session-active-closed", 0, "command-active-closed",
+		domain.SessionCreated{WorkspaceRoot: "/w"}, domain.SessionClosed{}))
+	mustAppend(t, store, appendRequest("append-active-deleted", "session-active-deleted", 0, "command-active-deleted",
+		domain.SessionCreated{WorkspaceRoot: "/w"}, domain.SessionDeleted{}))
+
+	got, err := store.ActiveSessions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []domain.SessionID{"session-active-running"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ActiveSessions() = %v, want %v", got, want)
+	}
+}
 
 func TestOpenAcquiresLeaseWithTokenOne(t *testing.T) {
 	store := openStore(t, tempStoreConfig(t))

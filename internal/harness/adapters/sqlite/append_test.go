@@ -153,20 +153,33 @@ func TestAppendCommitsAtomicBatch(t *testing.T) {
 	}
 }
 
-func TestAppendSessionHeadTracksActiveTurn(t *testing.T) {
+func TestAppendSessionHeadTracksWorkspaceRunningAndDeleted(t *testing.T) {
 	store := openStore(t, tempStoreConfig(t))
 	mustAppend(t, store, appendRequest("append-open", "session-h", 0, "command-h",
-		domain.SessionCreated{WorkspaceRoot: "/w"},
+		domain.SessionCreated{WorkspaceRoot: "/w/."},
 		domain.TurnStarted{TurnID: "turn-h", Input: "hi"}))
 
+	var workspaceRoot string
 	var status string
 	var activeTurn sql.NullString
 	if err := store.db.QueryRowContext(context.Background(),
-		"SELECT status, active_turn_id FROM session_heads WHERE session_id = 'session-h'").Scan(&status, &activeTurn); err != nil {
+		"SELECT workspace_root, status, active_turn_id FROM session_heads WHERE session_id = 'session-h'").Scan(&workspaceRoot, &status, &activeTurn); err != nil {
 		t.Fatalf("read session head: %v", err)
 	}
-	if status != "active" || !activeTurn.Valid || activeTurn.String != "turn-h" {
-		t.Fatalf("session head = %s/%v, want active/turn-h", status, activeTurn)
+	if workspaceRoot != "/w" || status != "running" || !activeTurn.Valid || activeTurn.String != "turn-h" {
+		t.Fatalf("session head = %s/%s/%v, want /w/running/turn-h", workspaceRoot, status, activeTurn)
+	}
+
+	mustAppend(t, store, appendRequest("append-stop", "session-h", 2, "command-stop",
+		domain.TurnCompleted{TurnID: "turn-h"}))
+	mustAppend(t, store, appendRequest("append-delete", "session-h", 3, "command-delete",
+		domain.SessionDeleted{}))
+	if err := store.db.QueryRowContext(context.Background(),
+		"SELECT workspace_root, status, active_turn_id FROM session_heads WHERE session_id = 'session-h'").Scan(&workspaceRoot, &status, &activeTurn); err != nil {
+		t.Fatalf("read deleted session head: %v", err)
+	}
+	if workspaceRoot != "/w" || status != "deleted" || activeTurn.Valid {
+		t.Fatalf("deleted session head = %s/%s/%v, want /w/deleted/NULL", workspaceRoot, status, activeTurn)
 	}
 }
 
