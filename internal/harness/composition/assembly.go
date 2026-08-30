@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"time"
 
@@ -45,6 +46,11 @@ func (assembly *Assembly) Host() *runtime.Host { return assembly.host }
 // Store is the canonical event stream.
 func (assembly *Assembly) Store() application.EventStore { return assembly.store }
 
+// checkSandboxAvailability is a seam over localexec.Availability so a test
+// can force "unavailable" without needing to actually break the host's
+// bwrap or sandbox-exec. Production never reassigns it.
+var checkSandboxAvailability = localexec.Availability
+
 // Open validates the configuration, constructs every component in dependency
 // order, and returns a running assembly.
 //
@@ -68,6 +74,16 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 	apiKey := os.Getenv(config.Provider.APIKeyEnv)
 	if apiKey == "" {
 		return nil, fmt.Errorf("%w: environment variable %s is empty", errInvalidConfig, config.Provider.APIKeyEnv)
+	}
+
+	// Fail closed ahead of any resource construction, exactly like the
+	// credential check above: refusing later would mean a database file
+	// and a lease existed before the assembly could possibly work.
+	if available, reason := checkSandboxAvailability(); !available {
+		if !config.AllowUnsandboxedExec {
+			return nil, fmt.Errorf("%w: exec sandbox is unavailable and AllowUnsandboxedExec is false: %s", errInvalidConfig, reason)
+		}
+		log.Printf("composition: AllowUnsandboxedExec is true - proceeding without OS-level exec confinement: %s", reason)
 	}
 
 	host, err := runtime.Launch(ctx, runtime.Config{

@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/SongYii/open-code-harness/internal/harness/adapters/localexec"
 	"github.com/SongYii/open-code-harness/internal/harness/composition"
 )
 
@@ -74,6 +75,28 @@ func TestOpenAndCloseRoundTrip(t *testing.T) {
 	}
 	if _, statErr := os.Stat(config.DatabasePath); statErr != nil {
 		t.Fatalf("Open() did not create %s: %v", config.DatabasePath, statErr)
+	}
+	if err := assembly.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+// TestOpenSucceedsWithDefaultFlagWhenSandboxIsAvailable proves the real,
+// unforced default path: on a host where bwrap or sandbox-exec actually
+// works, Open needs no escape hatch at all. Skips wherever this CI host
+// has neither.
+func TestOpenSucceedsWithDefaultFlagWhenSandboxIsAvailable(t *testing.T) {
+	available, reason := localexec.Availability()
+	if !available {
+		t.Skipf("no OS-level exec sandbox is available in this environment: %s", reason)
+	}
+	config := validConfig(t)
+	config.AllowUnsandboxedExec = false
+	t.Setenv(config.Provider.APIKeyEnv, "contract-key")
+
+	assembly, err := composition.Open(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Open() error = %v, want the default flag to be enough when the sandbox is real", err)
 	}
 	if err := assembly.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)

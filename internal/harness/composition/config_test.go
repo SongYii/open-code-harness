@@ -12,7 +12,12 @@ import (
 )
 
 // validConfig is the baseline every case below mutates one field of, so that
-// a failure names exactly one cause.
+// a failure names exactly one cause. AllowUnsandboxedExec is true because
+// these are lifecycle/config tests, not sandboxing tests: they must build a
+// working assembly on any CI host regardless of whether bwrap or
+// sandbox-exec actually works there. The sandbox-availability gate itself
+// is exercised separately, with the availability check forced via a seam,
+// in availability_internal_test.go.
 func validConfig(t *testing.T) composition.Config {
 	t.Helper()
 	root := t.TempDir()
@@ -31,7 +36,8 @@ func validConfig(t *testing.T) composition.Config {
 			ContextWindow: 8192,
 			MaxOutput:     1024,
 		},
-		Policy: policy.ModeDefault,
+		Policy:               policy.ModeDefault,
+		AllowUnsandboxedExec: true,
 	}
 }
 
