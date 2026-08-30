@@ -1,7 +1,9 @@
 # Exec Sandboxing and Resource Quotas — Design
 
 - **Date:** 2026-08-30
-- **Status:** Draft (approved for specification; pending human review of this file)
+- **Status:** Accepted 2026-08-30. The human reviewer confirmed §5's
+  Windows trade-off explicitly: Windows is out of scope for this slice,
+  and that is acceptable for now.
 - **Stability:** touches an existing `experimental`/pre-GA surface (`tools.CommandRunner`, `adapters/localexec`)
 - **Repository:** `open-code-harness` (`github.com/SongYii/open-code-harness`)
 - **Normative language:** English
@@ -236,11 +238,11 @@ flag (name to be finalized in the implementation plan; working name
 without OS-level confinement, on Windows or on any other platform where the
 primary mechanism is unavailable (missing `bwrap`, missing `sandbox-exec`,
 WSL1). Setting it is loud: a startup log line naming exactly which
-guarantee is absent, not a silent fallback. This is the one point in this
-design most likely to need the human reviewer's explicit sign-off, because
-it trades "usable on Windows today" against "safe by default everywhere
-else" — exactly the tension the sequencing decision that authorized this
-work named without resolving it.
+guarantee is absent, not a silent fallback.
+
+**Reviewer decision (2026-08-30):** this trade-off — Windows out of scope
+for this slice, fail-closed there by default — is explicitly accepted.
+Windows is not a near-term priority; a later slice may revisit it.
 
 A follow-up slice implementing Windows Job Objects
 (`SetInformationJobObject` with `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`,
@@ -300,7 +302,7 @@ than delete the coverage.
 | Risk | Mitigation |
 | --- | --- |
 | `bwrap` must be pre-installed; v1 does not vendor it | Named exclusion (§2); fails closed rather than silently degrading, and the escape hatch exists for operators who need to keep running before their environment has it |
-| Windows loses working (if unsandboxed) `exec` by default | Named explicitly in §5 as a regression requiring sign-off, not resolved unilaterally; an explicit opt-out preserves today's behavior |
+| Windows loses working (if unsandboxed) `exec` by default | Named explicitly in §5 as a regression; reviewer accepted this trade-off 2026-08-30 — Windows is not a near-term priority. An explicit opt-out still preserves today's behavior for operators who need it |
 | WSL1 does not support bubblewrap | Detected and classified distinctly from "bwrap missing" (§3.1), same distinction Codex's own code makes |
 | `sandbox-exec` is a deprecated, unreplaced Apple API | Inherited industry-wide risk (architecture gate), not unique to this design; no mitigation beyond monitoring Apple's own deprecation timeline |
 | Memory-quota monitor adds a background goroutine and inotify fd per assembly | Scoped to composition lifetime, same lifecycle discipline as the existing heartbeat/exporter loops in `runtime.Host` |

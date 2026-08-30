@@ -1,7 +1,7 @@
 # Exec 沙箱与资源配额设计（中文摘要）
 
 - **日期：** 2026-08-30
-- **状态：** 草案（已批准进入规格阶段；本文件待人工复审）
+- **状态：** 2026-08-30 已批准。人工复审明确确认了第五节里 Windows 那条权衡：这个切片不做 Windows，现在可以接受。
 - **稳定性：** 涉及现有的 `experimental`/pre-GA 面（`tools.CommandRunner`、`adapters/localexec`）
 
 英文版本 [2026-08-30-exec-sandboxing-resource-quotas-design.md](2026-08-30-exec-sandboxing-resource-quotas-design.md) 是规范文本；本文是摘要性的中文阅读版，不是逐字翻译。两者若有分歧，以英文为准。
@@ -28,7 +28,7 @@
 - **Linux 逐次调用隔离**：给现有 argv 包一层 bwrap，带 `--unshare-user/-pid/-ipc/-uts/-cgroup/-net`、`--die-with-parent`、`--new-session`、`--cap-drop ALL`、只读根 `--ro-bind / /`、`--tmpfs /tmp`、显式可写工作区绑定——和调研门里三个做 Linux 沙箱的项目要求的命名空间集合基本一致。`--unshare-net` 本身就在 v1 里拒绝了全部网络访问，不需要额外的 seccomp 层就能满足"无网络"这个目标；用 `golang.org/x/net/bpf` 构造、通过 `--seccomp FD` 传入的过滤器作为未来更细粒度系统调用拒绝的可选第二层保留着，但这次不做。
 - **Linux 内存配额（cgroup v2）**：组合根生命周期内建一个子 cgroup，设 `memory.high`（软）和 `memory.max = memory.high + headroom`（硬），采纳 Grok Build 的模型——这是整个对照集里唯一真正的资源*配额强制*（而不是权限隔离）。每次 bwrap 子进程一启动（还没 exec 目标命令）就把它的 PID 写进 `cgroup.procs`；一个每个 assembly 一个的后台监控器通过 `inotify` 盯 `memory.events` 的 `high` 计数器，超过可配置阈值（默认 90%，同 Grok Build）就发 `SIGKILL`，抢在内核自己更粗暴的 memcg OOM killer 之前。cgroup v2 不可用时只降级、打警告，不让 `composition.Open` 失败——这是叠加的尽力而为项，不是 fail-closed 必须项。
 - **macOS 机制**：探测 `sandbox-exec`；逐次调用在 Go 里现拼一份 `.sbpl`：默认拒绝写、显式放行规范化后的工作区根、读保持宽松（和 Codex 一致，收紧读历来是更脆弱的方向）、v1 拒绝所有网络。macOS 没有 cgroup 等价物，用 `setrlimit(RLIMIT_AS, ...)` 做尽力而为的地址空间上限，明确标注这比 Linux 的 cgroup 上限弱得多（失败模式是分配器拿到 `ENOMEM`，不是干净的外部击杀），在结构化的强制报告里如实区分开，不和 Linux 的保证混为一谈。
-- **Windows：默认 fail-closed，且明确点出这是一次退步**。今天 `exec` 在 Windows 上是能跑的（虽然不设防）；这次改动后默认会直接拒绝启动，这是一次真实的能力回退，不是"功能没做完"，本设计不打算自己悄悄拍板，而是明写出来。缓解手段是一个跨平台、默认关闭的配置开关（暂定名 `AllowUnsandboxedExec`），打开它是响亮的（启动时打出具体缺了哪项保证的日志），覆盖 Windows 以及任何主机制不可用的平台（缺 `bwrap`、缺 `sandbox-exec`、WSL1）。这是本设计里最需要人工复审明确点头的一处，因为它是在拿"Windows 今天能不能用"换"其他地方默认是不是安全"，而这正是授权这项工作的那份顺序决策里点出但没解决的张力。一份后续切片可以用 Windows Job Object（`SetInformationJobObject` + `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`，通过 `golang.org/x/sys/windows` 可达、不需要 CGO）给 Windows 做独立于文件系统权限沙箱难题之外的真实内存/CPU/进程数配额——这里只是记下这个已验证可行的选项，不在这次设计里拍板。
+- **Windows：默认 fail-closed，且明确点出这是一次退步**。今天 `exec` 在 Windows 上是能跑的（虽然不设防）；这次改动后默认会直接拒绝启动，这是一次真实的能力回退，不是"功能没做完"，本设计不打算自己悄悄拍板，而是明写出来。缓解手段是一个跨平台、默认关闭的配置开关（暂定名 `AllowUnsandboxedExec`），打开它是响亮的（启动时打出具体缺了哪项保证的日志），覆盖 Windows 以及任何主机制不可用的平台（缺 `bwrap`、缺 `sandbox-exec`、WSL1）。**复审决定（2026-08-30）：** 这条权衡——这个切片不做 Windows、默认 fail-closed——已经明确被接受；Windows 不是近期优先级，后续切片可以再议。一份后续切片可以用 Windows Job Object（`SetInformationJobObject` + `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`，通过 `golang.org/x/sys/windows` 可达、不需要 CGO）给 Windows 做独立于文件系统权限沙箱难题之外的真实内存/CPU/进程数配额——这里只是记下这个已验证可行的选项，不在这次设计里拍板。
 - **结构化强制报告**：`localexec.Enforcement` 不再是包级常量，改成在 `Runner` 构造时算一次的值，按效果分别报告（`Filesystem`/`Network`/`Memory` 各自 full/partial/none），而不是压成一个词——这是这次设计从 DeepSeek Harness 那里采纳的、和具体 OS 机制无关的那条原则。既有的 `TestEnforcementPartial` 测试和 `tool-runtime.md` 里那一行会被这次设计取代；实施计划要用按效果拆开的断言去替换它，而不是直接删掉这块覆盖。
 
 ## 验证与验收（要点）
