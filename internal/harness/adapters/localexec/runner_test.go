@@ -17,9 +17,15 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
 )
 
-func TestEnforcementPartial(t *testing.T) {
-	if localexec.Enforcement != "partial" {
-		t.Fatalf("Enforcement = %q, want partial", localexec.Enforcement)
+func TestEnforcementReportsNoneWithoutAPlatformBackend(t *testing.T) {
+	runner, _ := newTestRunner(t)
+	want := localexec.Enforcement{
+		Filesystem: localexec.EnforcementNone,
+		Network:    localexec.EnforcementNone,
+		Memory:     localexec.EnforcementNone,
+	}
+	if got := runner.Enforcement(); got != want {
+		t.Fatalf("Enforcement() = %+v, want %+v", got, want)
 	}
 }
 

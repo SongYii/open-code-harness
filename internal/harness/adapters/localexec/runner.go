@@ -13,15 +13,13 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
 )
 
-// Enforcement is the sandbox claim this adapter can honestly make.
-const Enforcement = "partial"
-
 // DefaultMaxBytes is the combined stdout+stderr cap when MaxBytes is unset.
 const DefaultMaxBytes = 64 << 10
 
 // Runner executes argv commands inside a workspace jail.
 type Runner struct {
-	workspace string
+	workspace   string
+	enforcement Enforcement
 }
 
 var errInvalidSpec = errors.New("localexec: invalid command spec")
@@ -43,7 +41,23 @@ func New(workspace string) (*Runner, error) {
 	if err != nil || !info.IsDir() {
 		return nil, errInvalidWorkspace
 	}
-	return &Runner{workspace: real}, nil
+	return &Runner{
+		workspace: real,
+		// No platform backend is wired in yet; this is an honest baseline,
+		// not a regression from the prior fixed "partial" claim, since
+		// nothing enforced before this type existed stops being enforced.
+		enforcement: Enforcement{
+			Filesystem: EnforcementNone,
+			Network:    EnforcementNone,
+			Memory:     EnforcementNone,
+		},
+	}, nil
+}
+
+// Enforcement reports, per effect, how completely this Runner confines or
+// bounds the commands it runs.
+func (runner *Runner) Enforcement() Enforcement {
+	return runner.enforcement
 }
 
 func (runner *Runner) Run(ctx context.Context, spec tools.CommandSpec) (tools.CommandResult, error) {

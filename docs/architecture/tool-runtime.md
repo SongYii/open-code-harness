@@ -421,9 +421,15 @@ directory symlink children that leave the workspace
 rejected (`TestNewRejectsFileRoot`). A foreign workspace argument is
 rejected (`TestResolveRejectsForeignWorkspace`).
 
-`adapters/localexec` implements `tools.CommandRunner`.
-`localexec.Enforcement == "partial"` (`TestEnforcementPartial`). This is
-not Seatbelt, bwrap, or Landlock; curl-from-exec is not kernel-blocked.
+`adapters/localexec` implements `tools.CommandRunner`. `Runner.Enforcement()`
+reports, per effect, how completely commands are confined —
+`Filesystem`/`Network`/`Memory`, each `"full"`, `"partial"`, or `"none"` — a
+fact computed from what is actually active, never an assumed promise. With
+no platform backend wired in, every effect reports `EnforcementNone`
+(`TestEnforcementReportsNoneWithoutAPlatformBackend`): this is not yet
+Seatbelt, bwrap, or Landlock, and curl-from-exec is not kernel-blocked. See
+[exec sandboxing and resource quotas](../superpowers/specs/2026-08-30-exec-sandboxing-resource-quotas-design.md)
+for the accepted design adding real per-platform backends.
 The child environment is empty except host `PATH`, `HOME` = workspace
 root, and `TMPDIR` = a workspace subdirectory removed after exit
 (`TestScrubbedEnv`). Commands are argv-only; no shell expansion
@@ -431,7 +437,11 @@ root, and `TMPDIR` = a workspace subdirectory removed after exit
 group (`TestTimeoutKillsProcessGroup`, `TestCancelKillsProcessGroup`).
 Combined stdout+stderr default cap is 64 KiB
 (`TestOutputCapKillsAndTruncates`). Cwd and argv0 must stay in the
-workspace (`TestCwdAndArgvMustStayInWorkspace`).
+workspace (`TestCwdAndArgvMustStayInWorkspace`). A command killed for
+exceeding a resource bound (once a platform backend sets one) reports
+`CommandResult.ResourceLimited` instead of `TimedOut`, classified as
+`CodeResourceLimit`/`ToolTextResourceLimit`
+(`TestExecResourceLimitedFailsToolWithFrozenText`).
 
 Shared port suites live under `tools/porttest` and `testkit` (`MemFS`,
 `ScriptedRunner`, `ScriptedApprover`).

@@ -404,15 +404,24 @@ type FailToolTurn struct {
 （`TestNewRejectsFileRoot`）。外工作区参数被拒绝
 （`TestResolveRejectsForeignWorkspace`）。
 
-`adapters/localexec` 实现 `tools.CommandRunner`。
-`localexec.Enforcement == "partial"`（`TestEnforcementPartial`）。这不是
-Seatbelt、bwrap 或 Landlock；挡不住 exec 里的 curl。子进程环境为空，只留
+`adapters/localexec` 实现 `tools.CommandRunner`。`Runner.Enforcement()` 按
+效果分别报告命令被限制的完整程度——`Filesystem`/`Network`/`Memory`，各自
+是 `"full"`、`"partial"` 或 `"none"`——这是根据实际生效的机制算出来的事实，
+不是假定的承诺。目前还没有接入任何平台后端，所以每个效果都报告
+`EnforcementNone`（`TestEnforcementReportsNoneWithoutAPlatformBackend`）：
+这还不是 Seatbelt、bwrap 或 Landlock，挡不住 exec 里的 curl。已批准的设计
+[exec 沙箱与资源配额](../superpowers/specs/2026-08-30-exec-sandboxing-resource-quotas-design.zh-CN.md)
+会加上真正的逐平台后端。子进程环境为空，只留
 宿主 `PATH`、`HOME` = 工作区根、`TMPDIR` = 退出后删除的工作区子目录
 （`TestScrubbedEnv`）。命令只走 argv，没有 shell 展开
 （`TestArgvOnlyNoShellExpansion`）。超时和取消杀掉进程组
 （`TestTimeoutKillsProcessGroup`、`TestCancelKillsProcessGroup`）。
 stdout+stderr 默认合计 64 KiB（`TestOutputCapKillsAndTruncates`）。cwd
-与 argv0 必须留在工作区内（`TestCwdAndArgvMustStayInWorkspace`）。
+与 argv0 必须留在工作区内（`TestCwdAndArgvMustStayInWorkspace`）。一条
+因超出资源上限被杀的命令（一旦某个平台后端设置了上限）会在
+`CommandResult` 上报 `ResourceLimited` 而不是 `TimedOut`，分类为
+`CodeResourceLimit`/`ToolTextResourceLimit`
+（`TestExecResourceLimitedFailsToolWithFrozenText`）。
 
 共享端口套件在 `tools/porttest` 和 `testkit`（`MemFS`、
 `ScriptedRunner`、`ScriptedApprover`）。

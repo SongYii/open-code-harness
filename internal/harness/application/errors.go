@@ -36,6 +36,7 @@ const (
 	CodeInvalidArgs     = "invalid_args"
 	CodeToolOutputLimit = "output_limit"
 	CodeExecTimeout     = "exec_timeout"
+	CodeResourceLimit   = "resource_limit"
 )
 
 const (
@@ -47,6 +48,7 @@ const (
 	ToolTextInvalidArgs     = "invalid tool arguments"
 	ToolTextOutputLimit     = "tool output exceeded the size limit"
 	ToolTextExecTimeout     = "command timed out"
+	ToolTextResourceLimit   = "command exceeded a resource limit"
 	TruncationMarker        = "\n[truncated]"
 )
 
