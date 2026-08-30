@@ -28,12 +28,15 @@ const (
 
 // Runner executes argv commands inside a workspace jail.
 type Runner struct {
-	workspace      string
-	enforcement    Enforcement
-	bwrapAvailable bool
-	bwrapReason    string
-	cgroup         *cgroupQuota
-	cgroupReason   string
+	workspace         string
+	enforcement       Enforcement
+	bwrapAvailable    bool
+	bwrapReason       string
+	cgroup            *cgroupQuota
+	cgroupReason      string
+	seatbeltAvailable bool
+	seatbeltReason    string
+	rlimitMu          sync.Mutex
 }
 
 var errInvalidSpec = errors.New("localexec: invalid command spec")
@@ -72,13 +75,23 @@ func New(workspace string) (*Runner, error) {
 	if cgroup != nil {
 		enforcement.Memory = EnforcementFull
 	}
+	seatbeltAvailable, seatbeltReason := probeSeatbelt()
+	if seatbeltAvailable {
+		enforcement.Filesystem = EnforcementFull
+		enforcement.Network = EnforcementFull
+	}
+	if level := rlimitEnforcementLevel(); level != EnforcementNone {
+		enforcement.Memory = level
+	}
 	return &Runner{
-		workspace:      real,
-		enforcement:    enforcement,
-		bwrapAvailable: bwrapAvailable,
-		bwrapReason:    bwrapReason,
-		cgroup:         cgroup,
-		cgroupReason:   cgroupReason,
+		workspace:         real,
+		enforcement:       enforcement,
+		bwrapAvailable:    bwrapAvailable,
+		bwrapReason:       bwrapReason,
+		cgroup:            cgroup,
+		cgroupReason:      cgroupReason,
+		seatbeltAvailable: seatbeltAvailable,
+		seatbeltReason:    seatbeltReason,
 	}, nil
 }
 
@@ -126,9 +139,12 @@ func (runner *Runner) Run(ctx context.Context, spec tools.CommandSpec) (tools.Co
 
 	name := argv0
 	runArgs := args
-	if runner.bwrapAvailable {
+	switch {
+	case runner.bwrapAvailable:
 		name = "bwrap"
 		runArgs = bwrapArgv(runner.workspace, cwd, append([]string{argv0}, args...))
+	case runner.seatbeltAvailable:
+		name, runArgs = seatbeltCommandArgv(runner.workspace, append([]string{argv0}, args...))
 	}
 	cmd := exec.Command(name, runArgs...)
 	cmd.Dir = cwd
@@ -142,8 +158,11 @@ func (runner *Runner) Run(ctx context.Context, spec tools.CommandSpec) (tools.Co
 	cmd.Stdout = out
 	cmd.Stderr = out
 
-	if err := cmd.Start(); err != nil {
-		return tools.CommandResult{}, err
+	restoreRlimit := beginRlimitBracket(&runner.rlimitMu, DefaultMemoryHighBytes+DefaultMemoryHeadroomBytes)
+	startErr := cmd.Start()
+	restoreRlimit()
+	if startErr != nil {
+		return tools.CommandResult{}, startErr
 	}
 	_ = runner.cgroup.addProcess(cmd.Process.Pid)
 	resourceLimited := runner.cgroup.register(cmd.Process.Pid)

@@ -22,7 +22,21 @@
 // that was never set up for it), the quota is skipped and Enforcement
 // reports Memory as none; this never fails Runner construction. Call
 // Close to release a Runner's quota and stop its monitor goroutine when
-// done with it. The child environment is empty except PATH (from the
-// host), HOME (the workspace root), and TMPDIR (a workspace subdirectory
-// removed after exit). Commands are argv-only.
+// done with it.
+//
+// On Darwin, when /usr/bin/sandbox-exec is present and a probe invocation
+// succeeds, every Run call is wrapped in sandbox-exec under a Seatbelt
+// (.sbpl) profile: a battle-tested Chrome/Codex-derived baseline plus this
+// project's own deny-by-default-writes-except-the-workspace-root and
+// deny-all-network layer, and Enforcement reports Filesystem and Network
+// as full. Independent of Seatbelt's own availability, every command also
+// gets a best-effort RLIMIT_AS bound (Enforcement reports Memory as
+// partial): this caps virtual address space, not resident memory, and a
+// breach surfaces as the child's own allocator getting ENOMEM rather than
+// a clean external kill, so it never sets CommandResult.ResourceLimited —
+// materially weaker than Linux's monitored cgroup ceiling.
+//
+// The child environment is empty except PATH (from the host), HOME (the
+// workspace root), and TMPDIR (a workspace subdirectory removed after
+// exit). Commands are argv-only.
 package localexec
