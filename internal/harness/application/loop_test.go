@@ -799,6 +799,37 @@ func TestExecArgvSymlinkOutNeverRuns(t *testing.T) {
 	}
 }
 
+func TestExecResourceLimitedFailsToolWithFrozenText(t *testing.T) {
+	fs := testkit.NewMemFS("/workspace")
+	counter := &countingFS{FileSystem: fs}
+	runner := testkit.NewScriptedRunner(testkit.ScriptedRun{Result: tools.CommandResult{ResourceLimited: true}})
+	model := newSequenceModel(
+		[]engine.StreamEvent{
+			{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "call-exec", Name: tools.NameExec, Arguments: `{"argv":["bin/tool"]}`}},
+			{Type: engine.StreamEventCompleted},
+		},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "continued"}, {Type: engine.StreamEventCompleted}},
+	)
+	approver := testkit.NewScriptedApprover(testkit.ScriptedApproval{Answer: tools.ApprovalAnswer{Granted: true}})
+	service, _ := newToolService(t, model, counter, runner, approver, application.DefaultConfig())
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+		SessionID: created.SessionID, RequestID: "request-exec-resource-limit", Input: "inspect", Sink: &testkit.RecordingSink{},
+	})
+	if err != nil || result.Text != "continued" {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if lastToolMessage(model.Calls()[1].Messages).Text != application.ToolTextResourceLimit {
+		t.Fatalf("tool text = %#v", model.Calls()[1].Messages)
+	}
+	if failed := lastToolFailed(result.Records); failed.Code != application.CodeResourceLimit || failed.Message != application.ToolTextResourceLimit {
+		t.Fatalf("failed = %#v", failed)
+	}
+}
+
 func TestEmptyCatalogKeepsNilMessagesAndTools(t *testing.T) {
 	model := &repeatingSuccessModel{text: "plain"}
 	service := newTurnService(t, newTurnMemoryStore(t), testkit.NewSequenceIDs(), model)

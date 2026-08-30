@@ -272,6 +272,9 @@ func (service *Service) invokeTool(ctx context.Context, spec domain.ToolSpec, ar
 		if result.TimedOut {
 			return "", false, CodeExecTimeout, ToolTextExecTimeout, nil
 		}
+		if result.ResourceLimited {
+			return "", false, CodeResourceLimit, ToolTextResourceLimit, nil
+		}
 		text := fmt.Sprintf("exit %d\n%s", result.ExitCode, result.Output)
 		if result.Truncated {
 			return appendTruncation(text), true, "", "", nil

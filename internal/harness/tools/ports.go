@@ -28,6 +28,11 @@ type CommandResult struct {
 	Output    string
 	Truncated bool
 	TimedOut  bool
+	// ResourceLimited is true when the command was killed for exceeding a
+	// resource bound (for example a memory quota) rather than a timeout.
+	// A run is killed for exactly one reason: this is mutually exclusive
+	// with TimedOut.
+	ResourceLimited bool
 }
 
 type CommandRunner interface {
