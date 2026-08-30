@@ -36,7 +36,7 @@ func TestReplayFixtureIsDeterministic(t *testing.T) {
 	if !reflect.DeepEqual(first, second) {
 		t.Fatalf("replays differ")
 	}
-	if first.Status != SessionStatusClosed || first.Version != 6 || len(first.TurnOrder) != 2 {
+	if first.Status != SessionStatusDeleted || first.Version != 7 || len(first.TurnOrder) != 2 {
 		t.Fatalf("Replay() = %#v", first)
 	}
 	if first.Turns[TurnID("turn-1")].Status != TurnStatusCompleted || first.Turns[TurnID("turn-2")].Status != TurnStatusInterrupted {

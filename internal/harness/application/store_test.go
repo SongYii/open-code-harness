@@ -17,6 +17,10 @@ func (*contractStore) ReadStream(context.Context, ReadStreamRequest) (StreamPage
 	return StreamPage{}, nil
 }
 
+func (*contractStore) ListSessionHeads(context.Context, ListSessionHeadsRequest) (SessionHeadPage, error) {
+	return SessionHeadPage{}, nil
+}
+
 func (*contractStore) Append(context.Context, AppendRequest) (CommitReceipt, error) {
 	return CommitReceipt{}, nil
 }

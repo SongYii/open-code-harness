@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -81,6 +82,28 @@ func TestImportVerifiesAndLandsWorkingStore(t *testing.T) {
 	}
 	if err := imported.RebuildAndVerifySessionHeads(context.Background()); err != nil {
 		t.Fatalf("heads projection disagrees: %v", err)
+	}
+}
+
+func TestImportMaintainsSessionHead(t *testing.T) {
+	_, directory := replicaRoundTrip(t, 2)
+	imported, err := ImportAuditReplica(context.Background(), directory,
+		Config{Path: filepath.Join(t.TempDir(), "imported.db"), RuntimeID: "runtime-import"})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	defer imported.Close()
+
+	var root, status string
+	var turn, item sql.NullString
+	var position uint64
+	if err := imported.db.QueryRowContext(context.Background(),
+		"SELECT workspace_root, status, active_turn_id, active_item_id, updated_at_commit_position FROM session_heads WHERE session_id = 'session-export'").Scan(
+		&root, &status, &turn, &item, &position); err != nil {
+		t.Fatalf("read imported session head: %v", err)
+	}
+	if root != "/w" || status != "idle" || turn.Valid || item.Valid || position != 2 {
+		t.Fatalf("imported session head = %q/%q/%v/%v/%d, want /w/idle/NULL/NULL/2", root, status, turn, item, position)
 	}
 }
 

@@ -245,6 +245,83 @@ func TestAssemblyServesACPTurnEndToEnd(t *testing.T) {
 	if !sawLoadToolContent {
 		t.Fatal("session/load after catalog-backed read_file produced no completed tool content")
 	}
+
+	writeACP(t, clientOut, fmt.Sprintf(`{"jsonrpc":"2.0","id":5,"method":"session/list","params":{"cwd":%q}}`, config.WorkspaceRoot))
+	listed := readACP(t, clientIn)
+	if listed["error"] != nil {
+		t.Fatalf("session/list error = %#v", listed["error"])
+	}
+	sessions, _ := listed["result"].(map[string]any)["sessions"].([]any)
+	found := false
+	for _, entry := range sessions {
+		row, _ := entry.(map[string]any)
+		if row["sessionId"] == sessionID {
+			found = true
+			if row["cwd"] != config.WorkspaceRoot {
+				t.Fatalf("session/list cwd = %#v, want %q", row["cwd"], config.WorkspaceRoot)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("session/list = %#v, want it to include %q", sessions, sessionID)
+	}
+
+	writeACP(t, clientOut, fmt.Sprintf(`{"jsonrpc":"2.0","id":6,"method":"session/close","params":{"sessionId":%q}}`, sessionID))
+	closed := readACP(t, clientIn)
+	if closed["error"] != nil || len(closed["result"].(map[string]any)) != 0 {
+		t.Fatalf("session/close = %#v", closed)
+	}
+
+	// A detached session rejects a prompt until it is reattached.
+	writeACP(t, clientOut, fmt.Sprintf(`{"jsonrpc":"2.0","id":7,"method":"session/prompt","params":{"sessionId":%q,"prompt":[{"type":"text","text":"hi"}]}}`, sessionID))
+	detachedPrompt := readACP(t, clientIn)
+	if detachedPrompt["error"] == nil {
+		t.Fatalf("prompt on a detached session = %#v, want rejected", detachedPrompt)
+	}
+
+	writeACP(t, clientOut, fmt.Sprintf(`{"jsonrpc":"2.0","id":8,"method":"session/resume","params":{"sessionId":%q,"cwd":%q}}`, sessionID, config.WorkspaceRoot))
+	resumed := readACP(t, clientIn)
+	if resumed["error"] != nil || len(resumed["result"].(map[string]any)) != 0 {
+		t.Fatalf("session/resume = %#v", resumed)
+	}
+
+	writeACP(t, clientOut, fmt.Sprintf(`{"jsonrpc":"2.0","id":9,"method":"session/delete","params":{"sessionId":%q}}`, sessionID))
+	deleted := readACP(t, clientIn)
+	if deleted["error"] != nil || len(deleted["result"].(map[string]any)) != 0 {
+		t.Fatalf("session/delete = %#v", deleted)
+	}
+
+	// A duplicate delete is an idempotent success rather than an error.
+	writeACP(t, clientOut, fmt.Sprintf(`{"jsonrpc":"2.0","id":10,"method":"session/delete","params":{"sessionId":%q}}`, sessionID))
+	dupDeleted := readACP(t, clientIn)
+	if dupDeleted["error"] != nil {
+		t.Fatalf("duplicate session/delete = %#v", dupDeleted)
+	}
+
+	// Ordinary load now fails: a deleted Session is invisible to normal use.
+	writeACP(t, clientOut, fmt.Sprintf(`{"jsonrpc":"2.0","id":11,"method":"session/load","params":{"sessionId":%q}}`, sessionID))
+	loadAfterDelete := readACP(t, clientIn)
+	if loadAfterDelete["error"] == nil {
+		t.Fatalf("session/load after delete = %#v, want rejected", loadAfterDelete)
+	}
+
+	// Deletion is logical, not physical: the durable stream this test reads
+	// directly still carries the deletion fact as append-only evidence. The
+	// transcript export tests separately cover projection; this test keeps the
+	// durable-store assertion at the composition boundary.
+	records, err := application.ReadWholeStreamPinned(context.Background(), assembly.Store(), domain.SessionID(sessionID), 256)
+	if err != nil {
+		t.Fatalf("ReadWholeStreamPinned() after delete error = %v", err)
+	}
+	sawDeleted := false
+	for _, record := range records {
+		if record.Event.EventType() == domain.EventSessionDeleted {
+			sawDeleted = true
+		}
+	}
+	if !sawDeleted {
+		t.Fatalf("durable stream after delete = %v, missing %q", records, domain.EventSessionDeleted)
+	}
 }
 
 func writeACP(t *testing.T, w io.Writer, line string) {

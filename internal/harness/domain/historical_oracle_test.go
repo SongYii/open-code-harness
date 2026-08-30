@@ -154,6 +154,8 @@ func HistoricalApply(state HistoricalSession, record RecordedEvent) (HistoricalS
 		return historical_applyAssistantMessageInterrupted(state, record, event)
 	case SessionClosed:
 		return historical_applySessionClosed(state, record)
+	case SessionDeleted:
+		return historical_applySessionDeleted(state, record)
 	case ModelRequestRecorded:
 		if err := validateModelRequestPayload(event, CodeInvalidEvent); err != nil {
 			return HistoricalSession{}, err
@@ -228,6 +230,29 @@ func historical_applySessionClosed(state HistoricalSession, record RecordedEvent
 
 	next := state.Clone()
 	next.Status = SessionStatusClosed
+	next.ActiveTurnID = ""
+	next.Version = record.Sequence
+	return next, nil
+}
+
+func historical_applySessionDeleted(state HistoricalSession, record RecordedEvent) (HistoricalSession, error) {
+	if !state.Exists() {
+		return HistoricalSession{}, domainError(CodeSessionNotFound, "session not found")
+	}
+	if record.SessionID != state.ID {
+		return HistoricalSession{}, domainError(CodeInvalidEvent, "event session ID does not match state")
+	}
+	if state.Status == SessionStatusDeleted {
+		return HistoricalSession{}, domainError(CodeSessionDeleted, "session is deleted")
+	}
+	if state.Status != SessionStatusActive && state.Status != SessionStatusClosed {
+		return HistoricalSession{}, domainError(CodeInvalidEvent, "session cannot be deleted")
+	}
+	if state.ActiveTurnID != "" {
+		return HistoricalSession{}, domainError(CodeTurnAlreadyRunning, "a turn is already running")
+	}
+	next := state.Clone()
+	next.Status = SessionStatusDeleted
 	next.ActiveTurnID = ""
 	next.Version = record.Sequence
 	return next, nil
@@ -774,6 +799,8 @@ func HistoricalDecide(state HistoricalSession, command Command) ([]UncommittedEv
 		return historical_decideResolveApproval(state, command)
 	case CloseSession:
 		return historical_decideCloseSession(state, command)
+	case DeleteSession:
+		return historical_decideDeleteSession(state, command)
 	default:
 		return nil, domainError(CodeInvalidCommand, "command type cannot be decided")
 	}
@@ -1010,6 +1037,28 @@ func historical_decideCloseSession(state HistoricalSession, command CloseSession
 		return nil, domainError(CodeTurnAlreadyRunning, "a turn is already running")
 	}
 	return closeSessionEvents(), nil
+}
+
+func historical_decideDeleteSession(state HistoricalSession, command DeleteSession) ([]UncommittedEvent, error) {
+	if !state.Exists() {
+		return nil, domainError(CodeSessionNotFound, "session not found")
+	}
+	if err := validateCommandSessionID(command.SessionID); err != nil {
+		return nil, err
+	}
+	if command.SessionID != state.ID {
+		return nil, domainError(CodeInvalidCommand, "command session ID does not match state")
+	}
+	if state.Status == SessionStatusDeleted {
+		return nil, domainError(CodeSessionDeleted, "session is deleted")
+	}
+	if state.Status != SessionStatusActive && state.Status != SessionStatusClosed {
+		return nil, domainError(CodeInvalidCommand, "session is not active or closed")
+	}
+	if state.ActiveTurnID != "" {
+		return nil, domainError(CodeTurnAlreadyRunning, "a turn is already running")
+	}
+	return deleteSessionEvents(), nil
 }
 
 func historical_decideCreateSession(state HistoricalSession, command CreateSession) ([]UncommittedEvent, error) {

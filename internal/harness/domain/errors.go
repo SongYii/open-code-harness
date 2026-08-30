@@ -11,6 +11,7 @@ const (
 	CodeSessionAlreadyExists ErrorCode = "session_already_exists"
 	CodeSessionNotFound      ErrorCode = "session_not_found"
 	CodeSessionClosed        ErrorCode = "session_closed"
+	CodeSessionDeleted       ErrorCode = "session_deleted"
 	CodeTurnAlreadyRunning   ErrorCode = "turn_already_running"
 	CodeTurnNotRunning       ErrorCode = "turn_not_running"
 	CodeTurnMismatch         ErrorCode = "turn_mismatch"

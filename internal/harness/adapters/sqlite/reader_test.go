@@ -320,7 +320,7 @@ func TestOpenReaderWaitsOnWriterImmediateLock(t *testing.T) {
 
 func TestReaderTypeHasNoAppend(t *testing.T) {
 	typ := reflect.TypeOf((*Reader)(nil))
-	for _, name := range []string{"Append", "ResolveAppend", "FindCommandRequest", "AcquireLease"} {
+	for _, name := range []string{"Append", "ListSessionHeads", "ResolveAppend", "FindCommandRequest", "AcquireLease"} {
 		if _, ok := typ.MethodByName(name); ok {
 			t.Errorf("Reader must not expose %s", name)
 		}

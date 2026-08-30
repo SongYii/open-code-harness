@@ -41,6 +41,33 @@ func TestRecordedEventJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRecordedEventJSONSessionDeletedIsStrictAndCanonical(t *testing.T) {
+	t.Parallel()
+
+	record := canonicalCodecRecord(7, SessionDeleted{})
+	encoded, err := MarshalRecordedEvent(record)
+	if err != nil {
+		t.Fatalf("MarshalRecordedEvent() error = %v", err)
+	}
+	want := `{"schemaVersion":1,"id":"event-7","commandId":"command-7","sessionId":"session-1","sequence":7,"occurredAt":"2026-08-11T01:02:03Z","type":"session.deleted","data":{}}`
+	if string(encoded) != want {
+		t.Fatalf("encoded = %s\nwant = %s", encoded, want)
+	}
+	decoded, err := UnmarshalRecordedEvent(encoded)
+	if err != nil || !reflect.DeepEqual(decoded, record) {
+		t.Fatalf("UnmarshalRecordedEvent() = (%#v, %v), want (%#v, nil)", decoded, err, record)
+	}
+
+	for _, invalid := range []string{
+		`{"schemaVersion":1,"id":"event-7","commandId":"command-7","sessionId":"session-1","sequence":7,"occurredAt":"2026-08-11T01:02:03Z","type":"session.deleted","data":null}`,
+		`{"schemaVersion":1,"id":"event-7","commandId":"command-7","sessionId":"session-1","sequence":7,"occurredAt":"2026-08-11T01:02:03Z","type":"session.deleted","data":{"extra":true}}`,
+	} {
+		if _, err := UnmarshalRecordedEvent([]byte(invalid)); !IsCode(err, CodeInvalidEvent) {
+			t.Fatalf("UnmarshalRecordedEvent(%s) error = %v, want %q", invalid, err, CodeInvalidEvent)
+		}
+	}
+}
+
 func TestMarshalEventPayloadIsCanonical(t *testing.T) {
 	t.Parallel()
 
@@ -348,8 +375,8 @@ func TestSessionLifecycleFixtureUsesCanonicalCodecRecords(t *testing.T) {
 		t.Fatalf("ReadFile() error = %v", err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) != 6 {
-		t.Fatalf("fixture line count = %d, want 6", len(lines))
+	if len(lines) != 7 {
+		t.Fatalf("fixture line count = %d, want 7", len(lines))
 	}
 	want := []RecordedEvent{
 		fixtureRecord(1, SessionCreated{WorkspaceRoot: "/workspace"}),
@@ -358,6 +385,7 @@ func TestSessionLifecycleFixtureUsesCanonicalCodecRecords(t *testing.T) {
 		fixtureRecord(4, TurnStarted{TurnID: "turn-2", Input: "second turn"}),
 		fixtureRecord(5, TurnInterrupted{TurnID: "turn-2", Reason: "user_cancelled"}),
 		fixtureRecord(6, SessionClosed{}),
+		fixtureRecord(7, SessionDeleted{}),
 	}
 	for index, line := range lines {
 		record, err := UnmarshalRecordedEvent([]byte(line))
@@ -380,7 +408,7 @@ func TestSessionLifecycleFixtureUsesCanonicalCodecRecords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Replay() fixture error = %v", err)
 	}
-	if state.Status != SessionStatusClosed || state.Version != 6 || state.ActiveTurnID != "" || len(state.Turns) != 2 {
+	if state.Status != SessionStatusDeleted || state.Version != 7 || state.ActiveTurnID != "" || len(state.Turns) != 2 {
 		t.Fatalf("Replay() fixture state = %#v", state)
 	}
 }

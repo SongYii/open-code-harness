@@ -2,6 +2,7 @@ package eventstoretest
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"reflect"
@@ -13,6 +14,89 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/application"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 )
+
+func testSessionHeadCatalog(t *testing.T, factory Factory) {
+	h := factory(t)
+	requireHarness(t, h)
+	requests := []application.AppendRequest{
+		v2Append("append-catalog-idle", "session-catalog-idle", 0, "command-catalog-idle", domain.SessionCreated{WorkspaceRoot: "/catalog"}),
+		v2Append("append-catalog-running", "session-catalog-running", 0, "command-catalog-running", domain.SessionCreated{WorkspaceRoot: "/catalog"}, domain.TurnStarted{TurnID: "turn-catalog", Input: "hello"}),
+		v2Append("append-catalog-closed", "session-catalog-closed", 0, "command-catalog-closed", domain.SessionCreated{WorkspaceRoot: "/catalog"}, domain.SessionClosed{}),
+		v2Append("append-catalog-deleted", "session-catalog-deleted", 0, "command-catalog-deleted", domain.SessionCreated{WorkspaceRoot: "/catalog"}, domain.SessionDeleted{}),
+		v2Append("append-catalog-foreign", "session-catalog-foreign", 0, "command-catalog-foreign", domain.SessionCreated{WorkspaceRoot: "/foreign"}),
+	}
+	for _, request := range requests {
+		if _, err := h.Store.Append(context.Background(), request); err != nil {
+			t.Fatalf("Append(%q) error = %v", request.SessionID, err)
+		}
+	}
+	first, err := h.Store.ListSessionHeads(context.Background(), application.ListSessionHeadsRequest{WorkspaceRoot: "/catalog", Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantFirst := []domain.SessionID{"session-catalog-closed", "session-catalog-running"}
+	if got := headIDs(first.Sessions); !reflect.DeepEqual(got, wantFirst) || first.NextCursor == "" {
+		t.Fatalf("first page = %#v, want IDs %v and cursor", first, wantFirst)
+	}
+	if first.Sessions[0].Status != application.SessionHeadStatusClosed || first.Sessions[1].Status != application.SessionHeadStatusRunning {
+		t.Fatalf("first statuses = %q/%q", first.Sessions[0].Status, first.Sessions[1].Status)
+	}
+	for _, head := range first.Sessions {
+		if head.WorkspaceRoot != "/catalog" || head.UpdatedAt.IsZero() || head.UpdatedAt.Location() != time.UTC {
+			t.Fatalf("invalid head = %#v", head)
+		}
+	}
+	second, err := h.Store.ListSessionHeads(context.Background(), application.ListSessionHeadsRequest{WorkspaceRoot: "/catalog", Cursor: first.NextCursor, Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSecond := []domain.SessionID{"session-catalog-idle"}
+	if got := headIDs(second.Sessions); !reflect.DeepEqual(got, wantSecond) || second.NextCursor != "" {
+		t.Fatalf("second page = %#v, want IDs %v without cursor", second, wantSecond)
+	}
+	first.Sessions[0].WorkspaceRoot = "/mutated"
+	again, err := h.Store.ListSessionHeads(context.Background(), application.ListSessionHeadsRequest{WorkspaceRoot: "/catalog", Limit: 2})
+	if err != nil || again.Sessions[0].WorkspaceRoot != "/catalog" {
+		t.Fatalf("catalog result aliases storage: %#v, %v", again, err)
+	}
+
+	invalidCursors := []string{
+		"%%%",
+		strings.Repeat("a", 513),
+		base64.RawURLEncoding.EncodeToString([]byte(`{"v":1,"p":1,"s":"session-catalog-idle","extra":true}`)),
+		base64.RawURLEncoding.EncodeToString([]byte(`{"v":1,"p":1}`)),
+		base64.URLEncoding.EncodeToString([]byte(`{"v":1,"p":1,"s":"session-catalog-idle"}`)),
+		"eyJ2IjoxLCJwIjoxLCJzIjoic2Vzc2lvbi1jYXRhbG9nLWlkbGUifR",
+		base64.RawURLEncoding.EncodeToString([]byte(`{"v":1,"p":18446744073709551615,"s":"session-catalog-idle"}`)),
+	}
+	for _, request := range append([]application.ListSessionHeadsRequest{
+		{WorkspaceRoot: "/catalog", Limit: 0},
+		{WorkspaceRoot: "/catalog", Limit: 257},
+		{WorkspaceRoot: "/catalog/.", Limit: 2},
+	}, catalogCursorRequests(invalidCursors)...) {
+		if _, err := h.Store.ListSessionHeads(context.Background(), request); err == nil {
+			t.Fatalf("ListSessionHeads(%#v) succeeded", request)
+		} else {
+			requireCode(t, err, application.StoreCodeInvalidRead)
+		}
+	}
+}
+
+func catalogCursorRequests(cursors []string) []application.ListSessionHeadsRequest {
+	requests := make([]application.ListSessionHeadsRequest, len(cursors))
+	for index, cursor := range cursors {
+		requests[index] = application.ListSessionHeadsRequest{WorkspaceRoot: "/catalog", Cursor: cursor, Limit: 2}
+	}
+	return requests
+}
+
+func headIDs(heads []application.SessionHead) []domain.SessionID {
+	ids := make([]domain.SessionID, len(heads))
+	for index := range heads {
+		ids[index] = heads[index].SessionID
+	}
+	return ids
+}
 
 var v2Time = time.Date(2026, 8, 13, 9, 0, 0, 0, time.UTC)
 

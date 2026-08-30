@@ -34,6 +34,74 @@ func TestCompactDecisionsMatchFullStateForFixturePrefixes(t *testing.T) {
 	}
 }
 
+func TestApplyCompactMatchesHistoricalSessionDeletion(t *testing.T) {
+	t.Parallel()
+
+	for _, closeFirst := range []bool{false, true} {
+		name := "active idle"
+		if closeFirst {
+			name = "closed idle"
+		}
+		t.Run(name, func(t *testing.T) {
+			records := []RecordedEvent{{
+				SchemaVersion: schemaVersion,
+				ID:            "delete-1",
+				CommandID:     "delete-create",
+				SessionID:     "session-delete",
+				Sequence:      1,
+				OccurredAt:    time.Date(2026, 8, 28, 1, 0, 0, 0, time.UTC),
+				Event:         SessionCreated{WorkspaceRoot: "/workspace"},
+			}}
+			if closeFirst {
+				records = append(records, RecordedEvent{
+					SchemaVersion: schemaVersion,
+					ID:            "delete-2",
+					CommandID:     "delete-close",
+					SessionID:     "session-delete",
+					Sequence:      2,
+					OccurredAt:    time.Date(2026, 8, 28, 1, 0, 1, 0, time.UTC),
+					Event:         SessionClosed{},
+				})
+			}
+			sequence := uint64(len(records) + 1)
+			deleted := RecordedEvent{
+				SchemaVersion: schemaVersion,
+				ID:            "delete-event",
+				CommandID:     "delete-command",
+				SessionID:     "session-delete",
+				Sequence:      sequence,
+				OccurredAt:    time.Date(2026, 8, 28, 1, 0, 2, 0, time.UTC),
+				Event:         SessionDeleted{},
+			}
+
+			full, err := HistoricalReplay(records)
+			if err != nil {
+				t.Fatalf("HistoricalReplay() error = %v", err)
+			}
+			compact, err := Replay(records)
+			if err != nil {
+				t.Fatalf("Replay() error = %v", err)
+			}
+			full, fullErr := HistoricalApply(full, deleted)
+			compact, compactErr := Apply(compact, deleted)
+			if fullErr != nil || compactErr != nil {
+				t.Fatalf("delete apply compact error = %v, historical error = %v", compactErr, fullErr)
+			}
+			if full.Status != SessionStatusDeleted || compact.Status != full.Status || compact.Version != full.Version {
+				t.Fatalf("delete state compact = %#v, historical = %#v", compact, full)
+			}
+
+			deleted.Sequence++
+			deleted.ID = "delete-again"
+			_, fullErr = HistoricalApply(full, deleted)
+			_, compactErr = Apply(compact, deleted)
+			if errorCode(compactErr) != CodeSessionDeleted || errorCode(fullErr) != errorCode(compactErr) {
+				t.Fatalf("second delete compact error = %v, historical error = %v", compactErr, fullErr)
+			}
+		})
+	}
+}
+
 func TestCompactDecisionsMatchFullStateForModelFacts(t *testing.T) {
 	created := RecordedEvent{SchemaVersion: schemaVersion, ID: "model-fact-1", CommandID: "model-fact-1", SessionID: "model-fact-session", Sequence: 1, OccurredAt: time.Date(2026, 8, 15, 0, 0, 1, 0, time.UTC), Event: SessionCreated{WorkspaceRoot: "/workspace"}}
 	full, err := HistoricalApply(HistoricalSession{}, created)
@@ -293,6 +361,7 @@ func freshCommandsForPrefix(state HistoricalSession, prefix int) []Command {
 		RequestApproval{SessionID: sessionID, TurnID: turnID, ItemID: itemID, ApprovalID: "approval-1", CallID: "call-1", Name: "write_file", Reason: "write_requires_approval"},
 		ResolveApproval{SessionID: sessionID, TurnID: turnID, ItemID: itemID, ApprovalID: "approval-1", Decision: ApprovalDecisionGranted},
 		CloseSession{SessionID: sessionID},
+		DeleteSession{SessionID: sessionID},
 	}
 }
 

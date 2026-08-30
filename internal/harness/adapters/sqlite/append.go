@@ -292,23 +292,27 @@ func (store *Store) lookupReceipt(ctx context.Context, queryer rowQueryer, appen
 // updateSessionHead maintains the one synchronous projection inside the
 // append transaction. It is derived state, never authoritative.
 func (store *Store) updateSessionHead(ctx context.Context, conn *sql.Conn, sessionID domain.SessionID, prepared *preparedAppend, position uint64) error {
-	head := sessionHeadState{status: "idle"}
+	head := sessionHeadState{}
 	err := conn.QueryRowContext(ctx,
-		"SELECT status, active_turn_id, active_item_id FROM session_heads WHERE session_id = ?",
-		string(sessionID)).Scan(&head.status, &head.turn, &head.item)
+		"SELECT workspace_root, status, active_turn_id, active_item_id, updated_at_commit_position FROM session_heads WHERE session_id = ?",
+		string(sessionID)).Scan(&head.workspaceRoot, &head.status, &head.turn, &head.item, &head.position)
 	switch {
 	case isNoRows(err):
-		head = sessionHeadState{status: "idle"}
+		head = sessionHeadState{}
 	case err != nil:
 		return mapStorageError(err, sessionID)
 	}
 	for _, entry := range prepared.events {
-		head = applyHeadTransition(head, entry.record.Event)
+		head, err = applyHeadTransition(head, entry.record.Event)
+		if err != nil {
+			return newStoreError(application.StoreCodeCorrupt, sessionID, err)
+		}
 	}
+	head.position = position
 	if _, err := conn.ExecContext(ctx,
-		"INSERT INTO session_heads (session_id, status, active_turn_id, active_item_id, updated_at_commit_position) VALUES (?, ?, ?, ?, ?) "+
-			"ON CONFLICT(session_id) DO UPDATE SET status = excluded.status, active_turn_id = excluded.active_turn_id, active_item_id = excluded.active_item_id, updated_at_commit_position = excluded.updated_at_commit_position",
-		string(sessionID), head.status, head.turn, head.item, position); err != nil {
+		"INSERT INTO session_heads (session_id, workspace_root, status, active_turn_id, active_item_id, updated_at_commit_position) VALUES (?, ?, ?, ?, ?, ?) "+
+			"ON CONFLICT(session_id) DO UPDATE SET workspace_root = excluded.workspace_root, status = excluded.status, active_turn_id = excluded.active_turn_id, active_item_id = excluded.active_item_id, updated_at_commit_position = excluded.updated_at_commit_position",
+		string(sessionID), head.workspaceRoot, head.status, head.turn, head.item, position); err != nil {
 		return mapStorageError(err, sessionID)
 	}
 	return nil

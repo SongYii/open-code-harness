@@ -30,7 +30,12 @@ go test -race ./internal/harness/adapters/acp/ ./internal/harness/transcript/ -c
 
 ## Remaining
 
-Maze UI and verdicts; ACP v2; session resume / list / delete; writing
-`transcript_entries`; changing the audit JSONL codec; redacted export;
-subagent `origin`; `RuntimeEvent` enrichment; import of transcript JSONL
-into EventStore. Surfaces remain `experimental`; not GA.
+Maze UI and verdicts; ACP v2; writing `transcript_entries`; changing the
+audit JSONL codec; redacted export; subagent `origin`; `RuntimeEvent`
+enrichment; import of transcript JSONL into EventStore. Surfaces remain
+`experimental`; not GA.
+
+**Later update:** the [ACP session lifecycle (Slice B) evidence
+ledger](acp-session-lifecycle-evidence.md) records the subsequently implemented
+session lifecycle methods and the `session.deleted` transcript fact now
+documented by this contract.

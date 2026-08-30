@@ -10,6 +10,8 @@ milestone contract.
 
 ```text
 nonexistent --session.created--> active --session.closed--> closed
+                                      `--session.deleted--> deleted
+closed -----------------session.deleted-------------------> deleted
 ```
 
 ```text
@@ -30,7 +32,10 @@ absent --tool.call.started--> running --tool.call.completed----> completed
                                     `--tool.call.interrupted----> interrupted
 ```
 
-Sessions have only `active` and `closed` states. Turns have only `running`,
+Sessions have `active`, `closed`, and `deleted` (`SessionStatusDeleted`) states.
+`session.closed` and
+`session.deleted` require no running Turn; deletion is accepted from an idle
+active or closed Session and is terminal. Turns have only `running`,
 `completed`, `failed`, and `interrupted` states. Terminal turn transitions are
 mutually exclusive: a terminal turn cannot transition again. Write-side Item
 kinds are `assistant_message` and `tool_call`. Approval is not a third Item
@@ -71,6 +76,7 @@ not an invalid session structure.
 | `approval.request` | `RequestApproval` | `approval.requested` |
 | `approval.resolve` | `ResolveApproval` | `approval.resolved` |
 | `session.close` | `CloseSession` | `session.closed` |
+| `session.delete` | `DeleteSession` | `session.deleted` |
 
 The four `*AssistantTurn` commands are composite use-case commands.
 `StartAssistantTurn` admits a Turn and its initial assistant Item as one
@@ -131,6 +137,7 @@ atomic `StartAssistantTurn` batch.
 - `approval.requested`
 - `approval.resolved`
 - `session.closed`
+- `session.deleted`
 
 `assistant.message.completed` may include optional `toolCalls`.
 `model.request.recorded` may include optional `tools`. Each `messages[]`
@@ -148,6 +155,7 @@ fails. `encoding/json` `omitempty` is not the compatibility story.
 - `session_already_exists`
 - `session_not_found`
 - `session_closed`
+- `session_deleted`
 - `turn_already_running`
 - `turn_not_running`
 - `turn_mismatch`
@@ -164,7 +172,9 @@ than matching error-message prose.
 ## Invariants and Recorded Events
 
 - A session has at most one running turn. Starting a second turn while one is
-  running fails, and a session cannot close while a turn is running.
+  running fails, and a session cannot close or delete while a turn is running.
+  An idle active or closed session may be deleted; a deleted session admits no
+  later event.
 - Production write-side `Session` is compact: it retains at most one active
   Turn and at most one active Item. Completed transcript is not part of the
   command aggregate. Historical Turn/Item uniqueness is enforced by the Store
@@ -214,7 +224,7 @@ than matching error-message prose.
 
 The canonical deterministic replay fixtures are:
 
-- [`internal/harness/domain/testdata/session_lifecycle.jsonl`](../../internal/harness/domain/testdata/session_lifecycle.jsonl), which preserves the original Session/Turn schema-v1 history.
+- [`internal/harness/domain/testdata/session_lifecycle.jsonl`](../../internal/harness/domain/testdata/session_lifecycle.jsonl), which covers Session/Turn schema-v1 history through durable close and logical deletion.
 - [`internal/harness/domain/testdata/assistant_lifecycle.jsonl`](../../internal/harness/domain/testdata/assistant_lifecycle.jsonl), which proves Item replay, exact Unicode assistant text, ordered Item/Turn terminal facts, and one command ID plus one timestamp for the atomic completion pair.
 
 ## Scope and Compatibility

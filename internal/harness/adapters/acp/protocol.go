@@ -5,21 +5,27 @@ import "encoding/json"
 const protocolVersion = 1
 
 const (
-	methodInitialize        = "initialize"
-	methodSessionNew        = "session/new"
-	methodSessionLoad       = "session/load"
-	methodSessionPrompt     = "session/prompt"
-	methodSessionCancel     = "session/cancel"
-	methodSessionUpdate     = "session/update"
-	methodRequestPermission = "session/request_permission"
-	optionAllowOnce         = "allow-once"
-	optionRejectOnce        = "reject-once"
-	stopReasonEndTurn       = "end_turn"
-	stopReasonCancelled     = "cancelled"
-	promptFailedMessage     = "session prompt failed"
-	promptInFlightMessage   = "a prompt is already in flight for this session"
-	agentName               = "open-code-harness"
-	agentVersion            = "0.0.0"
+	methodInitialize              = "initialize"
+	methodSessionNew              = "session/new"
+	methodSessionLoad             = "session/load"
+	methodSessionPrompt           = "session/prompt"
+	methodSessionCancel           = "session/cancel"
+	methodSessionUpdate           = "session/update"
+	methodSessionList             = "session/list"
+	methodSessionResume           = "session/resume"
+	methodSessionClose            = "session/close"
+	methodSessionDelete           = "session/delete"
+	methodRequestPermission       = "session/request_permission"
+	optionAllowOnce               = "allow-once"
+	optionRejectOnce              = "reject-once"
+	stopReasonEndTurn             = "end_turn"
+	stopReasonCancelled           = "cancelled"
+	promptFailedMessage           = "session prompt failed"
+	promptInFlightMessage         = "a prompt is already in flight for this session"
+	sessionNotAttachedMessage     = "session is not available for prompt"
+	sessionOperationFailedMessage = "session operation failed"
+	agentName                     = "open-code-harness"
+	agentVersion                  = "0.0.0"
 )
 
 type initializeParams struct {
@@ -34,14 +40,22 @@ type initializeResult struct {
 }
 
 type agentCapabilities struct {
-	LoadSession        bool               `json:"loadSession"`
-	PromptCapabilities promptCapabilities `json:"promptCapabilities"`
+	LoadSession         bool                `json:"loadSession"`
+	PromptCapabilities  promptCapabilities  `json:"promptCapabilities"`
+	SessionCapabilities sessionCapabilities `json:"sessionCapabilities"`
 }
 
 type promptCapabilities struct {
 	Image           bool `json:"image"`
 	Audio           bool `json:"audio"`
 	EmbeddedContext bool `json:"embeddedContext"`
+}
+
+type sessionCapabilities struct {
+	List   struct{} `json:"list"`
+	Resume struct{} `json:"resume"`
+	Close  struct{} `json:"close"`
+	Delete struct{} `json:"delete"`
 }
 
 type agentInfo struct {
@@ -55,6 +69,36 @@ type sessionNewParams struct {
 
 type sessionIDParams struct {
 	SessionID string `json:"sessionId"`
+}
+
+type sessionLoadParams struct {
+	SessionID             string            `json:"sessionId"`
+	Cwd                   string            `json:"cwd,omitempty"`
+	MCPServers            []json.RawMessage `json:"mcpServers,omitempty"`
+	AdditionalDirectories []json.RawMessage `json:"additionalDirectories,omitempty"`
+}
+
+type sessionListParams struct {
+	Cwd    string `json:"cwd,omitempty"`
+	Cursor string `json:"cursor,omitempty"`
+}
+
+type sessionListResult struct {
+	Sessions   []sessionListEntry `json:"sessions"`
+	NextCursor string             `json:"nextCursor,omitempty"`
+}
+
+type sessionListEntry struct {
+	SessionID string `json:"sessionId"`
+	Cwd       string `json:"cwd"`
+	UpdatedAt string `json:"updatedAt"`
+}
+
+type sessionResumeParams struct {
+	SessionID             string            `json:"sessionId"`
+	Cwd                   string            `json:"cwd"`
+	MCPServers            []json.RawMessage `json:"mcpServers,omitempty"`
+	AdditionalDirectories []json.RawMessage `json:"additionalDirectories,omitempty"`
 }
 
 type promptParams struct {

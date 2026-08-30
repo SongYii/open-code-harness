@@ -884,6 +884,10 @@ type turnCountingStore struct {
 	appendCalls int
 }
 
+func (*turnCountingStore) ListSessionHeads(context.Context, application.ListSessionHeadsRequest) (application.SessionHeadPage, error) {
+	return application.SessionHeadPage{}, nil
+}
+
 type lookupTurnStore struct {
 	application.EventStore
 	lookup    application.CommandRequestLookup

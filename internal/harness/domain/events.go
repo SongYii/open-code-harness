@@ -13,6 +13,7 @@ const (
 	EventTurnFailed                  = "turn.failed"
 	EventTurnInterrupted             = "turn.interrupted"
 	EventSessionClosed               = "session.closed"
+	EventSessionDeleted              = "session.deleted"
 	EventAssistantMessageStarted     = "assistant.message.started"
 	EventAssistantMessageCompleted   = "assistant.message.completed"
 	EventAssistantMessageFailed      = "assistant.message.failed"
@@ -86,6 +87,10 @@ func (TurnInterrupted) EventType() string { return EventTurnInterrupted }
 type SessionClosed struct{}
 
 func (SessionClosed) EventType() string { return EventSessionClosed }
+
+type SessionDeleted struct{}
+
+func (SessionDeleted) EventType() string { return EventSessionDeleted }
 
 type AssistantMessageStarted struct {
 	TurnID TurnID `json:"turnID"`

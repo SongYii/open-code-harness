@@ -17,6 +17,10 @@ func (testEventStore) ReadStream(context.Context, ReadStreamRequest) (StreamPage
 	return StreamPage{End: true}, nil
 }
 
+func (testEventStore) ListSessionHeads(context.Context, ListSessionHeadsRequest) (SessionHeadPage, error) {
+	return SessionHeadPage{}, nil
+}
+
 func (testEventStore) Append(context.Context, AppendRequest) (CommitReceipt, error) {
 	return CommitReceipt{}, nil
 }
@@ -84,6 +88,10 @@ type committedThenCanceledStore struct {
 
 func (*committedThenCanceledStore) ReadStream(context.Context, ReadStreamRequest) (StreamPage, error) {
 	return StreamPage{End: true}, nil
+}
+
+func (*committedThenCanceledStore) ListSessionHeads(context.Context, ListSessionHeadsRequest) (SessionHeadPage, error) {
+	return SessionHeadPage{}, nil
 }
 
 func (store *committedThenCanceledStore) Append(_ context.Context, request AppendRequest) (CommitReceipt, error) {

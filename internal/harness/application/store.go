@@ -62,9 +62,36 @@ type AuthoritySource interface {
 // EventStore is the authoritative per-Session event-stream boundary.
 type EventStore interface {
 	ReadStream(context.Context, ReadStreamRequest) (StreamPage, error)
+	ListSessionHeads(context.Context, ListSessionHeadsRequest) (SessionHeadPage, error)
 	Append(context.Context, AppendRequest) (CommitReceipt, error)
 	ResolveAppend(context.Context, ResolveAppendRequest) (AppendResolution, error)
 	FindCommandRequest(context.Context, FindCommandRequestRequest) (CommandRequestLookup, error)
+}
+
+type ListSessionHeadsRequest struct {
+	WorkspaceRoot string
+	Cursor        string
+	Limit         uint32
+}
+
+type SessionHeadStatus string
+
+const (
+	SessionHeadStatusIdle    SessionHeadStatus = "idle"
+	SessionHeadStatusRunning SessionHeadStatus = "running"
+	SessionHeadStatusClosed  SessionHeadStatus = "closed"
+)
+
+type SessionHead struct {
+	SessionID     domain.SessionID
+	WorkspaceRoot string
+	Status        SessionHeadStatus
+	UpdatedAt     time.Time
+}
+
+type SessionHeadPage struct {
+	Sessions   []SessionHead
+	NextCursor string
 }
 
 type ReadStreamRequest struct {

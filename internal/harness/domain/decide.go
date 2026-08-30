@@ -178,6 +178,10 @@ func closeSessionEvents() []UncommittedEvent {
 	return []UncommittedEvent{{Event: SessionClosed{}}}
 }
 
+func deleteSessionEvents() []UncommittedEvent {
+	return []UncommittedEvent{{Event: SessionDeleted{}}}
+}
+
 func createSessionEvents(workspaceRoot string) []UncommittedEvent {
 	return []UncommittedEvent{{Event: SessionCreated{WorkspaceRoot: workspaceRoot}}}
 }
@@ -241,6 +245,8 @@ func Decide(state Session, command Command) ([]UncommittedEvent, error) {
 		return decideResolveApproval(state, command)
 	case CloseSession:
 		return decideCloseSession(state, command)
+	case DeleteSession:
+		return decideDeleteSession(state, command)
 	default:
 		return nil, domainError(CodeInvalidCommand, "command type cannot be decided")
 	}
@@ -606,6 +612,28 @@ func decideCloseSession(state Session, command CloseSession) ([]UncommittedEvent
 		return nil, domainError(CodeTurnAlreadyRunning, "a turn is already running")
 	}
 	return closeSessionEvents(), nil
+}
+
+func decideDeleteSession(state Session, command DeleteSession) ([]UncommittedEvent, error) {
+	if !state.Exists() {
+		return nil, domainError(CodeSessionNotFound, "session not found")
+	}
+	if err := validateCommandSessionID(command.SessionID); err != nil {
+		return nil, err
+	}
+	if command.SessionID != state.ID {
+		return nil, domainError(CodeInvalidCommand, "command session ID does not match state")
+	}
+	if state.Status == SessionStatusDeleted {
+		return nil, domainError(CodeSessionDeleted, "session is deleted")
+	}
+	if err := validateSession(state); err != nil {
+		return nil, err
+	}
+	if state.ActiveTurn != nil {
+		return nil, domainError(CodeTurnAlreadyRunning, "a turn is already running")
+	}
+	return deleteSessionEvents(), nil
 }
 
 func requireSessionForCommand(state Session, sessionID SessionID) error {

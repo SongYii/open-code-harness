@@ -30,6 +30,8 @@ func CloneEvent(event Event) (Event, error) {
 		return event, nil
 	case SessionClosed:
 		return event, nil
+	case SessionDeleted:
+		return event, nil
 	case AssistantMessageStarted:
 		return event, nil
 	case AssistantMessageCompleted:

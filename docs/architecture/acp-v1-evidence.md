@@ -34,5 +34,10 @@ go test ./internal/harness/adapters/acp/ ./internal/harness/tools/ ./internal/ha
 
 ## Remaining
 
-- No v2, resume, or authenticate. Catalog-backed `RunTurn` prefixes prior turns from the event log; there is no independent Context Engine or token-aware compaction.
+- No v2 or authenticate. Catalog-backed `RunTurn` prefixes prior turns from the event log; there is no independent Context Engine or token-aware compaction.
 - Default gate does not spawn `cmd/och`.
+
+**Later update:** capability-gated `session/list`, `session/resume`,
+`session/close`, and `session/delete` were added after this dated snapshot; see
+the [ACP session lifecycle (Slice B) evidence
+ledger](acp-session-lifecycle-evidence.md).

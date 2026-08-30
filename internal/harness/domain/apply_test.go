@@ -388,6 +388,40 @@ func TestApplySessionClosed(t *testing.T) {
 	}
 }
 
+func TestApplySessionDeletedIsTerminalFromIdleActiveOrClosed(t *testing.T) {
+	t.Parallel()
+
+	idle := Session{ID: "session-1", Status: SessionStatusActive, Version: 1, WorkspaceRoot: "/workspace"}
+	closed := idle.Clone()
+	closed.Status = SessionStatusClosed
+
+	for _, state := range []Session{idle, closed} {
+		got, err := Apply(state, compactRecord(state, SessionDeleted{}))
+		if err != nil {
+			t.Fatalf("Apply(%q) error = %v", state.Status, err)
+		}
+		if got.Status != SessionStatusDeleted || got.Version != state.Version+1 || got.ActiveTurn != nil {
+			t.Fatalf("Apply(%q) = %#v", state.Status, got)
+		}
+		_, err = Apply(got, compactRecord(got, SessionDeleted{}))
+		if !IsCode(err, CodeSessionDeleted) {
+			t.Fatalf("second Apply(%q) error = %v, want %q", state.Status, err, CodeSessionDeleted)
+		}
+	}
+
+	running := idle.Clone()
+	running.ActiveTurn = &Turn{
+		ID:               "turn-1",
+		Input:            "hello",
+		StartedAt:        time.Date(2026, 8, 28, 1, 0, 0, 0, time.UTC),
+		LastTransitionAt: time.Date(2026, 8, 28, 1, 0, 0, 0, time.UTC),
+	}
+	_, err := Apply(running, compactRecord(running, SessionDeleted{}))
+	if !IsCode(err, CodeTurnAlreadyRunning) {
+		t.Fatalf("Apply(running) error = %v, want %q", err, CodeTurnAlreadyRunning)
+	}
+}
+
 func TestApplySessionClosedRejectsRunningTurn(t *testing.T) {
 	t.Parallel()
 
@@ -894,6 +928,7 @@ func TestCloneRecordedEventsDeepCopiesEventsAndRejectsUnknownTypes(t *testing.T)
 		{Event: request},
 		{Event: validModelUsageRecorded("turn-1", "item-1")},
 		{Event: validToolCallStarted("turn-1", "item-tool")},
+		{Event: SessionDeleted{}},
 	}
 	cloned, err := CloneRecordedEvents(records)
 	if err != nil {

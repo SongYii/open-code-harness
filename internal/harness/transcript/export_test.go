@@ -82,6 +82,15 @@ func TestWriteSessionSnapshotBits(t *testing.T) {
 			open:    false,
 			running: false,
 		},
+		{
+			name: "deleted session",
+			events: []domain.Event{
+				domain.SessionCreated{WorkspaceRoot: "/workspace"},
+				domain.SessionDeleted{},
+			},
+			open:    false,
+			running: false,
+		},
 	}
 
 	for _, test := range tests {
@@ -149,6 +158,46 @@ func TestWriteSessionCompleteTrailerAndFactLines(t *testing.T) {
 	}
 	if usage != 1 {
 		t.Fatalf("usage lines = %d, want 1", usage)
+	}
+}
+
+// TestWriteSessionDeletedSessionExportsDeletionFact proves that logical
+// deletion is append-only evidence: the session.deleted fact survives export
+// with an empty payload, the snapshot/complete envelopes agree it is neither
+// open nor running, and the trailer still completes normally.
+func TestWriteSessionDeletedSessionExportsDeletionFact(t *testing.T) {
+	t.Parallel()
+
+	store := newExportStore(t)
+	sessionID := domain.SessionID("session-1")
+	appendEvents(t, store, sessionID,
+		domain.SessionCreated{WorkspaceRoot: "/workspace"},
+		domain.SessionDeleted{},
+	)
+
+	var buf bytes.Buffer
+	result, err := WriteSession(context.Background(), store, sessionID, exportNow, &buf)
+	if err != nil {
+		t.Fatalf("WriteSession() error = %v", err)
+	}
+	if result.Open || result.Running {
+		t.Fatalf("result open/running = %t/%t, want false/false for a deleted session", result.Open, result.Running)
+	}
+	if result.FactLines != 2 {
+		t.Fatalf("result.FactLines = %d, want 2 (session.created, session.deleted)", result.FactLines)
+	}
+	snapshot, complete, facts := mustAcceptExport(t, buf.Bytes())
+	if snapshot.Open || snapshot.Running || complete.Open || complete.Running {
+		t.Fatalf("snapshot/complete open/running = %t/%t, %t/%t, want all false", snapshot.Open, snapshot.Running, complete.Open, complete.Running)
+	}
+	if complete.FactLines != 2 {
+		t.Fatalf("complete.FactLines = %d, want 2", complete.FactLines)
+	}
+	if len(facts) != 2 || facts[1].Type != domain.EventSessionDeleted || string(facts[1].Payload) != "{}" {
+		t.Fatalf("facts = %+v, want a trailing session.deleted fact with an empty payload", facts)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte(`"type":"transcript.complete"`)) {
+		t.Fatalf("export = %s, missing a complete trailer", buf.Bytes())
 	}
 }
 

@@ -95,3 +95,8 @@ Recorded as out of this slice, not as deferred bugs inside it:
 - `stopReason` still maps every `TurnStatusInterrupted` to `cancelled`.
 - Default gate does not spawn `cmd/och`.
 - Surfaces remain `experimental`; not GA.
+
+**Update:** `session/list`, `session/resume`, and `session/delete`, listed
+under Exclusions above at this ledger's 2026-08-23 date, are implemented as
+of the [ACP session lifecycle (Slice B) evidence
+ledger](acp-session-lifecycle-evidence.md).

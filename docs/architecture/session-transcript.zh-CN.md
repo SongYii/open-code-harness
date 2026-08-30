@@ -4,7 +4,7 @@
 
 **稳定性：** `experimental`
 
-**证据：** [对话面与会话转录完成证据](conversation-and-transcript-evidence.md)
+**证据：** [对话面与会话转录完成证据](conversation-and-transcript-evidence.md)；`session.deleted` 事实见 [ACP 会话生命周期（切片 B）完成证据](acp-session-lifecycle-evidence.md)
 
 英文版本 [session-transcript.md](session-transcript.md) 是规范文本；本文是与之同步的中文阅读版。两者若有分歧，以英文为准。
 
@@ -48,8 +48,11 @@ EventStore 仍是唯一在线提交权威；转录是投影，不是副本、不
 | `transcript.complete` | `headSequence`、`factLines`、`open`、`running` |
 
 `open` 为 `session.Status == active`。`running` 为 `ActiveTurn != nil`。
-空闲的活动会话是 `open: true`、`running: false`。快照与 complete 的
-`occurredAt` 共用导出器时钟，不是领域事件。
+空闲的活动会话是 `open: true`、`running: false`。逻辑删除的会话
+（`session.Status == deleted`）是 `open: false`、`running: false`，且仍可
+完整导出：删除只追加、绝不删除任何行，所以包含末尾 `session.deleted`
+事实在内的整条流仍能正常导出，并带有正常的 complete trailer。快照与
+complete 的 `occurredAt` 共用导出器时钟，不是领域事件。
 
 ## 事实目录
 
@@ -59,6 +62,7 @@ EventStore 仍是唯一在线提交权威；转录是投影，不是副本、不
 | --- | --- | --- |
 | `session.created` | `workspaceRoot` | `session.created` |
 | `session.closed` | `{}` | `session.closed` |
+| `session.deleted` | `{}` | `session.deleted` |
 | `turn.started` | `turnID`、`input` | `turn.started` |
 | `turn.completed` | `turnID` | `turn.completed` |
 | `turn.failed` | `turnID`、`code`、`message` | `turn.failed` |

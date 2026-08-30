@@ -4,7 +4,7 @@
 
 **Stability:** `experimental`
 
-**Evidence:** [Conversation and session transcript completion evidence](conversation-and-transcript-evidence.md)
+**Evidence:** [Conversation and session transcript completion evidence](conversation-and-transcript-evidence.md); the `session.deleted` fact in [ACP session lifecycle (Slice B) evidence](acp-session-lifecycle-evidence.md)
 
 **Package:** `internal/harness/transcript`
 
@@ -50,8 +50,13 @@ missing trailer.
 | `transcript.complete` | `headSequence`, `factLines`, `open`, `running` |
 
 `open` is `session.Status == active`. `running` is `ActiveTurn != nil`.
-An idle active session is `open: true`, `running: false`. Snapshot and
-complete `occurredAt` share the exporter clock, not a domain event.
+An idle active session is `open: true`, `running: false`. A logically
+deleted session (`session.Status == deleted`) is `open: false`,
+`running: false` and remains fully exportable: deletion is append-only and
+never removes rows, so the whole stream up to and including the trailing
+`session.deleted` fact still exports normally, with a normal complete
+trailer. Snapshot and complete `occurredAt` share the exporter clock, not a
+domain event.
 
 ## Fact catalog
 
@@ -61,6 +66,7 @@ complete `occurredAt` share the exporter clock, not a domain event.
 | --- | --- | --- |
 | `session.created` | `workspaceRoot` | `session.created` |
 | `session.closed` | `{}` | `session.closed` |
+| `session.deleted` | `{}` | `session.deleted` |
 | `turn.started` | `turnID`, `input` | `turn.started` |
 | `turn.completed` | `turnID` | `turn.completed` |
 | `turn.failed` | `turnID`, `code`, `message` | `turn.failed` |
