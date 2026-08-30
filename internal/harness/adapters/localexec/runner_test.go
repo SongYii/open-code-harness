@@ -245,6 +245,7 @@ func newTestRunner(t *testing.T) (*localexec.Runner, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = runner.Close() })
 	return runner, root
 }
 

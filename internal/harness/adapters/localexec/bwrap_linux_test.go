@@ -80,10 +80,7 @@ func TestIsWSL1Version(t *testing.T) {
 // of actually sandboxing anything.
 func TestRunWrapsArgvInBwrapWhenAvailable(t *testing.T) {
 	root := t.TempDir()
-	runner, err := New(root)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runner := newInternalTestRunner(t, root)
 	runner.bwrapAvailable = true
 
 	fakeBinDir := t.TempDir()
@@ -119,6 +116,16 @@ func TestRunWrapsArgvInBwrapWhenAvailable(t *testing.T) {
 	}
 }
 
+func newInternalTestRunner(t *testing.T, root string) *Runner {
+	t.Helper()
+	runner, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runner.Close() })
+	return runner
+}
+
 // requireFunctionalBwrap skips the calling test when this environment's
 // bwrap cannot actually confine a process (missing binary, WSL1, or a
 // probe that runs but fails — for example unprivileged user namespaces
@@ -133,10 +140,7 @@ func requireFunctionalBwrap(t *testing.T, runner *Runner) {
 
 func TestBwrapConfinementDeniesWritesOutsideWorkspace(t *testing.T) {
 	root := t.TempDir()
-	runner, err := New(root)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runner := newInternalTestRunner(t, root)
 	requireFunctionalBwrap(t, runner)
 	outsideMarker := "/etc/och-bwrap-integration-test-should-not-exist"
 	_ = os.Remove(outsideMarker)
@@ -160,10 +164,7 @@ func TestBwrapConfinementDeniesWritesOutsideWorkspace(t *testing.T) {
 
 func TestBwrapConfinementDeniesNetwork(t *testing.T) {
 	root := t.TempDir()
-	runner, err := New(root)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runner := newInternalTestRunner(t, root)
 	requireFunctionalBwrap(t, runner)
 	got, err := runner.Run(context.Background(), tools.CommandSpec{
 		Argv: []string{"sh", "-c", `
@@ -183,10 +184,7 @@ func TestBwrapConfinementDeniesNetwork(t *testing.T) {
 
 func TestBwrapConfinementHidesHostProcesses(t *testing.T) {
 	root := t.TempDir()
-	runner, err := New(root)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runner := newInternalTestRunner(t, root)
 	requireFunctionalBwrap(t, runner)
 	hostPid1Comm, err := os.ReadFile("/proc/1/comm")
 	if err != nil {

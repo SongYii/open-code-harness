@@ -16,12 +16,24 @@ import (
 // DefaultMaxBytes is the combined stdout+stderr cap when MaxBytes is unset.
 const DefaultMaxBytes = 64 << 10
 
+const (
+	// DefaultMemoryHighBytes is the soft memory ceiling (memory.high, Linux
+	// only) used when no explicit configuration is given.
+	DefaultMemoryHighBytes uint64 = 512 << 20 // 512 MiB
+	// DefaultMemoryHeadroomBytes is added to DefaultMemoryHighBytes to form
+	// the hard kernel OOM boundary (memory.max = high + headroom); 256 MiB
+	// is Grok Build's own documented default for this headroom.
+	DefaultMemoryHeadroomBytes uint64 = 256 << 20 // 256 MiB
+)
+
 // Runner executes argv commands inside a workspace jail.
 type Runner struct {
 	workspace      string
 	enforcement    Enforcement
 	bwrapAvailable bool
 	bwrapReason    string
+	cgroup         *cgroupQuota
+	cgroupReason   string
 }
 
 var errInvalidSpec = errors.New("localexec: invalid command spec")
@@ -56,12 +68,27 @@ func New(workspace string) (*Runner, error) {
 		enforcement.Filesystem = EnforcementFull
 		enforcement.Network = EnforcementFull
 	}
+	cgroup, cgroupReason := newCgroupQuota(DefaultMemoryHighBytes, DefaultMemoryHighBytes+DefaultMemoryHeadroomBytes)
+	if cgroup != nil {
+		enforcement.Memory = EnforcementFull
+	}
 	return &Runner{
 		workspace:      real,
 		enforcement:    enforcement,
 		bwrapAvailable: bwrapAvailable,
 		bwrapReason:    bwrapReason,
+		cgroup:         cgroup,
+		cgroupReason:   cgroupReason,
 	}, nil
+}
+
+// Close releases the memory-quota cgroup and stops its monitor goroutine,
+// if one was created. It is a no-op when no quota is active. Callers that
+// construct many short-lived Runners (tests included) should call this to
+// avoid leaking a cgroup directory and a goroutine per Runner.
+func (runner *Runner) Close() error {
+	runner.cgroup.close()
+	return nil
 }
 
 // Enforcement reports, per effect, how completely this Runner confines or
@@ -118,6 +145,9 @@ func (runner *Runner) Run(ctx context.Context, spec tools.CommandSpec) (tools.Co
 	if err := cmd.Start(); err != nil {
 		return tools.CommandResult{}, err
 	}
+	_ = runner.cgroup.addProcess(cmd.Process.Pid)
+	resourceLimited := runner.cgroup.register(cmd.Process.Pid)
+	defer runner.cgroup.unregister(cmd.Process.Pid)
 
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
@@ -151,6 +181,12 @@ func (runner *Runner) Run(ctx context.Context, spec tools.CommandSpec) (tools.Co
 		waitErr := <-done
 		result := finish(waitErr, out, false)
 		result.Truncated = true
+		return result, nil
+	case <-resourceLimited:
+		kill()
+		waitErr := <-done
+		result := finish(waitErr, out, false)
+		result.ResourceLimited = true
 		return result, nil
 	}
 }
