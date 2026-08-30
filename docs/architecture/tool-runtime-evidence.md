@@ -127,6 +127,13 @@ following remain unimplemented and are not implied by this ledger:
 
 GA remains blocked on those milestones.
 
+**Update:** OS Seatbelt/bwrap sandbox backends and a Linux memory quota,
+listed as unimplemented above at this ledger's 2026-08-16 date, are
+implemented as of the [exec sandboxing and resource quotas evidence
+ledger](exec-sandboxing-resource-quotas-evidence.md). Landlock remains
+excluded by design (CGO constraint), and Windows remains unsandboxed
+(fail-closed by default there instead).
+
 ---
 
 ## 中文证据台账
@@ -177,3 +184,9 @@ execute-plan PR 1–8。短 SHA 来自本分支 `git log`。
 SQLite、JSONL、Runtime Host/崩溃续跑、Context Engine、Application 重试、
 厂商 SDK、连网 CI 和插件内核仍未实现，不能由本台账暗示。GA 仍被这些后续
 里程碑阻断。
+
+**更新：** 上面在本台账 2026-08-16 日期下列为未实现的 OS Seatbelt/bwrap
+沙箱后端与 Linux 内存配额，已在
+[exec 沙箱与资源配额完成证据](exec-sandboxing-resource-quotas-evidence.md)
+中实现。Landlock 因 CGO 约束仍按设计排除；Windows 仍无沙箱（改为默认在
+该平台上 fail-closed）。

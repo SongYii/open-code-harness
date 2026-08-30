@@ -30,15 +30,17 @@ Four builtins exist: `read_file`, `write_file`, `list_dir`, `exec`.
 Model-visible tool texts are frozen. Cancel or Turn-fail while a tool Item
 is active uses `InterruptToolTurn` / `FailToolTurn`.
 
-`workspacefs` is a realpath prefix jail. `localexec` reports
-`enforcement=partial`. `openaicompat` sends `tools` and assembles
+`workspacefs` is a realpath prefix jail. `localexec` confines commands
+under bwrap (Linux) or Seatbelt (macOS) when available, with a fail-closed
+`composition.Open` gate and a named escape hatch when neither is.
+`openaicompat` sends `tools` and assembles
 `tool_call*` when `NativeTools` is `supported` or `required`. EventStore v2
 is still four methods. Call uniqueness is on ids. Step k≥2 logs a suffix
 envelope. Stream projection is 4 MiB; tool-enabled HTTP `MaxRequestBytes`
 is at least 5 MiB.
 
-MCP client, OS Seatbelt/bwrap/Landlock, ACP approval UI, parallel tools,
-Runtime Host, a plugin kernel, and vendor SDKs are not implemented.
+MCP client, Landlock, Windows OS confinement, ACP approval UI, parallel
+tools, Runtime Host, a plugin kernel, and vendor SDKs are not implemented.
 
 ## Package authority and dependency direction
 
@@ -424,12 +426,54 @@ rejected (`TestResolveRejectsForeignWorkspace`).
 `adapters/localexec` implements `tools.CommandRunner`. `Runner.Enforcement()`
 reports, per effect, how completely commands are confined —
 `Filesystem`/`Network`/`Memory`, each `"full"`, `"partial"`, or `"none"` — a
-fact computed from what is actually active, never an assumed promise. With
-no platform backend wired in, every effect reports `EnforcementNone`
-(`TestEnforcementReportsNoneWithoutAPlatformBackend`): this is not yet
-Seatbelt, bwrap, or Landlock, and curl-from-exec is not kernel-blocked. See
+fact computed from what is actually active, never an assumed promise
+(`TestEnforcementReportsNoneWithoutAPlatformBackend` pins the honest
+all-`"none"` baseline when no backend is usable). See
 [exec sandboxing and resource quotas](../superpowers/specs/2026-08-30-exec-sandboxing-resource-quotas-design.md)
-for the accepted design adding real per-platform backends.
+for the accepted design and its
+[completion evidence](exec-sandboxing-resource-quotas-evidence.md).
+
+On Linux, `Runner` probes `bwrap` at construction
+(`TestIsWSL1Version` distinguishes WSL1, which is also treated as
+unavailable) and, when the probe succeeds, wraps every `Run` call in a
+bwrap sandbox: unshared user/pid/ipc/uts/cgroup/net namespaces, every
+capability dropped, a read-only host view with only the workspace root
+rebound read-write (`TestBwrapArgvWrapsTargetWithRequiredNamespaceIsolation`,
+`TestRunWrapsArgvInBwrapWhenAvailable`), reporting `Filesystem`/`Network`
+as `"full"`. The same probe also gates a cgroup v2 memory quota — one
+child cgroup for the `Runner`'s lifetime with `memory.high`/`memory.max`,
+monitored via inotify on `memory.events`, killing the process group and
+reporting `CommandResult.ResourceLimited` (instead of `TimedOut`,
+classified as `CodeResourceLimit`/`ToolTextResourceLimit`) when usage
+stays above 90% of `memory.high` after a breach
+(`TestRunKillsOnResourceLimitSignal`,
+`TestExecResourceLimitedFailsToolWithFrozenText`), reporting `Memory` as
+`"full"` when active, `"none"` when the memory controller isn't delegated
+to this cgroup.
+
+On Darwin, `Runner` probes hardcoded `/usr/bin/sandbox-exec` (never
+PATH-resolved) and, when available, wraps every `Run` call in a Seatbelt
+`.sbpl` profile — a Chrome/Codex-derived base policy plus a
+deny-writes-except-workspace-root / allow-reads / deny-network layer
+(`TestSeatbeltArgvBindsWorkspaceRootAndAppendsTarget`,
+`TestRunWrapsArgvInSeatbeltWhenAvailable`) — reporting `Filesystem`/
+`Network` as `"full"`. Independent of Seatbelt's own availability, every
+command also gets a best-effort `RLIMIT_AS` bound, reported as `Memory =
+"partial"` (`TestRlimitEnforcementLevelIsPartialOnDarwin`): this bounds
+virtual address space, not resident memory, and a breach surfaces as the
+child's own allocator hitting `ENOMEM`, never `ResourceLimited`.
+
+`localexec.Availability()` reports whether the current platform's backend
+is usable at all; Windows and any platform with neither backend always
+report unavailable. `composition.Open` checks it right after the existing
+credential check, before any resource construction: unavailable with
+`Config.AllowUnsandboxedExec` false fails `Open` closed with a named
+error; unavailable with the flag true logs exactly which guarantee is
+absent and proceeds
+(`TestOpenFailsClosedWhenSandboxUnavailableAndFlagUnset`,
+`TestOpenProceedsAndLogsWhenFlagSetAndSandboxUnavailable`,
+`TestOpenSucceedsWithDefaultFlagWhenSandboxIsAvailable`).
+
 The child environment is empty except host `PATH`, `HOME` = workspace
 root, and `TMPDIR` = a workspace subdirectory removed after exit
 (`TestScrubbedEnv`). Commands are argv-only; no shell expansion
@@ -437,11 +481,7 @@ root, and `TMPDIR` = a workspace subdirectory removed after exit
 group (`TestTimeoutKillsProcessGroup`, `TestCancelKillsProcessGroup`).
 Combined stdout+stderr default cap is 64 KiB
 (`TestOutputCapKillsAndTruncates`). Cwd and argv0 must stay in the
-workspace (`TestCwdAndArgvMustStayInWorkspace`). A command killed for
-exceeding a resource bound (once a platform backend sets one) reports
-`CommandResult.ResourceLimited` instead of `TimedOut`, classified as
-`CodeResourceLimit`/`ToolTextResourceLimit`
-(`TestExecResourceLimitedFailsToolWithFrozenText`).
+workspace (`TestCwdAndArgvMustStayInWorkspace`).
 
 Shared port suites live under `tools/porttest` and `testkit` (`MemFS`,
 `ScriptedRunner`, `ScriptedApprover`).
@@ -518,8 +558,13 @@ This implemented contract does not provide:
 
 - an MCP client, MCP transport, or remote tool host (catalog `source=mcp`
   is a type hole only);
-- OS confinement backends (macOS Seatbelt, Linux bwrap/Landlock, Windows
-  ACL). `localexec` is `enforcement=partial`;
+- Windows OS confinement (no bwrap/Seatbelt-equivalent backend exists
+  there in this slice; `composition.Open` fails closed by default, with
+  `AllowUnsandboxedExec` as the named escape hatch) or Linux Landlock
+  (rejected: requires CGO for correctness on pre-ABI-V8 kernels). Linux
+  bwrap and macOS Seatbelt confinement, and a Linux cgroup v2 memory
+  quota, are implemented — see [exec sandboxing and resource
+  quotas](../superpowers/specs/2026-08-30-exec-sandboxing-resource-quotas-design.md);
 - ACP approval UI or TUI. Approval is an injected `Approver` port; the
   default denies;
 - parallel tool batches, background exec, PTY, LSP, web fetch,

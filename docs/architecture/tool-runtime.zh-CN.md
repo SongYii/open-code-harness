@@ -30,13 +30,15 @@ Policy 是 `policy.Engine.Decide(Input) Decision`——一张表，不是 `next(
 文案是冻结短句。工具 Item 仍在跑时取消或 Turn 失败走 `InterruptToolTurn` /
 `FailToolTurn`。
 
-`workspacefs` 是 realpath 前缀监狱。`localexec` 报告
-`enforcement=partial`。`openaicompat` 在 `NativeTools` 为 `supported` 或
-`required` 时发送 `tools` 并组装 `tool_call*`。EventStore v2 仍是四个
-方法。调用唯一性在 call id。Step k≥2 记录后缀信封。流投影帽 4 MiB；带
-工具的 HTTP `MaxRequestBytes` 至少 5 MiB。
+`workspacefs` 是 realpath 前缀监狱。`localexec` 在 Linux 上用 bwrap、
+在 macOS 上用 Seatbelt 做限制（可用时），并配有 `composition.Open` 的
+fail-closed 门禁和一个具名逃生开关（都不可用时）。`openaicompat` 在
+`NativeTools` 为 `supported` 或 `required` 时发送 `tools` 并组装
+`tool_call*`。EventStore v2 仍是四个方法。调用唯一性在 call id。Step
+k≥2 记录后缀信封。流投影帽 4 MiB；带工具的 HTTP `MaxRequestBytes` 至少
+5 MiB。
 
-未实现 MCP 客户端、OS Seatbelt/bwrap/Landlock、ACP 审批 UI、并行工具、
+未实现 MCP 客户端、Landlock、Windows OS 隔离、ACP 审批 UI、并行工具、
 Runtime Host、插件内核和厂商 SDK。
 
 ## 包权威与依赖方向
@@ -407,21 +409,54 @@ type FailToolTurn struct {
 `adapters/localexec` 实现 `tools.CommandRunner`。`Runner.Enforcement()` 按
 效果分别报告命令被限制的完整程度——`Filesystem`/`Network`/`Memory`，各自
 是 `"full"`、`"partial"` 或 `"none"`——这是根据实际生效的机制算出来的事实，
-不是假定的承诺。目前还没有接入任何平台后端，所以每个效果都报告
-`EnforcementNone`（`TestEnforcementReportsNoneWithoutAPlatformBackend`）：
-这还不是 Seatbelt、bwrap 或 Landlock，挡不住 exec 里的 curl。已批准的设计
+不是假定的承诺（`TestEnforcementReportsNoneWithoutAPlatformBackend` 钉住
+了没有可用后端时如实全 `"none"` 的基线）。见已批准的设计
 [exec 沙箱与资源配额](../superpowers/specs/2026-08-30-exec-sandboxing-resource-quotas-design.zh-CN.md)
-会加上真正的逐平台后端。子进程环境为空，只留
-宿主 `PATH`、`HOME` = 工作区根、`TMPDIR` = 退出后删除的工作区子目录
-（`TestScrubbedEnv`）。命令只走 argv，没有 shell 展开
+及其[完成证据](exec-sandboxing-resource-quotas-evidence.md)。
+
+在 Linux 上，`Runner` 在构造时探测 `bwrap`（`TestIsWSL1Version` 把 WSL1
+单独识别出来，同样按不可用处理），探测成功时把每次 `Run` 调用包进 bwrap
+沙箱：unshare 掉 user/pid/ipc/uts/cgroup/net 命名空间、丢弃所有
+capability、只读挂载整个宿主并把工作区根重新绑定为可写
+（`TestBwrapArgvWrapsTargetWithRequiredNamespaceIsolation`、
+`TestRunWrapsArgvInBwrapWhenAvailable`），此时报告 `Filesystem`/`Network`
+为 `"full"`。同一个探测结果也决定 cgroup v2 内存配额是否生效——为
+`Runner` 的整个生命周期创建一个子 cgroup，设置 `memory.high`/
+`memory.max`，通过 inotify 监听 `memory.events`，一旦内核的 high 计数器
+触发且用量仍高于 `memory.high` 的 90%，就杀掉整个进程组并在
+`CommandResult` 上报 `ResourceLimited`（而不是 `TimedOut`，分类为
+`CodeResourceLimit`/`ToolTextResourceLimit`）
+（`TestRunKillsOnResourceLimitSignal`、
+`TestExecResourceLimitedFailsToolWithFrozenText`），配额生效时报告
+`Memory` 为 `"full"`，memory controller 未被委派给这个 cgroup 时报告
+`"none"`。
+
+在 Darwin 上，`Runner` 探测硬编码的 `/usr/bin/sandbox-exec`（不走 PATH
+查找），可用时把每次 `Run` 调用包进一个 Seatbelt `.sbpl` profile——一份
+Chrome/Codex 派生的 base policy，加上一层「除工作区根外全部拒绝写、允许
+读、拒绝所有网络」（`TestSeatbeltArgvBindsWorkspaceRootAndAppendsTarget`、
+`TestRunWrapsArgvInSeatbeltWhenAvailable`），报告 `Filesystem`/`Network`
+为 `"full"`。不管 Seatbelt 本身是否可用，每条命令都会额外拿到一个
+best-effort 的 `RLIMIT_AS` 上限，报告 `Memory = "partial"`
+（`TestRlimitEnforcementLevelIsPartialOnDarwin`）：这限制的是虚拟地址
+空间而不是常驻内存，超限时子进程自己的分配器会拿到 `ENOMEM`，永远不会
+置位 `ResourceLimited`。
+
+`localexec.Availability()` 报告当前平台的后端是否真的可用；Windows 以及
+两种后端都没有的平台永远报不可用。`composition.Open` 在已有的凭证检查之
+后、任何资源构建之前就检查它：不可用且 `Config.AllowUnsandboxedExec` 为
+`false` 时带具名错误 fail closed；不可用但开关为 `true` 时打一条日志说明
+具体缺了哪项保证，然后继续
+（`TestOpenFailsClosedWhenSandboxUnavailableAndFlagUnset`、
+`TestOpenProceedsAndLogsWhenFlagSetAndSandboxUnavailable`、
+`TestOpenSucceedsWithDefaultFlagWhenSandboxIsAvailable`）。
+
+子进程环境为空，只留宿主 `PATH`、`HOME` = 工作区根、`TMPDIR` = 退出后
+删除的工作区子目录（`TestScrubbedEnv`）。命令只走 argv，没有 shell 展开
 （`TestArgvOnlyNoShellExpansion`）。超时和取消杀掉进程组
 （`TestTimeoutKillsProcessGroup`、`TestCancelKillsProcessGroup`）。
 stdout+stderr 默认合计 64 KiB（`TestOutputCapKillsAndTruncates`）。cwd
-与 argv0 必须留在工作区内（`TestCwdAndArgvMustStayInWorkspace`）。一条
-因超出资源上限被杀的命令（一旦某个平台后端设置了上限）会在
-`CommandResult` 上报 `ResourceLimited` 而不是 `TimedOut`，分类为
-`CodeResourceLimit`/`ToolTextResourceLimit`
-（`TestExecResourceLimitedFailsToolWithFrozenText`）。
+与 argv0 必须留在工作区内（`TestCwdAndArgvMustStayInWorkspace`）。
 
 共享端口套件在 `tools/porttest` 和 `testkit`（`MemFS`、
 `ScriptedRunner`、`ScriptedApprover`）。
@@ -493,8 +528,12 @@ go test ./internal/harness/domain ./internal/harness/engine \
 本已实现合同不提供：
 
 - MCP 客户端、MCP 传输或远程工具宿主（目录 `source=mcp` 只是类型孔）；
-- OS 隔离后端（macOS Seatbelt、Linux bwrap/Landlock、Windows ACL）。
-  `localexec` 是 `enforcement=partial`；
+- Windows OS 隔离（本切片在该平台上没有对应的 bwrap/Seatbelt 后端；
+  `composition.Open` 默认在那里 fail closed，`AllowUnsandboxedExec` 是
+  具名逃生开关）或 Linux Landlock（已否决：在 pre-ABI-V8 内核上要正确工作
+  需要 CGO）。Linux bwrap、macOS Seatbelt 限制以及 Linux cgroup v2 内存
+  配额均已实现——见
+  [exec 沙箱与资源配额](../superpowers/specs/2026-08-30-exec-sandboxing-resource-quotas-design.zh-CN.md)；
 - ACP 审批 UI 或 TUI。审批是注入的 `Approver` 端口，默认拒绝；
 - 并行工具批次、后台 exec、PTY、LSP、web fetch、apply-patch、作为一等
   工具的 grep/search、todo、Skills 或 subagent；
