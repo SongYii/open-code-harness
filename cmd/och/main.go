@@ -47,6 +47,7 @@ func run(arguments []string) error {
 	flags.StringVar(&config.RuntimeID, "runtime-id", "", "writer identity for the fencing lease (required)")
 	flags.StringVar(&config.AuditDirectory, "audit-dir", "", "directory for the JSONL audit replica; empty disables the exporter")
 	flags.StringVar(&config.Provider.BaseURL, "provider-url", "", "OpenAI-compatible base URL (required)")
+	flags.BoolVar(&config.Provider.AllowInsecureLoopback, "provider-allow-insecure-loopback", false, "permit a plain-HTTP provider-url when it resolves to loopback; for a local fixture server only, never a real endpoint")
 	flags.StringVar(&config.Provider.ModelID, "model", "", "provider model identifier (required)")
 	flags.StringVar(&config.Provider.APIKeyEnv, "api-key-env", "OCH_API_KEY", "environment variable holding the provider API key")
 	contextWindow := flags.Uint("context-window", 0, "provider context window in tokens (required)")

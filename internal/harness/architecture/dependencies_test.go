@@ -858,3 +858,65 @@ func TestOnlyCompositionAndRuntimeMayNameAnAdapter(t *testing.T) {
 		}
 	}
 }
+
+// TestClientPackagesAreIsolatedFromInternalHarness pins the ACP-native
+// client's package boundary (docs/superpowers/specs/
+// 2026-08-30-acp-native-client-design.md §3): it is a consumer of the ACP
+// wire protocol, not a harness adapter, and must never be coupled to
+// internal/harness/ in either direction.
+func TestClientPackagesAreIsolatedFromInternalHarness(t *testing.T) {
+	_, sourceFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot locate dependency test source")
+	}
+	repositoryRoot := filepath.Clean(filepath.Join(filepath.Dir(sourceFile), "..", "..", ".."))
+	harnessRoot := filepath.Join(repositoryRoot, "internal", "harness")
+	harnessImportPrefix := modulePath + "/internal/harness"
+	clientRoot := filepath.Join(repositoryRoot, "internal", "client", "acp")
+	clientImportPrefix := modulePath + "/internal/client/acp"
+	acpClientCmdRoot := filepath.Join(repositoryRoot, "cmd", "acp-client")
+
+	fileSet := token.NewFileSet()
+
+	for _, root := range []string{clientRoot, acpClientCmdRoot} {
+		assertNoFileUnderImports(t, fileSet, root, func(importPath string) bool {
+			return importPath == harnessImportPrefix || strings.HasPrefix(importPath, harnessImportPrefix+"/")
+		}, "internal/harness")
+	}
+
+	// cmd/acp-client is a main package nothing under internal/harness/
+	// could import even by mistake, so only the library package needs
+	// checking in this direction.
+	assertNoFileUnderImports(t, fileSet, harnessRoot, func(importPath string) bool {
+		return importPath == clientImportPrefix || strings.HasPrefix(importPath, clientImportPrefix+"/")
+	}, "internal/client/acp")
+}
+
+func assertNoFileUnderImports(t *testing.T, fileSet *token.FileSet, root string, forbidden func(string) bool, label string) {
+	t.Helper()
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		parsed, parseErr := parser.ParseFile(fileSet, path, nil, 0)
+		if parseErr != nil {
+			return parseErr
+		}
+		for _, spec := range parsed.Imports {
+			importPath, unquoteErr := strconv.Unquote(spec.Path.Value)
+			if unquoteErr != nil {
+				return unquoteErr
+			}
+			if forbidden(importPath) {
+				t.Errorf("%s imports %s (forbidden: %s boundary)", path, importPath, label)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
