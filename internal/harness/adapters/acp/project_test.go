@@ -65,6 +65,18 @@ func TestProjectRuntimeEvent(t *testing.T) {
 			}},
 		},
 		{
+			name:  "model.tool_call carries rawInput from Arguments",
+			event: engine.RuntimeEvent{Type: engine.RuntimeModelToolCall, Text: "read_file:call-1", Arguments: `{"path":"a.go"}`, Correlation: correlation},
+			want: []any{toolCallUpdate{
+				SessionUpdate: "tool_call",
+				ToolCallID:    "turn-1/call-1",
+				Title:         "read_file",
+				Kind:          "read",
+				Status:        "pending",
+				RawInput:      json.RawMessage(`{"path":"a.go"}`),
+			}},
+		},
+		{
 			name:  "model.stream.completed",
 			event: engine.RuntimeEvent{Type: engine.RuntimeModelStreamCompleted, Correlation: correlation},
 		},
@@ -95,6 +107,19 @@ func TestProjectRuntimeEvent(t *testing.T) {
 			}},
 		},
 		{
+			name:  "tool.execution.completed carries result content",
+			event: engine.RuntimeEvent{Type: engine.RuntimeToolExecutionCompleted, Text: "read_file:call-1", Content: "file contents", Correlation: correlation},
+			want: []any{toolCallUpdate{
+				SessionUpdate: "tool_call_update",
+				ToolCallID:    "turn-1/call-1",
+				Status:        "completed",
+				Content: []toolCallContent{{
+					Type:    "content",
+					Content: textContent{Type: "text", Text: "file contents"},
+				}},
+			}},
+		},
+		{
 			name:  "tool.execution.completed uses live when Text empty",
 			event: engine.RuntimeEvent{Type: engine.RuntimeToolExecutionCompleted, Correlation: correlation},
 			live:  live,
@@ -112,6 +137,20 @@ func TestProjectRuntimeEvent(t *testing.T) {
 				SessionUpdate: "tool_call_update",
 				ToolCallID:    "turn-1/call-1",
 				Status:        "failed",
+			}},
+		},
+		{
+			name:  "tool.execution.failed carries the failure message as content",
+			event: engine.RuntimeEvent{Type: engine.RuntimeToolExecutionFailed, Code: "policy_denied", Content: "denied by policy", Correlation: correlation},
+			live:  live,
+			want: []any{toolCallUpdate{
+				SessionUpdate: "tool_call_update",
+				ToolCallID:    "turn-1/call-1",
+				Status:        "failed",
+				Content: []toolCallContent{{
+					Type:    "content",
+					Content: textContent{Type: "text", Text: "denied by policy"},
+				}},
 			}},
 		},
 		{

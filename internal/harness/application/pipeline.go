@@ -296,7 +296,7 @@ func (service *Service) failToolAndContinue(ctx context.Context, owned *ownedTur
 	if err := service.commitStepAppend(ctx, owned, decided); err != nil {
 		return true, cloneRunTurnResult(owned.result), err
 	}
-	_ = owned.emitter.Emit(ctx, engine.RuntimePayload{Type: engine.RuntimeToolExecutionFailed, Code: code})
+	_ = owned.emitter.Emit(ctx, engine.RuntimePayload{Type: engine.RuntimeToolExecutionFailed, Code: code, Content: message})
 	owned.approvalID = ""
 	return false, owned.result, nil
 }
@@ -312,7 +312,7 @@ func (service *Service) completeToolAndContinue(ctx context.Context, owned *owne
 	if err := service.commitStepAppend(ctx, owned, decided); err != nil {
 		return true, cloneRunTurnResult(owned.result), err
 	}
-	_ = owned.emitter.Emit(ctx, engine.RuntimePayload{Type: engine.RuntimeToolExecutionCompleted, Text: runtimeToolText(call)})
+	_ = owned.emitter.Emit(ctx, engine.RuntimePayload{Type: engine.RuntimeToolExecutionCompleted, Text: runtimeToolText(call), Content: content})
 	owned.approvalID = ""
 	return false, owned.result, nil
 }

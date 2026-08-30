@@ -55,6 +55,7 @@ func ProjectRuntimeEvent(sessionID string, event engine.RuntimeEvent, live LiveT
 			Title:         live.Name,
 			Kind:          ToolKind(live.Name),
 			Status:        "pending",
+			RawInput:      rawInputValue(event.Arguments),
 		})
 	case engine.RuntimeToolExecutionStarted:
 		return fitToolCall(sessionID, toolCallUpdate{
@@ -63,16 +64,20 @@ func ProjectRuntimeEvent(sessionID string, event engine.RuntimeEvent, live LiveT
 			Status:        "in_progress",
 		})
 	case engine.RuntimeToolExecutionCompleted:
+		id := ToolCallID(live.TurnID, live.CallID)
 		return fitToolCall(sessionID, toolCallUpdate{
 			SessionUpdate: "tool_call_update",
-			ToolCallID:    ToolCallID(live.TurnID, live.CallID),
+			ToolCallID:    id,
 			Status:        "completed",
+			Content:       toolTextContent(sessionID, id, "completed", event.Content),
 		})
 	case engine.RuntimeToolExecutionFailed:
+		id := ToolCallID(live.TurnID, live.CallID)
 		return fitToolCall(sessionID, toolCallUpdate{
 			SessionUpdate: "tool_call_update",
-			ToolCallID:    ToolCallID(live.TurnID, live.CallID),
+			ToolCallID:    id,
 			Status:        "failed",
+			Content:       toolTextContent(sessionID, id, "failed", event.Content),
 		})
 	default:
 		return nil

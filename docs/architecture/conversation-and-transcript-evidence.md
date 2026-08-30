@@ -100,3 +100,28 @@ Recorded as out of this slice, not as deferred bugs inside it:
 under Exclusions above at this ledger's 2026-08-23 date, are implemented as
 of the [ACP session lifecycle (Slice B) evidence
 ledger](acp-session-lifecycle-evidence.md).
+
+**Update (2026-08-30):** The first "Remaining" item above — live ACP tool
+cards omitting `rawInput` and result content — is closed. `engine.RuntimeEvent`
+gained `Arguments` (set only on `RuntimeModelToolCall`) and `Content` (set
+only on `RuntimeToolExecutionCompleted`/`RuntimeToolExecutionFailed`) fields;
+`ProjectRuntimeEvent` now reuses `session/load`'s own `rawInputValue` and
+`toolTextContent` helpers for the live path instead of a thinner projection.
+See [Implemented ACP v1 adapter](acp-v1.md)'s "Live vs. replay parity"
+section. Verified by `TestEmitterCarriesArgumentsOnlyOnModelToolCall` and
+`TestEmitterCarriesContentOnlyOnToolExecutionOutcomes`
+(`internal/harness/engine`); `TestRuntimeModelToolCallCarriesArguments`,
+`TestRuntimeToolExecutionCompletedCarriesResultContent`, and
+`TestRuntimeToolExecutionFailedCarriesFailureMessageAsContent`
+(`internal/harness/application`, exercising a real `RunTurn` end to end, not
+a synthetic `RuntimeEvent` literal); and new `TestProjectRuntimeEvent` cases
+in `internal/harness/adapters/acp/project_test.go`. Each of the three
+wiring points (`internal/harness/engine/runner.go`'s `RuntimeModelToolCall`
+emit, `internal/harness/application/pipeline.go`'s
+`completeToolAndContinue`/`failToolAndContinue` emits, and
+`internal/harness/adapters/acp/project.go`'s `ProjectRuntimeEvent`) was
+independently reverted and confirmed to fail the corresponding test for the
+right reason before being restored — the `internal/harness/application`
+tests exist specifically because reverting the `pipeline.go` wiring alone
+passed the full `internal/harness/...` suite silently before they were
+added, an honest gap this update closes rather than papers over.

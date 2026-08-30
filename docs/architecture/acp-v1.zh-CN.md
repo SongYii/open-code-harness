@@ -74,11 +74,11 @@ sink 记住的 `LiveTool`，不是领域。顺序 `executeOneTool` 使同一时�
 | Runtime 事件 | ACP `session/update` | 说明 |
 | --- | --- | --- |
 | 非空 `model.text.delta` | `agent_message_chunk` `{type:text, text}` | 按下方界限裁剪 |
-| `model.tool_call` | `tool_call` `{toolCallId, title, kind, status: pending}` | 按最后一个 `:` 把 `Text` 解析为 `name:callID`。无 `rawInput` |
+| `model.tool_call` | `tool_call` `{toolCallId, title, kind, status: pending, rawInput?}` | 按最后一个 `:` 把 `Text` 解析为 `name:callID`。`rawInput` 来自 `Arguments`，规则同下方 `session/load` |
 | `tool.execution.started` | `tool_call_update` `{toolCallId, status: in_progress}` | 包含校验 / 审批等待 |
 | `approval.requested` / `resolved` | 无 | 权限 RPC 即 UX |
-| `tool.execution.completed` | `tool_call_update` `{status: completed}` | 现场无 `content` / `rawOutput` |
-| `tool.execution.failed` | `tool_call_update` `{status: failed}` | 可发送的帧绝不跳过。`Code` 不上线。若 `toolCallId` 本身放不下，与其他工具卡片一样省略 |
+| `tool.execution.completed` | `tool_call_update` `{status: completed, content: [文本块]}` | `Content` 是工具结果文本，编码规则同下方 `session/load` 的 `tool.call.completed` |
+| `tool.execution.failed` | `tool_call_update` `{status: failed, content: [失败消息文本块]}` | 可发送的帧绝不跳过。`Code` 不上线；投影到 `content` 上的是失败消息本身。若 `toolCallId` 本身放不下，与其他工具卡片一样省略 |
 | `model.stream.*`、`append.completed` | 无 | 运行器 / 存储内部 |
 
 prompt 路径上的 `session/update` 写失败被吞掉（`Emit` 返回 nil），以免
@@ -201,11 +201,18 @@ close 绝不会在被取消的 prompt 自己的终态帧上线之前就报告 `{
 | 出站 `toolCallId`（及 permission `toolCallId`） | 必须放进编码帧 | 绝不裁剪。省略该 `session/update`。跳过 permission RPC（fail-closed 拒绝） |
 | 出站 `rawInput` | 16 KiB 紧凑 JSON | 在 UTF-8 边界裁剪编码字节；若结果不再是合法 JSON，则 **省略** `rawInput`。绝不给 `rawInput` 追加 `\n[truncated]`。若工具调用帧仍超过 1 MiB 则整段省略 |
 
-## 现场保真缺口
+## 现场与重放的保真度对等
 
-`engine.RuntimeEvent` 未改。现场工具卡片只有 id、名称、kind 与状态。
-参数与结果文本出现在 `session/load` 与转录上。从不 load 的客户端看不到
-进行中 turn 的 `rawInput` 或输出内容。
+`engine.RuntimeEvent` 现在带着工具调用的原始 JSON 参数
+（`RuntimeModelToolCall.Arguments`）和结果/失败文本
+（`RuntimeToolExecutionCompleted`/`RuntimeToolExecutionFailed.Content`），
+所以 `ProjectRuntimeEvent` 直接复用 `session/load` 自己那套
+`rawInputValue`/`toolTextContent` 辅助函数，不另写一套：一个只看现场流的
+客户端，看到的 `rawInput`/`content` 跟只调用 `session/load` 的客户端完全
+一样，受上面同一组边界约束。唯一还剩的结构性差异是本来就该有的，不是保真
+度损失：现场路径多一个 `pending` 阶段（`model.tool_call`，在 policy/审批
+之前），`session/load` 从不重放这一步——一个还没真正开始执行的提议调用，
+根本没有对应的领域事件可供重放；`session/load` 只能重建真正开始过的调用。
 
 ## 从不投影到 ACP
 
@@ -217,8 +224,7 @@ diff、ACP v2 字段；裁决。
 ## 排除项
 
 ACP v2、终端、斜杠命令、authenticate、感知 token 的压缩、protocolVersion
-协商、取消时权限等待者清理、`RuntimeEvent` 增富，以及默认测试门中的子进程
-stdio。`session/set_mode`、`session/set_config_option`、会话分叉、批量删除、
+协商、取消时权限等待者清理，以及默认测试门中的子进程 stdio。`session/set_mode`、`session/set_config_option`、会话分叉、批量删除、
 撤销删除，以及对已删除会话的物理保留/垃圾回收。`session/load` /
 `session/resume` 上的 `additionalDirectories` 与会话级 MCP 配置仅接受空值
 且从不据此行动；不构造任何 MCP 客户端。不从提示词、搜索、标签或状态元数据

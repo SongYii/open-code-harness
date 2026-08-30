@@ -79,11 +79,11 @@ has the user prompt; the in-flight turn does not emit `user_message_chunk`.
 | Runtime event | ACP `session/update` | Notes |
 | --- | --- | --- |
 | `model.text.delta` (non-empty) | `agent_message_chunk` `{type:text, text}` | Clip per bounds below |
-| `model.tool_call` | `tool_call` `{toolCallId, title, kind, status: pending}` | Parse `Text` as `name:callID` on the last `:`. No `rawInput` |
+| `model.tool_call` | `tool_call` `{toolCallId, title, kind, status: pending, rawInput?}` | Parse `Text` as `name:callID` on the last `:`. `rawInput` from `Arguments`, same rule as `session/load` below |
 | `tool.execution.started` | `tool_call_update` `{toolCallId, status: in_progress}` | Includes validation / approval wait |
 | `approval.requested` / `resolved` | none | Permission RPC is the UX |
-| `tool.execution.completed` | `tool_call_update` `{status: completed}` | No live `content` / `rawOutput` |
-| `tool.execution.failed` | `tool_call_update` `{status: failed}` | Never skip a sendable frame. `Code` stays off the wire. If `toolCallId` itself cannot fit, omit like any other tool card |
+| `tool.execution.completed` | `tool_call_update` `{status: completed, content: [text block]}` | `Content` is the tool result text, same encoding as `session/load`'s `tool.call.completed` below |
+| `tool.execution.failed` | `tool_call_update` `{status: failed, content: [text block of the failure message]}` | Never skip a sendable frame. `Code` stays off the wire; the failure message is what's projected as `content`. If `toolCallId` itself cannot fit, omit like any other tool card |
 | `model.stream.*`, `append.completed` | none | Runner / store internals |
 
 `session/update` write errors on the prompt path are swallowed
@@ -223,12 +223,20 @@ the RPC or writing an oversize frame.
 | Outgoing `toolCallId` (and permission `toolCallId`) | must fit in the encoded frame | never clip. Omit the `session/update`. Skip the permission RPC (fail-closed deny) |
 | Outgoing `rawInput` | 16 KiB compact JSON | clip encoded bytes at a UTF-8 boundary; if the result is no longer valid JSON, **omit** `rawInput`. Never append `\n[truncated]` to `rawInput`. Omit entirely if the tool-call frame still exceeds 1 MiB |
 
-## Live fidelity gap
+## Live vs. replay parity
 
-`engine.RuntimeEvent` is unchanged. Live tool cards carry id, name, kind,
-and status only. Arguments and result text appear on `session/load` and on
-the transcript. A client that never loads will not see `rawInput` or output
-content for the in-flight turn.
+`engine.RuntimeEvent` carries the tool call's raw JSON arguments
+(`RuntimeModelToolCall.Arguments`) and its result or failure text
+(`RuntimeToolExecutionCompleted`/`RuntimeToolExecutionFailed.Content`), so
+`ProjectRuntimeEvent` reuses `session/load`'s own `rawInputValue` and
+`toolTextContent` helpers unchanged: a live client sees the same `rawInput`
+and `content` a client that only ever calls `session/load` would see,
+bounded by the same limits above. The one remaining structural difference
+is inherent, not a fidelity loss: the live path has an extra `pending`
+stage (`model.tool_call`, before policy/approval) that `session/load` never
+replays, since a proposed-but-not-yet-started call has no domain event to
+replay from — `session/load` only ever reconstructs calls that actually
+started.
 
 ## Never projected on ACP
 
@@ -240,8 +248,8 @@ plans, thoughts, terminals, diffs, ACP v2 fields; verdicts.
 ## Exclusions
 
 ACP v2, terminals, slash commands, authenticate, token-aware compaction,
-protocolVersion negotiation, permission waiter cleanup on cancel,
-`RuntimeEvent` enrichment, and subprocess stdio as the default test gate.
+protocolVersion negotiation, permission waiter cleanup on cancel, and
+subprocess stdio as the default test gate.
 `session/set_mode`, `session/set_config_option`, session fork, batch
 deletion, undelete, and physical retention/garbage collection of a deleted
 Session. `additionalDirectories` and session-scoped MCP configuration are

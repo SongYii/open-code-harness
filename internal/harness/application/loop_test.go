@@ -129,6 +129,97 @@ func TestTwoStepReadFileSuccess(t *testing.T) {
 	}
 }
 
+func TestRuntimeToolExecutionCompletedCarriesResultContent(t *testing.T) {
+	fs := testkit.NewMemFS("/workspace")
+	fs.AddFile("README.md", []byte("hello from fixture"))
+	model := newSequenceModel(
+		[]engine.StreamEvent{
+			{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "call-read", Name: tools.NameReadFile, Arguments: `{"path":"README.md"}`}},
+			{Type: engine.StreamEventCompleted},
+		},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "done"}, {Type: engine.StreamEventCompleted}},
+	)
+	service, _ := newToolService(t, model, fs, nil, nil, application.DefaultConfig())
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &testkit.RecordingSink{}
+	if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+		SessionID: created.SessionID, RequestID: "request-runtime-content", Input: "inspect", Sink: sink,
+	}); err != nil {
+		t.Fatalf("RunTurn() = %v", err)
+	}
+	completed := runtimeEventOfType(t, sink.Delivered(), engine.RuntimeToolExecutionCompleted)
+	if completed.Content != "hello from fixture" {
+		t.Fatalf("RuntimeToolExecutionCompleted.Content = %q, want the file's actual content", completed.Content)
+	}
+}
+
+func TestRuntimeModelToolCallCarriesArguments(t *testing.T) {
+	fs := testkit.NewMemFS("/workspace")
+	fs.AddFile("README.md", []byte("hello from fixture"))
+	model := newSequenceModel(
+		[]engine.StreamEvent{
+			{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "call-read", Name: tools.NameReadFile, Arguments: `{"path":"README.md"}`}},
+			{Type: engine.StreamEventCompleted},
+		},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "done"}, {Type: engine.StreamEventCompleted}},
+	)
+	service, _ := newToolService(t, model, fs, nil, nil, application.DefaultConfig())
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &testkit.RecordingSink{}
+	if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+		SessionID: created.SessionID, RequestID: "request-runtime-arguments", Input: "inspect", Sink: sink,
+	}); err != nil {
+		t.Fatalf("RunTurn() = %v", err)
+	}
+	proposed := runtimeEventOfType(t, sink.Delivered(), engine.RuntimeModelToolCall)
+	if proposed.Arguments != `{"path":"README.md"}` {
+		t.Fatalf("RuntimeModelToolCall.Arguments = %q, want the tool call's raw arguments", proposed.Arguments)
+	}
+}
+
+func TestRuntimeToolExecutionFailedCarriesFailureMessageAsContent(t *testing.T) {
+	fs := testkit.NewMemFS("/workspace")
+	model := newSequenceModel(
+		[]engine.StreamEvent{
+			{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "call-1", Name: "not_a_tool", Arguments: `{}`}},
+			{Type: engine.StreamEventCompleted},
+		},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "continued"}, {Type: engine.StreamEventCompleted}},
+	)
+	service, _ := newToolService(t, model, fs, nil, nil, application.DefaultConfig())
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &testkit.RecordingSink{}
+	if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+		SessionID: created.SessionID, RequestID: "request-runtime-failed-content", Input: "inspect", Sink: sink,
+	}); err != nil {
+		t.Fatalf("RunTurn() = %v", err)
+	}
+	failed := runtimeEventOfType(t, sink.Delivered(), engine.RuntimeToolExecutionFailed)
+	if failed.Content != application.ToolTextUnknownTool {
+		t.Fatalf("RuntimeToolExecutionFailed.Content = %q, want %q", failed.Content, application.ToolTextUnknownTool)
+	}
+}
+
+func runtimeEventOfType(t *testing.T, events []engine.RuntimeEvent, eventType engine.RuntimeEventType) engine.RuntimeEvent {
+	t.Helper()
+	for _, event := range events {
+		if event.Type == eventType {
+			return event
+		}
+	}
+	t.Fatalf("no runtime event of type %q among %#v", eventType, events)
+	return engine.RuntimeEvent{}
+}
+
 func TestSecondRunTurnSeesPriorTurnMessages(t *testing.T) {
 	fs := testkit.NewMemFS("/workspace")
 	model := newSequenceModel(
