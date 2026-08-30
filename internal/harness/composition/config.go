@@ -62,6 +62,16 @@ type Config struct {
 	// ShutdownTimeout bounds Close. Default 10s. This is the only bound this
 	// package introduces rather than forwards.
 	ShutdownTimeout time.Duration
+
+	// AllowUnsandboxedExec permits Open to proceed when no OS-level exec
+	// confinement backend is available on this host (missing bwrap or
+	// sandbox-exec, WSL1, or any platform with neither — including
+	// Windows, which has none in this slice: design doc §5). Off by
+	// default, so a missing sandbox fails Open closed rather than
+	// silently running commands unconfined. Setting it is a deliberate,
+	// loud trade-off, not a convenience: Open logs exactly which
+	// guarantee is absent.
+	AllowUnsandboxedExec bool
 }
 
 // DefaultShutdownTimeout bounds how long Close waits for the host's loops

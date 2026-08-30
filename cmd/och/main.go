@@ -53,6 +53,7 @@ func run(arguments []string) error {
 	maxOutput := flags.Uint("max-output", 0, "provider maximum output in tokens (required)")
 	flags.StringVar(&policyMode, "policy", string(policy.ModeDefault), "policy mode: default, read_only, allow_writes, deny_all")
 	flags.DurationVar(&config.ShutdownTimeout, "shutdown-timeout", composition.DefaultShutdownTimeout, "how long shutdown may wait for the host's loops")
+	flags.BoolVar(&config.AllowUnsandboxedExec, "allow-unsandboxed-exec", false, "proceed even if no OS-level exec sandbox (bwrap, sandbox-exec) is available on this host; logs which guarantee is absent")
 	serveACP := flags.Bool("acp", false, "serve ACP v1 JSON-RPC on stdin/stdout (stderr for diagnostics)")
 
 	if err := flags.Parse(arguments); err != nil {
