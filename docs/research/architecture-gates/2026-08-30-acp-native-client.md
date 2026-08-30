@@ -45,13 +45,20 @@ across independently-built implementations.
 | acp-go-sdk | `coder/acp-go-sdk` | `0845a3b` | 2026-08-30 | The most directly relevant reference for idiomatic Go client patterns, from a credible maintainer (Coder), given this project's own pure-Go, `CGO_ENABLED=0` constraint |
 | Toad | `batrachianai/toad` | `dd4f90e` | 2026-08-30 | A minimal terminal client rendering a trajectory — architecturally the closest published shape to what step 2 of the sequencing decision actually asks for, not a full IDE. Built by Will McGugan (creator of Rich/Textual). **License: AGPL** — noted here as a citation fact; this gate's own no-copying rule (below) applies regardless of any project's license |
 
-`MoonshotAI/kimi-code` and `deepseek-ai/deepseek-harness`, already pinned
-by the 2026-08-22 gate for their agent/server-side ACP work, were not
-re-fetched: neither project's own repository structure (as read at that
-gate — `packages/acp-server`, `packages/acp-adapter`,
-`packages/acp/acp/src/index.ts`) suggests a client-side counterpart, and
+`MoonshotAI/kimi-code`, already pinned by the 2026-08-22 gate for its
+agent/server-side ACP work, was not re-fetched: its own repository
+structure (as read at that gate — `packages/acp-server`,
+`packages/acp-adapter`) does not suggest a client-side counterpart, and
 this gate's three chosen sources already converge strongly enough (below)
 that a fourth shallow read would add breadth without adding signal.
+
+`deepseek-ai/deepseek-harness` — already pinned at `cd5ef81` by the
+2026-08-30 exec-sandboxing gate, re-observed here at the same commit,
+2026-08-30 — is a different case: it does ship an extensive client/
+frontend (`packages/client/ui-*`, dozens of packages), addressed directly
+below rather than in this table, since it was checked specifically to
+answer whether it is adoptable, not chosen as a converging fourth
+comparison point.
 
 ## Per-project findings
 
@@ -216,6 +223,60 @@ Three crates: `agent_servers` (subprocess lifecycle and the wire), `acp_thread` 
   and `terminal` capabilities entirely rather than reimplementing
   read/write/terminal proxying a second time on the client side, since the
   agent (this project) already owns and confines those effects.
+
+## DeepSeek Harness's frontend: checked directly, ruled out
+
+The sequencing decision this gate implements already rejected adopting
+DeepSeek Harness's web UI as this project's primary client surface
+(architecture, 2026-08-15 gate's Rejected shape 3). A narrower question
+remained open going into this gate: even if the whole web UI isn't
+adoptable, are any of its individual presentation components — a
+trajectory renderer, a tool-call card — cheaply extractable for reuse
+under this project's own ACP-native client? Checked directly at
+`deepseek-ai/deepseek-harness` `cd5ef81` (`packages/client/ui-trajectory`,
+`ui-chat`, `ui-tool`) rather than inferred from the package list. Two
+independent findings each rule this out on their own:
+
+- **Wrong rendering target.** `TrajectoryCell.tsx` imports
+  `TrajectoryCell.module.css` — CSS Modules, a browser-DOM styling
+  mechanism. This project's own milestone list already names its client
+  target `TypeScript TUI client` (`docs/README.md`, milestone 7) — a
+  terminal renderer, which has no `<div className=...>` equivalent
+  regardless of any data-format compatibility. This alone makes the
+  component non-portable to this project's chosen target independent of
+  everything else.
+- **Deep coupling to a private plugin architecture, not a standalone
+  component.** `trajectory-contract.ts` imports its core types
+  (`ConversationNode`, `RequestView`, `ToolCallBlock`,
+  `AssistantMessageNode`) from `@deepseek-ai/dsh-client-ui-conversation/
+  client` — DeepSeek Harness's own internal domain model, not ACP wire
+  types — and uses TypeScript `declare module` augmentation to register
+  itself into that package's `ConversationViewSnapshotMap` and a separate
+  `@deepseek-ai/dsh-client-ui-slots` registry. This is DeepSeek Harness's
+  own "capability seam" plugin system (`packages/CLAUDE.md` in that
+  repository), not a component with an independent public interface.
+  Extracting it would mean either vendoring a chain of DeepSeek Harness's
+  own internal packages this gate found no evidence are published for
+  external, non-DeepSeek-Harness consumption, or stripping every
+  DeepSeek-specific type and registration out — at which point the
+  original file is a reading reference for what fields a trajectory view
+  needs to track, not code being reused.
+
+This matches, from an independent angle, why DeepSeek Harness's own ACP
+server is deliberately "automation-only" (2026-08-22 gate): the web UI's
+presentation layer is built against a private, richer internal event
+model the ACP surface intentionally does not expose, not against ACP
+itself — so there was never a client-side ACP counterpart to adopt in the
+first place, only a web frontend that happens to live in the same
+repository.
+
+`TrajectorySnapshot`'s own field categorization (`eventNodes`,
+`eventLocations`, `requests`, `callSchemas`, `partial`, `runningCalls`) is
+noted as a plausible reference for what categories of state a trajectory
+view needs to track — read, not copied (DeepSeek Harness is MIT-licensed,
+which would permit copying with attribution, but the coupling above makes
+copying pointless regardless of what the license allows) — should the
+design phase find it useful.
 
 ## Open questions a design must resolve, not answered by this gate
 

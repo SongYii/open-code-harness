@@ -20,7 +20,9 @@
 | acp-go-sdk | `coder/acp-go-sdk` | `0845a3b` | 2026-08-30 | 考虑到本项目自己纯 Go、`CGO_ENABLED=0` 的约束，这是最直接相关的、来自可信维护方（Coder）的地道 Go 客户端写法参考 |
 | Toad | `batrachianai/toad` | `dd4f90e` | 2026-08-30 | 一个渲染执行轨迹的最小终端客户端——就架构形态而言，是目前公开项目里离顺序决策第 2 步实际要求的东西最近的一个，不是一整个 IDE。作者是 Will McGugan（Rich/Textual 的作者）。**协议：AGPL**——这里只是作为引用事实记录一下；本文下面的"不授权照抄"规则跟任何项目的许可证无关，一律适用 |
 
-`MoonshotAI/kimi-code` 和 `deepseek-ai/deepseek-harness`——2026-08-22 那份调研门已经为它们各自的 agent/server 端 ACP 工作钉过 commit——这次没有重新抓取：从那次调研门读到的目录结构看（`packages/acp-server`、`packages/acp-adapter`、`packages/acp/acp/src/index.ts`），两个项目的仓库结构都没有透露出有对应的客户端侧实现，而这次选的三个来源已经收敛得足够强（见下文），再泛读第四个只会增加广度、不会增加信号。
+`MoonshotAI/kimi-code`——2026-08-22 那份调研门已经为它的 agent/server 端 ACP 工作钉过 commit——这次没有重新抓取：从那次调研门读到的目录结构看（`packages/acp-server`、`packages/acp-adapter`），没有透露出有对应的客户端侧实现，而这次选的三个来源已经收敛得足够强（见下文），再泛读第四个只会增加广度、不会增加信号。
+
+`deepseek-ai/deepseek-harness`——同样在 2026-08-30 那份 exec 沙箱调研门里钉在 `cd5ef81`，这次在同一个 commit 上重新看——是另一回事：它确实有一整套前端（`packages/client/ui-*`，几十个包），下面单独讨论是不是能用，而不是放进对照表当第四个收敛来源。
 
 ## 逐项目发现
 
@@ -57,6 +59,17 @@ Toad（基于 [Textual](https://github.com/Textualize/textual) 的 TUI，Python�
 - **在唯一一个不自带转录存储的生产级客户端（Toad）里，历史重放是 agent 的活，不是客户端的活。** Zed 的 `to_markdown` 能力暗示它那边可能有一套更完整的应用内历史/导出机制，但本文没有确认 Zed 重新接上一个既有会话时，靠的是自己的存储还是 `session/load` 重放——这是下面留给设计阶段的一个开放问题，不是本文的发现。
 - **线协议层面的可观测性（一份独立于渲染出来的执行轨迹之外的原始请求/响应/通知日志）是最成熟的那个客户端（Zed 的 `acp_tools`）里一个真实的、单独做出来的功能**，不是顺手挂在执行轨迹渲染上的附加品。值得当作一个独立的设计问题提出来，而不是想当然地认为一份执行轨迹视图就能覆盖本项目自己的运维方可能有的同样需求。
 - **客户端侧真正最小的 `Client` 接口很小**（按 acp-go-sdk 的写法）：如果客户端在 `initialize` 时就声明不支持文件系统和终端能力，真正需要写实际逻辑的只有两个方法（`RequestPermission`、`SessionUpdate`）。本项目自己的定位里，工作区文件系统和 `exec` 本来就是**这个 harness**自己 jail 住的工具，不是客户端的活——针对本项目自己的 agent 端写一个最小客户端，有一个真实、成本很低的机会：直接在能力协商时声明不要 `fs` 和 `terminal`，而不是在客户端这边把读/写/终端代理再实现一遍——毕竟这些效果本来就已经被 agent（也就是本项目自己）拥有并限制住了。
+
+## DeepSeek Harness 的前端：直接查过了，排除
+
+本文所执行的那份顺序决策已经否决了把 DeepSeek Harness 的 WebUI 当作本项目主要客户端界面（架构，2026-08-15 调研门的"否决方案 3"）。但留了一个更窄的问题：就算整个 WebUI 不能用，里面某些展示组件（执行轨迹渲染、工具调用卡片）能不能低成本抠出来复用？这次直接在 `deepseek-ai/deepseek-harness`（`cd5ef81`，与 exec 沙箱那份调研门钉的是同一个 commit）里读了 `packages/client/ui-trajectory`、`ui-chat`、`ui-tool` 的源码，而不是靠包名单推断。两条各自独立的理由，任何一条单独就够否决：
+
+- **渲染目标不对。** `TrajectoryCell.tsx` 依赖 `TrajectoryCell.module.css`——CSS Modules 是浏览器 DOM 样式机制。本项目自己的里程碑列表里客户端那一项的名字就是"TypeScript TUI client"（`docs/README.md` 第 7 项）——终端渲染器，根本没有 `<div className=...>` 这种东西的对应物，跟数据格式兼不兼容无关。
+- **深度绑定在一套私有插件架构上，不是一个独立组件。** `trajectory-contract.ts` 的核心类型（`ConversationNode`、`RequestView`、`ToolCallBlock`）来自 `@deepseek-ai/dsh-client-ui-conversation/client`——DeepSeek Harness 自己的内部领域模型，不是 ACP 协议类型——并且用 TypeScript 的 `declare module` 把自己注册进那个包的 `ConversationViewSnapshotMap` 和另一个 `@deepseek-ai/dsh-client-ui-slots` 注册表里。这是 DeepSeek Harness 自己的"capability seam"插件系统，不是一个有独立公开接口的组件。想抠出来用，要么把一整条内部包依赖链搬过来（没有证据表明这些包是给 DeepSeek Harness 之外的消费者用的），要么把所有 DeepSeek 专属类型和注册逻辑全部剥掉——剥到最后，原文件只是"一个好的执行轨迹视图大概要追踪哪些字段"的参考读物，不是能复用的代码。
+
+这跟 DeepSeek Harness 自己的 ACP server 为什么刻意做成"automation-only"（2026-08-22 调研门的发现）是同一个根因的另一个侧面：WebUI 的展示层背后是一套私有的、更丰富的内部事件模型，ACP 这一侧是故意不暴露这份数据的——所以从一开始就不存在一个"客户端侧 ACP 对应物"可以采用，只是恰好这个仓库里也放着一份网页前端而已。
+
+`TrajectorySnapshot` 自己对字段的分类（`eventNodes`、`eventLocations`、`requests`、`callSchemas`、`partial`、`runningCalls`）可以作为"执行轨迹视图大概要追踪哪几类状态"的参考——只读不抄（DeepSeek Harness 是 MIT 协议，抄了带上版权声明是允许的，但上面说的耦合程度让"抄"这件事本身没有意义，跟协议允不允许无关）——设计阶段如果觉得有用可以参考。
 
 ## 本文没有回答、留给设计阶段的问题
 
