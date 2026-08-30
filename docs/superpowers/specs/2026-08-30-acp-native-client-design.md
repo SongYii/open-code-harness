@@ -1,7 +1,20 @@
 # Minimal ACP-Native Client — Design
 
 - **Date:** 2026-08-30
-- **Status:** Draft (approved for specification; pending human review of this file)
+- **Status:** Accepted 2026-08-30. The human reviewer raised whether this
+  slice's scoping choices (declining capabilities, a narrowed
+  `sessionUpdate` variant set, hand-rolled framing) risk deviating from
+  ACP as a de facto industry standard. None of them do: capability
+  decline and graceful handling of an unrecognized variant are the
+  protocol's own extensibility mechanism, not departures from it, and
+  hand-rolled framing is an implementation-strategy choice orthogonal to
+  wire compatibility. The one real open question the review surfaced is
+  genuine and already this design's stated primary goal, not a new gap:
+  the existing agent-side adapter has only ever been driven by this
+  repository's own scripted fixtures, never a real independent client, so
+  whether it is actually spec-compliant in practice remains unverified
+  until §7's real integration test exists — accepted as this slice's
+  acceptance criterion, not deferred as an unstated risk.
 - **Stability:** new surface; does not change any existing `experimental`/pre-GA contract
 - **Repository:** `open-code-harness` (`github.com/SongYii/open-code-harness`)
 - **Normative language:** English
