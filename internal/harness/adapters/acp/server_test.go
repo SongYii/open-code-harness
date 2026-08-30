@@ -1519,35 +1519,26 @@ func TestServeSessionLifecycleErrorsDoNotLeakDetails(t *testing.T) {
 	}
 }
 
-// TestServeSessionCloseRevalidatesFreshStateAfterDurableCheck proves that
-// session/close's durable LoadSession validation cannot make it act on a
-// wire-entry snapshot taken before that call. If close captured the
-// cancel/promptDone pair before validating, and the in-flight prompt at that
-// moment happened to settle while the durable check was outstanding, a
-// second prompt could start and run entirely uncancelled: close would wait
-// on and "cancel" the first (already-finished) prompt's stale channel/func
-// instead of the second (actually running) one, then unconditionally
-// overwrite the wire entry to detached — orphaning the live prompt's real
-// state. This test forces exactly that interleaving and requires close to
-// cancel whichever prompt is *actually* running when it makes its final,
-// mutex-guarded admission decision.
-func TestServeSessionCloseRevalidatesFreshStateAfterDurableCheck(t *testing.T) {
+// TestServeSessionCloseReservesClosingBeforeDurableCheck catches moving the
+// wireClosing transition after the unlocked LoadSession call. Once the close
+// frame has been admitted, a later prompt must observe closing and be rejected;
+// it must not start new work that the earlier close then happens to cancel.
+func TestServeSessionCloseReservesClosingBeforeDurableCheck(t *testing.T) {
 	agentIn, clientOut := io.Pipe()
 	clientIn, agentOut := io.Pipe()
 	fake := newFake()
 
-	var loadCalls int
 	loadEntered := make(chan struct{})
 	releaseLoad := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(releaseLoad) }) })
+	var loadCalls int
 	fake.load = func(_ context.Context, id domain.SessionID) (domain.Session, error) {
 		fake.mu.Lock()
 		loadCalls++
 		n := loadCalls
 		fake.mu.Unlock()
-		if n == 2 {
-			// This is session/close's own durable check: hold it open until
-			// the test has driven the first prompt to completion and started
-			// a second one.
+		if n == 1 {
 			close(loadEntered)
 			<-releaseLoad
 		}
@@ -1558,27 +1549,6 @@ func TestServeSessionCloseRevalidatesFreshStateAfterDurableCheck(t *testing.T) {
 			return domain.Session{}, sessionNotFoundError()
 		}
 		return session, nil
-	}
-
-	var promptCalls int
-	promptOneBlocked := make(chan struct{})
-	releasePromptOne := make(chan struct{})
-	promptTwoStarted := make(chan struct{})
-	promptTwoCancelled := make(chan struct{})
-	fake.run = func(ctx context.Context, request application.RunTurnRequest) (application.RunTurnResult, error) {
-		fake.mu.Lock()
-		promptCalls++
-		n := promptCalls
-		fake.mu.Unlock()
-		if n == 1 {
-			close(promptOneBlocked)
-			<-releasePromptOne
-			return application.RunTurnResult{SessionID: request.SessionID, Status: domain.TurnStatusCompleted}, nil
-		}
-		close(promptTwoStarted)
-		<-ctx.Done()
-		close(promptTwoCancelled)
-		return application.RunTurnResult{SessionID: request.SessionID, Status: domain.TurnStatusInterrupted}, ctx.Err()
 	}
 
 	done := make(chan error, 1)
@@ -1598,40 +1568,111 @@ func TestServeSessionCloseRevalidatesFreshStateAfterDurableCheck(t *testing.T) {
 	created := readJSON(t, clientIn)
 	sessionID := created["result"].(map[string]any)["sessionId"].(string)
 
-	// Prompt one starts and blocks inside RunTurn. Its own admission LoadSession
-	// call is loadCalls == 1.
-	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"`+sessionID+`","prompt":[{"text":"one"}]}}`)
-	awaitSignal(t, promptOneBlocked, "prompt one to start")
-
-	// session/close's own durable check is loadCalls == 2 and blocks.
-	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":4,"method":"session/close","params":{"sessionId":"`+sessionID+`"}}`)
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":3,"method":"session/close","params":{"sessionId":"`+sessionID+`"}}`)
 	awaitSignal(t, loadEntered, "close's durable check to start")
 
-	// While close is blocked mid-validation, let prompt one settle back to idle...
-	close(releasePromptOne)
-	promptOneResult := readJSON(t, clientIn)
-	if promptOneResult["id"] != float64(3) || promptOneResult["result"].(map[string]any)["stopReason"] != stopReasonEndTurn {
-		t.Fatalf("prompt one result = %#v", promptOneResult)
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"`+sessionID+`","prompt":[{"text":"later"}]}}`)
+	promptRejected := readJSON(t, clientIn)
+	releaseOnce.Do(func() { close(releaseLoad) })
+	promptError, _ := promptRejected["error"].(map[string]any)
+	if promptRejected["id"] != float64(4) || promptError["code"] != float64(codeInvalidRequest) {
+		t.Fatalf("prompt admitted while close durable check was outstanding: %#v", promptRejected)
+	}
+	fake.mu.Lock()
+	runs := fake.runs
+	fake.mu.Unlock()
+	if runs != 0 {
+		t.Fatalf("RunTurn calls while close durable check was outstanding = %d, want 0", runs)
 	}
 
-	// ...and admit a second, independent prompt into the now-idle entry.
-	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":5,"method":"session/prompt","params":{"sessionId":"`+sessionID+`","prompt":[{"text":"two"}]}}`)
-	awaitSignal(t, promptTwoStarted, "prompt two to start")
-
-	// Release close's durable check. Its final admission must be decided
-	// fresh, under the mutex, at this point — not from anything captured
-	// before the check started.
-	close(releaseLoad)
-
-	awaitSignal(t, promptTwoCancelled, "close to cancel the prompt actually running, not a stale one")
-
-	promptTwoResult := readJSON(t, clientIn)
-	if promptTwoResult["id"] != float64(5) || promptTwoResult["result"].(map[string]any)["stopReason"] != stopReasonCancelled {
-		t.Fatalf("prompt two result = %#v", promptTwoResult)
-	}
 	closeResult := readJSON(t, clientIn)
-	if closeResult["id"] != float64(4) || closeResult["error"] != nil {
+	if closeResult["id"] != float64(3) || closeResult["error"] != nil {
 		t.Fatalf("close result = %#v", closeResult)
+	}
+}
+
+// TestServeSessionCloseRestoresSettledPromptAfterDurableInternalFailure
+// catches both treating a storage failure as validation and reviving a stale
+// running entry when its prompt settled while close held wireClosing.
+func TestServeSessionCloseRestoresSettledPromptAfterDurableInternalFailure(t *testing.T) {
+	agentIn, clientOut := io.Pipe()
+	clientIn, agentOut := io.Pipe()
+	fake := newFake()
+
+	loadEntered := make(chan struct{})
+	releaseLoad := make(chan struct{})
+	var releaseLoadOnce sync.Once
+	t.Cleanup(func() { releaseLoadOnce.Do(func() { close(releaseLoad) }) })
+	var loadCalls int
+	fake.load = func(_ context.Context, id domain.SessionID) (domain.Session, error) {
+		fake.mu.Lock()
+		loadCalls++
+		n := loadCalls
+		session := fake.sessions[id]
+		fake.mu.Unlock()
+		if n == 2 {
+			close(loadEntered)
+			<-releaseLoad
+			return domain.Session{}, &application.Error{Category: application.CategoryPersistence, Code: "load_failed"}
+		}
+		return session, nil
+	}
+
+	promptEntered := make(chan struct{})
+	releasePrompt := make(chan struct{})
+	var releasePromptOnce sync.Once
+	t.Cleanup(func() { releasePromptOnce.Do(func() { close(releasePrompt) }) })
+	fake.run = func(_ context.Context, request application.RunTurnRequest) (application.RunTurnResult, error) {
+		fake.mu.Lock()
+		n := fake.runs
+		fake.mu.Unlock()
+		if n == 1 {
+			close(promptEntered)
+			<-releasePrompt
+		}
+		return application.RunTurnResult{SessionID: request.SessionID, Status: domain.TurnStatusCompleted}, nil
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(context.Background(), Config{Sessions: fake, History: fake, Workspace: "/workspace"}, agentIn, agentOut)
+	}()
+	t.Cleanup(func() {
+		_ = agentIn.Close()
+		_ = clientOut.Close()
+		_ = clientIn.Close()
+		_ = agentOut.Close()
+		_ = awaitError(t, done, "server exit")
+	})
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	_ = readJSON(t, clientIn)
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":2,"method":"session/new","params":{}}`)
+	created := readJSON(t, clientIn)
+	sessionID := created["result"].(map[string]any)["sessionId"].(string)
+
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"`+sessionID+`","prompt":[{"text":"one"}]}}`)
+	awaitSignal(t, promptEntered, "prompt to start")
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":4,"method":"session/close","params":{"sessionId":"`+sessionID+`"}}`)
+	awaitSignal(t, loadEntered, "close durable check to start")
+
+	releasePromptOnce.Do(func() { close(releasePrompt) })
+	promptResult := readJSON(t, clientIn)
+	if promptResult["id"] != float64(3) || promptResult["result"].(map[string]any)["stopReason"] != stopReasonEndTurn {
+		t.Fatalf("settled prompt result = %#v", promptResult)
+	}
+
+	releaseLoadOnce.Do(func() { close(releaseLoad) })
+	failed := readJSON(t, clientIn)
+	rpcError, _ := failed["error"].(map[string]any)
+	if rpcError["code"] != float64(codeInternalError) || rpcError["message"] != sessionOperationFailedMessage {
+		t.Fatalf("close durable internal failure = %#v", failed)
+	}
+
+	writeLine(t, clientOut, `{"jsonrpc":"2.0","id":5,"method":"session/prompt","params":{"sessionId":"`+sessionID+`","prompt":[{"text":"two"}]}}`)
+	secondPrompt := readJSON(t, clientIn)
+	secondResult, _ := secondPrompt["result"].(map[string]any)
+	if secondPrompt["id"] != float64(5) || secondResult["stopReason"] != stopReasonEndTurn {
+		t.Fatalf("prompt after failed close = %#v, want idle re-admission", secondPrompt)
 	}
 }
 

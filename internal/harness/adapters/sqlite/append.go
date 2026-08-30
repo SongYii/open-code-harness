@@ -79,12 +79,16 @@ func (store *Store) Append(ctx context.Context, request application.AppendReques
 		}
 	}
 
-	var current uint64
+	var current, previousAppendPosition uint64
+	streamExists := true
 	err = conn.QueryRowContext(ctx,
-		"SELECT version FROM event_streams WHERE session_id = ?", string(request.SessionID)).Scan(&current)
+		"SELECT version, last_append_commit_position FROM event_streams WHERE session_id = ?",
+		string(request.SessionID)).Scan(&current, &previousAppendPosition)
 	switch {
 	case isNoRows(err):
+		streamExists = false
 		current = 0
+		previousAppendPosition = 0
 	case err != nil:
 		return application.CommitReceipt{}, mapStorageError(err, request.SessionID)
 	}
@@ -186,7 +190,7 @@ func (store *Store) Append(ctx context.Context, request application.AppendReques
 		}
 	}
 
-	if err := store.updateSessionHead(ctx, conn, request.SessionID, prepared, position); err != nil {
+	if err := store.updateSessionHead(ctx, conn, request.SessionID, prepared, streamExists, previousAppendPosition, position); err != nil {
 		return application.CommitReceipt{}, err
 	}
 
@@ -291,16 +295,37 @@ func (store *Store) lookupReceipt(ctx context.Context, queryer rowQueryer, appen
 
 // updateSessionHead maintains the one synchronous projection inside the
 // append transaction. It is derived state, never authoritative.
-func (store *Store) updateSessionHead(ctx context.Context, conn *sql.Conn, sessionID domain.SessionID, prepared *preparedAppend, position uint64) error {
+func (store *Store) updateSessionHead(
+	ctx context.Context,
+	conn *sql.Conn,
+	sessionID domain.SessionID,
+	prepared *preparedAppend,
+	streamExists bool,
+	previousAppendPosition uint64,
+	position uint64,
+) error {
 	head := sessionHeadState{}
 	err := conn.QueryRowContext(ctx,
 		"SELECT workspace_root, status, active_turn_id, active_item_id, updated_at_commit_position FROM session_heads WHERE session_id = ?",
 		string(sessionID)).Scan(&head.workspaceRoot, &head.status, &head.turn, &head.item, &head.position)
 	switch {
 	case isNoRows(err):
+		if streamExists {
+			return newStoreError(application.StoreCodeCorrupt, sessionID,
+				wrapDetail("session_heads row missing for existing stream", nil))
+		}
 		head = sessionHeadState{}
 	case err != nil:
 		return mapStorageError(err, sessionID)
+	default:
+		if !streamExists {
+			return newStoreError(application.StoreCodeCorrupt, sessionID,
+				wrapDetail("session_heads row exists for a new stream", nil))
+		}
+		if head.position != previousAppendPosition {
+			return newStoreError(application.StoreCodeCorrupt, sessionID,
+				wrapDetail("session_heads position disagrees with canonical stream", nil))
+		}
 	}
 	for _, entry := range prepared.events {
 		head, err = applyHeadTransition(head, entry.record.Event)

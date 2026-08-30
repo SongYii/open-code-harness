@@ -149,9 +149,40 @@ func decodeSessionHeadCursor(encoded string) (sessionHeadCursor, bool, error) {
 		return sessionHeadCursor{}, false, fmt.Errorf("invalid session head cursor")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
+	token, err := decoder.Token()
+	delimiter, ok := token.(json.Delim)
+	if err != nil || !ok || delimiter != '{' {
+		return sessionHeadCursor{}, false, fmt.Errorf("invalid session head cursor")
+	}
 	var cursor sessionHeadCursor
-	if err := decoder.Decode(&cursor); err != nil {
+	seen := make(map[string]struct{}, 3)
+	for decoder.More() {
+		token, err = decoder.Token()
+		key, ok := token.(string)
+		if err != nil || !ok {
+			return sessionHeadCursor{}, false, fmt.Errorf("invalid session head cursor")
+		}
+		if _, duplicate := seen[key]; duplicate {
+			return sessionHeadCursor{}, false, fmt.Errorf("invalid session head cursor")
+		}
+		seen[key] = struct{}{}
+		switch key {
+		case "v":
+			err = decoder.Decode(&cursor.Version)
+		case "p":
+			err = decoder.Decode(&cursor.Position)
+		case "s":
+			err = decoder.Decode(&cursor.Session)
+		default:
+			return sessionHeadCursor{}, false, fmt.Errorf("invalid session head cursor")
+		}
+		if err != nil {
+			return sessionHeadCursor{}, false, fmt.Errorf("invalid session head cursor")
+		}
+	}
+	token, err = decoder.Token()
+	delimiter, ok = token.(json.Delim)
+	if err != nil || !ok || delimiter != '}' {
 		return sessionHeadCursor{}, false, fmt.Errorf("invalid session head cursor")
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {

@@ -283,6 +283,113 @@ func TestAppendSessionHeadCorruptionRollsBackWholeCanonicalAppend(t *testing.T) 
 	}
 }
 
+// TestAppendRejectsMissingSessionHeadForExistingStream catches rebuilding an
+// existing stream's derived head from only the new append. Missing derived
+// state is corruption; the canonical append must remain wholly absent.
+func TestAppendRejectsMissingSessionHeadForExistingStream(t *testing.T) {
+	store := openStore(t, tempStoreConfig(t))
+	mustAppend(t, store, appendRequest("append-head-open", "session-head-missing", 0, "command-head-open",
+		domain.SessionCreated{WorkspaceRoot: "/w"}))
+	if _, err := store.db.ExecContext(context.Background(),
+		"DELETE FROM session_heads WHERE session_id = 'session-head-missing'"); err != nil {
+		t.Fatalf("delete derived head: %v", err)
+	}
+
+	_, err := store.Append(context.Background(), appendRequest(
+		"append-head-after-missing", "session-head-missing", 1, "command-head-after-missing",
+		domain.TurnStarted{TurnID: "turn-head-missing", Input: "hi"}))
+	requireStoreCode(t, err, application.StoreCodeCorrupt)
+
+	if got := tableCount(t, store, "events"); got != 1 {
+		t.Fatalf("events rows after rejected append = %d, want 1", got)
+	}
+	if got := tableCount(t, store, "event_appends"); got != 1 {
+		t.Fatalf("event_appends rows after rejected append = %d, want 1", got)
+	}
+	var version, storeHead uint64
+	if err := store.db.QueryRowContext(context.Background(),
+		"SELECT version FROM event_streams WHERE session_id = 'session-head-missing'").Scan(&version); err != nil {
+		t.Fatalf("read stream version: %v", err)
+	}
+	if err := store.db.QueryRowContext(context.Background(),
+		"SELECT head_commit_position FROM store_metadata WHERE id = 1").Scan(&storeHead); err != nil {
+		t.Fatalf("read store head: %v", err)
+	}
+	if version != 1 || storeHead != 1 || tableCount(t, store, "session_heads") != 0 {
+		t.Fatalf("state after rejected append = version %d/store head %d/head rows %d, want 1/1/0",
+			version, storeHead, tableCount(t, store, "session_heads"))
+	}
+}
+
+// TestAppendRejectsMissingHeadForExistingVersionZeroStream catches using
+// version zero as a proxy for row absence. The schema permits a corrupt,
+// pre-existing zero-version stream row, which append must not silently repair.
+func TestAppendRejectsMissingHeadForExistingVersionZeroStream(t *testing.T) {
+	store := openStore(t, tempStoreConfig(t))
+	if _, err := store.db.ExecContext(context.Background(),
+		"INSERT INTO event_streams (session_id, version, created_at_commit_position, last_append_commit_position) VALUES ('session-head-zero', 0, 1, 1)"); err != nil {
+		t.Fatalf("insert zero-version stream: %v", err)
+	}
+
+	_, err := store.Append(context.Background(), appendRequest(
+		"append-head-zero", "session-head-zero", 0, "command-head-zero",
+		domain.SessionCreated{WorkspaceRoot: "/w"}))
+	requireStoreCode(t, err, application.StoreCodeCorrupt)
+
+	var version, storeHead uint64
+	if err := store.db.QueryRowContext(context.Background(),
+		"SELECT version FROM event_streams WHERE session_id = 'session-head-zero'").Scan(&version); err != nil {
+		t.Fatalf("read zero-version stream: %v", err)
+	}
+	if err := store.db.QueryRowContext(context.Background(),
+		"SELECT head_commit_position FROM store_metadata WHERE id = 1").Scan(&storeHead); err != nil {
+		t.Fatalf("read store head: %v", err)
+	}
+	if version != 0 || storeHead != 0 || tableCount(t, store, "events") != 0 ||
+		tableCount(t, store, "event_appends") != 0 || tableCount(t, store, "session_heads") != 0 {
+		t.Fatalf("state after rejected append = version %d/store head %d/events %d/appends %d/heads %d, want 0/0/0/0/0",
+			version, storeHead, tableCount(t, store, "events"), tableCount(t, store, "event_appends"), tableCount(t, store, "session_heads"))
+	}
+}
+
+// TestAppendRejectsStaleSessionHeadPosition catches advancing a derived head
+// whose position does not name the canonical stream's previous append.
+func TestAppendRejectsStaleSessionHeadPosition(t *testing.T) {
+	store := openStore(t, tempStoreConfig(t))
+	mustAppend(t, store, appendRequest("append-stale-head-open", "session-head-stale", 0, "command-stale-head-open",
+		domain.SessionCreated{WorkspaceRoot: "/w"}))
+	mustAppend(t, store, appendRequest("append-stale-head-run", "session-head-stale", 1, "command-stale-head-run",
+		domain.TurnStarted{TurnID: "turn-head-stale", Input: "hi"}))
+	if _, err := store.db.ExecContext(context.Background(),
+		"UPDATE session_heads SET updated_at_commit_position = 1 WHERE session_id = 'session-head-stale'"); err != nil {
+		t.Fatalf("stale derived head position: %v", err)
+	}
+
+	_, err := store.Append(context.Background(), appendRequest(
+		"append-after-stale-head", "session-head-stale", 2, "command-after-stale-head",
+		domain.TurnCompleted{TurnID: "turn-head-stale"}))
+	requireStoreCode(t, err, application.StoreCodeCorrupt)
+
+	var version, headPosition, storeHead uint64
+	if err := store.db.QueryRowContext(context.Background(),
+		"SELECT version FROM event_streams WHERE session_id = 'session-head-stale'").Scan(&version); err != nil {
+		t.Fatalf("read stream version: %v", err)
+	}
+	if err := store.db.QueryRowContext(context.Background(),
+		"SELECT updated_at_commit_position FROM session_heads WHERE session_id = 'session-head-stale'").Scan(&headPosition); err != nil {
+		t.Fatalf("read derived head position: %v", err)
+	}
+	if err := store.db.QueryRowContext(context.Background(),
+		"SELECT head_commit_position FROM store_metadata WHERE id = 1").Scan(&storeHead); err != nil {
+		t.Fatalf("read store head: %v", err)
+	}
+	if version != 2 || headPosition != 1 || storeHead != 2 ||
+		tableCount(t, store, "events") != 2 || tableCount(t, store, "event_appends") != 2 {
+		t.Fatalf("state after rejected append = version %d/head position %d/store head %d/events %d/appends %d, want 2/1/2/2/2",
+			version, headPosition, storeHead, tableCount(t, store, "events"), tableCount(t, store, "event_appends"))
+	}
+}
+
 func readSessionCorruptSnapshot(t *testing.T, store *Store) (version uint64, headStatus string, headPosition uint64, storeHead uint64) {
 	t.Helper()
 	if err := store.db.QueryRowContext(context.Background(),

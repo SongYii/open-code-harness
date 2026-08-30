@@ -120,13 +120,19 @@ policy, startup reconciliation) is Slice 4 and intentionally absent.
 `session_heads` is the one synchronous projection. Append applies the same
 domain transition semantics that `RebuildAndVerifySessionHeads` independently
 checks by replaying canonical streams; any disagreement is corruption. The
-projection is never authoritative. Every append derives `workspace_root`
-from the replayed `session.created` root (never from a caller-supplied
-value) and upserts it alongside `status`/`active_turn_id`/`active_item_id`/
+projection is never authoritative. The initial `session.created` derives
+`workspace_root` from its canonical event value; later appends carry it
+forward from the position-validated head, never from caller input. Append
+upserts it alongside `status`/`active_turn_id`/`active_item_id`/
 `updated_at_commit_position` inside the same `BEGIN IMMEDIATE` transaction
-that writes the canonical append; a `session.deleted` event transitions
-`status` to `deleted` in that same write. `Backup` produces a consistent
-snapshot copy (via `VACUUM INTO`, because the pure-Go driver does not export
+that writes the canonical append. Before applying incremental events, a new
+stream must have no derived head, while an existing stream must have a head
+whose `updated_at_commit_position` equals canonical
+`event_streams.last_append_commit_position`; a missing, orphaned, or stale
+head is `StoreCorrupt` and rolls back the whole append. A `session.deleted`
+event transitions `status` to `deleted` in that same write. `Backup`
+produces a consistent snapshot copy (via `VACUUM INTO`, because the pure-Go
+driver does not export
 the Online Backup API) and verifies the copy's schema version, contiguity,
 and invariant counts against the live database before reporting success.
 
@@ -147,8 +153,9 @@ is never returned to the caller.
 The cursor is opaque outside this package: base64url (strict decode, no
 padding) of the JSON object `{"v":1,"p":<last returned commit position>,
 "s":"<its session id>"}`, bounded to 512 bytes and built only from the last
-row actually returned. A malformed, oversize, non-canonical-base64, or
-wrong-version cursor is a validation error, not a silent empty page. Each
+row actually returned. A malformed, oversize, non-canonical-base64,
+duplicate-JSON-key, or wrong-version cursor is a validation error, not a
+silent empty page. Each
 page is one SQLite snapshot; the port makes no multi-page snapshot
 guarantee, so a concurrent append can move a session between pages.
 

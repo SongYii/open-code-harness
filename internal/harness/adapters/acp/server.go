@@ -92,9 +92,10 @@ const (
 )
 
 type sessionState struct {
-	state      wireSessionState
-	cancel     context.CancelFunc
-	promptDone chan struct{}
+	state         wireSessionState
+	cancel        context.CancelFunc
+	promptDone    chan struct{}
+	promptSettled bool
 }
 
 // admitBusy reports whether entry blocks a new prompt/resume/load admission:
@@ -375,15 +376,20 @@ func (s *server) runPrompt(ctx context.Context, id json.RawMessage, sessionID do
 	close(done)
 }
 
-// settlePrompt returns a running entry to idle. A closing entry is left
-// untouched: sessionClose owns the closing -> detached transition once it
-// wakes from done.
+// settlePrompt returns a running entry to idle. If close has already reserved
+// the entry, it records settlement without changing wireClosing; a failed
+// durable close check can then restore idle without racing the final response.
 func (s *server) settlePrompt(wireID string) {
 	s.mu.Lock()
-	if entry := s.sessions[wireID]; entry != nil && entry.state == wireRunning {
-		entry.state = wireIdle
-		entry.cancel = nil
-		entry.promptDone = nil
+	if entry := s.sessions[wireID]; entry != nil {
+		switch entry.state {
+		case wireRunning:
+			entry.state = wireIdle
+			entry.cancel = nil
+			entry.promptDone = nil
+		case wireClosing:
+			entry.promptSettled = true
+		}
 	}
 	s.mu.Unlock()
 }
@@ -453,20 +459,10 @@ func (s *server) sessionResume(message rpcRequest) error {
 	return s.out.writeResult(message.ID, struct{}{})
 }
 
-// sessionClose fast-fails obviously ineligible entries under the mutex, then
-// hands off to a goroutine for everything that can block: the durable
-// LoadSession check (confirming the session still exists in this workspace,
-// so close cannot outlive an externally deleted or foreign session) and
-// cancelling/waiting for running work. Neither step holds the mutex or
-// blocks frames for other sessions.
-//
-// The durable check is unlocked and can race a concurrently settling or
-// restarting prompt on the same entry, so admission is decided exactly once,
-// fresh under the mutex, immediately before the wireClosing transition — the
-// cancel/promptDone pair used below is read at that same instant, never
-// captured before the durable call. Reusing an earlier snapshot would let
-// close cancel a prompt that already finished while a different prompt that
-// started in the interim ran on uncancelled.
+// sessionClose reserves wireClosing under the mutex before handing durable
+// validation and prompt settlement to a goroutine. The reservation makes the
+// close frame the linearization point: later prompt/resume/load/close/delete
+// frames for this wire entry are rejected even while LoadSession is slow.
 //
 // It never calls the durable Application close use case and never appends
 // session.closed: a resumable persistent Session survives.
@@ -479,49 +475,74 @@ func (s *server) sessionClose(message rpcRequest) error {
 	if err != nil {
 		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
 	}
+
 	s.mu.Lock()
 	entry := s.sessions[params.SessionID]
-	fastEligible := entry != nil && (entry.state == wireIdle || entry.state == wireRunning)
-	s.mu.Unlock()
-	if !fastEligible {
-		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
-	}
-
-	go s.durableCloseAdmission(message.ID, sessionID, params.SessionID)
-	return nil
-}
-
-// durableCloseAdmission runs off the dispatch goroutine so its LoadSession
-// call cannot block other sessions on the same duplex. It takes the one
-// authoritative admission decision fresh, under the mutex, right after that
-// call returns.
-func (s *server) durableCloseAdmission(id json.RawMessage, sessionID domain.SessionID, wireID string) {
-	// LoadSession alone only ever filters a deleted session; a durably
-	// closed one loads successfully (ordinary load may still replay a
-	// closed Session's history). Close must reject both, matching the
-	// documented contract.
-	session, err := s.config.Sessions.LoadSession(s.ctx, sessionID)
-	if err != nil || session.Status != domain.SessionStatusActive || !s.sessionWorkspaceMatches(session.WorkspaceRoot) {
-		_ = s.out.writeError(id, codeInvalidParams, "invalid params")
-		return
-	}
-
-	s.mu.Lock()
-	entry := s.sessions[wireID]
 	if entry == nil || (entry.state != wireIdle && entry.state != wireRunning) {
 		s.mu.Unlock()
-		_ = s.out.writeError(id, codeInvalidParams, "invalid params")
-		return
+		return s.out.writeError(message.ID, codeInvalidParams, "invalid params")
 	}
+	priorState := entry.state
 	entry.state = wireClosing
+	entry.promptSettled = false
 	cancel := entry.cancel
 	done := entry.promptDone
 	s.mu.Unlock()
 
-	s.finishClose(id, wireID, cancel, done)
+	go s.durableCloseAdmission(message.ID, sessionID, params.SessionID, entry, priorState, cancel, done)
+	return nil
 }
 
-func (s *server) finishClose(id json.RawMessage, wireID string, cancel context.CancelFunc, done chan struct{}) {
+// durableCloseAdmission runs off the dispatch goroutine so its LoadSession
+// call cannot block other sessions on the same duplex. Validation failure
+// restores the exact reserved idle/running state; persistence/internal failure
+// uses the lifecycle contract's fixed non-leaking internal error.
+func (s *server) durableCloseAdmission(
+	id json.RawMessage,
+	sessionID domain.SessionID,
+	wireID string,
+	reserved *sessionState,
+	priorState wireSessionState,
+	cancel context.CancelFunc,
+	done chan struct{},
+) {
+	session, err := s.config.Sessions.LoadSession(s.ctx, sessionID)
+	if err != nil {
+		s.restoreCloseReservation(wireID, reserved, priorState)
+		if application.IsCategory(err, application.CategoryValidation) {
+			_ = s.out.writeError(id, codeInvalidParams, "invalid params")
+		} else {
+			_ = s.out.writeError(id, codeInternalError, sessionOperationFailedMessage)
+		}
+		return
+	}
+	if session.Status != domain.SessionStatusActive || !s.sessionWorkspaceMatches(session.WorkspaceRoot) {
+		s.restoreCloseReservation(wireID, reserved, priorState)
+		_ = s.out.writeError(id, codeInvalidParams, "invalid params")
+		return
+	}
+
+	s.finishClose(id, wireID, reserved, cancel, done)
+}
+
+func (s *server) restoreCloseReservation(wireID string, reserved *sessionState, priorState wireSessionState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry := s.sessions[wireID]
+	if entry != reserved || entry.state != wireClosing {
+		return
+	}
+	if priorState == wireRunning && !entry.promptSettled {
+		entry.state = wireRunning
+	} else {
+		entry.state = wireIdle
+		entry.cancel = nil
+		entry.promptDone = nil
+	}
+	entry.promptSettled = false
+}
+
+func (s *server) finishClose(id json.RawMessage, wireID string, reserved *sessionState, cancel context.CancelFunc, done chan struct{}) {
 	if cancel != nil {
 		cancel()
 	}
@@ -529,7 +550,9 @@ func (s *server) finishClose(id json.RawMessage, wireID string, cancel context.C
 		<-done
 	}
 	s.mu.Lock()
-	s.sessions[wireID] = &sessionState{state: wireDetached}
+	if s.sessions[wireID] == reserved && reserved.state == wireClosing {
+		s.sessions[wireID] = &sessionState{state: wireDetached}
+	}
 	s.mu.Unlock()
 	_ = s.out.writeResult(id, struct{}{})
 }

@@ -34,6 +34,9 @@ the evidence below, not from checkbox state.
 | 6 | `484088d` | ACP: `session/list`/`resume`/`close`/`delete`, explicit five-state wire machine, workspace canonicalization at `Serve` construction |
 | 6 fix | `6da3e2a` | `session/load` gains the same `CanonicalWorkspaceRoot`/empty-MCP-list validation as `session/resume`; lock-scoped reads of shared wire-entry fields |
 | 7 | `6bb3c05` | `session.deleted` transcript fact, implemented-contract and evidence publication |
+| 7 review | `1455d9c` | Domain-event catalog completion, evidence/test-table corrections, and stale exclusion pointers |
+| Post-review 1 | `46e0a59` | Durable close revalidation and canonical-append rollback proof |
+| Post-review 2 | `af35fe8` | Domain-closed close rejection, migration-4 deleted-session compatibility, and cursor integer-bound parity |
 
 ## Mapping-table tests
 
@@ -42,13 +45,14 @@ the evidence below, not from checkbox state.
 | Domain deletion | `TestDecideDeleteSessionAcceptsOnlyIdleActiveOrClosedSession`, `TestApplySessionDeletedIsTerminalFromIdleActiveOrClosed`, `TestApplyCompactMatchesHistoricalSessionDeletion`, `TestRecordedEventJSONSessionDeletedIsStrictAndCanonical` |
 | Application lifecycle | `TestListSessionsUsesCanonicalFixedPageAndMapsCatalogErrors`, `TestResumeSessionRequiresSameWorkspaceAndActiveIdleState`, `TestDeleteSessionUsesCanonicalAppendAndNonEnumeratingBoundary`, `TestRunTurnAndDeleteSessionHaveOneCASWinner` |
 | SQLite migration 4 | `TestMigration4MigratesEmptyV3Database`, `TestMigration4ReplaysPopulatedV3Head`, `TestMigration4RejectsNonLegacyRunningStatus`, `TestMigration4RebuildsMissingLegacyHead`, `TestMigration4MismatchRollsBackToV3`, `TestMigration4MalformedEventRollsBackToV3`, `TestMigration4OrphanLegacyHeadRollsBackToV3`, `TestImportMaintainsSessionHead` |
-| SQLite keyset catalog | `TestListSessionHeadsFiltersDeletedBeforeLimitAndPaginates`, `TestListSessionHeadsBreaksCommitPositionTiesBySessionID`, `TestListSessionHeadsStrictlyDecodesCursorsAndBindsCursorValues`, `TestListSessionHeadsConvertsUTCAndRejectsCorruptVisibleRows`, `TestListSessionHeadsUsesOneSnapshotDuringConcurrentAppend` |
+| SQLite append head integrity | `TestAppendSessionHeadCorruptionRollsBackWholeCanonicalAppend`, `TestAppendRejectsMissingSessionHeadForExistingStream`, `TestAppendRejectsMissingHeadForExistingVersionZeroStream`, `TestAppendRejectsStaleSessionHeadPosition` |
+| SQLite keyset catalog | `TestListSessionHeadsFiltersDeletedBeforeLimitAndPaginates`, `TestListSessionHeadsBreaksCommitPositionTiesBySessionID`, `TestListSessionHeadsStrictlyDecodesCursorsAndBindsCursorValues`, `TestListSessionHeadsConvertsUTCAndRejectsCorruptVisibleRows`, `TestListSessionHeadsUsesOneSnapshotDuringConcurrentAppend`, shared `session_head_catalog` conformance cases (including duplicate JSON keys) |
 | ACP capabilities golden | `TestServeInitializeAdvertisesSessionLifecycleCapabilities` |
 | ACP list | `TestServeSessionListReturnsWorkspaceSessions` |
 | ACP resume | `TestServeSessionResumeReattachesAndRejectsIneligible` |
-| ACP close | `TestServeSessionCloseCancelsSettlesAndDetaches`, `TestServeSessionLifecycleRejectsDuringClosingAndDeleting` |
+| ACP close | `TestServeSessionCloseCancelsSettlesAndDetaches`, `TestServeSessionLifecycleRejectsDuringClosingAndDeleting`, `TestServeSessionCloseReservesClosingBeforeDurableCheck`, `TestServeSessionCloseRejectsDomainClosedSession` |
 | ACP delete | `TestServeSessionDeleteBlocksPromptEntryAndIsIdempotent`, `TestServeSessionDeleteRestoresStateAfterInternalFailure` |
-| ACP fixed error strings | `TestServeSessionLifecycleErrorsDoNotLeakDetails` |
+| ACP fixed error strings | `TestServeSessionLifecycleErrorsDoNotLeakDetails`, `TestServeSessionCloseRestoresSettledPromptAfterDurableInternalFailure` |
 | Composition end-to-end | `TestAssemblyServesACPTurnEndToEnd` (extended through list/close/resume/delete and a durable-stream deletion-evidence read) |
 | Transcript deletion fact | `TestProjectRecordFrozenPayloads/session_deleted`, `TestGoldenFixturesRoundTrip/testdata/facts.jsonl`, `TestWriteSessionSnapshotBits/deleted_session`, `TestWriteSessionDeletedSessionExportsDeletionFact` |
 
@@ -63,7 +67,7 @@ was appended; `snapshot.jsonl` and `complete.jsonl` are unchanged from the
 | --- | --- |
 | `facts.jsonl` | `82bbaeeb54b6452f493c8d4fc722045d7d69ff554377636e9e9e479134c5b452` |
 
-## Verification commands and output
+## Original Slice B verification commands and output (historical at `6bb3c05`)
 
 All keyless and network-free.
 
@@ -131,6 +135,44 @@ cross-target `go build ./...` commands above are the executable portability
 checks used in their place; the cross-target test attempts are not recorded as
 passing.
 
+## Post-review repair verification (2026-08-30)
+
+This working-tree repair is based on `7ac09d6`. It is intentionally recorded
+separately from the frozen original Slice B output above; the review fixes were
+uncommitted when these commands ran.
+
+```text
+$ gofmt -l .
+(clean)
+
+$ go vet ./...
+(clean)
+
+$ go test -count=1 ./...
+ok (all packages)
+
+$ go test -race -count=1 ./...
+ok (all packages)
+
+$ GOOS=windows GOARCH=amd64 go build ./...
+(clean)
+
+$ GOOS=darwin GOARCH=arm64 go build ./...
+(clean)
+
+$ git diff --check
+(clean)
+```
+
+The repair's RED checks reproduced all reviewed failures before implementation:
+a later prompt entered while close was still validating, close mapped an
+internal validation failure to `-32602`, missing and stale `session_heads`
+rows (including an existing version-zero stream) were accepted, and cursors
+with duplicate top-level keys decoded successfully. The focused tests passed
+after the fixes. A mutation that suppressed close's prompt-settlement marker
+made the restored session remain spuriously busy, and the corresponding ACP
+regression failed as expected before the mutation was reverted.
+
 ## Mutation check
 
 Disabling `sessionPrompt`'s `entry.state != wireIdle` admission check (Task
@@ -183,10 +225,6 @@ Recorded as out of this slice, not as deferred bugs inside it:
 
 ## Remaining
 
-- Stale attachment handling when a Session becomes externally
-  durable-closed or deleted before an ACP `session/close` on the same wire
-  entry is not specially handled beyond the existing idle/running admission
-  check (deferred from Task 6 review).
 - `SessionID` is parsed once in `application.DeleteSession` and, for some
   ACP handlers, again for wire-level validation; not consolidated into a
   single parse (deferred from Task 6 review).

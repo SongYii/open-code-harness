@@ -107,11 +107,16 @@ fence。SQLite 的 `unixepoch('subsec')` 是唯一租约时钟。每次追加在
 
 `session_heads` 是唯一同步投影。追加路径应用领域转移语义；
 `RebuildAndVerifySessionHeads` 通过独立重放规范流来校验同一语义，并把任何
-不一致报告为损坏。投影绝不被当作权威。每次追加都从重放出的
-`session.created` 根推导 `workspace_root`（绝不来自调用方传入的值），并在
-写入规范追加的同一个 `BEGIN IMMEDIATE` 事务里，连同
-`status`/`active_turn_id`/`active_item_id`/`updated_at_commit_position` 一起
-upsert；`session.deleted` 事件在同一次写入中把 `status` 转为 `deleted`。
+不一致报告为损坏。投影绝不被当作权威。初始 `session.created` 从其规范事件
+值推导 `workspace_root`；后续追加从位置已校验的 head 继承该值，绝不采用
+调用方输入。追加在写入规范追加的同一个 `BEGIN IMMEDIATE` 事务里，连同
+`status`/`active_turn_id`/`active_item_id`/
+`updated_at_commit_position` 一起
+upsert。应用增量事件之前，新流必须没有派生 head；已有流必须存在 head，且其
+`updated_at_commit_position` 必须等于规范
+`event_streams.last_append_commit_position`。缺失、孤立或位置陈旧的 head
+会返回 `StoreCorrupt` 并回滚整次追加；`session.deleted` 事件在同一次
+写入中把 `status` 转为 `deleted`。
 `Backup` 生成一致快照副本（因纯 Go 驱动未导出 Online Backup API 而使用
 `VACUUM INTO`），并在报告成功前校验副本的模式版本、连续性与不变量
 计数是否与活库一致。
@@ -131,8 +136,9 @@ SQL。`WorkspaceRoot` 必须已是规范值（已应用
 
 cursor 对本包之外不透明：JSON 对象 `{"v":1,"p":<最后返回行的提交位置>,
 "s":"<其会话 id>"}` 的 base64url（严格解码，无 padding）编码，上限
-512 字节，且只由最后一行真正返回的行构造。畸形、超限、非规范 base64
-或版本不对的 cursor 是校验错误，不是静默空页。每一页都是一次 SQLite
+512 字节，且只由最后一行真正返回的行构造。畸形、超限、非规范 base64、
+含重复 JSON 键或版本不对的 cursor 是校验错误，不是静默空页。每一页都是一次
+SQLite
 快照；该端口不保证多页快照，并发追加可以把某个会话移动到另一页。
 
 每个 EventStore 实现（SQLite 与共享的内存/一致性适配器）都针对同一个端口

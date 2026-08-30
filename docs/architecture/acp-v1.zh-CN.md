@@ -125,15 +125,15 @@ load 不发 `session/request_permission`。
 **ACP close 不是持久的 `session.closed` 事实。** close 只取消该 duplex
 拥有的工作并 detach 现场条目；持久 Session 仍可恢复，绝不调用
 `application.CloseSession`。close 确实会执行一次持久的*读*——
-`LoadSession`——在接纳这次转换之前确认该会话在本工作区仍然存在：一个已被
-外部删除或已被其他路径持久关闭的会话是 `-32602`，而不是静默地成功 detach。
-这次读取不持锁，且运行在 dispatch goroutine 之外（这样一次缓慢的读取不会
-阻塞其他会话的帧）；最终的接纳决定——重新查找现场条目、转到 `wireClosing`、
-以及被实际使用的那对 `cancel`/`promptDone`——只在该读取返回之后、在锁内、
-恰好做一次。这个决定里没有任何东西是在读取之前捕获的：如果读取进行期间某
-个 prompt 结算了、或又有新 prompt 开始了，都会被正确地看到，因为 close
-取消的永远是它真正提交 closing 那一刻实际在跑的 prompt，绝不是更早捕获的
-那个。delete 是本切片新增的唯一持久生命周期事实：
+`LoadSession`——确认该会话在本工作区仍然存在且保持 active。close 在执行
+这次读取**之前**就在互斥锁内记录 `wireClosing`；这次预留就是接纳点，因而
+后续 prompt/resume/load/close/delete 帧在不持锁的慢读取期间都会被拒绝。
+读取仍运行在 dispatch goroutine 之外，所以慢存储不会阻塞其他会话。缺失、
+外来、领域已关闭或已删除会话会恢复预留条目并返回 `-32602`；持久化/内部
+读取失败会恢复条目并返回 `-32603 session operation failed`。如果原条目
+正在运行且 prompt 在读取期间结算，恢复目标是 idle，而不是复活一个陈旧的
+running 条目。成功读取则取消最初预留的 prompt，等待其终态帧后 detach。
+delete 是本切片新增的唯一持久生命周期事实：
 它经由与其他命令相同的 CAS 保护追加路径写入 `session.deleted`，是逻辑删除
 （不物理擦除任何行——见[会话转录](session-transcript.md)），并把缺失、
 外来工作区与已删除会话都当作同一个不可区分的成功空操作，因而绝不会成为

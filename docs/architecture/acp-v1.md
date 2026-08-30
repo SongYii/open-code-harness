@@ -133,18 +133,17 @@ or `_meta`.
 **ACP close is not the durable `session.closed` fact.** Close only cancels
 work owned by this duplex and detaches the wire entry; the persistent
 Session remains resumable and `application.CloseSession` is never called.
-Close does perform one durable *read*, `LoadSession`, to confirm the session
-still exists in this workspace before admitting the transition — a session
-externally deleted or durably closed by some other path is `-32602`, not a
-silent successful detach. That read is unlocked and runs off the dispatch
-goroutine (so a slow read cannot block frames for other sessions); the final
-admission decision — the fresh entry lookup, the `wireClosing` transition,
-and the `cancel`/`promptDone` pair that get acted on — is made exactly once,
-under the mutex, immediately after the read returns. Nothing about that
-decision is captured before the read: a prompt that settles or a new one
-that starts while the read is outstanding is picked up correctly, because
-close always cancels whichever prompt is actually running at the moment it
-commits to closing, never one captured earlier.
+Close records `wireClosing` under the mutex before performing one durable
+*read*, `LoadSession`, to confirm the session still exists and remains active
+in this workspace. That reservation is the admission point: later
+prompt/resume/load/close/delete frames are rejected while the unlocked read
+runs off the dispatch goroutine, so a slow store does not block other
+sessions. An absent, foreign, durably closed, or deleted Session restores the
+reserved entry and returns `-32602`; a persistence/internal read failure
+restores it and returns `-32603 session operation failed`. If the reserved
+entry was running and its prompt settles during the read, restoration records
+idle rather than reviving a stale running entry. A successful read cancels
+the originally reserved prompt, waits for its terminal frame, and detaches.
 Delete is the sole new durable lifecycle fact this slice adds: it appends
 `session.deleted` through the same CAS-guarded append path as every other
 command, is logical (no row is physically erased — see
