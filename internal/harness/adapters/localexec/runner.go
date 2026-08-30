@@ -18,8 +18,10 @@ const DefaultMaxBytes = 64 << 10
 
 // Runner executes argv commands inside a workspace jail.
 type Runner struct {
-	workspace   string
-	enforcement Enforcement
+	workspace      string
+	enforcement    Enforcement
+	bwrapAvailable bool
+	bwrapReason    string
 }
 
 var errInvalidSpec = errors.New("localexec: invalid command spec")
@@ -41,16 +43,24 @@ func New(workspace string) (*Runner, error) {
 	if err != nil || !info.IsDir() {
 		return nil, errInvalidWorkspace
 	}
+	bwrapAvailable, bwrapReason := probeBwrap()
+	enforcement := Enforcement{
+		Filesystem: EnforcementNone,
+		Network:    EnforcementNone,
+		Memory:     EnforcementNone,
+	}
+	if bwrapAvailable {
+		// --unshare-net denies all network access outright (design §3.2);
+		// the read-only host with only the workspace rebound read-write
+		// gives the same guarantee for filesystem writes.
+		enforcement.Filesystem = EnforcementFull
+		enforcement.Network = EnforcementFull
+	}
 	return &Runner{
-		workspace: real,
-		// No platform backend is wired in yet; this is an honest baseline,
-		// not a regression from the prior fixed "partial" claim, since
-		// nothing enforced before this type existed stops being enforced.
-		enforcement: Enforcement{
-			Filesystem: EnforcementNone,
-			Network:    EnforcementNone,
-			Memory:     EnforcementNone,
-		},
+		workspace:      real,
+		enforcement:    enforcement,
+		bwrapAvailable: bwrapAvailable,
+		bwrapReason:    bwrapReason,
 	}, nil
 }
 
@@ -87,7 +97,13 @@ func (runner *Runner) Run(ctx context.Context, spec tools.CommandSpec) (tools.Co
 	}
 	defer os.RemoveAll(tmp)
 
-	cmd := exec.Command(argv0, args...)
+	name := argv0
+	runArgs := args
+	if runner.bwrapAvailable {
+		name = "bwrap"
+		runArgs = bwrapArgv(runner.workspace, cwd, append([]string{argv0}, args...))
+	}
+	cmd := exec.Command(name, runArgs...)
 	cmd.Dir = cwd
 	cmd.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
