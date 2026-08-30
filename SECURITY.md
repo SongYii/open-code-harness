@@ -41,17 +41,41 @@ today, stated with their limits.
   timeout or cancellation, and receives an environment reduced to `PATH`
   (inherited), `HOME` (the workspace root), and `TMPDIR` (a workspace
   subdirectory removed after exit).
+- **OS-level exec confinement when available.** On Linux, `exec` runs under
+  `bwrap` (unshared user/pid/ipc/uts/cgroup/network namespaces, every
+  capability dropped, a read-only host view with only the workspace root
+  rebound writable) when `bwrap` is on `PATH` and a scoped probe succeeds. On
+  macOS, `exec` runs under a Seatbelt (`sandbox-exec`) profile denying writes
+  outside the workspace root and all network egress when
+  `/usr/bin/sandbox-exec` is present and its probe succeeds. This is a fact,
+  not an assumption: `Runner.Enforcement()` reports the real per-effect state
+  (`"full"`, `"partial"`, or `"none"`), and a missing or non-functional
+  backend is the fail-closed case below, not a silent downgrade.
+- **A Linux memory quota.** A cgroup v2 child cgroup bounds each command's
+  memory (`memory.high`/`memory.max`); a monitored breach kills the process
+  group and reports `CommandResult.ResourceLimited` instead of `TimedOut`.
+- **Fail-closed startup.** `composition.Open` refuses to start when neither
+  OS-level backend is available, unless the operator explicitly sets
+  `Config.AllowUnsandboxedExec` (`-allow-unsandboxed-exec` on the `och`
+  binary) — a loud, logged opt-out naming exactly which guarantee is absent,
+  never a silent fallback.
 
 ### Not enforced
 
-- **`exec` is not sandboxed.** `adapters/localexec` is bounded `os/exec`, not
-  Seatbelt, bwrap, seccomp, or Landlock. An approved command runs with the
-  full privileges of the harness process. Network egress is not blocked:
-  `curl` from `exec` reaches the internet. Writes outside the workspace are
-  not kernel-blocked; only the filesystem tools are jailed.
+- **Windows has no OS-level `exec` confinement in this slice.**
+  `composition.Open` fails closed there by default, the same as any host
+  missing its platform's backend; an operator must explicitly accept running
+  unconfined via `AllowUnsandboxedExec`. This is a real, named capability gap
+  relative to a working Linux/macOS deployment, not an oversight.
+- **Confinement mechanisms have real limits even where active.** There is no
+  seccomp-level syscall filtering and no Landlock (rejected: it needs CGO for
+  correctness on pre-ABI-V8 kernels, which this project's pure-Go constraint
+  excludes). macOS's memory bound (`RLIMIT_AS`) is best-effort: it caps
+  virtual address space, not resident memory, and a breach surfaces as the
+  child's own allocator getting `ENOMEM`, not a clean external kill —
+  `CommandResult.ResourceLimited` is never set there.
 - **`PATH` is inherited from the host,** so `exec` resolves host binaries.
-- **No resource isolation** beyond wall-clock timeout and output caps. There
-  are no CPU, memory, file descriptor, or disk quotas.
+- **No CPU or disk-IO quota,** on any platform. No file-descriptor limit.
 - **No multi-tenant isolation.** One workspace root per session is a
   correctness boundary, not a security boundary between mutually distrusting
   users.

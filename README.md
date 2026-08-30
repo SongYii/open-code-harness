@@ -28,7 +28,12 @@ The numbered milestone list lives in
   not a vendor SDK or plugin kernel.
 - Tool Runtime, Policy, and four builtin workspace tools: implemented and
   verified; not GA. Application-owned Step loop and a pure Policy Decide
-  table behind ports; not a plugin kernel.
+  table behind ports; not a plugin kernel. `exec` is now confined by bwrap
+  and a cgroup v2 memory quota on Linux, or Seatbelt and RLIMIT_AS on
+  macOS, when available, with a fail-closed startup gate and a named,
+  logged escape hatch otherwise; see the
+  [SECURITY.md](SECURITY.md) threat model and the
+  [exec sandboxing evidence ledger](docs/architecture/exec-sandboxing-resource-quotas-evidence.md).
 - SQLite canonical EventStore (`adapters/sqlite`): implemented and verified;
   not GA. Pure-Go durable adapter behind the EventStore v2 port, passing the
   adapter-neutral conformance suite unchanged: verified open profile, WAL,
