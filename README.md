@@ -63,6 +63,14 @@ The numbered milestone list lives in
   never appends the durable `session.closed` fact on ACP close. ACP v2 and
   authenticate are not included.
 
+- ACP-native client (`internal/client/acp`, `cmd/acp-client`): implemented
+  and verified; not GA. A standalone client that spawns an agent over
+  stdio, renders a live trajectory from `session/update`, and answers
+  `session/request_permission` interactively — the first real proof
+  anywhere in this repository that the ACP v1 adapter above interoperates
+  with an independent client process. Not milestone 7's fuller
+  TypeScript TUI client, which remains unspecified.
+
 - Session transcript (`internal/harness/transcript`, `och export-session`):
   implemented and verified; not GA. Experimental `och.session.transcript`
   JSONL projection of one EventStore session, read through `sqlite.OpenReader`
@@ -106,6 +114,12 @@ session-lifecycle capabilities (`session/list`/`resume`/`close`/`delete`,
 the logical `session.deleted` fact, and the SQLite session head catalog) are
 documented with auditable results in the
 [ACP session lifecycle (Slice B) evidence ledger](docs/architecture/acp-session-lifecycle-evidence.md).
+The ACP-native client contract is documented in
+[Implemented ACP-native Client](docs/architecture/acp-native-client.md)
+and its [Chinese reading copy](docs/architecture/acp-native-client.zh-CN.md),
+with auditable results, including the real interoperability proof's own
+output, in the
+[ACP-native client evidence ledger](docs/architecture/acp-native-client-evidence.md).
 The session transcript contract is documented in
 [Implemented Session Transcript](docs/architecture/session-transcript.md)
 and its [Chinese reading copy](docs/architecture/session-transcript.zh-CN.md),
