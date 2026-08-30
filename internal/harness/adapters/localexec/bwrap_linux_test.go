@@ -167,18 +167,41 @@ func TestBwrapConfinementDeniesNetwork(t *testing.T) {
 	runner := newInternalTestRunner(t, root)
 	requireFunctionalBwrap(t, runner)
 	got, err := runner.Run(context.Background(), tools.CommandSpec{
-		Argv: []string{"sh", "-c", `
-			exec 3<>/dev/tcp/1.1.1.1/80 2>/dev/null && echo connected || echo denied
-		`},
+		Argv:     []string{"sh", "-c", networkProbeScript},
 		Cwd:      root,
-		Timeout:  5 * time.Second,
+		Timeout:  8 * time.Second,
 		MaxBytes: DefaultMaxBytes,
 	})
 	if err != nil {
 		t.Fatalf("Run() err = %v", err)
 	}
-	if strings.TrimSpace(got.Output) != "denied" {
-		t.Fatalf("output = %q, want network to be denied", got.Output)
+	assertNetworkDenied(t, got.Output)
+}
+
+// networkProbeScript is /bin/sh-portable (no bash-only /dev/tcp/ pseudo-
+// device, which dash — /bin/sh on Ubuntu and possibly restricted shells
+// elsewhere — does not implement: it fails to even open the path, which
+// would make a naive "did it fail" check pass regardless of whether the
+// network is actually reachable). It connects to a raw IP, skipping DNS,
+// so the result reflects socket-connect denial specifically.
+const networkProbeScript = `
+curl -sS --max-time 3 https://1.1.1.1/ >/dev/null 2>&1
+code=$?
+if [ "$code" -eq 127 ]; then echo notfound; exit 0; fi
+if [ "$code" -eq 0 ]; then echo connected; exit 0; fi
+echo denied
+`
+
+func assertNetworkDenied(t *testing.T, output string) {
+	t.Helper()
+	switch strings.TrimSpace(output) {
+	case "notfound":
+		t.Skip("curl is not available in this environment")
+	case "connected":
+		t.Fatal("network connection succeeded, want denied")
+	case "denied":
+	default:
+		t.Fatalf("unexpected probe output: %q", output)
 	}
 }
 
