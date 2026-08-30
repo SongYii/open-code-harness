@@ -127,7 +127,7 @@ func (runner *TurnRunner) Run(ctx context.Context, request RunRequest, emitter *
 			if _, exists := seenCallIDs[call.ID]; exists {
 				return runner.fail(cancel, stream, engineError(CodeInvalidStream, nil))
 			}
-			if err := emitter.Emit(streamCtx, RuntimePayload{Type: RuntimeModelToolCall, Text: call.Name + ":" + call.ID}); err != nil {
+			if err := emitter.Emit(streamCtx, RuntimePayload{Type: RuntimeModelToolCall, Text: call.Name + ":" + call.ID, Arguments: call.Arguments}); err != nil {
 				if cause := ctx.Err(); cause != nil {
 					return runner.fail(cancel, stream, engineError(CodeCanceled, cause))
 				}

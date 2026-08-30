@@ -830,7 +830,7 @@ func TestTurnRunnerAcceptsTextThenOneToolCall(t *testing.T) {
 		{Correlation: validRunnerCorrelation(), Ordinal: 1, Type: RuntimeModelStreamStarted},
 		{Correlation: validRunnerCorrelation(), Ordinal: 2, Type: RuntimeModelTextDelta, Text: "looking "},
 		{Correlation: validRunnerCorrelation(), Ordinal: 3, Type: RuntimeModelTextDelta, Text: "up"},
-		{Correlation: validRunnerCorrelation(), Ordinal: 4, Type: RuntimeModelToolCall, Text: "read_file:call-1"},
+		{Correlation: validRunnerCorrelation(), Ordinal: 4, Type: RuntimeModelToolCall, Text: "read_file:call-1", Arguments: `{"path":"README.md"}`},
 	})
 	assertRuntimeEvents(t, sink.Delivered(), sink.Attempts())
 }
@@ -868,8 +868,8 @@ func TestTurnRunnerAcceptsTwoReadFileCallsWithDistinctIDs(t *testing.T) {
 	assertRunnerCounts(t, model, 3, 1)
 	assertRuntimeEvents(t, sink.Delivered(), []RuntimeEvent{
 		{Correlation: validRunnerCorrelation(), Ordinal: 1, Type: RuntimeModelStreamStarted},
-		{Correlation: validRunnerCorrelation(), Ordinal: 2, Type: RuntimeModelToolCall, Text: "read_file:call-1"},
-		{Correlation: validRunnerCorrelation(), Ordinal: 3, Type: RuntimeModelToolCall, Text: "read_file:call-2"},
+		{Correlation: validRunnerCorrelation(), Ordinal: 2, Type: RuntimeModelToolCall, Text: "read_file:call-1", Arguments: `{"path":"a.go"}`},
+		{Correlation: validRunnerCorrelation(), Ordinal: 3, Type: RuntimeModelToolCall, Text: "read_file:call-2", Arguments: `{"path":"b.go"}`},
 	})
 }
 

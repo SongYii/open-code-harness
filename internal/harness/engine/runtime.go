@@ -40,13 +40,23 @@ type RuntimeEvent struct {
 	Type    RuntimeEventType
 	Text    string
 	Code    string
+	// Arguments is the tool call's raw JSON arguments, set only on
+	// RuntimeModelToolCall so a live tool_call card can carry rawInput with
+	// the same fidelity a replayed session/load already has.
+	Arguments string
+	// Content is the tool call's result or failure text, set only on
+	// RuntimeToolExecutionCompleted/RuntimeToolExecutionFailed for the same
+	// reason.
+	Content string
 }
 
 // RuntimePayload excludes correlation and ordinal: Emitter owns both values.
 type RuntimePayload struct {
-	Type RuntimeEventType
-	Text string
-	Code string
+	Type      RuntimeEventType
+	Text      string
+	Code      string
+	Arguments string
+	Content   string
 }
 
 // RuntimeSink is the shared concurrency boundary. Calls are synchronous and
@@ -89,7 +99,10 @@ func (emitter *Emitter) Emit(ctx context.Context, payload RuntimePayload) error 
 		return &Error{Code: CodeDelivery, Cause: errRuntimeOrdinalExhausted}
 	}
 	emitter.nextOrdinal++
-	event := RuntimeEvent{Correlation: emitter.correlation, Ordinal: emitter.nextOrdinal, Type: payload.Type, Text: payload.Text, Code: payload.Code}
+	event := RuntimeEvent{
+		Correlation: emitter.correlation, Ordinal: emitter.nextOrdinal, Type: payload.Type,
+		Text: payload.Text, Code: payload.Code, Arguments: payload.Arguments, Content: payload.Content,
+	}
 	if err := emitter.sink.Emit(ctx, event); err != nil {
 		if cause := ctx.Err(); cause != nil {
 			return &Error{Code: CodeCanceled, Cause: cause}
@@ -112,13 +125,19 @@ func validCorrelation(correlation Correlation) bool {
 func validPayload(payload RuntimePayload) bool {
 	switch payload.Type {
 	case RuntimeModelStreamStarted, RuntimeModelStreamCompleted, RuntimeAppendCompleted:
-		return payload.Text == "" && payload.Code == ""
-	case RuntimeModelTextDelta, RuntimeModelToolCall:
-		return payload.Text != "" && utf8.ValidString(payload.Text) && payload.Code == ""
+		return payload.Text == "" && payload.Code == "" && payload.Arguments == "" && payload.Content == ""
+	case RuntimeModelTextDelta:
+		return payload.Text != "" && utf8.ValidString(payload.Text) && payload.Code == "" &&
+			payload.Arguments == "" && payload.Content == ""
+	case RuntimeModelToolCall:
+		return payload.Text != "" && utf8.ValidString(payload.Text) && payload.Code == "" &&
+			utf8.ValidString(payload.Arguments) && payload.Content == ""
 	case RuntimeModelStreamFailed, RuntimeModelStreamInterrupted:
-		return payload.Text == "" && validStableCode(payload.Code)
-	case RuntimeToolExecutionStarted, RuntimeToolExecutionCompleted, RuntimeToolExecutionFailed, RuntimeApprovalRequested, RuntimeApprovalResolved:
-		return validToolRuntimePayload(payload)
+		return payload.Text == "" && validStableCode(payload.Code) && payload.Arguments == "" && payload.Content == ""
+	case RuntimeToolExecutionStarted, RuntimeApprovalRequested, RuntimeApprovalResolved:
+		return validToolRuntimePayload(payload) && payload.Arguments == "" && payload.Content == ""
+	case RuntimeToolExecutionCompleted, RuntimeToolExecutionFailed:
+		return validToolRuntimePayload(payload) && payload.Arguments == "" && utf8.ValidString(payload.Content)
 	default:
 		return false
 	}

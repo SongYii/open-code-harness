@@ -36,6 +36,53 @@ func TestEmitterExhaustionFollowsValidationAndCancellation(t *testing.T) {
 	}
 }
 
+func TestEmitterCarriesArgumentsOnlyOnModelToolCall(t *testing.T) {
+	sink := &acceptingRuntimeTestSink{}
+	emitter, err := NewEmitter(sink, runtimeTestCorrelation())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := emitter.Emit(context.Background(), RuntimePayload{Type: RuntimeModelToolCall, Text: "read_file:call-1", Arguments: `{"path":"a.go"}`}); err != nil {
+		t.Fatalf("Emit() = %v, want accepted", err)
+	}
+	if got := sink.events[0].Arguments; got != `{"path":"a.go"}` {
+		t.Fatalf("Arguments = %q, want the raw tool call arguments", got)
+	}
+	if err := emitter.Emit(context.Background(), RuntimePayload{Type: RuntimeModelTextDelta, Text: "hi", Arguments: "should not be set here"}); !IsCode(err, CodeInvalidRequest) {
+		t.Fatalf("Emit() = %v, want invalid_request for Arguments on a non-tool-call type", err)
+	}
+}
+
+func TestEmitterCarriesContentOnlyOnToolExecutionOutcomes(t *testing.T) {
+	sink := &acceptingRuntimeTestSink{}
+	emitter, err := NewEmitter(sink, runtimeTestCorrelation())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := emitter.Emit(context.Background(), RuntimePayload{Type: RuntimeToolExecutionCompleted, Text: "read_file:call-1", Content: "file contents"}); err != nil {
+		t.Fatalf("Emit() = %v, want accepted", err)
+	}
+	if got := sink.events[0].Content; got != "file contents" {
+		t.Fatalf("Content = %q, want the tool result text", got)
+	}
+	if err := emitter.Emit(context.Background(), RuntimePayload{Type: RuntimeToolExecutionFailed, Code: "policy_denied", Content: "denied by policy"}); err != nil {
+		t.Fatalf("Emit() = %v, want accepted", err)
+	}
+	if got := sink.events[1].Content; got != "denied by policy" {
+		t.Fatalf("Content = %q, want the failure message", got)
+	}
+	if err := emitter.Emit(context.Background(), RuntimePayload{Type: RuntimeToolExecutionStarted, Text: "read_file:call-1", Content: "should not be set here"}); !IsCode(err, CodeInvalidRequest) {
+		t.Fatalf("Emit() = %v, want invalid_request for Content on tool.execution.started", err)
+	}
+}
+
+type acceptingRuntimeTestSink struct{ events []RuntimeEvent }
+
+func (sink *acceptingRuntimeTestSink) Emit(_ context.Context, event RuntimeEvent) error {
+	sink.events = append(sink.events, event)
+	return nil
+}
+
 type runtimeTestSink struct{ events []RuntimeEvent }
 
 func (sink *runtimeTestSink) Emit(_ context.Context, event RuntimeEvent) error {
