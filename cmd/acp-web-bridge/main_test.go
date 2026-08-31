@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
@@ -41,7 +42,7 @@ var readyLineRE = regexp.MustCompile(`^acp-web-bridge: ready at (http://[^\s]+)\
 // run() entrypoint (main() calls this directly) against a real OS
 // subprocess (a trivial line-echoing shell script standing in for an ACP
 // agent) and a real WebSocket client — proving the whole wiring (flags,
-// net.Listen, the embedded placeholder asset, Server, Relay, and a real
+// net.Listen, the embedded frontend asset, Server, Relay, and a real
 // exec.Command subprocess) end to end. This is not the full Task 8
 // browser-driven interoperability proof against the real och binary; it
 // is the Go-level wiring proof this task's own scope covers.
@@ -97,6 +98,49 @@ func TestRunSpawnsRealSubprocessAndRelaysOverRealWebSocket(t *testing.T) {
 	}
 	if string(data) != `{"ping":1}` {
 		t.Fatalf("got %q, want the echoed line back unchanged", data)
+	}
+}
+
+// TestRunServesTheRealBuiltFrontendNotThePlaceholder guards against the
+// go:embed directive silently falling back to whatever happens to be on
+// disk under web/dist at build time: after Task 7's real "npm run build"
+// step, "/" must serve the Vite build's actual output, not Task 3's
+// original placeholder page.
+func TestRunServesTheRealBuiltFrontendNotThePlaceholder(t *testing.T) {
+	stderrR, stderrW := writePipe(t)
+	go func() {
+		_ = run([]string{
+			"-agent", "/bin/sh",
+			"-cwd", t.TempDir(),
+			"--", "-c", `while IFS= read -r line; do echo "$line"; done`,
+		}, &bytes.Buffer{}, stderrW)
+	}()
+	t.Cleanup(func() { _ = stderrW.Close() })
+
+	readyLine := readLineWithTimeout(t, stderrR, testTimeout)
+	m := readyLineRE.FindStringSubmatch(readyLine)
+	if m == nil {
+		t.Fatalf("got stderr line %q, want a match for %s", readyLine, readyLineRE)
+	}
+
+	resp, err := http.Get(m[1])
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("got status %d, want 200", resp.StatusCode)
+	}
+	text := string(body)
+	if strings.Contains(text, "Placeholder asset") {
+		t.Fatal("served the Task 3 placeholder page, not the real build — run \"npm run build\" under web/ before building this binary")
+	}
+	if !strings.Contains(text, `<div id="app">`) {
+		t.Fatalf("served page did not contain the expected app root element; got:\n%s", text)
 	}
 }
 

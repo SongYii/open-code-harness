@@ -160,6 +160,18 @@ go run ./cmd/och -help
 
 Testing with `-race` requires cgo, so a C toolchain must be installed.
 
+`cmd/acp-web-bridge` embeds its frontend (`cmd/acp-web-bridge/web/`) into
+the binary at build time via `//go:embed`. `go build ./...` alone does
+**not** produce a working `acp-web-bridge` with real assets unless the
+frontend was already built at least once — the embedded directory falls
+back to whatever is on disk, which is a placeholder page until a real
+build has run:
+
+```bash
+cd cmd/acp-web-bridge/web && npm ci && npm run build && cd -
+go build ./cmd/acp-web-bridge
+```
+
 ## Security
 
 Open Code Harness executes model-proposed tool calls against a local
