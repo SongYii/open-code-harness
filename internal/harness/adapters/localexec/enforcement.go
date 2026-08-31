@@ -26,4 +26,5 @@ type Enforcement struct {
 	Filesystem EnforcementLevel
 	Network    EnforcementLevel
 	Memory     EnforcementLevel
+	CPU        EnforcementLevel
 }

@@ -23,6 +23,7 @@ func TestEnforcementReportsNoneWithoutAPlatformBackend(t *testing.T) {
 		Filesystem: localexec.EnforcementNone,
 		Network:    localexec.EnforcementNone,
 		Memory:     localexec.EnforcementNone,
+		CPU:        localexec.EnforcementNone,
 	}
 	if got := runner.Enforcement(); got != want {
 		t.Fatalf("Enforcement() = %+v, want %+v", got, want)

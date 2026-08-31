@@ -66,30 +66,36 @@ func probeCgroupV2() (selfPath string, ok bool) {
 // writing the limits on the child itself. Any failure to get a working
 // memory-limited child is reported as unavailable so the caller can fall
 // back to no quota; this never fails Runner construction.
-func newCgroupQuota(memoryHighBytes, memoryMaxBytes uint64) (*cgroupQuota, string) {
+//
+// cpu.max is written afterward, independently: a failure there (memReason
+// empty, cpuReason not) never undoes the memory quota that already
+// succeeded (CPU quota design §3) — the cpu controller may not be
+// delegated on a host where memory is, and that must not cost this
+// project the memory quota it already has.
+func newCgroupQuota(memoryHighBytes, memoryMaxBytes, cpuPeriodMicros, cpuQuotaMicros uint64) (quota *cgroupQuota, memReason string, cpuReason string) {
 	selfPath, ok := probeCgroupV2()
 	if !ok {
-		return nil, "cgroup v2 (unified hierarchy) not detected"
+		return nil, "cgroup v2 (unified hierarchy) not detected", ""
 	}
 	name := fmt.Sprintf("och-exec-%d-%d", os.Getpid(), atomic.AddUint64(&cgroupSeq, 1))
 	fsPath := filepath.Join("/sys/fs/cgroup", selfPath, name)
 	if err := os.MkdirAll(fsPath, 0o755); err != nil {
-		return nil, "creating cgroup: " + err.Error()
+		return nil, "creating cgroup: " + err.Error(), ""
 	}
 	parent := filepath.Dir(fsPath)
 	// Best-effort: this may already be enabled by an ancestor, or writing
 	// it here may be refused entirely; either way we still try to use the
 	// child below and let that attempt be the real availability signal.
-	_ = os.WriteFile(filepath.Join(parent, "cgroup.subtree_control"), []byte("+memory"), 0o644)
+	_ = os.WriteFile(filepath.Join(parent, "cgroup.subtree_control"), []byte("+memory +cpu"), 0o644)
 	if err := os.WriteFile(filepath.Join(fsPath, "memory.high"), []byte(strconv.FormatUint(memoryHighBytes, 10)), 0o644); err != nil {
 		_ = os.Remove(fsPath)
-		return nil, "memory controller not delegated to this cgroup: " + err.Error()
+		return nil, "memory controller not delegated to this cgroup: " + err.Error(), ""
 	}
 	if err := os.WriteFile(filepath.Join(fsPath, "memory.max"), []byte(strconv.FormatUint(memoryMaxBytes, 10)), 0o644); err != nil {
 		_ = os.Remove(fsPath)
-		return nil, "writing memory.max: " + err.Error()
+		return nil, "writing memory.max: " + err.Error(), ""
 	}
-	quota := &cgroupQuota{
+	quota = &cgroupQuota{
 		fsPath:     fsPath,
 		memoryHigh: memoryHighBytes,
 		inotifyFD:  -1,
@@ -97,9 +103,13 @@ func newCgroupQuota(memoryHighBytes, memoryMaxBytes uint64) (*cgroupQuota, strin
 	}
 	if err := quota.startMonitor(); err != nil {
 		_ = os.Remove(fsPath)
-		return nil, "starting memory monitor: " + err.Error()
+		return nil, "starting memory monitor: " + err.Error(), ""
 	}
-	return quota, ""
+	cpuMax := fmt.Sprintf("%d %d", cpuQuotaMicros, cpuPeriodMicros)
+	if err := os.WriteFile(filepath.Join(fsPath, "cpu.max"), []byte(cpuMax), 0o644); err != nil {
+		cpuReason = "cpu controller not delegated to this cgroup: " + err.Error()
+	}
+	return quota, "", cpuReason
 }
 
 func (q *cgroupQuota) startMonitor() error {
@@ -175,6 +185,28 @@ func (q *cgroupQuota) readHighCounter() (uint64, error) {
 		}
 	}
 	return 0, fmt.Errorf("localexec: memory.events missing high counter")
+}
+
+// readThrottledCount reads cpu.stat's nr_throttled counter — the number of
+// periods in which this cgroup was throttled by cpu.max since the cgroup
+// was created. A nil quota (no cgroup active at all) and any read error
+// (the cpu controller was never delegated, so cpu.stat does not exist)
+// both report zero, never a hard failure: the caller treats either as
+// "not throttled".
+func (q *cgroupQuota) readThrottledCount() (uint64, error) {
+	if q == nil {
+		return 0, nil
+	}
+	data, err := os.ReadFile(filepath.Join(q.fsPath, "cpu.stat"))
+	if err != nil {
+		return 0, err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if rest, ok := strings.CutPrefix(line, "nr_throttled "); ok {
+			return strconv.ParseUint(strings.TrimSpace(rest), 10, 64)
+		}
+	}
+	return 0, fmt.Errorf("localexec: cpu.stat missing nr_throttled counter")
 }
 
 func (q *cgroupQuota) readMemoryCurrent() (uint64, error) {
