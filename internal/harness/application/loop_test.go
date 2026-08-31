@@ -156,6 +156,64 @@ func TestRuntimeToolExecutionCompletedCarriesResultContent(t *testing.T) {
 	}
 }
 
+func TestToolResultSecretIsRedactedInRuntimeEventAndDomainEvent(t *testing.T) {
+	fs := testkit.NewMemFS("/workspace")
+	fs.AddFile(".env", []byte("DATABASE_URL=postgres://localhost/app\nAPI_KEY=sup3rSecretValue123\n"))
+	model := newSequenceModel(
+		[]engine.StreamEvent{
+			{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "call-read", Name: tools.NameReadFile, Arguments: `{"path":".env"}`}},
+			{Type: engine.StreamEventCompleted},
+		},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "done"}, {Type: engine.StreamEventCompleted}},
+	)
+	store := newTurnMemoryStore(t)
+	service := newToolServiceWithStore(t, store, model, fs, nil, nil, application.DefaultConfig())
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &testkit.RecordingSink{}
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+		SessionID: created.SessionID, RequestID: "request-redact-tool-result", Input: "inspect", Sink: sink,
+	})
+	if err != nil {
+		t.Fatalf("RunTurn() = %v", err)
+	}
+
+	completed := runtimeEventOfType(t, sink.Delivered(), engine.RuntimeToolExecutionCompleted)
+	if strings.Contains(completed.Content, "sup3rSecretValue123") {
+		t.Fatalf("RuntimeToolExecutionCompleted.Content leaked the secret: %q", completed.Content)
+	}
+	if !strings.Contains(completed.Content, "[redacted]") {
+		t.Fatalf("RuntimeToolExecutionCompleted.Content = %q, want a [redacted] marker", completed.Content)
+	}
+	if !strings.Contains(completed.Content, "DATABASE_URL=postgres://localhost/app") {
+		t.Fatalf("RuntimeToolExecutionCompleted.Content = %q, want unrelated content preserved", completed.Content)
+	}
+
+	records, err := application.ReadWholeStreamPinned(context.Background(), store, result.SessionID, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var domainContent string
+	found := false
+	for _, record := range records {
+		if event, ok := record.Event.(domain.ToolCallCompleted); ok {
+			domainContent = event.Content
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no domain.ToolCallCompleted event found in the durable stream")
+	}
+	if strings.Contains(domainContent, "sup3rSecretValue123") {
+		t.Fatalf("persisted domain.ToolCallCompleted.Content leaked the secret: %q", domainContent)
+	}
+	if !strings.Contains(domainContent, "[redacted]") {
+		t.Fatalf("persisted domain.ToolCallCompleted.Content = %q, want a [redacted] marker", domainContent)
+	}
+}
+
 func TestRuntimeModelToolCallCarriesArguments(t *testing.T) {
 	fs := testkit.NewMemFS("/workspace")
 	fs.AddFile("README.md", []byte("hello from fixture"))

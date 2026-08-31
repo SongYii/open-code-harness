@@ -11,6 +11,7 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
 	"github.com/SongYii/open-code-harness/internal/harness/policy"
+	"github.com/SongYii/open-code-harness/internal/harness/redact"
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
 )
 
@@ -286,6 +287,7 @@ func (service *Service) invokeTool(ctx context.Context, spec domain.ToolSpec, ar
 }
 
 func (service *Service) failToolAndContinue(ctx context.Context, owned *ownedTurn, call engine.ToolCall, code, message string) (bool, RunTurnResult, error) {
+	message = redact.Text(message)
 	decided, err := domain.Decide(owned.state, domain.FailToolCall{
 		SessionID: owned.result.SessionID, TurnID: owned.result.TurnID, ItemID: owned.toolItemID,
 		CallID: call.ID, Code: code, Message: message,
@@ -302,6 +304,7 @@ func (service *Service) failToolAndContinue(ctx context.Context, owned *ownedTur
 }
 
 func (service *Service) completeToolAndContinue(ctx context.Context, owned *ownedTurn, call engine.ToolCall, content string, truncated bool) (bool, RunTurnResult, error) {
+	content = redact.Text(content)
 	decided, err := domain.Decide(owned.state, domain.CompleteToolCall{
 		SessionID: owned.result.SessionID, TurnID: owned.result.TurnID, ItemID: owned.toolItemID,
 		CallID: call.ID, Content: content, Truncated: truncated,
