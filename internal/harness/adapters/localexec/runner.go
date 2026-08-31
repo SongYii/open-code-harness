@@ -24,6 +24,14 @@ const (
 	// the hard kernel OOM boundary (memory.max = high + headroom); 256 MiB
 	// is Grok Build's own documented default for this headroom.
 	DefaultMemoryHeadroomBytes uint64 = 256 << 20 // 256 MiB
+	// DefaultCPUPeriodMicros and DefaultCPUQuotaMicros configure cpu.max
+	// (Linux only) as "100000 100000": one full core's worth of scheduled
+	// time per 100ms period, cgroup v2's own stated default period. A
+	// single-threaded command never trips this; a command fanning out
+	// across multiple cores is throttled to roughly one core's aggregate
+	// worth of CPU time (design doc §3).
+	DefaultCPUPeriodMicros uint64 = 100000
+	DefaultCPUQuotaMicros  uint64 = 100000
 )
 
 // Runner executes argv commands inside a workspace jail.
@@ -34,6 +42,7 @@ type Runner struct {
 	bwrapReason       string
 	cgroup            *cgroupQuota
 	cgroupReason      string
+	cpuReason         string
 	seatbeltAvailable bool
 	seatbeltReason    string
 	rlimitMu          sync.Mutex
@@ -63,6 +72,7 @@ func New(workspace string) (*Runner, error) {
 		Filesystem: EnforcementNone,
 		Network:    EnforcementNone,
 		Memory:     EnforcementNone,
+		CPU:        EnforcementNone,
 	}
 	if bwrapAvailable {
 		// --unshare-net denies all network access outright (design §3.2);
@@ -71,9 +81,15 @@ func New(workspace string) (*Runner, error) {
 		enforcement.Filesystem = EnforcementFull
 		enforcement.Network = EnforcementFull
 	}
-	cgroup, cgroupReason := newCgroupQuota(DefaultMemoryHighBytes, DefaultMemoryHighBytes+DefaultMemoryHeadroomBytes)
+	cgroup, cgroupReason, cpuReason := newCgroupQuota(DefaultMemoryHighBytes, DefaultMemoryHighBytes+DefaultMemoryHeadroomBytes, DefaultCPUPeriodMicros, DefaultCPUQuotaMicros)
 	if cgroup != nil {
 		enforcement.Memory = EnforcementFull
+		// cpu delegation fails independently of memory (CPU quota
+		// design §3): a cpu.max write failure never undoes the memory
+		// quota that already succeeded.
+		if cpuReason == "" {
+			enforcement.CPU = EnforcementFull
+		}
 	}
 	seatbeltAvailable, seatbeltReason := probeSeatbelt()
 	if seatbeltAvailable {
@@ -90,6 +106,7 @@ func New(workspace string) (*Runner, error) {
 		bwrapReason:       bwrapReason,
 		cgroup:            cgroup,
 		cgroupReason:      cgroupReason,
+		cpuReason:         cpuReason,
 		seatbeltAvailable: seatbeltAvailable,
 		seatbeltReason:    seatbeltReason,
 	}, nil
@@ -186,7 +203,7 @@ func (runner *Runner) Run(ctx context.Context, spec tools.CommandSpec) (tools.Co
 
 	select {
 	case waitErr := <-done:
-		return finish(waitErr, out, false), nil
+		return finish(waitErr, out, false, runner.throttled()), nil
 	case <-ctx.Done():
 		kill()
 		<-done
@@ -194,20 +211,31 @@ func (runner *Runner) Run(ctx context.Context, spec tools.CommandSpec) (tools.Co
 	case <-timeout:
 		kill()
 		waitErr := <-done
-		return finish(waitErr, out, true), nil
+		return finish(waitErr, out, true, runner.throttled()), nil
 	case <-out.Overflow():
 		kill()
 		waitErr := <-done
-		result := finish(waitErr, out, false)
+		result := finish(waitErr, out, false, runner.throttled())
 		result.Truncated = true
 		return result, nil
 	case <-resourceLimited:
 		kill()
 		waitErr := <-done
-		result := finish(waitErr, out, false)
+		result := finish(waitErr, out, false, runner.throttled())
 		result.ResourceLimited = true
 		return result, nil
 	}
+}
+
+// throttled reads the cgroup's cpu.stat one final time before the caller's
+// deferred cleanup tears the cgroup down for this invocation, reporting
+// whether the kernel's cpu.max controller measurably throttled this
+// command at any point during its run (CPU quota design §3). A read error
+// (no quota active, or the cpu controller was never delegated) is treated
+// as "not throttled", never as a hard failure.
+func (runner *Runner) throttled() bool {
+	count, err := runner.cgroup.readThrottledCount()
+	return err == nil && count > 0
 }
 
 func (runner *Runner) jailCwd(cwd string) (string, error) {
@@ -246,12 +274,13 @@ func (runner *Runner) resolveArgv0(argv0, cwd string) (string, error) {
 	return resolved, nil
 }
 
-func finish(waitErr error, out *capBuffer, timedOut bool) tools.CommandResult {
+func finish(waitErr error, out *capBuffer, timedOut, throttled bool) tools.CommandResult {
 	return tools.CommandResult{
 		ExitCode:  exitCode(waitErr),
 		Output:    out.String(),
 		Truncated: out.Truncated(),
 		TimedOut:  timedOut,
+		Throttled: throttled,
 	}
 }
 

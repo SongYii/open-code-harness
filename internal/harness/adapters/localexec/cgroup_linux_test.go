@@ -72,6 +72,29 @@ func TestCgroupQuotaParsesMemoryEventsAndProcs(t *testing.T) {
 	}
 }
 
+func TestCgroupQuotaParsesCPUStatThrottledCount(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "cpu.stat"), []byte("usage_usec 500000\nuser_usec 400000\nsystem_usec 100000\nnr_periods 10\nnr_throttled 4\nthrottled_usec 250000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	q := &cgroupQuota{fsPath: dir}
+	count, err := q.readThrottledCount()
+	if err != nil || count != 4 {
+		t.Fatalf("readThrottledCount() = %d, %v, want 4, nil", count, err)
+	}
+}
+
+func TestCgroupQuotaReadThrottledCountMissingFileIsNotAHardFailure(t *testing.T) {
+	q := &cgroupQuota{fsPath: t.TempDir()} // no cpu.stat written: cpu controller never delegated
+	count, err := q.readThrottledCount()
+	if err == nil {
+		t.Fatalf("readThrottledCount() with no cpu.stat = (%d, nil), want a read error", count)
+	}
+	if count != 0 {
+		t.Fatalf("readThrottledCount() = %d on error, want 0", count)
+	}
+}
+
 func TestCgroupQuotaNilReceiverMethodsAreNoOps(t *testing.T) {
 	var q *cgroupQuota
 	if err := q.addProcess(1); err != nil {
@@ -82,6 +105,9 @@ func TestCgroupQuotaNilReceiverMethodsAreNoOps(t *testing.T) {
 	}
 	q.unregister(1) // must not panic
 	q.close()       // must not panic
+	if count, err := q.readThrottledCount(); count != 0 || err != nil {
+		t.Fatalf("readThrottledCount() on nil quota = (%d, %v), want (0, nil)", count, err)
+	}
 }
 
 // requireFunctionalCgroup skips the calling test when this environment's
@@ -95,6 +121,56 @@ func requireFunctionalCgroup(t *testing.T, runner *Runner) {
 	t.Helper()
 	if runner.Enforcement().Memory != EnforcementFull {
 		t.Skip("cgroup v2 memory quota is not functionally available in this environment")
+	}
+}
+
+// requireFunctionalCPUQuota skips the calling test when this environment's
+// cgroup v2 cpu controller cannot actually be delegated to a child cgroup,
+// mirroring requireFunctionalCgroup's own reasoning for memory — the two
+// controllers fail independently (CPU quota design §3), so a host where
+// memory delegates but cpu does not (or vice versa) is a real, distinct
+// case this helper checks for on its own.
+func requireFunctionalCPUQuota(t *testing.T, runner *Runner) {
+	t.Helper()
+	if runner.Enforcement().CPU != EnforcementFull {
+		t.Skip("cgroup v2 cpu quota is not functionally available in this environment")
+	}
+}
+
+// TestCgroupCPUQuotaThrottlesParallelWork proves the real kernel behavior,
+// not merely the Go-side wiring already covered by
+// TestRunReportsThrottledFromHandWiredCPUStat: four CPU-bound loops
+// spawned in parallel (inheriting cgroup membership from the exec'd shell
+// through fork, exactly like the memory test's growing-string child does)
+// demand more than the one-core cap this project's default cpu.max
+// configures, so nr_throttled must be nonzero within the run's own
+// timeout window. The loops never exit on their own; TimedOut is expected
+// alongside Throttled, not a test failure — Throttled is additive (design
+// doc §3), not a replacement outcome.
+func TestCgroupCPUQuotaThrottlesParallelWork(t *testing.T) {
+	root := t.TempDir()
+	runner := newInternalTestRunner(t, root)
+	requireFunctionalCPUQuota(t, runner)
+
+	got, err := runner.Run(context.Background(), tools.CommandSpec{
+		Argv: []string{"sh", "-c", `
+			for i in 1 2 3 4; do
+				sh -c 'while :; do :; done' &
+			done
+			wait
+		`},
+		Cwd:      root,
+		Timeout:  2 * time.Second,
+		MaxBytes: DefaultMaxBytes,
+	})
+	if err != nil {
+		t.Fatalf("Run() err = %v", err)
+	}
+	if !got.TimedOut {
+		t.Fatalf("Run() = %#v, want TimedOut (the parallel loops never exit on their own)", got)
+	}
+	if !got.Throttled {
+		t.Fatalf("Run() = %#v, want Throttled true: four parallel CPU-bound loops under a one-core cgroup quota must be throttled", got)
 	}
 }
 
@@ -173,6 +249,85 @@ func TestRunKillsOnResourceLimitSignal(t *testing.T) {
 		t.Fatalf("Run() = %#v, want ResourceLimited", got.result)
 	}
 	assertProcessGroupDead(t, pid)
+}
+
+// TestRunReportsThrottledFromHandWiredCPUStat exercises Run()'s own
+// wiring — that it reads cpu.stat after the process exits and sets
+// CommandResult.Throttled — independent of whether this environment's
+// cgroup v2 cpu controller is functionally delegated, by hand-wiring a
+// bare cgroupQuota whose fsPath is a plain directory this test controls
+// (mirroring TestRunKillsOnResourceLimitSignal's own hand-wiring
+// technique for the memory-kill path).
+func TestRunReportsThrottledFromHandWiredCPUStat(t *testing.T) {
+	root := t.TempDir()
+	runner := newInternalTestRunner(t, root)
+	cgroupDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cgroupDir, "cpu.stat"), []byte("nr_throttled 1\nthrottled_usec 1000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner.cgroup = &cgroupQuota{fsPath: cgroupDir, inotifyFD: -1, notify: make(map[int]chan struct{})}
+
+	got, err := runner.Run(context.Background(), tools.CommandSpec{
+		Argv:     []string{"echo", "ok"},
+		Cwd:      root,
+		Timeout:  5 * time.Second,
+		MaxBytes: DefaultMaxBytes,
+	})
+	if err != nil {
+		t.Fatalf("Run() err = %v", err)
+	}
+	if !got.Throttled {
+		t.Fatalf("Run() = %#v, want Throttled true from the hand-wired cpu.stat", got)
+	}
+}
+
+// TestRunReportsNotThrottledWhenCPUStatShowsNoThrottling proves the
+// converse of the test above with the same hand-wiring technique: a
+// nr_throttled of zero reports Throttled: false, not merely "true by
+// default whenever a cgroup is wired up at all".
+func TestRunReportsNotThrottledWhenCPUStatShowsNoThrottling(t *testing.T) {
+	root := t.TempDir()
+	runner := newInternalTestRunner(t, root)
+	cgroupDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cgroupDir, "cpu.stat"), []byte("nr_throttled 0\nthrottled_usec 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner.cgroup = &cgroupQuota{fsPath: cgroupDir, inotifyFD: -1, notify: make(map[int]chan struct{})}
+
+	got, err := runner.Run(context.Background(), tools.CommandSpec{
+		Argv:     []string{"echo", "ok"},
+		Cwd:      root,
+		Timeout:  5 * time.Second,
+		MaxBytes: DefaultMaxBytes,
+	})
+	if err != nil {
+		t.Fatalf("Run() err = %v", err)
+	}
+	if got.Throttled {
+		t.Fatalf("Run() = %#v, want Throttled false when nr_throttled is 0", got)
+	}
+}
+
+// TestCPUControllerFailureLeavesMemoryQuotaActive proves the two
+// controllers fail independently: an invalid cpu.max period (rejected by
+// the kernel regardless of host-specific delegation quirks) must not
+// undo an already-successful memory.high/memory.max write. Skips, like
+// TestCgroupMemoryQuotaKillsAMemoryGrowingCommand, on a host where even
+// the memory controller cannot be delegated at all (this one included),
+// since there is nothing to prove independence between two controllers
+// when neither one works.
+func TestCPUControllerFailureLeavesMemoryQuotaActive(t *testing.T) {
+	quota, memReason, cpuReason := newCgroupQuota(DefaultMemoryHighBytes, DefaultMemoryHighBytes+DefaultMemoryHeadroomBytes, 0, 0)
+	if quota == nil {
+		t.Skip("cgroup v2 memory quota is not functionally available in this environment")
+	}
+	t.Cleanup(quota.close)
+	if memReason != "" {
+		t.Fatalf("memReason = %q, want empty (memory succeeded)", memReason)
+	}
+	if cpuReason == "" {
+		t.Fatal("cpuReason is empty, want a failure reason for an invalid (zero) cpu.max period")
+	}
 }
 
 func waitForPIDFile(t *testing.T, path string) int {

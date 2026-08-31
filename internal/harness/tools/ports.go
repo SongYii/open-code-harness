@@ -33,6 +33,12 @@ type CommandResult struct {
 	// A run is killed for exactly one reason: this is mutually exclusive
 	// with TimedOut.
 	ResourceLimited bool
+	// Throttled is true when the command's CPU usage was measurably
+	// bandwidth-limited during its run (Linux cgroup v2 cpu.max). It is
+	// additive, not a kill reason: it can be true alongside TimedOut,
+	// alongside ResourceLimited, or alongside neither, since a throttled
+	// command may still finish well within its timeout.
+	Throttled bool
 }
 
 type CommandRunner interface {
