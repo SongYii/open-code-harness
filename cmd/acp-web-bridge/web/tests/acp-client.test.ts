@@ -2,10 +2,37 @@ import { describe, expect, it, vi } from "vitest";
 import {
   AcpClient,
   AcpError,
+  WebSocketTransport,
   type Handler,
   type JsonValue,
   type Transport,
 } from "../src/acp-client";
+
+// FakeWebSocket stands in for the real browser WebSocket global so
+// WebSocketTransport's queue-until-open behavior can be tested without a
+// real network connection: it starts CONNECTING (no listeners fired
+// yet) and only dispatches "open" when the test calls simulateOpen.
+class FakeWebSocket {
+  static instances: FakeWebSocket[] = [];
+  sent: string[] = [];
+  private openHandlers: Array<() => void> = [];
+
+  constructor(public readonly url: string) {
+    FakeWebSocket.instances.push(this);
+  }
+
+  addEventListener(type: string, handler: () => void): void {
+    if (type === "open") this.openHandlers.push(handler);
+  }
+
+  send(data: string): void {
+    this.sent.push(data);
+  }
+
+  simulateOpen(): void {
+    for (const h of this.openHandlers) h();
+  }
+}
 
 class FakeTransport implements Transport {
   sent: string[] = [];
@@ -159,5 +186,33 @@ describe("AcpClient protocol calls", () => {
     const sent = transport.lastSent() as { id?: unknown; method: string };
     expect(sent.id).toBeUndefined();
     expect(sent.method).toBe("session/cancel");
+  });
+});
+
+describe("WebSocketTransport", () => {
+  it("queues send() calls made before the socket opens and flushes them in order once it does", () => {
+    const originalWebSocket = globalThis.WebSocket;
+    // @ts-expect-error -- FakeWebSocket intentionally implements only the
+    // slice of the real WebSocket API this transport uses.
+    globalThis.WebSocket = FakeWebSocket;
+    try {
+      const transport = new WebSocketTransport("ws://example.test/ws");
+      const socket = FakeWebSocket.instances[FakeWebSocket.instances.length - 1]!;
+
+      // AcpClient's constructor calls initialize() immediately, well
+      // before the WebSocket handshake can complete — this is exactly
+      // that race, reproduced directly against the transport.
+      transport.send("first");
+      transport.send("second");
+      expect(socket.sent).toEqual([]); // nothing sent yet; the socket is still CONNECTING
+
+      socket.simulateOpen();
+      expect(socket.sent).toEqual(["first", "second"]);
+
+      transport.send("third");
+      expect(socket.sent).toEqual(["first", "second", "third"]); // sent immediately once open
+    } finally {
+      globalThis.WebSocket = originalWebSocket;
+    }
   });
 });

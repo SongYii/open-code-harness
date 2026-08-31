@@ -27,16 +27,33 @@ export interface Transport {
 }
 
 /** WebSocketTransport adapts a browser WebSocket to Transport. It is the
- * only place this file touches the WebSocket API directly. */
+ * only place this file touches the WebSocket API directly. A WebSocket
+ * begins in the CONNECTING state and throws if send() is called before
+ * the "open" event fires; AcpClient's constructor calls initialize()
+ * immediately, well before that handshake can complete, so every send()
+ * here is queued and flushed in order once the socket actually opens,
+ * rather than requiring every caller to await a connection separately. */
 export class WebSocketTransport implements Transport {
   private readonly socket: WebSocket;
+  private readonly queue: string[] = [];
+  private open = false;
 
   constructor(url: string) {
     this.socket = new WebSocket(url);
+    this.socket.addEventListener("open", () => {
+      this.open = true;
+      for (const data of this.queue.splice(0)) {
+        this.socket.send(data);
+      }
+    });
   }
 
   send(data: string): void {
-    this.socket.send(data);
+    if (this.open) {
+      this.socket.send(data);
+    } else {
+      this.queue.push(data);
+    }
   }
 
   onMessage(handler: (data: string) => void): void {

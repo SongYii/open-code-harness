@@ -87,6 +87,17 @@ today, stated with their limits.
   and resource quotas evidence
   ledger](docs/architecture/exec-sandboxing-resource-quotas-evidence.md)'s
   CPU quota extension section.
+- **The browser trajectory UI bridge (`cmd/acp-web-bridge`) is
+  loopback-only and gated by two independent checks.** It binds
+  `127.0.0.1` only, hardcoded, with no flag to change it. Every
+  WebSocket upgrade (and the `/config` endpoint, which reveals a real
+  workspace path) requires both a matching `Origin` header and a
+  per-invocation, `crypto/rand`-generated token printed to stderr with
+  the ready URL — defending, respectively, against a hostile page in
+  another browser tab and against another local account or process on a
+  shared host. This is a **local development tool**, not hardened for
+  exposure beyond loopback: no TLS, no support for binding elsewhere.
+  See [Web trajectory UI](docs/architecture/web-trajectory-ui.md).
 
 ### Not enforced
 
