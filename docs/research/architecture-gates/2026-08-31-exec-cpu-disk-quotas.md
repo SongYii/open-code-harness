@@ -177,6 +177,27 @@ project's prior sandboxing design already relied on for `memory.high`/
   more definitive gap than memory's "partial/best-effort" one, not merely
   an unresearched corner.
 
+**Correction (2026-08-31, found while preparing the design that follows):**
+the macOS finding above is wrong, and the error was not in the six
+reference projects — it was in not first checking this project's *own*
+existing code. `internal/harness/adapters/localexec/sandbox_darwin.go`'s
+`beginRlimitBracket` already demonstrates a real, working technique for
+exactly this class of problem: since `RLIMIT_AS` is inherited by a child
+at `fork()`, and Go's `os/exec` gives no hook to set a limit only in the
+child between fork and exec, this project brackets its *own* process's
+rlimit around the parent's `Start()` call — lower it, start the child (a
+narrow, mutex-guarded window during which the harness's own process is
+also bound by the lowered ceiling), then restore it. `RLIMIT_CPU` is
+inherited at fork identically to `RLIMIT_AS`; the same bracket technique
+applies to it without modification. This gate's claim that "nothing this
+gate or the six reference projects demonstrate" externally enforces a
+CPU ceiling on macOS was true only of the six external projects — this
+project's own existing memory-quota code already solved the general
+problem. The design that follows uses this corrected understanding, not
+the paragraph above; the paragraph is left unedited, with this note
+attached, rather than silently rewritten, per this project's own
+established practice for correcting a merged document.
+
 ## Open questions a design must resolve, not answered by this gate
 
 - **Whether a throttled-but-not-killed outcome deserves a new
