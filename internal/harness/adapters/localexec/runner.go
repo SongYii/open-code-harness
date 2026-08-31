@@ -99,6 +99,9 @@ func New(workspace string) (*Runner, error) {
 	if level := rlimitEnforcementLevel(); level != EnforcementNone {
 		enforcement.Memory = level
 	}
+	if level := cpuRlimitEnforcementLevel(); level != EnforcementNone {
+		enforcement.CPU = level
+	}
 	return &Runner{
 		workspace:         real,
 		enforcement:       enforcement,
@@ -203,7 +206,15 @@ func (runner *Runner) Run(ctx context.Context, spec tools.CommandSpec) (tools.Co
 
 	select {
 	case waitErr := <-done:
-		return finish(waitErr, out, false, runner.throttled()), nil
+		result := finish(waitErr, out, false, runner.throttled())
+		// Nothing else in this select pre-empted normal completion, so a
+		// process terminated by SIGXCPU here was killed by the kernel's
+		// own RLIMIT_CPU enforcement (Darwin only; always false
+		// elsewhere — CPU quota design §4).
+		if isCPUResourceLimitExit(waitErr) {
+			result.ResourceLimited = true
+		}
+		return result, nil
 	case <-ctx.Done():
 		kill()
 		<-done

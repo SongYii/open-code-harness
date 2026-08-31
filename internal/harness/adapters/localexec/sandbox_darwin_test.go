@@ -5,12 +5,16 @@ package localexec
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
+	"golang.org/x/sys/unix"
 )
 
 func newInternalTestRunner(t *testing.T, root string) *Runner {
@@ -69,6 +73,112 @@ func TestSeatbeltCommandArgvUsesHardcodedExecutable(t *testing.T) {
 func TestRlimitEnforcementLevelIsPartialOnDarwin(t *testing.T) {
 	if got := rlimitEnforcementLevel(); got != EnforcementPartial {
 		t.Fatalf("rlimitEnforcementLevel() = %q, want partial", got)
+	}
+}
+
+func TestCPURlimitEnforcementLevelIsFullOnDarwin(t *testing.T) {
+	if got := cpuRlimitEnforcementLevel(); got != EnforcementFull {
+		t.Fatalf("cpuRlimitEnforcementLevel() = %q, want full", got)
+	}
+}
+
+// TestRlimitBracketSetsAndRestoresRLIMIT_CPU proves the bracket itself,
+// independent of spawning any child: RLIMIT_CPU is lowered to the
+// soft/hard pair for the duration of the returned closure's lifetime and
+// restored exactly afterward, the same guarantee this package's own
+// RLIMIT_AS bracket already has, verified again here since RLIMIT_CPU is
+// a second, independent rlimit sharing the same bracket function.
+func TestRlimitBracketSetsAndRestoresRLIMIT_CPU(t *testing.T) {
+	var before unix.Rlimit
+	if err := unix.Getrlimit(unix.RLIMIT_CPU, &before); err != nil {
+		t.Fatalf("Getrlimit() err = %v", err)
+	}
+
+	var mu sync.Mutex
+	restore := beginRlimitBracket(&mu, DefaultMemoryHighBytes)
+
+	var during unix.Rlimit
+	if err := unix.Getrlimit(unix.RLIMIT_CPU, &during); err != nil {
+		t.Fatalf("Getrlimit() during bracket err = %v", err)
+	}
+	if during.Cur != DefaultCPUSoftSeconds {
+		t.Fatalf("RLIMIT_CPU.Cur during bracket = %d, want %d", during.Cur, DefaultCPUSoftSeconds)
+	}
+
+	restore()
+
+	var after unix.Rlimit
+	if err := unix.Getrlimit(unix.RLIMIT_CPU, &after); err != nil {
+		t.Fatalf("Getrlimit() after restore err = %v", err)
+	}
+	if after != before {
+		t.Fatalf("RLIMIT_CPU after restore = %+v, want %+v", after, before)
+	}
+}
+
+// TestIsCPUResourceLimitExitDetectsSIGXCPUOnly proves the signal-inspection
+// function's own discrimination: a real child killed by SIGXCPU is
+// attributable, one killed by an unrelated signal (SIGTERM, standing in
+// for "some other reason entirely") is not, and one that exits normally
+// is not — using real subprocesses and real *exec.ExitError values, not a
+// hand-constructed fake, since exec.ExitError's own Sys() shape is what
+// this function actually depends on.
+func TestIsCPUResourceLimitExitDetectsSIGXCPUOnly(t *testing.T) {
+	run := func(sig syscall.Signal) error {
+		cmd := exec.Command("sleep", "5")
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("Start() err = %v", err)
+		}
+		if err := cmd.Process.Signal(sig); err != nil {
+			t.Fatalf("Signal(%v) err = %v", sig, err)
+		}
+		return cmd.Wait()
+	}
+
+	if got := isCPUResourceLimitExit(run(syscall.SIGXCPU)); !got {
+		t.Fatal("isCPUResourceLimitExit() = false for a real SIGXCPU exit, want true")
+	}
+	if got := isCPUResourceLimitExit(run(syscall.SIGTERM)); got {
+		t.Fatal("isCPUResourceLimitExit() = true for an unrelated SIGTERM exit, want false")
+	}
+
+	normal := exec.Command("true")
+	normalErr := normal.Run()
+	if got := isCPUResourceLimitExit(normalErr); got {
+		t.Fatalf("isCPUResourceLimitExit(%v) = true for a normal exit, want false", normalErr)
+	}
+}
+
+// TestCPUQuotaKillsARunawayCPUCommand is the real, gated integration test:
+// with the soft/hard limits lowered to make the test fast (the same
+// technique TestRunWrapsArgvInSeatbeltWhenAvailable's package-level var
+// substitution already uses for seatbeltExecutable), a CPU-spinning
+// command exceeds RLIMIT_CPU's soft limit, is terminated by the kernel's
+// own SIGXCPU, and Run() reports ResourceLimited: true via the
+// signal-inspection path this task adds — proving the full chain, not
+// merely the bracket or the signal-detector in isolation.
+func TestCPUQuotaKillsARunawayCPUCommand(t *testing.T) {
+	originalSoft, originalHard := DefaultCPUSoftSeconds, DefaultCPUHardSeconds
+	DefaultCPUSoftSeconds, DefaultCPUHardSeconds = 1, 2
+	t.Cleanup(func() { DefaultCPUSoftSeconds, DefaultCPUHardSeconds = originalSoft, originalHard })
+
+	root := t.TempDir()
+	runner := newInternalTestRunner(t, root)
+
+	got, err := runner.Run(context.Background(), tools.CommandSpec{
+		Argv:     []string{"sh", "-c", `s=""; while :; do s="$s.x"; done`},
+		Cwd:      root,
+		Timeout:  10 * time.Second,
+		MaxBytes: DefaultMaxBytes,
+	})
+	if err != nil {
+		t.Fatalf("Run() err = %v", err)
+	}
+	if got.TimedOut {
+		t.Fatalf("Run() = %#v, want the CPU quota to fire before the 10s timeout", got)
+	}
+	if !got.ResourceLimited {
+		t.Fatalf("Run() = %#v, want ResourceLimited from RLIMIT_CPU", got)
 	}
 }
 
