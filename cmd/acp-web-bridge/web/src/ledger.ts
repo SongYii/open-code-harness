@@ -48,12 +48,12 @@ export interface LedgerSnapshot {
   unassigned: LedgerRecord[];
 }
 
-interface MessageChunkUpdate {
+export interface MessageChunkUpdate {
   sessionUpdate: "agent_message_chunk" | "user_message_chunk";
   content: { type: "text"; text: string };
 }
 
-interface ToolCallUpdate {
+export interface ToolCallUpdate {
   sessionUpdate: "tool_call" | "tool_call_update";
   toolCallId: string;
   title?: string;
@@ -63,7 +63,7 @@ interface ToolCallUpdate {
   rawInput?: unknown;
 }
 
-type SessionUpdate = MessageChunkUpdate | ToolCallUpdate;
+export type SessionUpdate = MessageChunkUpdate | ToolCallUpdate;
 
 function isToolCallUpdate(update: SessionUpdate): update is ToolCallUpdate {
   return update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update";
