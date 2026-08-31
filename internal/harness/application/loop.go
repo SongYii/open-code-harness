@@ -7,6 +7,7 @@ import (
 
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
+	"github.com/SongYii/open-code-harness/internal/harness/redact"
 )
 
 func LoggedEnvelopeBudget(maxAssistant, maxToolCallsPerStep int) int {
@@ -242,6 +243,7 @@ func (service *Service) runStepLoop(ctx context.Context, owned *ownedTurn) (RunT
 		if len(runResult.ToolCalls) > service.config.MaxToolCallsPerStep {
 			return service.failOwnedTurn(ctx, owned, string(engine.CodeInvalidStream), displayFailureSentence(string(engine.CodeInvalidStream)))
 		}
+		runResult.Text = redact.Text(runResult.Text)
 		decided, err := service.decideTurnTerminal(owned.state, owned.result.SessionID, owned.result.TurnID, owned.assistantItem, runResult.Stats, domain.CompleteAssistantMessage{
 			SessionID: owned.result.SessionID,
 			TurnID:    owned.result.TurnID,
@@ -290,6 +292,7 @@ func (service *Service) runStepLoop(ctx context.Context, owned *ownedTurn) (RunT
 }
 
 func (service *Service) completeAssistantTurn(ctx context.Context, owned *ownedTurn, runResult engine.RunResult) (RunTurnResult, error) {
+	runResult.Text = redact.Text(runResult.Text)
 	decided, err := service.decideTurnTerminal(owned.state, owned.result.SessionID, owned.result.TurnID, owned.assistantItem, runResult.Stats, domain.CompleteAssistantTurn{
 		SessionID: owned.result.SessionID,
 		TurnID:    owned.result.TurnID,

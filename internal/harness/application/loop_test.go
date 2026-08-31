@@ -214,6 +214,57 @@ func TestToolResultSecretIsRedactedInRuntimeEventAndDomainEvent(t *testing.T) {
 	}
 }
 
+func TestIntermediateAssistantMessageSecretIsRedactedInDomainEvent(t *testing.T) {
+	fs := testkit.NewMemFS("/workspace")
+	fs.AddFile("README.md", []byte("hello from fixture"))
+	model := newSequenceModel(
+		[]engine.StreamEvent{
+			{Type: engine.StreamEventTextDelta, Text: "found API_KEY=sup3rSecretValue123 while reading, "},
+			{Type: engine.StreamEventTextDelta, Text: "reading the file now"},
+			{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "call-read", Name: tools.NameReadFile, Arguments: `{"path":"README.md"}`}},
+			{Type: engine.StreamEventCompleted},
+		},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "done"}, {Type: engine.StreamEventCompleted}},
+	)
+	store := newTurnMemoryStore(t)
+	service := newToolServiceWithStore(t, store, model, fs, nil, nil, application.DefaultConfig())
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+		SessionID: created.SessionID, RequestID: "request-redact-intermediate", Input: "inspect", Sink: &testkit.RecordingSink{},
+	})
+	if err != nil {
+		t.Fatalf("RunTurn() = %v", err)
+	}
+
+	records, err := application.ReadWholeStreamPinned(context.Background(), store, result.SessionID, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var intermediateText string
+	found := false
+	for _, record := range records {
+		if event, ok := record.Event.(domain.AssistantMessageCompleted); ok && len(event.ToolCalls) > 0 {
+			intermediateText = event.Text
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no intermediate domain.AssistantMessageCompleted (with tool call offers) found in the durable stream")
+	}
+	if strings.Contains(intermediateText, "sup3rSecretValue123") {
+		t.Fatalf("persisted intermediate AssistantMessageCompleted.Text leaked the secret: %q", intermediateText)
+	}
+	if !strings.Contains(intermediateText, "[redacted]") {
+		t.Fatalf("persisted intermediate AssistantMessageCompleted.Text = %q, want a [redacted] marker", intermediateText)
+	}
+	if !strings.Contains(intermediateText, "reading the file now") {
+		t.Fatalf("persisted intermediate AssistantMessageCompleted.Text = %q, want unrelated content preserved", intermediateText)
+	}
+}
+
 func TestRuntimeModelToolCallCarriesArguments(t *testing.T) {
 	fs := testkit.NewMemFS("/workspace")
 	fs.AddFile("README.md", []byte("hello from fixture"))

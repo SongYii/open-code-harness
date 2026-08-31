@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -121,6 +122,68 @@ func TestRunTurnPersistsExactAssistantMessage(t *testing.T) {
 	}
 	if runtimeEvents[1].Text != "你" || runtimeEvents[2].Text != "好\n" {
 		t.Fatalf("runtime deltas = %q, %q", runtimeEvents[1].Text, runtimeEvents[2].Text)
+	}
+}
+
+func TestFinalAssistantMessageSecretIsRedactedInResultAndDomainEvent(t *testing.T) {
+	store := newTurnMemoryStore(t)
+	expectedRequest := engine.ModelRequest{
+		SessionID: "session-1",
+		TurnID:    "turn-1",
+		ItemID:    "item-1",
+		Input:     "inspect repository",
+	}
+	model, err := testkit.NewScriptedModel(expectedRequest, testkit.ScriptedModelConfig{Steps: []testkit.ScriptedStep{
+		{Event: engine.StreamEvent{Type: engine.StreamEventTextDelta, Text: "found DATABASE_URL=postgres://localhost/app and API_KEY=sup3rSecretValue123 in the .env file"}},
+		{Event: engine.StreamEvent{Type: engine.StreamEventCompleted}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := newTurnService(t, store, testkit.NewSequenceIDs(), model)
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+		SessionID: created.SessionID,
+		RequestID: "request-redact-final",
+		Input:     expectedRequest.Input,
+		Sink:      &testkit.RecordingSink{},
+	})
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if strings.Contains(result.Text, "sup3rSecretValue123") {
+		t.Fatalf("RunTurnResult.Text leaked the secret: %q", result.Text)
+	}
+	if !strings.Contains(result.Text, "[redacted]") {
+		t.Fatalf("RunTurnResult.Text = %q, want a [redacted] marker", result.Text)
+	}
+	if !strings.Contains(result.Text, "DATABASE_URL=postgres://localhost/app") {
+		t.Fatalf("RunTurnResult.Text = %q, want unrelated content preserved", result.Text)
+	}
+
+	records, err := application.ReadWholeStreamPinned(context.Background(), store, created.SessionID, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var domainText string
+	found := false
+	for _, record := range records {
+		if event, ok := record.Event.(domain.AssistantMessageCompleted); ok {
+			domainText = event.Text
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no domain.AssistantMessageCompleted event found in the durable stream")
+	}
+	if strings.Contains(domainText, "sup3rSecretValue123") {
+		t.Fatalf("persisted domain.AssistantMessageCompleted.Text leaked the secret: %q", domainText)
+	}
+	if !strings.Contains(domainText, "[redacted]") {
+		t.Fatalf("persisted domain.AssistantMessageCompleted.Text = %q, want a [redacted] marker", domainText)
 	}
 }
 
