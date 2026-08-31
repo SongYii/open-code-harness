@@ -407,11 +407,12 @@ type FailToolTurn struct {
 （`TestResolveRejectsForeignWorkspace`）。
 
 `adapters/localexec` 实现 `tools.CommandRunner`。`Runner.Enforcement()` 按
-效果分别报告命令被限制的完整程度——`Filesystem`/`Network`/`Memory`，各自
-是 `"full"`、`"partial"` 或 `"none"`——这是根据实际生效的机制算出来的事实，
-不是假定的承诺（`TestEnforcementReportsNoneWithoutAPlatformBackend` 钉住
-了没有可用后端时如实全 `"none"` 的基线）。见已批准的设计
+效果分别报告命令被限制的完整程度——`Filesystem`/`Network`/`Memory`/`CPU`，
+各自是 `"full"`、`"partial"` 或 `"none"`——这是根据实际生效的机制算出来的
+事实，不是假定的承诺（`TestEnforcementReportsNoneWithoutAPlatformBackend`
+钉住了没有可用后端时如实全 `"none"` 的基线）。见已批准的设计
 [exec 沙箱与资源配额](../superpowers/specs/2026-08-30-exec-sandboxing-resource-quotas-design.zh-CN.md)
+和 [Exec CPU 配额](../superpowers/specs/2026-08-31-exec-cpu-quota-design.zh-CN.md)
 及其[完成证据](exec-sandboxing-resource-quotas-evidence.md)。
 
 在 Linux 上，`Runner` 在构造时探测 `bwrap`（`TestIsWSL1Version` 把 WSL1
@@ -429,7 +430,16 @@ capability、只读挂载整个宿主并把工作区根重新绑定为可写
 （`TestRunKillsOnResourceLimitSignal`、
 `TestExecResourceLimitedFailsToolWithFrozenText`），配额生效时报告
 `Memory` 为 `"full"`，memory controller 未被委派给这个 cgroup 时报告
-`"none"`。
+`"none"`。同一个子 cgroup 还会写入 `cpu.max`，设成 `"100000 100000"`
+（每 100ms 周期给满一个核的带宽），委派跟 `memory` 完全独立——`cpu`
+controller 失败绝不会拖累已经成功的内存配额，`CPU` 的 `"full"`/`"none"`
+报告也跟 `Memory` 相互独立（`TestCPUControllerFailureLeavesMemoryQuotaActive`）。
+跟内存不一样，`cpu.max` 是内核强制的限流，不是杀掉——不需要监控，
+`CommandResult.Throttled`（每条退出路径结束后从 `cpu.stat` 的
+`nr_throttled` 读出来）纯粹是叠加的诊断信息，绝不是杀掉原因，可以跟
+`TimedOut`、`ResourceLimited` 同时为真，也可以都不是
+（`TestRunReportsThrottledFromHandWiredCPUStat`、
+`TestCgroupCPUQuotaThrottlesParallelWork`）。
 
 在 Darwin 上，`Runner` 探测硬编码的 `/usr/bin/sandbox-exec`（不走 PATH
 查找），可用时把每次 `Run` 调用包进一个 Seatbelt `.sbpl` profile——一份
@@ -440,7 +450,17 @@ Chrome/Codex 派生的 base policy，加上一层「除工作区根外全部拒�
 best-effort 的 `RLIMIT_AS` 上限，报告 `Memory = "partial"`
 （`TestRlimitEnforcementLevelIsPartialOnDarwin`）：这限制的是虚拟地址
 空间而不是常驻内存，超限时子进程自己的分配器会拿到 `ENOMEM`，永远不会
-置位 `ResourceLimited`。
+置位 `ResourceLimited`。同一个围在 `Start()` 前后的围栏还会设置
+`RLIMIT_CPU`（软限制 30 秒、硬限制 31 秒），报告 `CPU = "full"`
+（`TestCPURlimitEnforcementLevelIsFullOnDarwin`）——跟 `RLIMIT_AS` 不同，
+这是内核真正的杀掉，不是尽力而为的上限：一个被 `SIGXCPU`（软限制自己的
+信号，刻意不认裸的 `SIGKILL`，因为那没法跟同一个窄窗口里一次无关的外部
+杀掉区分开）终止的进程，会通过 `Run` 里一段专门的信号检查逻辑置位
+`CommandResult.ResourceLimited`
+（`TestIsCPUResourceLimitExitDetectsSIGXCPUOnly`、
+`TestCPUQuotaKillsARunawayCPUCommand`）。这次 CPU 配额扩展在本项目自己的
+历史上还没有任何 macOS 主机真正跑过（见完成证据）；目前只靠交叉编译和
+代码审查验证过。
 
 `localexec.Availability()` 报告当前平台的后端是否真的可用；Windows 以及
 两种后端都没有的平台永远报不可用。`composition.Open` 在已有的凭证检查之

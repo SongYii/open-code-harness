@@ -276,11 +276,122 @@ Recorded as out of this slice by design, not as deferred bugs inside it:
   available in principle (`golang.org/x/net/bpf` plus bwrap's `--seccomp
   FD`) but not needed to satisfy v1's "no network" goal and not built.
 
+## CPU quota extension (2026-08-31)
+
+**Gate:** [Exec CPU and disk quotas architecture gate](../research/architecture-gates/2026-08-31-exec-cpu-disk-quotas.md) (including its 2026-08-31 correction note)
+
+**Design:** [Exec CPU quota](../superpowers/specs/2026-08-31-exec-cpu-quota-design.md)
+
+**Plan:** [Exec CPU quota implementation plan](../superpowers/plans/2026-08-31-exec-cpu-quota.md)
+
+This section records the CPU-quota extension to the slice above: Linux
+`cpu.max` and macOS `RLIMIT_CPU`, closing the CPU half of `SECURITY.md`'s
+former "No CPU or disk-IO quota, on any platform" sentence. Disk-IO
+quota remains unaddressed (see Remaining below); this section does not
+claim otherwise.
+
+### Commits
+
+| # | Commit | Subject |
+| --- | --- | --- |
+| Gate | `eaa54cc` | docs: add the exec CPU/disk quota architecture gate |
+| Design | `9ace12b` | docs: design exec CPU quota; correct the gate's macOS finding |
+| Plan | `55c647e` | docs: freeze the exec CPU quota implementation plan |
+| Task 1 | `b1d2f5b` | feat(localexec): Linux CPU quota via cgroup v2 cpu.max |
+| Task 2 | `69499a8` | feat(localexec): macOS CPU quota via RLIMIT_CPU |
+
+### Mapping table: mechanism → test → verification reality
+
+| Mechanism | Test | Verification reality |
+| --- | --- | --- |
+| Linux `cpu.max` write (extends the existing cgroup) | `TestCPUControllerFailureLeavesMemoryQuotaActive` | Skips in this session's own sandboxed dev environment — it cannot delegate even the pre-existing memory controller (`TestCgroupMemoryQuotaKillsAMemoryGrowingCommand` already skips here too); the independent-failure logic itself was still exercised by the code path, only the real-host assertion is unverified here |
+| `cpu.stat` `nr_throttled` parsing | `TestCgroupQuotaParsesCPUStatThrottledCount`, `TestCgroupQuotaReadThrottledCountMissingFileIsNotAHardFailure` | Ran and passed for real (pure file-parsing, no cgroup dependency) |
+| `Run()`'s `Throttled`-reporting wiring | `TestRunReportsThrottledFromHandWiredCPUStat`, `TestRunReportsNotThrottledWhenCPUStatShowsNoThrottling` | Ran and passed for real, hand-wiring a fake `cgroupQuota.fsPath` independent of real cgroup delegation (mirroring `TestRunKillsOnResourceLimitSignal`'s own existing technique for the memory-kill path) |
+| Real parallel-workload throttling | `TestCgroupCPUQuotaThrottlesParallelWork` | Skips in this session's own environment for the same cgroup-delegation reason as above |
+| macOS `RLIMIT_CPU` bracket | `TestRlimitBracketSetsAndRestoresRLIMIT_CPU` | Compiles cleanly cross-compiled (`darwin/arm64`, `darwin/amd64`); never executed — no macOS host in this session |
+| macOS `cpuRlimitEnforcementLevel` | `TestCPURlimitEnforcementLevelIsFullOnDarwin` | Compiles cleanly cross-compiled; never executed |
+| macOS signal attribution (`isCPUResourceLimitExit`) | `TestIsCPUResourceLimitExitDetectsSIGXCPUOnly`, `TestCPUQuotaKillsARunawayCPUCommand` | Compiles cleanly cross-compiled; never executed |
+
+### Verification commands and output (fresh, this session, Linux host)
+
+```
+$ gofmt -l .
+(no output)
+$ go vet ./...
+(no output)
+$ GOOS=darwin GOARCH=arm64 go build ./... && GOOS=darwin GOARCH=amd64 go build ./...
+(no output; both succeed)
+$ GOOS=darwin GOARCH=arm64 go vet ./...
+(no output)
+$ GOOS=darwin GOARCH=arm64 go test -c ./internal/harness/adapters/localexec/...
+(compiles; not run)
+$ CGO_ENABLED=0 go build ./...
+(no output)
+$ go test ./... -count=1
+(all packages ok)
+$ go test -race ./internal/harness/adapters/localexec/... -count=1
+ok
+```
+
+### Mutation checks
+
+1. **Linux, `Run()`-side `Throttled` wiring**: forced `throttled()` to
+   always return `false` regardless of `cpu.stat` contents —
+   `TestRunReportsThrottledFromHandWiredCPUStat` failed for the right
+   reason; restored.
+2. **Linux, `cpu.stat` parsing**: changed the parsed key from
+   `nr_throttled` to `nr_periods` — `TestCgroupQuotaParsesCPUStatThrottledCount`
+   and `TestRunReportsThrottledFromHandWiredCPUStat` both failed for the
+   right reason; restored.
+3. **Linux, the real `cpu.max` write itself**: removed it entirely (the
+   function returned an always-empty `cpuReason` without ever writing the
+   file) — the full suite still passed in this session's own environment,
+   since neither test that would catch it
+   (`TestCgroupCPUQuotaThrottlesParallelWork`,
+   `TestCPUControllerFailureLeavesMemoryQuotaActive`) can run here at all.
+   Disclosed as a real, pre-existing environment limitation (matching the
+   memory quota's own inability to be verified for real here), not a gap
+   this task introduces or hides.
+4. **macOS**: no mutation check could be executed at all — there is no
+   way to run a `darwin`-tagged test from this Linux session. Correctness
+   for `beginRlimitBracket`'s `RLIMIT_CPU` handling and
+   `isCPUResourceLimitExit`'s signal discrimination rests on code review
+   and cross-compilation only, disclosed plainly rather than implied to
+   be test-proven.
+
+### Deviations from the plan
+
+- **Task 2's checklist instructed attributing a bare, unexplained
+  `SIGKILL` to `ResourceLimited` in addition to `SIGXCPU`; the design's
+  own prose said the opposite (SIGXCPU only).** Implemented per the
+  design: a bare `SIGKILL` is not attributed, since it cannot be
+  distinguished from an unrelated external kill in the same narrow
+  window, and the overwhelming majority of real commands already die
+  from `SIGXCPU`'s own default disposition before the hard limit's
+  `SIGKILL` would ever fire. The plan's checklist wording was wrong.
+- **Task 2's checklist instructed citing `application.DefaultExecTimeout`
+  directly so the two 30-second values could not drift apart.**
+  Impossible: `internal/harness/architecture`'s own dependency-boundary
+  rule (`TestForbiddenImport`, `"localexec cannot import application"`)
+  forbids it — `localexec` is a lower-level adapter and `application` is
+  the layer above it that consumes adapters through ports, not the
+  reverse. `DefaultCPUSoftSeconds` is a plain, documented constant
+  instead, with no compiler-enforced link; a future change to
+  `DefaultExecTimeout` needs a matching, manual update here.
+- **Task 3's checklist named a nonexistent file**,
+  `docs/architecture/exec-sandboxing-resource-quotas.md` — no such
+  standalone implemented-contract document exists; exec sandboxing's
+  contract has always lived inside [Tool runtime](tool-runtime.md) (the
+  file amended in this task instead) and `SECURITY.md` directly. The
+  plan's own File Map entry was wrong.
+
 ## Remaining
 
-- No macOS or Windows CI/dev host has run any part of this slice for
-  real; see "Per-platform verification reality" above for exactly what
-  substitutes for that from this Linux-only environment.
+- No macOS or Windows CI/dev host has run any part of this slice —
+  including this CPU-quota extension — for real; see "Per-platform
+  verification reality" above and the CPU quota extension's own mapping
+  table for exactly what substitutes for that from this Linux-only
+  environment.
 - `RLIMIT_AS` on macOS is a best-effort virtual-address-space bound, not
   a monitored ceiling; a breach surfaces as the child's own allocator
   hitting `ENOMEM`, not a clean external kill, and never sets
@@ -291,4 +402,19 @@ Recorded as out of this slice by design, not as deferred bugs inside it:
   `DefaultMemoryHeadroomBytes` = 256 MiB) but neither is yet exposed
   through `composition.Config`; only the plan's stated defaults exist
   today, not per-deployment tuning.
+- **Disk-IO quota and file-descriptor limits remain unaddressed**,
+  exactly as the CPU quota design's own §2 scoped them out: `io.max`
+  would only throttle throughput rate, not bound total disk space
+  consumed (the concern `SECURITY.md`'s former wording most naturally
+  suggested), and file-descriptor limits face the same
+  no-pre-exec-hook constraint as CPU on macOS with no Linux cgroup
+  fallback (`pids.max` bounds process count, not descriptors).
+- `TestEnforcementReportsNoneWithoutAPlatformBackend` (tagged `unix`,
+  nominally covering Darwin) asserts an all-`"none"` `Enforcement` that
+  was already inconsistent with `rlimitEnforcementLevel`'s unconditional
+  `"partial"` for `Memory` on Darwin *before* the CPU quota extension;
+  that extension's own unconditional `"full"` for `CPU` inherits the
+  same pre-existing, never-caught-for-real gap rather than introducing a
+  new one. Noted here, not fixed — out of scope for a CPU-quota-focused
+  plan.
 - Surfaces remain `experimental`; not GA.
