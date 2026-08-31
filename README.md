@@ -34,6 +34,12 @@ The numbered milestone list lives in
   logged escape hatch otherwise; see the
   [SECURITY.md](SECURITY.md) threat model and the
   [exec sandboxing evidence ledger](docs/architecture/exec-sandboxing-resource-quotas-evidence.md).
+  Tool call results, failure messages, and the final assistant message
+  text are scanned for a small, hardcoded set of secret shapes and
+  redacted before persistence, audit replication, or ACP projection; see
+  the [secret redaction contract](docs/architecture/secret-redaction.md)
+  and its
+  [evidence ledger](docs/architecture/secret-redaction-evidence.md).
 - SQLite canonical EventStore (`adapters/sqlite`): implemented and verified;
   not GA. Pure-Go durable adapter behind the EventStore v2 port, passing the
   adapter-neutral conformance suite unchanged: verified open profile, WAL,

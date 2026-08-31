@@ -59,6 +59,18 @@ today, stated with their limits.
   `Config.AllowUnsandboxedExec` (`-allow-unsandboxed-exec` on the `och`
   binary) — a loud, logged opt-out naming exactly which guarantee is absent,
   never a silent fallback.
+- **Secret redaction for tool results and assistant text.**
+  `internal/harness/redact.Text` scans the exact content becoming a tool
+  call's result or failure message (`application/pipeline.go`) and the
+  model's final assistant message (`application/loop.go`) for a small,
+  hardcoded set of secret-shaped substrings — `Authorization`/`Bearer`
+  headers, provider-style `sk-` keys, a generic
+  `key`/`token`/`secret`/`password`/`credential` assignment shape, AWS
+  access key IDs, GitHub tokens, and PEM private-key blocks — replacing
+  each matched value with a `[redacted]` marker before it is persisted as
+  a domain event, replicated into the JSONL audit trail, or projected onto
+  ACP `session/update` (live or replayed). See the [secret redaction
+  contract](docs/architecture/secret-redaction.md).
 
 ### Not enforced
 
@@ -79,9 +91,15 @@ today, stated with their limits.
 - **No multi-tenant isolation.** One workspace root per session is a
   correctness boundary, not a security boundary between mutually distrusting
   users.
-- **No secret redaction.** Provider credentials live in adapter configuration;
-  event payloads and tool results are not scanned for secrets before being
-  persisted or emitted.
+- **Secret redaction is a small, hardcoded pattern match, not an exhaustive
+  scanner.** It catches only the shapes named above; a secret with no
+  recognizable prefix (a raw high-entropy string) is not detected. It never
+  scans a tool call's own arguments — redacting the actual input before use
+  would corrupt what `write_file`/`exec` do with it — or live
+  `model.text.delta` streaming chunks, since a secret could span two
+  chunks with no buffer to redact against. The Provider API key itself is
+  protected structurally instead (never stored past request time, never
+  logged), a code-review convention rather than a compiler-enforced type.
 - **Durable storage is not encrypted** and its integrity is not chained. The
   audit envelope and digest chain are deferred to a later slice.
 
