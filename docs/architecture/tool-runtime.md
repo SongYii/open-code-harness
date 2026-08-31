@@ -425,12 +425,13 @@ rejected (`TestResolveRejectsForeignWorkspace`).
 
 `adapters/localexec` implements `tools.CommandRunner`. `Runner.Enforcement()`
 reports, per effect, how completely commands are confined —
-`Filesystem`/`Network`/`Memory`, each `"full"`, `"partial"`, or `"none"` — a
+`Filesystem`/`Network`/`Memory`/`CPU`, each `"full"`, `"partial"`, or `"none"` — a
 fact computed from what is actually active, never an assumed promise
 (`TestEnforcementReportsNoneWithoutAPlatformBackend` pins the honest
 all-`"none"` baseline when no backend is usable). See
 [exec sandboxing and resource quotas](../superpowers/specs/2026-08-30-exec-sandboxing-resource-quotas-design.md)
-for the accepted design and its
+and [exec CPU quota](../superpowers/specs/2026-08-31-exec-cpu-quota-design.md)
+for the accepted designs and their
 [completion evidence](exec-sandboxing-resource-quotas-evidence.md).
 
 On Linux, `Runner` probes `bwrap` at construction
@@ -449,7 +450,18 @@ stays above 90% of `memory.high` after a breach
 (`TestRunKillsOnResourceLimitSignal`,
 `TestExecResourceLimitedFailsToolWithFrozenText`), reporting `Memory` as
 `"full"` when active, `"none"` when the memory controller isn't delegated
-to this cgroup.
+to this cgroup. The same child cgroup also gets `cpu.max` written as
+`"100000 100000"` (one full core's bandwidth per 100ms period),
+delegated independently of `memory` — a `cpu` controller failure never
+undoes an already-succeeded memory quota, and `CPU` is reported `"full"`
+or `"none"` independently of `Memory`
+(`TestCPUControllerFailureLeavesMemoryQuotaActive`). Unlike memory,
+`cpu.max` is a kernel-enforced throttle, not a kill: there is no monitor,
+and `CommandResult.Throttled` — read from `cpu.stat`'s `nr_throttled`
+after every exit path — is a purely additive diagnostic, never a kill
+reason, and can be `true` alongside `TimedOut`, `ResourceLimited`, or
+neither (`TestRunReportsThrottledFromHandWiredCPUStat`,
+`TestCgroupCPUQuotaThrottlesParallelWork`).
 
 On Darwin, `Runner` probes hardcoded `/usr/bin/sandbox-exec` (never
 PATH-resolved) and, when available, wraps every `Run` call in a Seatbelt
@@ -461,7 +473,19 @@ deny-writes-except-workspace-root / allow-reads / deny-network layer
 command also gets a best-effort `RLIMIT_AS` bound, reported as `Memory =
 "partial"` (`TestRlimitEnforcementLevelIsPartialOnDarwin`): this bounds
 virtual address space, not resident memory, and a breach surfaces as the
-child's own allocator hitting `ENOMEM`, never `ResourceLimited`.
+child's own allocator hitting `ENOMEM`, never `ResourceLimited`. The same
+bracket around `Start()` also sets `RLIMIT_CPU` (soft 30s / hard 31s),
+reported as `CPU = "full"` (`TestCPURlimitEnforcementLevelIsFullOnDarwin`)
+— unlike `RLIMIT_AS`, this is a real kernel kill, not a best-effort bound:
+a process terminated by `SIGXCPU` specifically (the soft limit's own
+signal, deliberately not a bare `SIGKILL`, which cannot be distinguished
+from an unrelated external kill in the same window) sets
+`CommandResult.ResourceLimited` via a dedicated signal-inspection path in
+`Run` (`TestIsCPUResourceLimitExitDetectsSIGXCPUOnly`,
+`TestCPUQuotaKillsARunawayCPUCommand`). No macOS host has run any part of
+this CPU-quota extension for real in this repository's own history yet
+(see the evidence ledger); it is verified only by cross-compilation and
+code review.
 
 `localexec.Availability()` reports whether the current platform's backend
 is usable at all; Windows and any platform with neither backend always

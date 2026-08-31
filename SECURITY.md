@@ -71,6 +71,22 @@ today, stated with their limits.
   a domain event, replicated into the JSONL audit trail, or projected onto
   ACP `session/update` (live or replayed). See the [secret redaction
   contract](docs/architecture/secret-redaction.md).
+- **A CPU quota on `exec`, on Linux and macOS.** On Linux, the same
+  per-invocation cgroup that bounds memory also gets `cpu.max` set to one
+  full core's worth of scheduled bandwidth per 100ms period — a
+  kernel-enforced throttle, not a kill, reported via
+  `CommandResult.Throttled`. On macOS, `RLIMIT_CPU` (soft 30s / hard 31s)
+  is bracketed around the same window as the existing `RLIMIT_AS` bound;
+  a process terminated by `SIGXCPU` specifically sets
+  `CommandResult.ResourceLimited` — a bare `SIGKILL` alone is not
+  attributed to this quota, since it cannot be distinguished from an
+  unrelated external kill in the same narrow window. No macOS host has
+  run this for real in this repository's own history; it is verified
+  only by cross-compilation and code review. See [Tool
+  runtime](docs/architecture/tool-runtime.md) and the [exec sandboxing
+  and resource quotas evidence
+  ledger](docs/architecture/exec-sandboxing-resource-quotas-evidence.md)'s
+  CPU quota extension section.
 
 ### Not enforced
 
@@ -87,7 +103,15 @@ today, stated with their limits.
   child's own allocator getting `ENOMEM`, not a clean external kill —
   `CommandResult.ResourceLimited` is never set there.
 - **`PATH` is inherited from the host,** so `exec` resolves host binaries.
-- **No CPU or disk-IO quota,** on any platform. No file-descriptor limit.
+- **No disk-IO quota, on any platform. No file-descriptor limit.** Even a
+  future disk-IO throttle (Linux `io.max`) would only bound throughput
+  rate, not total disk space consumed — it would not, on its own, prevent
+  a workspace from being filled to capacity by a single large write.
+  File-descriptor limits face the same constraint CPU quota did on macOS
+  before this project added `RLIMIT_CPU` (Go's `os/exec` has no
+  pre-exec hook for an arbitrary child), with no Linux cgroup v2
+  controller fallback (`pids.max` bounds process count, not open file
+  descriptors).
 - **No multi-tenant isolation.** One workspace root per session is a
   correctness boundary, not a security boundary between mutually distrusting
   users.

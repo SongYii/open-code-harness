@@ -29,9 +29,9 @@ The numbered milestone list lives in
 - Tool Runtime, Policy, and four builtin workspace tools: implemented and
   verified; not GA. Application-owned Step loop and a pure Policy Decide
   table behind ports; not a plugin kernel. `exec` is now confined by bwrap
-  and a cgroup v2 memory quota on Linux, or Seatbelt and RLIMIT_AS on
-  macOS, when available, with a fail-closed startup gate and a named,
-  logged escape hatch otherwise; see the
+  and a cgroup v2 memory and CPU quota on Linux, or Seatbelt, RLIMIT_AS,
+  and RLIMIT_CPU on macOS, when available, with a fail-closed startup
+  gate and a named, logged escape hatch otherwise; see the
   [SECURITY.md](SECURITY.md) threat model and the
   [exec sandboxing evidence ledger](docs/architecture/exec-sandboxing-resource-quotas-evidence.md).
   Tool call results, failure messages, and the final assistant message
