@@ -113,8 +113,19 @@ func TestRedactionOnClassifiedMessages(t *testing.T) {
 	model := newTestModel(t, validConfig(transport))
 	_, err := model.Stream(context.Background(), modelRequest())
 	failure := requireProviderFailure(t, err, engine.CodeModelStartup, "provider_auth")
-	if strings.Contains(failure.SafeMessage, "sk-") || strings.Contains(failure.SafeMessage, "Bearer") || strings.Contains(failure.SafeMessage, "Authorization") {
-		t.Fatalf("SafeMessage leaked secret: %q", failure.SafeMessage)
+	// The header/parameter labels ("Authorization", "key") are expected to
+	// survive: internal/harness/redact.Text preserves a matched prefix and
+	// replaces only the secret value with a [redacted] marker, so a reader
+	// can tell "a secret was here and removed" apart from "this field was
+	// legitimately empty" (secret redaction design §5). Only the actual
+	// secret values must be gone.
+	for _, leaked := range []string{"sk-secret", "sk-also"} {
+		if strings.Contains(failure.SafeMessage, leaked) {
+			t.Fatalf("SafeMessage leaked secret value %q: %q", leaked, failure.SafeMessage)
+		}
+	}
+	if !strings.Contains(failure.SafeMessage, "[redacted]") {
+		t.Fatalf("SafeMessage = %q, want a [redacted] marker where the secret value was", failure.SafeMessage)
 	}
 }
 
