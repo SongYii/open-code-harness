@@ -8,13 +8,13 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
+	"github.com/SongYii/open-code-harness/internal/harness/redact"
 )
 
 const (
@@ -22,13 +22,6 @@ const (
 	maxSafeMessageRunes  = 256
 	maxProviderRequestID = 128
 	maxRetryAfter        = time.Hour
-)
-
-var (
-	reAuthorization = regexp.MustCompile(`(?i)Authorization\s*[:=]\s*\S+`)
-	reBearer        = regexp.MustCompile(`(?i)Bearer\s+\S+`)
-	reSecretKey     = regexp.MustCompile(`sk-[A-Za-z0-9_\-]+`)
-	reQueryKey      = regexp.MustCompile(`(?i)([?&]key=)[^&\s]+`)
 )
 
 var (
@@ -243,7 +236,7 @@ func safeMessage(status int, body []byte) string {
 	if looksLikeHTML(body) {
 		return truncateRunes("http_" + strconv.Itoa(status))
 	}
-	text := redactSecrets(string(bytes.TrimSpace(body)))
+	text := redact.Text(string(bytes.TrimSpace(body)))
 	text = strings.Join(strings.Fields(text), " ")
 	if text == "" {
 		return truncateRunes("http_" + strconv.Itoa(status))
@@ -262,14 +255,6 @@ func looksLikeHTML(body []byte) bool {
 		limit = limit[:256]
 	}
 	return bytes.HasPrefix(limit, []byte("<!doctype")) || bytes.HasPrefix(limit, []byte("<html")) || bytes.Contains(limit, []byte("<html"))
-}
-
-func redactSecrets(text string) string {
-	text = reAuthorization.ReplaceAllString(text, "")
-	text = reBearer.ReplaceAllString(text, "")
-	text = reSecretKey.ReplaceAllString(text, "")
-	text = reQueryKey.ReplaceAllString(text, "$1")
-	return text
 }
 
 func truncateRunes(text string) string {
@@ -296,7 +281,7 @@ func startupFailure(class engine.FailureClass, code string, status int, requestI
 			Code:        code,
 			HTTPStatus:  status,
 			RequestID:   requestID,
-			SafeMessage: redactSecrets(message),
+			SafeMessage: redact.Text(message),
 		},
 	}
 }
@@ -314,7 +299,7 @@ func streamFailure(engineCode engine.ErrorCode, class engine.FailureClass, code 
 			Code:        code,
 			HTTPStatus:  status,
 			RequestID:   requestID,
-			SafeMessage: redactSecrets(message),
+			SafeMessage: redact.Text(message),
 		},
 	}
 }

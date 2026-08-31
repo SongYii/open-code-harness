@@ -18,6 +18,7 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/application"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
+	"github.com/SongYii/open-code-harness/internal/harness/redact"
 	"github.com/SongYii/open-code-harness/internal/harness/testkit"
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
 )
@@ -600,10 +601,15 @@ func assertNoSecrets(t *testing.T, err error, records []domain.RecordedEvent, ex
 				t.Fatalf("compared output to the secret input itself")
 			}
 		}
-		for _, part := range []string{"Authorization", "Bearer ", "sk-"} {
-			if strings.Contains(text, part) {
-				t.Fatalf("classified or persisted text leaked %q: %q", part, text)
-			}
+		// redact.Text is idempotent on genuinely redacted output (see
+		// openaicompat's own assertNoSecrets for why); a text it would
+		// still change on a second pass still has an unredacted secret
+		// shape in it. This does not assume redaction empties a matched
+		// label rather than preserving it (secret redaction design §5
+		// preserves context labels like "Authorization:" and redacts
+		// only values).
+		if again := redact.Text(text); again != text {
+			t.Fatalf("classified or persisted text still had an unredacted secret shape: %q (redact.Text would further change it to %q)", text, again)
 		}
 	}
 }

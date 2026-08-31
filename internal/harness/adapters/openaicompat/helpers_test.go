@@ -15,6 +15,7 @@ import (
 
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
+	"github.com/SongYii/open-code-harness/internal/harness/redact"
 )
 
 type scriptedTransport struct {
@@ -195,14 +196,21 @@ func requireProviderFailure(t *testing.T, err error, code engine.ErrorCode, dura
 	return failure
 }
 
+// assertNoSecrets requires every classified text to already be fully
+// redacted: redact.Text is idempotent on genuinely redacted output (a
+// [redacted] marker, or a preserved label like "Authorization:" with
+// nothing secret-shaped left after it, never matches any pattern again),
+// so a text redact.Text would still change on a second pass still has an
+// unredacted secret shape in it. This is a stronger, pattern-set-agnostic
+// replacement for a hardcoded word list, and does not assume secret
+// redaction empties a matched label rather than preserving it (secret
+// redaction design §5 preserves context labels and redacts only values).
 func assertNoSecrets(t *testing.T, err error, failure *engine.ProviderFailure) {
 	t.Helper()
 	texts := []string{err.Error(), failure.Error(), failure.SafeMessage}
 	for _, text := range texts {
-		for _, part := range []string{"Authorization", "Bearer ", "sk-"} {
-			if strings.Contains(text, part) {
-				t.Fatalf("classified text leaked %q: %q", part, text)
-			}
+		if again := redact.Text(text); again != text {
+			t.Fatalf("classified text still had an unredacted secret shape: %q (redact.Text would further change it to %q)", text, again)
 		}
 	}
 }
