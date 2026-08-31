@@ -55,6 +55,9 @@ async function main(): Promise<void> {
 
   const ledger = new Ledger();
   const view = new TrajectoryView(root);
+  const status = document.createElement("div");
+  status.id = "status";
+  root.append(status);
   let turnCounter = 0;
 
   const transport = new WebSocketTransport(websocketURL(token));
@@ -91,10 +94,14 @@ async function main(): Promise<void> {
     const turnId = `local-turn-${turnCounter++}`;
     ledger.beginTurn(turnId, text, Date.now());
     view.render(ledger.snapshot());
+    status.textContent = "";
     client
       .prompt(sessionId, text)
+      .then((stopReason) => {
+        status.textContent = `[${stopReason}]`;
+      })
       .catch((err: unknown) => {
-        console.error("acp-web-bridge: session/prompt failed", err);
+        status.textContent = `[error: ${err instanceof Error ? err.message : String(err)}]`;
       })
       .finally(() => {
         ledger.endTurn(Date.now());

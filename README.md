@@ -82,6 +82,17 @@ The numbered milestone list lives in
   JSONL projection of one EventStore session, read through `sqlite.OpenReader`
   without taking the runtime lease.
 
+- Web trajectory UI (`internal/client/acpweb`, `cmd/acp-web-bridge`):
+  implemented and verified; not GA. `cmd/acp-web-bridge` is a dumb
+  NDJSON-line-to-WebSocket-frame relay, not a second ACP client — every
+  ACP v1 semantic runs as an independent TypeScript client in the
+  browser, rendering a turn-grouped ledger with composer-position
+  permission approval. Every WebSocket upgrade requires both an
+  Origin-allowlist match and a per-invocation token; loopback-only, no
+  TLS. Proven end to end by a real headless-browser interoperability
+  proof against the real `och` binary. Not milestone 7's fuller
+  TypeScript TUI client, which remains unspecified.
+
 TUI, MCP, the Context Engine, evaluation, and OpenTelemetry are not yet
 implemented. The project remains pre-v0.
 
@@ -131,6 +142,12 @@ The session transcript contract is documented in
 and its [Chinese reading copy](docs/architecture/session-transcript.zh-CN.md),
 with auditable results in the
 [conversation and session transcript evidence ledger](docs/architecture/conversation-and-transcript-evidence.md).
+The web trajectory UI contract is documented in
+[Implemented Web Trajectory UI](docs/architecture/web-trajectory-ui.md)
+and its [Chinese reading copy](docs/architecture/web-trajectory-ui.zh-CN.md),
+with auditable results, including the real interoperability proof's own
+output, in the
+[web trajectory UI evidence ledger](docs/architecture/web-trajectory-ui-evidence.md).
 The durable Store adapter is documented in
 [Implemented SQLite Canonical EventStore](docs/architecture/sqlite-eventstore.md)
 and its [Chinese reading copy](docs/architecture/sqlite-eventstore.zh-CN.md),
