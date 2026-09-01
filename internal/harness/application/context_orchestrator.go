@@ -145,6 +145,12 @@ type PrepareContextInput struct {
 	Trigger      string
 	CurrentInput domain.ModelPromptMessage
 	Tools        []domain.ToolSchema
+	// Force skips the Budget.Trigger comparison and always attempts a
+	// cut (contextengine.PlanInput.Force). Provider overflow recovery
+	// (implementation plan Task 10, design §15.3) sets this: a Provider
+	// just rejected the request as too large, which the deterministic
+	// meter's own estimate may not have predicted as being over Trigger.
+	Force bool
 }
 
 // PrepareContextResult is PrepareContext's output: the Session as of
@@ -197,7 +203,7 @@ func PrepareContext(ctx context.Context, deps ContextOrchestratorDeps, state dom
 		units = unitsAfter(units, previous.Coverage.ThroughSequence)
 	}
 	plan, err := contextengine.SelectCutPoint(contextengine.PlanInput{
-		Units: units, Budget: deps.Budget, Meter: deps.Meter, Tools: input.Tools, CurrentInput: input.CurrentInput,
+		Units: units, Budget: deps.Budget, Meter: deps.Meter, Tools: input.Tools, CurrentInput: input.CurrentInput, Force: input.Force,
 	})
 	if err != nil {
 		return PrepareContextResult{}, mapContextEngineScanError(err)
@@ -216,7 +222,7 @@ func PrepareContext(ctx context.Context, deps ContextOrchestratorDeps, state dom
 			// uncheckpointed history from scratch (design §14.3).
 			previous = nil
 			plan, err = contextengine.SelectCutPoint(contextengine.PlanInput{
-				Units: scan.Units, Budget: deps.Budget, Meter: deps.Meter, Tools: input.Tools, CurrentInput: input.CurrentInput,
+				Units: scan.Units, Budget: deps.Budget, Meter: deps.Meter, Tools: input.Tools, CurrentInput: input.CurrentInput, Force: input.Force,
 			})
 			if err != nil {
 				return PrepareContextResult{}, mapContextEngineScanError(err)
@@ -821,6 +827,34 @@ func minUint64(a, b uint64) uint64 {
 		return a
 	}
 	return b
+}
+
+// contextPreparationAndRequestEvents decides context.prepared +
+// model.request.recorded as one ordered slice against preview (a state
+// clone with the about-to-exist assistant Item already attached — see
+// turn.go's contextAdmissionEvents and loop.go's midTurnStepEvents, both
+// of which build preview themselves before calling this, since exactly
+// how the Item comes to exist on preview differs between admission
+// [StartAssistantTurn creates the Turn too] and a subsequent Step
+// [StartAssistantMessage only]). Shared here so both call sites build the
+// identical event pair the same way.
+func contextPreparationAndRequestEvents(preview domain.Session, sessionID domain.SessionID, turnID domain.TurnID, itemID domain.ItemID, identity *engine.RequestIdentity, prepared PrepareContextResult, trigger string, attemptIndex uint32, decisionID domain.ContextDecisionID) ([]domain.UncommittedEvent, error) {
+	contextPreparedRecorded := ContextPreparedRecordedFromResult(prepared, trigger, attemptIndex, decisionID, turnID, itemID)
+	contextEvents, err := domain.Decide(preview, domain.RecordContextPreparation{SessionID: sessionID, ContextPreparedRecorded: contextPreparedRecorded})
+	if err != nil {
+		return nil, applicationError(CategoryInternal, "domain_transition_failed", false, err)
+	}
+
+	modelRequestRecorded := ModelRequestRecordedFromEnvelope(identity, turnID, itemID, prepared.Prepared.Envelope, engine.ModelRequestPurposeConversation, attemptIndex, decisionID)
+	requestEvents, err := domain.Decide(preview, domain.RecordModelRequest{SessionID: sessionID, ModelRequestRecorded: modelRequestRecorded})
+	if err != nil {
+		return nil, applicationError(CategoryInternal, "domain_transition_failed", false, err)
+	}
+
+	decided := make([]domain.UncommittedEvent, 0, len(contextEvents)+len(requestEvents))
+	decided = append(decided, contextEvents...)
+	decided = append(decided, requestEvents...)
+	return decided, nil
 }
 
 // ContextPreparedRecordedFromResult builds design §7.4's per-attempt

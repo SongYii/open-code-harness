@@ -248,24 +248,11 @@ func contextAdmissionEvents(state domain.Session, sessionID domain.SessionID, tu
 	preview := state.Clone()
 	preview.ActiveTurn = &domain.Turn{ID: turnID, ActiveItem: &domain.Item{ID: itemID, TurnID: turnID, Kind: domain.ItemKindAssistantMessage}}
 
-	const firstAttempt uint32 = 1
-	contextPreparedRecorded := ContextPreparedRecordedFromResult(prepared, domain.ContextTriggerPreTurn, firstAttempt, decisionID, turnID, itemID)
-	contextEvents, err := domain.Decide(preview, domain.RecordContextPreparation{SessionID: sessionID, ContextPreparedRecorded: contextPreparedRecorded})
+	contextAndRequestEvents, err := contextPreparationAndRequestEvents(preview, sessionID, turnID, itemID, identity, prepared, domain.ContextTriggerPreTurn, 1, decisionID)
 	if err != nil {
-		return nil, applicationError(CategoryInternal, "domain_transition_failed", false, err)
+		return nil, err
 	}
-
-	modelRequestRecorded := ModelRequestRecordedFromEnvelope(identity, turnID, itemID, prepared.Prepared.Envelope, engine.ModelRequestPurposeConversation, firstAttempt, decisionID)
-	requestEvents, err := domain.Decide(preview, domain.RecordModelRequest{SessionID: sessionID, ModelRequestRecorded: modelRequestRecorded})
-	if err != nil {
-		return nil, applicationError(CategoryInternal, "domain_transition_failed", false, err)
-	}
-
-	decided := make([]domain.UncommittedEvent, 0, len(startEvents)+len(contextEvents)+len(requestEvents))
-	decided = append(decided, startEvents...)
-	decided = append(decided, contextEvents...)
-	decided = append(decided, requestEvents...)
-	return decided, nil
+	return append(startEvents, contextAndRequestEvents...), nil
 }
 
 // contextHistoryPrefix recovers the history portion of a Context-Engine-

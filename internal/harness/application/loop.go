@@ -36,6 +36,15 @@ type ownedTurn struct {
 	started       map[domain.ItemID]struct{}
 	executed      map[domain.ItemID]struct{}
 	stepIndex     uint32
+	// attemptIndex and overflowRecoveries are Context-Engine-aware-only
+	// (implementation plan Task 10, design §13.4/§15.3): attemptIndex is
+	// the current assistant item's 1-based attempt counter (bumped by an
+	// overflow retry, reset to 1 by each new Step); overflowRecoveries
+	// counts overflow recoveries used so far in this Turn, in-memory only
+	// for the lifetime of one RunTurn call, checked against
+	// Config.Context.MaxOverflowRecoveriesPerTurn.
+	attemptIndex       uint32
+	overflowRecoveries uint32
 }
 
 type turnProjection struct {
@@ -57,6 +66,18 @@ func newTurnProjectionWithPrefix(prefix []domain.ModelPromptMessage, input strin
 		suffixStart: len(messages),
 		names:       make(map[string]string),
 	}
+}
+
+// newTurnProjectionFromMessages wraps an already-complete message list
+// (a Context-Engine-prepared envelope) verbatim, with no synthetic
+// trailing input message appended -- unlike newTurnProjectionWithPrefix,
+// which always appends one. Mid-turn preparation (implementation plan
+// Task 10) has no fresh user input to append; the envelope PrepareContext
+// already materialized (checkpoint/tail through the last committed Tool
+// Result) is exactly what the next dispatch must send.
+func newTurnProjectionFromMessages(messages []domain.ModelPromptMessage) *turnProjection {
+	cloned := clonePromptMessages(messages)
+	return &turnProjection{messages: cloned, suffixStart: len(cloned), names: make(map[string]string)}
 }
 
 // projectPriorTurns folds committed events from earlier turns into model
@@ -189,6 +210,7 @@ func (service *Service) runAfterAdmission(ctx context.Context, request RunTurnRe
 	}
 	if usedContextEngine {
 		owned.projection = newTurnProjectionWithPrefix(contextPrefix, request.Input)
+		owned.attemptIndex = 1
 		return service.runStepLoop(ctx, owned)
 	}
 	if !service.catalogEnabled() {
@@ -233,7 +255,7 @@ func (service *Service) runStepLoop(ctx context.Context, owned *ownedTurn) (RunT
 		if err := contextError(ctx); err != nil {
 			return service.cancelOwnedTurn(ctx, owned, domain.InterruptionCallerCanceled)
 		}
-		runResult, err := service.runner.Run(ctx, engine.RunRequest{
+		runResult, err := service.runProviderAttempt(ctx, owned, engine.RunRequest{
 			ModelRequest: engine.ModelRequest{
 				SessionID: owned.result.SessionID,
 				TurnID:    owned.result.TurnID,
@@ -243,7 +265,7 @@ func (service *Service) runStepLoop(ctx context.Context, owned *ownedTurn) (RunT
 				Tools:     service.catalog.Schemas(),
 			},
 			MaxAssistantBytes: service.config.MaxAssistantBytes,
-		}, owned.emitter)
+		})
 		if err != nil {
 			cleanupBase := context.WithoutCancel(ctx)
 			cleanupCtx, cancel := context.WithTimeout(cleanupBase, service.config.TerminalCommitTimeout)
@@ -284,6 +306,13 @@ func (service *Service) runStepLoop(ctx context.Context, owned *ownedTurn) (RunT
 		}
 		if step == service.config.MaxSteps {
 			return service.failOwnedTurn(ctx, owned, CodeStepLimit, displayFailureSentence(CodeStepLimit))
+		}
+		if service.contextEnabled() {
+			done, result, err := service.startNextStepWithContextEngine(ctx, owned)
+			if done {
+				return result, err
+			}
+			continue
 		}
 		itemID, err := service.newItemID(ctx)
 		if err != nil {
@@ -348,6 +377,84 @@ func (service *Service) decideStartAssistantStep(owned *ownedTurn) ([]domain.Unc
 		return nil, err
 	}
 	return append(start, requestEvents...), nil
+}
+
+// startNextStepWithContextEngine is Task 10's mid-turn preparation (design
+// §15.2): after every Tool Result event for a Step has committed (the
+// caller, runStepLoop, only reaches here once its own tool-execution loop
+// finishes) and before the next assistant item dispatches, it allocates
+// the next Item/decision IDs, plans at a pinned post-tool head via
+// PrepareContext (Trigger: mid_turn, no CurrentInput -- there is no new
+// user text mid-turn), compacts only if that plan needs it, and appends
+// the atomic assistant.message.started + context.prepared +
+// model.request.recorded batch design §13.4 names for a subsequent Step
+// (never a fourth turn.started -- the Turn is already running). It
+// mirrors turn.go's contextAdmissionEvents/runTurnOwnedWithContextEngine
+// for the Step case; the done bool matches executeOneTool's own calling
+// convention (true = terminal, the caller returns result/err verbatim).
+func (service *Service) startNextStepWithContextEngine(ctx context.Context, owned *ownedTurn) (bool, RunTurnResult, error) {
+	itemID, err := service.newItemID(ctx)
+	if err != nil {
+		if contextError(ctx) != nil {
+			result, cancelErr := service.cancelOwnedTurn(ctx, owned, domain.InterruptionCallerCanceled)
+			return true, result, cancelErr
+		}
+		result, failErr := service.failOwnedTurn(ctx, owned, "model_failure", displayFailureSentence("model_failure"))
+		return true, result, failErr
+	}
+	owned.assistantItem = itemID
+
+	prepared, err := PrepareContext(ctx, service.contextOrchestratorDeps(), owned.state, PrepareContextInput{
+		SessionID: owned.result.SessionID, TurnID: owned.result.TurnID, ItemID: itemID,
+		Trigger: domain.ContextTriggerMidTurn, Tools: service.catalog.Schemas(),
+	})
+	if err != nil {
+		return true, cloneRunTurnResult(owned.result), err
+	}
+	owned.state = prepared.State
+
+	decisionID, sourceErr := service.ids.NewContextDecisionID()
+	if mapped := generatedIDError(ctx, sourceErr); mapped != nil {
+		return true, cloneRunTurnResult(owned.result), mapped
+	}
+	if _, err := domain.ParseContextDecisionID(string(decisionID)); err != nil {
+		return true, cloneRunTurnResult(owned.result), applicationError(CategoryInternal, "id_generator_contract_violation", false, err)
+	}
+
+	decided, err := midTurnStepEvents(owned.state, owned.result.SessionID, owned.result.TurnID, itemID, service.config.RequestIdentity, prepared, decisionID)
+	if err != nil {
+		return true, cloneRunTurnResult(owned.result), err
+	}
+	if err := service.commitStepAppend(ctx, owned, decided); err != nil {
+		return true, cloneRunTurnResult(owned.result), err
+	}
+	owned.projection = newTurnProjectionFromMessages(prepared.Prepared.Envelope.Messages)
+	owned.attemptIndex = 1
+	return false, owned.result, nil
+}
+
+// midTurnStepEvents decides design §13.4's subsequent-Step admission
+// batch (assistant.message.started + context.prepared +
+// model.request.recorded) as one ordered slice for one BuildAppendIntent
+// call, via commitStepAppend. It mirrors turn.go's contextAdmissionEvents
+// exactly except it starts from StartAssistantMessage (the Turn already
+// exists) instead of StartAssistantTurn.
+func midTurnStepEvents(state domain.Session, sessionID domain.SessionID, turnID domain.TurnID, itemID domain.ItemID, identity *engine.RequestIdentity, prepared PrepareContextResult, decisionID domain.ContextDecisionID) ([]domain.UncommittedEvent, error) {
+	startEvents, err := domain.Decide(state, domain.StartAssistantMessage{SessionID: sessionID, TurnID: turnID, ItemID: itemID})
+	if err != nil {
+		return nil, applicationError(CategoryInternal, "domain_transition_failed", false, err)
+	}
+	preview := state.Clone()
+	if preview.ActiveTurn == nil {
+		return nil, applicationError(CategoryInternal, "domain_transition_failed", false, errors.New("missing active turn"))
+	}
+	preview.ActiveTurn.ActiveItem = &domain.Item{ID: itemID, TurnID: turnID, Kind: domain.ItemKindAssistantMessage}
+
+	contextAndRequestEvents, err := contextPreparationAndRequestEvents(preview, sessionID, turnID, itemID, identity, prepared, domain.ContextTriggerMidTurn, 1, decisionID)
+	if err != nil {
+		return nil, err
+	}
+	return append(startEvents, contextAndRequestEvents...), nil
 }
 
 func (service *Service) stepRequestRecorded(turnID domain.TurnID, itemID domain.ItemID, messages []domain.ModelPromptMessage) domain.ModelRequestRecorded {
