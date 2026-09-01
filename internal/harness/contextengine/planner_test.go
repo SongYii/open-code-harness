@@ -131,6 +131,48 @@ func TestSelectCutPointBelowTriggerRetainsEverything(t *testing.T) {
 	}
 }
 
+// TestSelectCutPointForceBypassesTheTriggerComparison is implementation
+// plan Task 10's own reason for the Force field (design §15.3): a
+// Provider just rejected a request the meter itself estimated as safely
+// below Trigger, and overflow recovery must still attempt a cut rather
+// than trust that estimate.
+func TestSelectCutPointForceBypassesTheTriggerComparison(t *testing.T) {
+	units, err := ProjectSourceEvents(buildManyTurns(6))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Trigger/HardInput huge (certainly below Trigger without Force), but
+	// ProtectedTail small enough that not every unit fits in the tail --
+	// otherwise Force alone forces a cut attempt that still finds nothing
+	// safe to cover, which would test nothing.
+	budget := Budget{HardInput: 131072, Trigger: 131072, Target: 65536, ProtectedTail: 64, SummaryOutputCap: 512}
+
+	unforced, err := SelectCutPoint(PlanInput{Units: units, Budget: budget, Meter: WireEstimateMeter{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unforced.NeedsCompaction {
+		t.Fatal("fixture unexpectedly needs compaction without Force; tighten the fixture")
+	}
+
+	forced, err := SelectCutPoint(PlanInput{Units: units, Budget: budget, Meter: WireEstimateMeter{}, Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !forced.NeedsCompaction {
+		t.Fatal("Force: true did not force NeedsCompaction=true despite units below Trigger")
+	}
+	if len(forced.CoveredUnits) == 0 {
+		t.Fatal("Force: true produced NeedsCompaction=true but selected nothing to cover")
+	}
+	// Force never changes the cut-selection algorithm itself, only whether
+	// the early below-Trigger return is taken: Target/ProtectedTail-driven
+	// coverage still applies normally.
+	if forced.CoveredThroughSequence == 0 {
+		t.Fatal("forced result has no coverage boundary")
+	}
+}
+
 // buildManyTurns constructs count standalone (Turn, Assistant) unit pairs
 // with long enough text to force compaction pressure against a small
 // window.

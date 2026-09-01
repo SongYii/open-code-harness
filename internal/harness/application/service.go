@@ -59,7 +59,20 @@ type ContextConfig struct {
 	CheckpointStore ContextCheckpointStore
 	// PageLimit bounds each Scan page; zero uses PrepareContext's own default.
 	PageLimit uint32
+	// MaxOverflowRecoveriesPerTurn bounds design §15.3/§19's per-Turn
+	// Provider overflow recovery count. Zero uses
+	// DefaultMaxOverflowRecoveriesPerTurn (2); values above
+	// MaxOverflowRecoveriesPerTurnCap (3) are rejected by NewService.
+	MaxOverflowRecoveriesPerTurn uint32
 }
+
+// DefaultMaxOverflowRecoveriesPerTurn and MaxOverflowRecoveriesPerTurnCap
+// are design §19's own default (2) and maximum (3) for
+// ContextConfig.MaxOverflowRecoveriesPerTurn.
+const (
+	DefaultMaxOverflowRecoveriesPerTurn = 2
+	MaxOverflowRecoveriesPerTurnCap     = 3
+)
 
 func DefaultConfig() Config {
 	return Config{
@@ -131,8 +144,16 @@ func NewService(store EventStore, ids IDGenerator, clock Clock, runner *engine.T
 	if err := validateToolComposition(config, catalogEnabled); err != nil {
 		return nil, err
 	}
-	if config.Context.Enabled && (isNilValue(config.Context.Summarizer) || isNilValue(config.Context.CheckpointStore) || isNilValue(config.Context.Meter) || config.Context.Budget.HardInput == 0) {
-		return nil, applicationError(CategoryValidation, "invalid_configuration", false, nil)
+	if config.Context.Enabled {
+		if isNilValue(config.Context.Summarizer) || isNilValue(config.Context.CheckpointStore) || isNilValue(config.Context.Meter) || config.Context.Budget.HardInput == 0 {
+			return nil, applicationError(CategoryValidation, "invalid_configuration", false, nil)
+		}
+		if config.Context.MaxOverflowRecoveriesPerTurn == 0 {
+			config.Context.MaxOverflowRecoveriesPerTurn = DefaultMaxOverflowRecoveriesPerTurn
+		}
+		if config.Context.MaxOverflowRecoveriesPerTurn > MaxOverflowRecoveriesPerTurnCap {
+			return nil, applicationError(CategoryValidation, "invalid_configuration", false, nil)
+		}
 	}
 	approver := config.Approver
 	if isNilValue(approver) {
@@ -201,6 +222,10 @@ func (service *Service) appendResolutionConfig() AppendResolutionConfig {
 
 func (service *Service) contextEnabled() bool {
 	return service != nil && service.config.Context.Enabled
+}
+
+func (service *Service) maxOverflowRecoveriesPerTurn() uint32 {
+	return service.config.Context.MaxOverflowRecoveriesPerTurn
 }
 
 func (service *Service) contextOrchestratorDeps() ContextOrchestratorDeps {

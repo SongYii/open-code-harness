@@ -133,6 +133,17 @@ type PlanInput struct {
 	// CurrentInput is the not-yet-committed incoming user input (design
 	// §7.1's CurrentInputUnit) — never itself a candidate for coverage.
 	CurrentInput domain.ModelPromptMessage
+	// Force skips the Budget.Trigger comparison and always attempts a cut,
+	// as if the estimate already exceeded Trigger — implementation plan
+	// Task 10's Provider overflow recovery (design §15.3) needs this: a
+	// Provider just rejected the request as too large, which the
+	// deterministic meter's own estimate may not have predicted, so
+	// recovery cannot wait for the meter to agree pressure exists. Force
+	// never changes Target/ProtectedTail/the cut-selection algorithm
+	// itself — only whether the early "already under Trigger" return is
+	// taken. The zero value (false) preserves every existing caller's
+	// behavior unchanged.
+	Force bool
 }
 
 // PlanResult is SelectCutPoint's decision.
@@ -202,7 +213,7 @@ func SelectCutPoint(input PlanInput) (PlanResult, error) {
 	allMessages = append(allMessages, currentInputMessages(input.CurrentInput)...)
 
 	estimate := input.Meter.Estimate(Envelope{Messages: allMessages, Tools: input.Tools}).Tokens
-	if estimate <= input.Budget.Trigger {
+	if estimate <= input.Budget.Trigger && !input.Force {
 		return PlanResult{
 			NeedsCompaction: false,
 			RetainedUnits:   input.Units,
