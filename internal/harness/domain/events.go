@@ -27,6 +27,11 @@ const (
 	EventPolicyDecisionRecorded      = "policy.decision.recorded"
 	EventApprovalRequested           = "approval.requested"
 	EventApprovalResolved            = "approval.resolved"
+
+	EventContextCompactionStarted   = "context.compaction.started"
+	EventContextCompactionCompleted = "context.compaction.completed"
+	EventContextCompactionFailed    = "context.compaction.failed"
+	EventContextPreparedRecorded    = "context.prepared"
 )
 
 const (
@@ -48,6 +53,30 @@ const (
 	ApprovalDecisionDenied   = "denied"
 	ApprovalDecisionTimeout  = "timeout"
 	ApprovalDecisionCanceled = "canceled"
+
+	// Context compaction triggers (design §15). PreTurn and Manual start
+	// require no active Turn; MidTurn and OverflowRetry require one.
+	ContextTriggerPreTurn       = "pre_turn"
+	ContextTriggerManual        = "manual"
+	ContextTriggerMidTurn       = "mid_turn"
+	ContextTriggerOverflowRetry = "overflow_retry"
+
+	// Context compaction strategies (design §11/§12).
+	ContextStrategySummary = "summary"
+	ContextStrategyReset   = "reset"
+
+	// Context checkpoint kinds (design §7.3), duplicated here as plain
+	// strings rather than importing internal/harness/contextengine's
+	// CheckpointKind type: domain may not import contextengine, since
+	// contextengine itself imports domain (CE-01).
+	ContextCheckpointKindRollingSummary  = "rolling_summary_v1"
+	ContextCheckpointKindSourceTailReset = "source_tail_reset_v1"
+
+	// ModelRequestPurpose values (design §6.3). Empty is treated as
+	// ModelRequestPurposeConversation for backward compatibility with
+	// every ModelRequestRecorded constructed before this field existed.
+	ModelRequestPurposeConversation = "conversation"
+	ModelRequestPurposeCompaction   = "compaction"
 )
 
 type SessionCreated struct {
@@ -181,6 +210,20 @@ type ModelRequestRecorded struct {
 	MaxTokensField      string               `json:"maxTokensField"`
 	Messages            []ModelPromptMessage `json:"messages"`
 	Tools               []ToolSchema         `json:"tools,omitempty"`
+	// Purpose distinguishes a conversation attempt from a Context Engine
+	// summarization attempt (design §6.3). Empty is equivalent to
+	// ModelRequestPurposeConversation, so every ModelRequestRecorded
+	// constructed before this field existed remains valid.
+	Purpose string `json:"purpose,omitempty"`
+	// AttemptIndex is 1-based, matching this project's existing StepIndex
+	// convention; zero (the Go zero value) means "not yet assigned by a
+	// Context Engine-aware caller," not "first attempt." It exists so an
+	// overflow attempt and its retry (design §15.3) are never conflated.
+	AttemptIndex uint32 `json:"attemptIndex,omitempty"`
+	// ContextDecisionID names the ContextPreparedRecorded evidence this
+	// request's envelope came from, when one exists (design §7.4). Empty
+	// for a request built without going through the Context Engine.
+	ContextDecisionID ContextDecisionID `json:"contextDecisionID,omitempty"`
 }
 
 func (ModelRequestRecorded) EventType() string { return EventModelRequestRecorded }
@@ -194,6 +237,10 @@ type ModelUsageRecorded struct {
 	LatencyMs         uint64 `json:"latencyMs"`
 	FinishReason      string `json:"finishReason"`
 	ProviderRequestID string `json:"providerRequestID"`
+	// AttemptIndex mirrors ModelRequestRecorded.AttemptIndex so a usage
+	// fact can be paired back to the exact request that produced it, even
+	// across an overflow retry within the same Turn/Item.
+	AttemptIndex uint32 `json:"attemptIndex,omitempty"`
 }
 
 func (ModelUsageRecorded) EventType() string { return EventModelUsageRecorded }
@@ -270,3 +317,108 @@ type ApprovalResolved struct {
 }
 
 func (ApprovalResolved) EventType() string { return EventApprovalResolved }
+
+// ContextCheckpointRecord is domain's own durable representation of a
+// Context Engine checkpoint (design §7.3), embedded in
+// ContextCompactionCompleted. It deliberately duplicates the shape of
+// internal/harness/contextengine.ContextCheckpoint as plain fields rather
+// than importing that type: domain may not import contextengine, since
+// contextengine itself imports domain (CE-01). Application (Task 9) is
+// responsible for translating between the two. SourceDigest is hex-encoded
+// (contextengine's own [32]byte does not marshal usefully to JSON).
+type ContextCheckpointRecord struct {
+	ID                     string `json:"id"`
+	Kind                   string `json:"kind"`
+	SourceSchema           string `json:"sourceSchema"`
+	SummaryFormat          string `json:"summaryFormat,omitempty"`
+	PromptVersion          string `json:"promptVersion,omitempty"`
+	CoveredEventCount      uint64 `json:"coveredEventCount"`
+	CoveredTurnCount       uint64 `json:"coveredTurnCount"`
+	ThroughSequence        uint64 `json:"throughSequence"`
+	SourceDigestHex        string `json:"sourceDigestHex"`
+	PreviousCheckpointID   string `json:"previousCheckpointID,omitempty"`
+	Summary                string `json:"summary,omitempty"`
+	Limitations            string `json:"limitations,omitempty"`
+	TokensBefore           uint64 `json:"tokensBefore"`
+	CheckpointTokens       uint64 `json:"checkpointTokens"`
+	RetainedTailTokens     uint64 `json:"retainedTailTokens"`
+	EstimatedRequestTokens uint64 `json:"estimatedRequestTokens"`
+	SummarizerRoute        string `json:"summarizerRoute,omitempty"`
+	SummarizerUsage        uint64 `json:"summarizerUsage,omitempty"`
+	SummaryChunks          uint32 `json:"summaryChunks,omitempty"`
+	PrunedToolResultCount  uint32 `json:"prunedToolResultCount,omitempty"`
+}
+
+// ContextCompactionStarted opens design §13.3's bounded ContextCompaction
+// aggregate value. BaseSourceHead is the pinned scan head the compaction
+// plans against; PriorCheckpointID is "" for a Session's first compaction.
+// PlannedRoute is a non-secret route identity only (never a credential).
+type ContextCompactionStarted struct {
+	ID                ContextCompactionID `json:"id"`
+	Trigger           string              `json:"trigger"`
+	Strategy          string              `json:"strategy"`
+	BaseSourceHead    uint64              `json:"baseSourceHead"`
+	PriorCheckpointID string              `json:"priorCheckpointID,omitempty"`
+	PromptVersion     string              `json:"promptVersion,omitempty"`
+	SourceSchema      string              `json:"sourceSchema"`
+	MeterID           string              `json:"meterID"`
+	PlannedRoute      string              `json:"plannedRoute,omitempty"`
+}
+
+func (ContextCompactionStarted) EventType() string { return EventContextCompactionStarted }
+
+// ContextCompactionCompleted closes an active compaction successfully,
+// embedding the validated checkpoint (design §13.2/§13.3). Completing
+// clears Session.ContextCompaction; the checkpoint itself never enters the
+// bounded aggregate.
+type ContextCompactionCompleted struct {
+	ID         ContextCompactionID     `json:"id"`
+	Checkpoint ContextCheckpointRecord `json:"checkpoint"`
+}
+
+func (ContextCompactionCompleted) EventType() string { return EventContextCompactionCompleted }
+
+// ContextCompactionFailed closes an active compaction with a closed,
+// stable code and a safe message — never partial model output (design
+// §13.2).
+type ContextCompactionFailed struct {
+	ID      ContextCompactionID `json:"id"`
+	Code    string              `json:"code"`
+	Message string              `json:"message"`
+}
+
+func (ContextCompactionFailed) EventType() string { return EventContextCompactionFailed }
+
+// ContextPreparedRecorded is design §7.4's per-attempt evidence: what the
+// Context Engine decided before this ModelRequestRecorded was dispatched.
+type ContextPreparedRecorded struct {
+	TurnID                    TurnID            `json:"turnID"`
+	ItemID                    ItemID            `json:"itemID"`
+	AttemptIndex              uint32            `json:"attemptIndex"`
+	ContextDecisionID         ContextDecisionID `json:"contextDecisionID"`
+	Trigger                   string            `json:"trigger"`
+	SourceHeadVersion         uint64            `json:"sourceHeadVersion"`
+	CheckpointID              string            `json:"checkpointID,omitempty"`
+	CheckpointKind            string            `json:"checkpointKind,omitempty"`
+	RawTailFromSequence       uint64            `json:"rawTailFromSequence,omitempty"`
+	RawTailThroughSequence    uint64            `json:"rawTailThroughSequence,omitempty"`
+	BudgetHardInput           uint64            `json:"budgetHardInput"`
+	BudgetTrigger             uint64            `json:"budgetTrigger"`
+	BudgetTarget              uint64            `json:"budgetTarget"`
+	EstimatedMessageTokens    uint64            `json:"estimatedMessageTokens"`
+	EstimatedToolSchemaTokens uint64            `json:"estimatedToolSchemaTokens"`
+	EstimatedTotalTokens      uint64            `json:"estimatedTotalTokens"`
+	MeterID                   string            `json:"meterID"`
+	// UsageAnchorApplied/UsageAnchorTokens record whether the non-lowering
+	// usage anchor (design §8, CE-04) raised the estimate this decision
+	// used, and by how much — omitted (both zero-valued) when no anchor
+	// was eligible.
+	UsageAnchorApplied bool   `json:"usageAnchorApplied,omitempty"`
+	UsageAnchorTokens  uint64 `json:"usageAnchorTokens,omitempty"`
+	// SerializedEnvelopeBytes is the actual wire size Application's
+	// Provider Adapter produced for this request — not
+	// contextengine.PreparedContext's own JSON-encoded approximation.
+	SerializedEnvelopeBytes uint64 `json:"serializedEnvelopeBytes"`
+}
+
+func (ContextPreparedRecorded) EventType() string { return EventContextPreparedRecorded }

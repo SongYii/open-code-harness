@@ -13,6 +13,8 @@ type AppendID string
 type RunTurnRequestID string
 type EventID string
 type ApprovalID string
+type ContextCompactionID string
+type ContextDecisionID string
 
 func ParseSessionID(value string) (SessionID, error) {
 	if err := validateID(value); err != nil {
@@ -68,6 +70,20 @@ func ParseApprovalID(value string) (ApprovalID, error) {
 		return "", err
 	}
 	return ApprovalID(value), nil
+}
+
+func ParseContextCompactionID(value string) (ContextCompactionID, error) {
+	if err := validateID(value); err != nil {
+		return "", err
+	}
+	return ContextCompactionID(value), nil
+}
+
+func ParseContextDecisionID(value string) (ContextDecisionID, error) {
+	if err := validateID(value); err != nil {
+		return "", err
+	}
+	return ContextDecisionID(value), nil
 }
 
 func validateID(value string) error {

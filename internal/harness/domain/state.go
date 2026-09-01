@@ -91,6 +91,20 @@ type Turn struct {
 	ActiveItem       *Item
 }
 
+// ContextCompaction retains only the information needed while a Context
+// Engine compaction is active (design §13.3): no summary, source events,
+// messages, or checkpoint list — only enough to enforce "at most one
+// compaction active" and its start/terminal timestamp ordering. The
+// completed checkpoint itself never enters this bounded aggregate; it is
+// carried only by the ContextCompactionCompleted event.
+type ContextCompaction struct {
+	ID          ContextCompactionID
+	Trigger     string
+	Strategy    string
+	BaseVersion uint64
+	StartedAt   time.Time
+}
+
 // Session discards completed turns and items. Persistent identity
 // uniqueness for discarded records is enforced by the Store identity index.
 type Session struct {
@@ -99,6 +113,11 @@ type Session struct {
 	Version       uint64
 	WorkspaceRoot string
 	ActiveTurn    *Turn
+	// ContextCompaction is non-nil exactly while one Context Engine
+	// compaction is active (design §13.3). It is set by
+	// ContextCompactionStarted and cleared by ContextCompactionCompleted
+	// or ContextCompactionFailed; at most one is active at a time.
+	ContextCompaction *ContextCompaction
 }
 
 func (state Session) Exists() bool { return state.ID != "" }
@@ -113,9 +132,13 @@ func (state Session) Clone() Session {
 			clone.ActiveTurn.ActiveItem = &item
 		}
 	}
+	if state.ContextCompaction != nil {
+		compaction := *state.ContextCompaction
+		clone.ContextCompaction = &compaction
+	}
 	return clone
 }
 
 func (state Session) isPristine() bool {
-	return state.ID == "" && state.Status == "" && state.Version == 0 && state.WorkspaceRoot == "" && state.ActiveTurn == nil
+	return state.ID == "" && state.Status == "" && state.Version == 0 && state.WorkspaceRoot == "" && state.ActiveTurn == nil && state.ContextCompaction == nil
 }

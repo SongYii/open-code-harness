@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -222,6 +223,26 @@ func marshalEvent(event Event) (json.RawMessage, string, error) {
 			return nil, "", err
 		}
 		return marshalEventData(event, EventApprovalResolved)
+	case ContextCompactionStarted:
+		if err := validateContextCompactionStartedPayload(event, CodeInvalidEvent); err != nil {
+			return nil, "", err
+		}
+		return marshalEventData(event, EventContextCompactionStarted)
+	case ContextCompactionCompleted:
+		if err := validateContextCompactionCompletedPayload(event, CodeInvalidEvent); err != nil {
+			return nil, "", err
+		}
+		return marshalEventData(event, EventContextCompactionCompleted)
+	case ContextCompactionFailed:
+		if err := validateContextCompactionFailedPayload(event, CodeInvalidEvent); err != nil {
+			return nil, "", err
+		}
+		return marshalEventData(event, EventContextCompactionFailed)
+	case ContextPreparedRecorded:
+		if err := validateContextPreparedPayload(event, CodeInvalidEvent); err != nil {
+			return nil, "", err
+		}
+		return marshalEventData(event, EventContextPreparedRecorded)
 	default:
 		return nil, "", invalidEventError("unsupported event type")
 	}
@@ -277,10 +298,11 @@ func unmarshalEvent(eventType string, data json.RawMessage) (Event, error) {
 	case EventModelRequestRecorded:
 		event = ModelRequestRecorded{}
 		required = modelRequestRecordedKeys()
-		optional = []string{"tools"}
+		optional = []string{"tools", "purpose", "attemptIndex", "contextDecisionID"}
 	case EventModelUsageRecorded:
 		event = ModelUsageRecorded{}
 		required = modelUsageRecordedKeys()
+		optional = []string{"attemptIndex"}
 	case EventToolCallStarted:
 		event = ToolCallStarted{}
 		required = []string{"turnID", "itemID", "callID", "name", "arguments", "stepIndex"}
@@ -302,6 +324,28 @@ func unmarshalEvent(eventType string, data json.RawMessage) (Event, error) {
 	case EventApprovalResolved:
 		event = ApprovalResolved{}
 		required = []string{"turnID", "itemID", "approvalID", "decision"}
+	case EventContextCompactionStarted:
+		event = ContextCompactionStarted{}
+		required = []string{"id", "trigger", "strategy", "baseSourceHead", "sourceSchema", "meterID"}
+		optional = []string{"priorCheckpointID", "promptVersion", "plannedRoute"}
+	case EventContextCompactionCompleted:
+		event = ContextCompactionCompleted{}
+		required = []string{"id", "checkpoint"}
+	case EventContextCompactionFailed:
+		event = ContextCompactionFailed{}
+		required = []string{"id", "code", "message"}
+	case EventContextPreparedRecorded:
+		event = ContextPreparedRecorded{}
+		required = []string{
+			"turnID", "itemID", "attemptIndex", "contextDecisionID", "trigger",
+			"sourceHeadVersion", "budgetHardInput", "budgetTrigger", "budgetTarget",
+			"estimatedMessageTokens", "estimatedToolSchemaTokens", "estimatedTotalTokens",
+			"meterID", "serializedEnvelopeBytes",
+		}
+		optional = []string{
+			"checkpointID", "checkpointKind", "rawTailFromSequence", "rawTailThroughSequence",
+			"usageAnchorApplied", "usageAnchorTokens",
+		}
 	default:
 		return nil, invalidEventError("unsupported event type")
 	}
@@ -417,6 +461,29 @@ func unmarshalEvent(eventType string, data json.RawMessage) (Event, error) {
 		}
 		event = target
 	case ApprovalResolved:
+		if err := decoder.Decode(&target); err != nil {
+			return nil, invalidEventError("invalid event data")
+		}
+		event = target
+	case ContextCompactionStarted:
+		if err := decoder.Decode(&target); err != nil {
+			return nil, invalidEventError("invalid event data")
+		}
+		event = target
+	case ContextCompactionCompleted:
+		if err := validateContextCheckpointRecordJSON(data); err != nil {
+			return nil, err
+		}
+		if err := decoder.Decode(&target); err != nil {
+			return nil, invalidEventError("invalid event data")
+		}
+		event = target
+	case ContextCompactionFailed:
+		if err := decoder.Decode(&target); err != nil {
+			return nil, invalidEventError("invalid event data")
+		}
+		event = target
+	case ContextPreparedRecorded:
 		if err := decoder.Decode(&target); err != nil {
 			return nil, invalidEventError("invalid event data")
 		}
@@ -711,6 +778,19 @@ func validateModelRequestPayload(event ModelRequestRecorded, code ErrorCode) err
 			return domainError(CodeInvalidCommand, "turn ID is invalid")
 		}
 		return err
+	}
+	// Empty Purpose is equivalent to ModelRequestPurposeConversation, so
+	// every ModelRequestRecorded constructed before this field existed
+	// remains valid; only a genuinely unrecognized non-empty value fails.
+	switch event.Purpose {
+	case "", ModelRequestPurposeConversation, ModelRequestPurposeCompaction:
+	default:
+		return domainError(code, "model request purpose is invalid")
+	}
+	if event.ContextDecisionID != "" {
+		if _, err := ParseContextDecisionID(string(event.ContextDecisionID)); err != nil {
+			return domainError(code, "context decision ID is invalid")
+		}
 	}
 	return validateModelRequestBody(
 		event.AdapterFamily, event.ModelID, event.EndpointID,
@@ -1054,4 +1134,186 @@ func isJSONObject(data json.RawMessage) bool {
 
 func invalidEventError(message string) error {
 	return domainError(CodeInvalidEvent, message)
+}
+
+func validateContextCompactionID(id ContextCompactionID) error {
+	if _, err := ParseContextCompactionID(string(id)); err != nil {
+		return invalidEventError("context compaction ID is invalid")
+	}
+	return nil
+}
+
+func validateContextTrigger(trigger string) error {
+	switch trigger {
+	case ContextTriggerPreTurn, ContextTriggerManual, ContextTriggerMidTurn, ContextTriggerOverflowRetry:
+		return nil
+	default:
+		return invalidEventError("context compaction trigger is invalid")
+	}
+}
+
+func validateContextStrategy(strategy string) error {
+	switch strategy {
+	case ContextStrategySummary, ContextStrategyReset:
+		return nil
+	default:
+		return invalidEventError("context compaction strategy is invalid")
+	}
+}
+
+func validateContextCompactionStartedPayload(event ContextCompactionStarted, code ErrorCode) error {
+	if err := validateContextCompactionID(event.ID); err != nil {
+		if code == CodeInvalidCommand {
+			return domainError(CodeInvalidCommand, "context compaction ID is invalid")
+		}
+		return err
+	}
+	if err := validateContextTrigger(event.Trigger); err != nil {
+		if code == CodeInvalidCommand {
+			return domainError(CodeInvalidCommand, "context compaction trigger is invalid")
+		}
+		return err
+	}
+	if err := validateContextStrategy(event.Strategy); err != nil {
+		if code == CodeInvalidCommand {
+			return domainError(CodeInvalidCommand, "context compaction strategy is invalid")
+		}
+		return err
+	}
+	if !hasRequiredText(event.SourceSchema) || !hasRequiredText(event.MeterID) {
+		return domainError(code, "context compaction source schema and meter ID are required")
+	}
+	for _, value := range []string{event.PriorCheckpointID, event.PromptVersion, event.SourceSchema, event.MeterID, event.PlannedRoute} {
+		if !utf8.ValidString(value) {
+			return domainError(code, "context compaction field must be valid UTF-8")
+		}
+	}
+	return nil
+}
+
+func validateContextCheckpointKind(kind string) error {
+	switch kind {
+	case ContextCheckpointKindRollingSummary, ContextCheckpointKindSourceTailReset:
+		return nil
+	default:
+		return invalidEventError("context checkpoint kind is invalid")
+	}
+}
+
+// validateContextCheckpointRecord checks structural validity only (non-
+// blank required fields, valid UTF-8, a supported kind) — it does not
+// re-derive contextengine's own successor-lineage or digest-chain
+// verification (ValidateSuccessor, the ContextCheckpointStore contract),
+// which are Application/Task 9's responsibility using contextengine's own
+// functions before a command ever reaches Decide.
+func validateContextCheckpointRecord(checkpoint ContextCheckpointRecord, code ErrorCode) error {
+	if !hasRequiredText(checkpoint.ID) {
+		return domainError(code, "checkpoint ID is required")
+	}
+	if err := validateContextCheckpointKind(checkpoint.Kind); err != nil {
+		if code == CodeInvalidCommand {
+			return domainError(CodeInvalidCommand, "checkpoint kind is invalid")
+		}
+		return err
+	}
+	if !hasRequiredText(checkpoint.SourceSchema) {
+		return domainError(code, "checkpoint source schema is required")
+	}
+	if !hasRequiredText(checkpoint.SourceDigestHex) {
+		return domainError(code, "checkpoint source digest is required")
+	}
+	if checkpoint.Kind == ContextCheckpointKindRollingSummary && strings.TrimSpace(checkpoint.Summary) == "" {
+		return domainError(code, "rolling summary checkpoint requires summary text")
+	}
+	for _, value := range []string{
+		checkpoint.ID, checkpoint.SourceSchema, checkpoint.SummaryFormat, checkpoint.PromptVersion,
+		checkpoint.SourceDigestHex, checkpoint.PreviousCheckpointID, checkpoint.Summary,
+		checkpoint.Limitations, checkpoint.SummarizerRoute,
+	} {
+		if !utf8.ValidString(value) {
+			return domainError(code, "checkpoint field must be valid UTF-8")
+		}
+	}
+	return nil
+}
+
+func validateContextCompactionCompletedPayload(event ContextCompactionCompleted, code ErrorCode) error {
+	if err := validateContextCompactionID(event.ID); err != nil {
+		if code == CodeInvalidCommand {
+			return domainError(CodeInvalidCommand, "context compaction ID is invalid")
+		}
+		return err
+	}
+	return validateContextCheckpointRecord(event.Checkpoint, code)
+}
+
+func validateContextCompactionFailedPayload(event ContextCompactionFailed, code ErrorCode) error {
+	if err := validateContextCompactionID(event.ID); err != nil {
+		if code == CodeInvalidCommand {
+			return domainError(CodeInvalidCommand, "context compaction ID is invalid")
+		}
+		return err
+	}
+	if !hasRequiredText(event.Code) || !hasRequiredText(event.Message) {
+		return domainError(code, "context compaction failure code and message are required")
+	}
+	if !utf8.ValidString(event.Message) {
+		return domainError(code, "context compaction failure message must be valid UTF-8")
+	}
+	return nil
+}
+
+func validateContextPreparedPayload(event ContextPreparedRecorded, code ErrorCode) error {
+	if err := validateAssistantMessageIDs(event.TurnID, event.ItemID); err != nil {
+		if code == CodeInvalidCommand {
+			return domainError(CodeInvalidCommand, "turn ID is invalid")
+		}
+		return err
+	}
+	if err := validateContextTrigger(event.Trigger); err != nil {
+		if code == CodeInvalidCommand {
+			return domainError(CodeInvalidCommand, "context compaction trigger is invalid")
+		}
+		return err
+	}
+	if event.ContextDecisionID != "" {
+		if _, err := ParseContextDecisionID(string(event.ContextDecisionID)); err != nil {
+			return domainError(code, "context decision ID is invalid")
+		}
+	}
+	if (event.CheckpointID == "") != (event.CheckpointKind == "") {
+		return domainError(code, "checkpoint ID and kind must both be set or both be empty")
+	}
+	if event.CheckpointKind != "" {
+		if err := validateContextCheckpointKind(event.CheckpointKind); err != nil {
+			if code == CodeInvalidCommand {
+				return domainError(CodeInvalidCommand, "checkpoint kind is invalid")
+			}
+			return err
+		}
+	}
+	if !utf8.ValidString(event.CheckpointID) || !utf8.ValidString(event.MeterID) {
+		return domainError(code, "context preparation field must be valid UTF-8")
+	}
+	return nil
+}
+
+// validateContextCheckpointRecordJSON strictly validates the nested
+// "checkpoint" object's own keys, matching how validateModelRequestMessagesJSON
+// validates ModelRequestRecorded's nested "messages" array — the generic
+// top-level validateJSONObjectKeys pass does not descend into nested
+// objects.
+func validateContextCheckpointRecordJSON(data json.RawMessage) error {
+	fields, err := jsonObjectFields(data)
+	if err != nil {
+		return err
+	}
+	checkpoint, ok := fields["checkpoint"]
+	if !ok {
+		return invalidEventError("checkpoint is required")
+	}
+	return validateJSONObjectKeys(checkpoint,
+		[]string{"id", "kind", "sourceSchema", "coveredEventCount", "coveredTurnCount", "throughSequence", "sourceDigestHex", "tokensBefore", "checkpointTokens", "retainedTailTokens", "estimatedRequestTokens"},
+		[]string{"summaryFormat", "promptVersion", "previousCheckpointID", "summary", "limitations", "summarizerRoute", "summarizerUsage", "summaryChunks", "prunedToolResultCount"},
+	)
 }
