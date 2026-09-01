@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io/fs"
 	"net/http"
+	"sync"
 
 	"github.com/coder/websocket"
 )
@@ -45,6 +46,10 @@ type Server struct {
 	config     Config
 	token      string
 	selfOrigin string
+
+	connectionMu       sync.Mutex
+	nextConnectionID   uint64
+	activeConnectionID uint64
 }
 
 // NewServer constructs a Server. SetSelfOrigin must be called once the
@@ -99,6 +104,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
+	connectionID := s.beginConnection()
 
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		// This handler already ran its own Origin check above with this
@@ -112,8 +118,37 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	conn.SetReadLimit(MaxRelayFrameBytes)
 
-	previous := s.relay.SetConn(&wsConn{conn: conn})
+	previous, activated := s.activateConnection(connectionID, &wsConn{conn: conn})
+	if !activated {
+		_ = conn.Close(websocket.StatusNormalClosure, "superseded by a new connection")
+		return
+	}
 	if pc, ok := previous.(*wsConn); ok {
 		_ = pc.conn.Close(websocket.StatusNormalClosure, "superseded by a new connection")
 	}
+}
+
+// beginConnection assigns request order before websocket.Accept completes.
+// Accept sends the handshake before returning, so two sequential client dials
+// can otherwise finish their handlers out of order and let the older handler
+// replace the newer connection.
+func (s *Server) beginConnection() uint64 {
+	s.connectionMu.Lock()
+	defer s.connectionMu.Unlock()
+	s.nextConnectionID++
+	return s.nextConnectionID
+}
+
+// activateConnection installs conn only if no later request has already been
+// activated. The ordering check and Relay replacement share one lock so an
+// older handler cannot pass the check and then overwrite a newer connection.
+func (s *Server) activateConnection(connectionID uint64, conn Conn) (previous Conn, activated bool) {
+	s.connectionMu.Lock()
+	defer s.connectionMu.Unlock()
+	if connectionID <= s.activeConnectionID {
+		return nil, false
+	}
+	previous = s.relay.SetConn(conn)
+	s.activeConnectionID = connectionID
+	return previous, true
 }
