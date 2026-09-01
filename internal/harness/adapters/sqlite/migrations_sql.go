@@ -161,3 +161,23 @@ CREATE TABLE session_heads_v4 (
 	)
 );
 `
+
+// migration5DDL adds design 2026-09-01's own §14.1 projection: the derived,
+// bounded latest-checkpoint index for the Context Engine
+// (implementation plan Task 13). The row stores only bounded identity and
+// cursors; LoadLatestContextCheckpoint joins the canonical
+// context.compaction.completed event for the checkpoint payload itself,
+// and Append only ever updates this row after independently re-verifying
+// the claimed source digest chain against canonical events in the same
+// transaction (context_checkpoint.go).
+const migration5DDL = `
+CREATE TABLE context_checkpoint_heads (
+	session_id TEXT PRIMARY KEY REFERENCES event_streams (session_id),
+	checkpoint_event_sequence INTEGER NOT NULL CHECK (checkpoint_event_sequence > 0),
+	checkpoint_event_id TEXT NOT NULL UNIQUE REFERENCES events (event_id),
+	checkpoint_id TEXT NOT NULL UNIQUE,
+	covered_through_sequence INTEGER NOT NULL CHECK (covered_through_sequence > 0),
+	source_digest BLOB NOT NULL CHECK (length(source_digest) = 32),
+	updated_at_commit_position INTEGER NOT NULL REFERENCES event_appends (commit_position) CHECK (updated_at_commit_position > 0)
+);
+`
