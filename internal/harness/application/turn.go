@@ -107,6 +107,9 @@ func (service *Service) runTurnOwned(ctx context.Context, request RunTurnRequest
 	if service.catalogEnabled() {
 		schemas = service.catalog.Schemas()
 	}
+	if service.contextEnabled() {
+		return service.runTurnOwnedWithContextEngine(ctx, request, requestDigest, lease, state, turnID, itemID, commandID, emitter, schemas)
+	}
 	decided, err := domain.Decide(state, domain.StartAssistantTurn{SessionID: request.SessionID, TurnID: turnID, ItemID: itemID, Input: request.Input, Request: modelRequestSpec(service.config.RequestIdentity, request.Input, schemas)})
 	if err != nil {
 		return RunTurnResult{}, applicationError(CategoryValidation, "domain_rejected", false, err)
@@ -125,7 +128,7 @@ func (service *Service) runTurnOwned(ctx context.Context, request RunTurnRequest
 			if retainErr := lease.retainUnknown(executionPhaseAdmissionUnknown); retainErr != nil {
 				return RunTurnResult{}, storeContractViolation(retainErr)
 			}
-			return service.resolveAdmissionUnknown(ctx, request, requestDigest, lease, state, admissionIntent, commandID, emitter)
+			return service.resolveAdmissionUnknown(ctx, request, requestDigest, lease, state, admissionIntent, commandID, emitter, nil, false)
 		}
 		if IsStoreCode(err, StoreCodeCommandRequestConflict) {
 			lookup, lookupErr := service.store.FindCommandRequest(ctx, FindCommandRequestRequest{RunTurnRequestID: request.RequestID, SessionID: request.SessionID, RequestDigest: requestDigest})
@@ -149,7 +152,134 @@ func (service *Service) runTurnOwned(ctx context.Context, request RunTurnRequest
 		return RunTurnResult{}, storeContractViolation(err)
 	}
 	runningResult := RunTurnResult{SessionID: request.SessionID, TurnID: turnID, ItemID: itemID, Status: domain.TurnStatusRunning, Records: admissionRecords}
-	return service.runAfterAdmission(ctx, request, lease, runningState, runningResult, commandID, emitter)
+	return service.runAfterAdmission(ctx, request, lease, runningState, runningResult, commandID, emitter, nil, false)
+}
+
+// runTurnOwnedWithContextEngine is Task 9 Step 2's Context-Engine-aware
+// admission (design §15.1): it runs PrepareContext (which may itself
+// commit its own context.compaction.* bracket against the current
+// Session version) before building the atomic admission batch
+// turn.started + assistant.message.started + context.prepared +
+// model.request.recorded (design §13.4) over PrepareContext's own
+// materialized envelope -- never the bare-Input modelRequestSpec the
+// legacy path above still uses. It is only reachable when
+// service.contextEnabled(), so every existing caller that does not
+// configure Config.Context is completely unaffected.
+func (service *Service) runTurnOwnedWithContextEngine(ctx context.Context, request RunTurnRequest, requestDigest Digest, lease *executionLease, state domain.Session, turnID domain.TurnID, itemID domain.ItemID, commandID domain.CommandID, emitter *engine.Emitter, schemas []domain.ToolSchema) (RunTurnResult, error) {
+	prepared, err := PrepareContext(ctx, service.contextOrchestratorDeps(), state, PrepareContextInput{
+		SessionID: request.SessionID, TurnID: turnID, ItemID: itemID, Trigger: domain.ContextTriggerPreTurn,
+		CurrentInput: domain.ModelPromptMessage{Role: domain.PromptRoleUser, Text: request.Input}, Tools: schemas,
+	})
+	if err != nil {
+		return RunTurnResult{}, err
+	}
+	state = prepared.State
+
+	decisionID, sourceErr := service.ids.NewContextDecisionID()
+	if mapped := generatedIDError(ctx, sourceErr); mapped != nil {
+		return RunTurnResult{}, mapped
+	}
+	if _, err := domain.ParseContextDecisionID(string(decisionID)); err != nil {
+		return RunTurnResult{}, applicationError(CategoryInternal, "id_generator_contract_violation", false, err)
+	}
+
+	decided, err := contextAdmissionEvents(state, request.SessionID, turnID, itemID, request.Input, service.config.RequestIdentity, prepared, decisionID)
+	if err != nil {
+		return RunTurnResult{}, err
+	}
+
+	admission := &CommandAdmission{RunTurnRequestID: request.RequestID, RequestDigest: requestDigest, TurnID: turnID, ItemID: itemID}
+	admissionIntent, err := BuildAppendIntent(service.clock, service.ids, service.authority.CurrentAuthority(), request.SessionID, state.Version, commandID, admission, decided)
+	if err != nil {
+		return RunTurnResult{}, err
+	}
+	if err := lease.retainIntent(admissionIntent); err != nil {
+		return RunTurnResult{}, storeContractViolation(err)
+	}
+	contextPrefix := contextHistoryPrefix(prepared)
+	runningState, admissionRecords, err := CommitAppendIntent(ctx, service.store, state, admissionIntent)
+	if err != nil {
+		if isAppendOutcomeUnknown(err) {
+			if retainErr := lease.retainUnknown(executionPhaseAdmissionUnknown); retainErr != nil {
+				return RunTurnResult{}, storeContractViolation(retainErr)
+			}
+			return service.resolveAdmissionUnknown(ctx, request, requestDigest, lease, state, admissionIntent, commandID, emitter, contextPrefix, true)
+		}
+		if IsStoreCode(err, StoreCodeCommandRequestConflict) {
+			lookup, lookupErr := service.store.FindCommandRequest(ctx, FindCommandRequestRequest{RunTurnRequestID: request.RequestID, SessionID: request.SessionID, RequestDigest: requestDigest})
+			if !isNilValue(lookupErr) {
+				return RunTurnResult{}, mapV2StoreError(ctx, lookupErr, "read")
+			}
+			if validateErr := lookup.Validate(); validateErr != nil {
+				return RunTurnResult{}, storeContractViolation(validateErr)
+			}
+			if lookup.Kind == CommandRequestLookupFound {
+				return service.runTurnFound(ctx, request, requestDigest, *lookup.Record, false)
+			}
+			if lookup.Kind == CommandRequestLookupIdentityMismatch {
+				return RunTurnResult{}, applicationError(CategoryConflict, CodeCommandIdentityMismatch, false, nil)
+			}
+			return RunTurnResult{}, storeContractViolation(errors.New("command request conflict relookup was not found"))
+		}
+		return RunTurnResult{}, err
+	}
+	if err := lease.setPhase(executionPhaseRunning); err != nil {
+		return RunTurnResult{}, storeContractViolation(err)
+	}
+	runningResult := RunTurnResult{SessionID: request.SessionID, TurnID: turnID, ItemID: itemID, Status: domain.TurnStatusRunning, Records: admissionRecords}
+	return service.runAfterAdmission(ctx, request, lease, runningState, runningResult, commandID, emitter, contextPrefix, true)
+}
+
+// contextAdmissionEvents decides the atomic admission batch turn.started +
+// assistant.message.started + context.prepared + model.request.recorded
+// (design §13.4) as one ordered slice ready for one BuildAppendIntent
+// call. context.prepared/model.request.recorded both require a running
+// assistant Item (domain's own eligibility for RecordContextPreparation/
+// RecordModelRequest), which does not exist in state yet -- exactly
+// loop.go's decideStartAssistantStep's own established pattern, a preview
+// clone with the about-to-exist Turn/Item manually attached, used only to
+// satisfy Decide's eligibility checks, never applied or committed itself.
+func contextAdmissionEvents(state domain.Session, sessionID domain.SessionID, turnID domain.TurnID, itemID domain.ItemID, input string, identity *engine.RequestIdentity, prepared PrepareContextResult, decisionID domain.ContextDecisionID) ([]domain.UncommittedEvent, error) {
+	startEvents, err := domain.Decide(state, domain.StartAssistantTurn{SessionID: sessionID, TurnID: turnID, ItemID: itemID, Input: input, Request: nil})
+	if err != nil {
+		return nil, applicationError(CategoryValidation, "domain_rejected", false, err)
+	}
+
+	preview := state.Clone()
+	preview.ActiveTurn = &domain.Turn{ID: turnID, ActiveItem: &domain.Item{ID: itemID, TurnID: turnID, Kind: domain.ItemKindAssistantMessage}}
+
+	const firstAttempt uint32 = 1
+	contextPreparedRecorded := ContextPreparedRecordedFromResult(prepared, domain.ContextTriggerPreTurn, firstAttempt, decisionID, turnID, itemID)
+	contextEvents, err := domain.Decide(preview, domain.RecordContextPreparation{SessionID: sessionID, ContextPreparedRecorded: contextPreparedRecorded})
+	if err != nil {
+		return nil, applicationError(CategoryInternal, "domain_transition_failed", false, err)
+	}
+
+	modelRequestRecorded := ModelRequestRecordedFromEnvelope(identity, turnID, itemID, prepared.Prepared.Envelope, engine.ModelRequestPurposeConversation, firstAttempt, decisionID)
+	requestEvents, err := domain.Decide(preview, domain.RecordModelRequest{SessionID: sessionID, ModelRequestRecorded: modelRequestRecorded})
+	if err != nil {
+		return nil, applicationError(CategoryInternal, "domain_transition_failed", false, err)
+	}
+
+	decided := make([]domain.UncommittedEvent, 0, len(startEvents)+len(contextEvents)+len(requestEvents))
+	decided = append(decided, startEvents...)
+	decided = append(decided, contextEvents...)
+	decided = append(decided, requestEvents...)
+	return decided, nil
+}
+
+// contextHistoryPrefix recovers the history portion of a Context-Engine-
+// prepared envelope: every message except the trailing current-input one
+// Materialize always appends last (materialize.go's own message order is
+// checkpoint text, then retained tail, then CurrentInput). loop.go's
+// newTurnProjectionWithPrefix re-appends the current input itself, so the
+// prefix it wants is everything before that.
+func contextHistoryPrefix(prepared PrepareContextResult) []domain.ModelPromptMessage {
+	messages := prepared.Prepared.Envelope.Messages
+	if len(messages) == 0 {
+		return nil
+	}
+	return messages[:len(messages)-1]
 }
 
 func (service *Service) runTurnFound(ctx context.Context, request RunTurnRequest, digest Digest, record CommandRequestRecord, attachLocal bool) (RunTurnResult, error) {
@@ -197,7 +327,7 @@ func durableRequestTerminalError(result RunTurnResult) error {
 	}
 }
 
-func (service *Service) resolveAdmissionUnknown(ctx context.Context, request RunTurnRequest, requestDigest Digest, lease *executionLease, state domain.Session, intent AppendIntent, commandID domain.CommandID, emitter *engine.Emitter) (RunTurnResult, error) {
+func (service *Service) resolveAdmissionUnknown(ctx context.Context, request RunTurnRequest, requestDigest Digest, lease *executionLease, state domain.Session, intent AppendIntent, commandID domain.CommandID, emitter *engine.Emitter, contextPrefix []domain.ModelPromptMessage, usedContextEngine bool) (RunTurnResult, error) {
 	resolveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), service.config.AppendResolutionTimeout)
 	defer cancel()
 	receipt, err := ResolveAppendIntent(resolveCtx, service.store, intent, service.appendResolutionConfig())
@@ -219,7 +349,7 @@ func (service *Service) resolveAdmissionUnknown(ctx context.Context, request Run
 	if err := lease.resumeAfterResolvedAdmission(); err != nil {
 		return RunTurnResult{}, storeContractViolation(err)
 	}
-	return service.runAfterAdmission(ctx, request, lease, runningState, runningResult, commandID, emitter)
+	return service.runAfterAdmission(ctx, request, lease, runningState, runningResult, commandID, emitter, contextPrefix, usedContextEngine)
 }
 
 func (service *Service) abandonAdmittedTurn(ctx context.Context, lease *executionLease, state domain.Session, runningResult RunTurnResult, commandID domain.CommandID, emitter *engine.Emitter) (RunTurnResult, error) {

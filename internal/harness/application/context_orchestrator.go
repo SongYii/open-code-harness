@@ -822,3 +822,60 @@ func minUint64(a, b uint64) uint64 {
 	}
 	return b
 }
+
+// ContextPreparedRecordedFromResult builds design §7.4's per-attempt
+// evidence from PrepareContext's own output. The caller (Task 9 Step 2's
+// admission/mid-turn dispatch) supplies the trigger, AttemptIndex, and
+// ContextDecisionID -- PrepareContextResult does not carry the trigger
+// back, since the caller already gave it as PrepareContextInput.Trigger.
+//
+// SerializedEnvelopeBytes uses Prepared.ApproximateSerializedBytes: the
+// design's own §7.4 wording asks for "the actual wire size Application's
+// Provider Adapter produced," but this event commits as part of the
+// admission batch strictly before that Adapter call is even allowed to
+// happen (Global Constraint: no Provider call before context.prepared +
+// model.request.recorded commit), so the true wire size cannot exist yet
+// at the point this event is built. The deterministic approximation is
+// the only value available at commit time; this is a disclosed, inherent
+// property of committing evidence before dispatch, not an oversight.
+func ContextPreparedRecordedFromResult(result PrepareContextResult, trigger string, attemptIndex uint32, decisionID domain.ContextDecisionID, turnID domain.TurnID, itemID domain.ItemID) domain.ContextPreparedRecorded {
+	prepared := result.Prepared
+	return domain.ContextPreparedRecorded{
+		TurnID: turnID, ItemID: itemID, AttemptIndex: attemptIndex, ContextDecisionID: decisionID,
+		Trigger: trigger, SourceHeadVersion: result.SourceHeadVersion,
+		CheckpointID: prepared.CheckpointID, CheckpointKind: string(prepared.CheckpointKind),
+		RawTailFromSequence: prepared.RetainedTailFromSequence, RawTailThroughSequence: prepared.RetainedTailThroughSequence,
+		EstimatedMessageTokens: prepared.EstimatedMessageTokens, EstimatedToolSchemaTokens: prepared.EstimatedToolSchemaTokens,
+		EstimatedTotalTokens: prepared.EstimatedTotalTokens, MeterID: prepared.MeterID,
+		SerializedEnvelopeBytes: uint64(prepared.ApproximateSerializedBytes),
+	}
+}
+
+// ModelRequestRecordedFromEnvelope builds a ModelRequestRecorded from a
+// Context-Engine-prepared envelope and the active route's identity,
+// mirroring loop.go's own stepRequestRecorded field-by-field mapping so a
+// Context-Engine-aware request and a legacy one carry identical route
+// metadata -- only Messages/Tools/Purpose/AttemptIndex/ContextDecisionID
+// differ.
+func ModelRequestRecordedFromEnvelope(identity *engine.RequestIdentity, turnID domain.TurnID, itemID domain.ItemID, envelope contextengine.Envelope, purpose engine.ModelRequestPurpose, attemptIndex uint32, decisionID domain.ContextDecisionID) domain.ModelRequestRecorded {
+	recorded := domain.ModelRequestRecorded{
+		TurnID: turnID, ItemID: itemID, Messages: envelope.Messages, Tools: envelope.Tools,
+		Purpose: string(purpose), AttemptIndex: attemptIndex, ContextDecisionID: decisionID,
+	}
+	if identity == nil {
+		return recorded
+	}
+	recorded.AdapterFamily = identity.AdapterFamily
+	recorded.ModelID = identity.ModelID
+	recorded.EndpointID = identity.EndpointID
+	recorded.NativeTools = string(identity.Profile.NativeTools)
+	recorded.Images = string(identity.Profile.Images)
+	recorded.StructuredOutput = string(identity.Profile.StructuredOutput)
+	recorded.ReasoningFields = string(identity.Profile.ReasoningFields)
+	recorded.PromptCache = string(identity.Profile.PromptCache)
+	recorded.ContextWindowTokens = identity.Profile.ContextWindowTokens
+	recorded.MaxOutputTokens = identity.Profile.MaxOutputTokens
+	recorded.IncludeUsage = identity.IncludeUsage
+	recorded.MaxTokensField = identity.MaxTokensField
+	return recorded
+}
