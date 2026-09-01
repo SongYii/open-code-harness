@@ -64,7 +64,7 @@ roadmap 门读到的 commit 完全相同，而 roadmap 门自己也已经核实�
   `ModelAttemptStarted` 形状的事件 schema，`internal/harness/domain/events.go:178-179`）。真正缺的是
   每个参考项目触发数学都需要的那个分子：即将构建的 prompt 会消耗多少 token 的实际值或估计值，以及一个
   在 `RunTurn` 构建其 projection 之前会同时参考这两者的决策点。`ModelUsageRecorded`
-  （`internal/harness/application/loop.go:529-543`，`modelUsageFromStats`）已经从供应商的 `stats.Usage`
+  （`internal/harness/application/turn.go:529-543`，`modelUsageFromStats`）已经从供应商的 `stats.Usage`
   里捕获了真实的、事后的 `InputTokens`/`OutputTokens`/`CachedInputTokens`——这正是 Pi 自己的
   `estimateContextTokens`（见下文）在有真实用量时优先选用而不是字符估算的那种信号，而本项目已经有了它，
   只是还没有任何 turn 开始前的预算检查会去参考它。

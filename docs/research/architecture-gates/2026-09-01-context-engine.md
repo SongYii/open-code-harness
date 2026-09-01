@@ -95,7 +95,7 @@ build against.
   or estimated count of tokens the about-to-be-built prompt will consume,
   and a decision point that consults both before `RunTurn` builds its
   projection. `ModelUsageRecorded`
-  (`internal/harness/application/loop.go:529-543`,
+  (`internal/harness/application/turn.go:529-543`,
   `modelUsageFromStats`) already captures real post-hoc
   `InputTokens`/`OutputTokens`/`CachedInputTokens` from provider
   `stats.Usage` — this is exactly the kind of "last real usage" signal Pi's
