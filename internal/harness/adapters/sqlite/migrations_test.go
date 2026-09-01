@@ -185,8 +185,8 @@ func TestMigration4MigratesEmptyV3Database(t *testing.T) {
 	if err := store.db.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 4 {
-		t.Fatalf("migrated user_version = %d, want 4", version)
+	if version != latestMigrationVersion {
+		t.Fatalf("migrated user_version = %d, want %d", version, latestMigrationVersion)
 	}
 	var heads int
 	if err := store.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM session_heads").Scan(&heads); err != nil {

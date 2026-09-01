@@ -194,6 +194,10 @@ func (store *Store) Append(ctx context.Context, request application.AppendReques
 		return application.CommitReceipt{}, err
 	}
 
+	if err := store.updateContextCheckpointHead(ctx, conn, request.SessionID, prepared, position); err != nil {
+		return application.CommitReceipt{}, err
+	}
+
 	if err := store.maintainAuditChain(ctx, conn, request, prepared, position, committedAtUnix); err != nil {
 		return application.CommitReceipt{}, err
 	}
