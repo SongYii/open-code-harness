@@ -68,6 +68,59 @@ func TestLaunchReconcilesAndBecomesReady(t *testing.T) {
 	}
 }
 
+// TestLaunchReconcilesDanglingCompactionWithoutActiveTurn proves the full
+// startup path (not just reconcileSession called directly) discovers a
+// crashed manual/pre-turn compaction: session_heads stays idle throughout
+// this session's whole history, so only SessionsWithActiveCompaction (not
+// ActiveSessions) can ever surface it as a candidate.
+func TestLaunchReconcilesDanglingCompactionWithoutActiveTurn(t *testing.T) {
+	config := hostConfig(t)
+	seedDanglingCompaction(t, config.SQLite.Path)
+
+	host, err := Launch(context.Background(), config)
+	if err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	defer func() { _ = host.Shutdown(context.Background()) }()
+	store, err := host.Store()
+	if err != nil {
+		t.Fatalf("store before reconciliation complete: %v", err)
+	}
+	page, err := store.ReadStream(context.Background(), application.ReadStreamRequest{SessionID: "session-idle-compaction", Limit: 256})
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if page.HeadVersion != 3 {
+		t.Fatalf("head = %d, want 3 (dangling compaction closed)", page.HeadVersion)
+	}
+	failed, ok := page.Records[2].Event.(domain.ContextCompactionFailed)
+	if !ok || failed.Code != runtimeRecoveredCode {
+		t.Fatalf("terminal record = %+v, want %s ContextCompactionFailed", page.Records[2].Event, runtimeRecoveredCode)
+	}
+}
+
+func seedDanglingCompaction(t *testing.T, path string) {
+	t.Helper()
+	store, err := sqlite.Open(context.Background(), sqlite.Config{Path: path, RuntimeID: "runtime-crashed"})
+	if err != nil {
+		t.Fatalf("seed open: %v", err)
+	}
+	hostAppend(t, store, application.AppendRequest{
+		AppendID: "append-idle-compaction", SessionID: "session-idle-compaction", ExpectedVersion: 0,
+		CommandID: "command-idle-compaction", Authority: hostAuthority(store),
+		Events: []application.ProposedEvent{
+			proposed("event-idle-compaction-1", domain.SessionCreated{WorkspaceRoot: "/w"}),
+			proposed("event-idle-compaction-2", validContextCompactionStarted("compaction-idle", domain.ContextTriggerManual)),
+		},
+	})
+	if err := store.ExpireLeaseForTesting(context.Background()); err != nil {
+		t.Fatalf("expire lease: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("seed close: %v", err)
+	}
+}
+
 func TestSecondProcessGetsStableDiagnostic(t *testing.T) {
 	config := hostConfig(t)
 	first, err := Launch(context.Background(), config)

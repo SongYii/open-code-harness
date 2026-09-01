@@ -35,6 +35,42 @@ func TestActiveSessionsEnumeratesOnlyRunningHeads(t *testing.T) {
 	}
 }
 
+// TestSessionsWithActiveCompactionEnumeratesOnlyDanglingCompactions covers
+// the recovery candidate query ActiveSessions cannot: a manual/pre-turn
+// compaction with no active Turn leaves session_heads idle throughout, so
+// only a session whose own stream head is an unmatched
+// context.compaction.started must appear.
+func TestSessionsWithActiveCompactionEnumeratesOnlyDanglingCompactions(t *testing.T) {
+	store := openStore(t, tempStoreConfig(t))
+	compactionStarted := domain.ContextCompactionStarted{
+		ID: "compaction-dangling", Trigger: domain.ContextTriggerManual, Strategy: domain.ContextStrategySummary,
+		MeterID: "och_wire_estimate_v1", SourceSchema: "och_source_v1",
+	}
+	mustAppend(t, store, appendRequest("append-compaction-idle", "session-compaction-idle", 0, "command-compaction-idle",
+		domain.SessionCreated{WorkspaceRoot: "/w"}))
+	mustAppend(t, store, appendRequest("append-compaction-dangling", "session-compaction-dangling", 0, "command-compaction-dangling",
+		domain.SessionCreated{WorkspaceRoot: "/w"}, compactionStarted))
+	mustAppend(t, store, appendRequest("append-compaction-completed", "session-compaction-completed", 0, "command-compaction-completed",
+		domain.SessionCreated{WorkspaceRoot: "/w"}))
+	completedRecords := readEvents(t, store, "session-compaction-completed")
+	completedThrough := completedRecords[len(completedRecords)-1].Sequence
+	completedCheckpoint := validCheckpoint(t, "checkpoint-completed", completedRecords, completedThrough)
+	mustAppend(t, store, appendRequest("append-compaction-completed-2", "session-compaction-completed", uint64(len(completedRecords)), "command-compaction-completed-2",
+		domain.ContextCompactionStarted{
+			ID: completedCheckpoint.ID, Trigger: domain.ContextTriggerManual, Strategy: domain.ContextStrategySummary,
+			MeterID: "och_wire_estimate_v1", SourceSchema: "och_source_v1",
+		}, completedCheckpoint))
+
+	got, err := store.SessionsWithActiveCompaction(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []domain.SessionID{"session-compaction-dangling"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("SessionsWithActiveCompaction() = %v, want %v", got, want)
+	}
+}
+
 func TestOpenAcquiresLeaseWithTokenOne(t *testing.T) {
 	store := openStore(t, tempStoreConfig(t))
 	authority := store.Authority()

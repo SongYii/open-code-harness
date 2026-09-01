@@ -254,6 +254,41 @@ func (store *Store) ActiveSessions(ctx context.Context) ([]domain.SessionID, err
 	return sessions, nil
 }
 
+// SessionsWithActiveCompaction enumerates sessions whose most recent
+// canonical event is context.compaction.started with no matching terminal
+// event yet -- a recovery candidate ActiveSessions cannot surface, since
+// (unlike Turn activity) compaction activity is never reflected in
+// session_heads (design §14.4). While a compaction is active no other
+// command may extend the stream (design §13.3's eligibility rules), so its
+// own Started event being the stream's own head is a reliable indicator
+// requiring no dedicated derived-state table.
+func (store *Store) SessionsWithActiveCompaction(ctx context.Context) ([]domain.SessionID, error) {
+	if err := contextError(ctx); err != nil {
+		return nil, newStoreError(application.StoreCodeUnavailable, "", err)
+	}
+	rows, err := store.db.QueryContext(ctx,
+		"SELECT es.session_id FROM event_streams es JOIN events e ON e.session_id = es.session_id AND e.sequence = es.version "+
+			"WHERE e.event_type = ? ORDER BY es.session_id", domain.EventContextCompactionStarted)
+	if err != nil {
+		return nil, mapStorageError(err, "")
+	}
+	var sessions []domain.SessionID
+	for rows.Next() {
+		var session string
+		if err := rows.Scan(&session); err != nil {
+			rows.Close()
+			return nil, mapStorageError(err, "")
+		}
+		sessions = append(sessions, domain.SessionID(session))
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, mapStorageError(err, "")
+	}
+	rows.Close()
+	return sessions, nil
+}
+
 // ReleaseLease expires the lease when — and only when — it is still owned
 // by this runtime and fencing token, so a stale host can never release a
 // successor's lease. Releasing an already-lost lease reports fencing.

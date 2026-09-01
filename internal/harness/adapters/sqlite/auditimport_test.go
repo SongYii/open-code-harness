@@ -107,6 +107,38 @@ func TestImportMaintainsSessionHead(t *testing.T) {
 	}
 }
 
+// TestImportRebuildsContextCheckpointHeads covers the plan's own required
+// case: import never writes context_checkpoint_heads incrementally the way
+// it does session_heads, so landing a Session containing a compaction must
+// rebuild a matching row afterward (auditimport.go's Layer 9, added
+// alongside the existing Layer 8 RebuildAndVerifySessionHeads call).
+func TestImportRebuildsContextCheckpointHeads(t *testing.T) {
+	store, directory := exportStore(t)
+	seedAppends(t, store, 1)
+	completed := appendValidCheckpoint(t, store, "session-export", "checkpoint-export")
+	if _, err := store.ExportOnce(context.Background(), ExportConfig{Directory: directory}); err != nil {
+		t.Fatalf("export: %v", err)
+	}
+
+	imported, err := ImportAuditReplica(context.Background(), directory,
+		Config{Path: filepath.Join(t.TempDir(), "imported.db"), RuntimeID: "runtime-import"})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	defer imported.Close()
+
+	if got := tableCount(t, imported, "context_checkpoint_heads"); got != 1 {
+		t.Fatalf("context_checkpoint_heads rows = %d, want 1", got)
+	}
+	lookup, err := imported.LoadLatestContextCheckpoint(context.Background(), "session-export")
+	if err != nil {
+		t.Fatalf("LoadLatestContextCheckpoint: %v", err)
+	}
+	if lookup.Status != application.ContextCheckpointLookupFound || lookup.Checkpoint.ID != completed.Checkpoint.ID {
+		t.Fatalf("imported checkpoint = %+v, want Found %s", lookup, completed.Checkpoint.ID)
+	}
+}
+
 func TestImportRefusesNonEmptyDatabase(t *testing.T) {
 	store, directory := replicaRoundTrip(t, 1)
 	destination := filepath.Join(t.TempDir(), "dest.db")
