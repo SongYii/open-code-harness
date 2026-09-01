@@ -23,6 +23,11 @@ const defaultContextPageLimit = 256
 // detached from a canceled caller context.
 const defaultCompactionCleanupTimeout = DefaultTerminalCommitTimeout
 
+// defaultSummarizeTimeout mirrors DefaultCompactionTimeout (service.go):
+// the bound one summarizer call within a compaction bracket gets when
+// ContextOrchestratorDeps.SummarizeTimeout is unset.
+const defaultSummarizeTimeout = DefaultCompactionTimeout
+
 // maxCompactionSummaryOutputBytes is the byte cap Collect enforces on one
 // summarization call, matching contextengine's own 256 KiB absolute
 // summary cap (summarizer_validation.go's maxSummaryBytes) rather than
@@ -143,6 +148,10 @@ type ContextOrchestratorDeps struct {
 	// DefaultAppendResolutionTimeout/DefaultAppendResolutionMaxOperations.
 	AppendResolutionTimeout       time.Duration
 	AppendResolutionMaxOperations uint32
+	// SummarizeTimeout bounds one summarizer call within a compaction
+	// bracket (design §21/§8's own CompactionTimeout config, distinct
+	// from CleanupTimeout above). Zero uses defaultSummarizeTimeout.
+	SummarizeTimeout time.Duration
 }
 
 func (deps ContextOrchestratorDeps) valid() bool {
@@ -182,6 +191,13 @@ func (deps ContextOrchestratorDeps) pageLimit() uint32 {
 		return defaultContextPageLimit
 	}
 	return deps.PageLimit
+}
+
+func (deps ContextOrchestratorDeps) summarizeTimeout() time.Duration {
+	if deps.SummarizeTimeout <= 0 {
+		return defaultSummarizeTimeout
+	}
+	return deps.SummarizeTimeout
 }
 
 // PrepareContextInput is one request for Context Engine preparation
@@ -617,10 +633,12 @@ func buildSummaryCheckpointWithFocus(ctx context.Context, deps ContextOrchestrat
 		return nil, fmt.Errorf("%s: source material for one summarizer call exceeds hard input budget", CodeContextSummaryFailed)
 	}
 
-	summarizeResult, err := deps.Summarizer.Summarize(ctx, ContextSummarizeRequest{
+	summarizeCtx, cancelSummarize := context.WithTimeout(ctx, deps.summarizeTimeout())
+	summarizeResult, err := deps.Summarizer.Summarize(summarizeCtx, ContextSummarizeRequest{
 		SessionID: sessionID, TurnID: input.TurnID, ItemID: input.ItemID, Content: content,
 		MaxOutputTokens: uint32(minUint64(deps.Budget.SummaryOutputCap, 1<<31)), MaxOutputBytes: maxCompactionSummaryOutputBytes,
 	})
+	cancelSummarize()
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", CodeContextSummaryFailed, err)
 	}

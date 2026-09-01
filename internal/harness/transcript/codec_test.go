@@ -133,6 +133,34 @@ func TestProjectRecordFrozenPayloads(t *testing.T) {
 		{name: "approval requested", seq: 16, event: domain.ApprovalRequested{TurnID: "turn-1", ItemID: "item-1", ApprovalID: "approval-1", CallID: "call-1", Name: "run_command", Reason: "exec"}},
 		{name: "approval resolved", seq: 17, event: domain.ApprovalResolved{TurnID: "turn-1", ItemID: "item-1", ApprovalID: "approval-1", Decision: "granted"}},
 		{name: "session deleted", seq: 18, event: domain.SessionDeleted{}},
+		{name: "context compaction started", seq: 19, event: domain.ContextCompactionStarted{
+			ID: "compaction-1", Trigger: domain.ContextTriggerPreTurn, Strategy: domain.ContextStrategySummary,
+			BaseSourceHead: 18, PriorCheckpointID: "checkpoint-0", PromptVersion: "v1",
+			SourceSchema: "och_source_v1", MeterID: "och_wire_estimate_v1", PlannedRoute: "gpt-5",
+		}},
+		{name: "context compaction completed", seq: 20, event: domain.ContextCompactionCompleted{
+			ID: "compaction-1",
+			Checkpoint: domain.ContextCheckpointRecord{
+				ID: "checkpoint-1", Kind: domain.ContextCheckpointKindRollingSummary, SourceSchema: "och_source_v1",
+				SummaryFormat: "markdown", PromptVersion: "v1", CoveredEventCount: 18, CoveredTurnCount: 3,
+				ThroughSequence: 18, SourceDigestHex: strings.Repeat("ab", 32), PreviousCheckpointID: "checkpoint-0",
+				Summary: "the session inspected a README and ran two commands", Limitations: "tool output truncated",
+				TokensBefore: 4000, CheckpointTokens: 500, RetainedTailTokens: 200, EstimatedRequestTokens: 700,
+				SummarizerRoute: "gpt-5", SummarizerUsage: 480, SummaryChunks: 1, PrunedToolResultCount: 2,
+			},
+		}},
+		{name: "context compaction failed", seq: 21, event: domain.ContextCompactionFailed{
+			ID: "compaction-2", Code: "context_summary_failed", Message: "summarizer returned an empty response",
+		}},
+		{name: "context prepared", seq: 22, event: domain.ContextPreparedRecorded{
+			TurnID: "turn-1", ItemID: "item-1", AttemptIndex: 1, ContextDecisionID: "decision-1",
+			Trigger: domain.ContextTriggerPreTurn, SourceHeadVersion: 18, CheckpointID: "checkpoint-1",
+			CheckpointKind: domain.ContextCheckpointKindRollingSummary, RawTailFromSequence: 15, RawTailThroughSequence: 18,
+			BudgetHardInput: 100000, BudgetTrigger: 80000, BudgetTarget: 55000,
+			EstimatedMessageTokens: 900, EstimatedToolSchemaTokens: 100, EstimatedTotalTokens: 1000,
+			MeterID: "och_wire_estimate_v1", UsageAnchorApplied: true, UsageAnchorTokens: 50,
+			SerializedEnvelopeBytes: 3200,
+		}},
 	}
 
 	wantLines := strings.Split(strings.TrimSpace(readFixture(t, "testdata/facts.jsonl")), "\n")

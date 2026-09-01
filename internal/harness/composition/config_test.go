@@ -73,6 +73,20 @@ func TestValidateRejectsEveryDocumentedCause(t *testing.T) {
 		{"negative assistant bytes", func(c *composition.Config) { c.Limits.MaxAssistantBytes = -1 }, "Limits"},
 		{"negative approval timeout", func(c *composition.Config) { c.Limits.ApprovalTimeout = -time.Second }, "timeouts"},
 		{"negative shutdown timeout", func(c *composition.Config) { c.ShutdownTimeout = -time.Second }, "timeouts"},
+		{"context trigger percent out of range", func(c *composition.Config) { c.Context.TriggerPercent = 50 }, "TriggerPercent"},
+		{"context target percent not below trigger", func(c *composition.Config) {
+			c.Context.TriggerPercent, c.Context.TargetPercent = 80, 80
+		}, "TargetPercent"},
+		{"context tail percent not below target", func(c *composition.Config) {
+			c.Context.TargetPercent, c.Context.TailPercent = 55, 55
+		}, "TailPercent"},
+		{"context max summary chunks out of range", func(c *composition.Config) { c.Context.MaxSummaryChunks = 17 }, "MaxSummaryChunks"},
+		{"context max overflow compactions out of range", func(c *composition.Config) { c.Context.MaxOverflowCompactionsPerTurn = 4 }, "MaxOverflowCompactionsPerTurn"},
+		{"context compaction timeout out of range", func(c *composition.Config) { c.Context.CompactionTimeout = time.Second }, "CompactionTimeout"},
+		{"context max pruned tool results out of range", func(c *composition.Config) { c.Context.MaxPrunedToolResultsPerRequest = 65 }, "MaxPrunedToolResultsPerRequest"},
+		{"context budget cannot be positive", func(c *composition.Config) {
+			c.Provider.ContextWindow, c.Provider.MaxOutput = 1000, 900
+		}, "positive Context Engine budget"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -101,6 +115,20 @@ func TestValidateAppliesDefaultsWithoutMutatingTheCaller(t *testing.T) {
 	}
 	if config.Policy != "" || config.ShutdownTimeout != 0 {
 		t.Fatalf("Validate() mutated the caller's config: policy=%q timeout=%v", config.Policy, config.ShutdownTimeout)
+	}
+}
+
+// TestValidateAppliesContextDefaultsWithoutMutatingTheCaller pins that a
+// zero Context (every field unset) validates via design §8's own defaults,
+// not as a rejection, and that Validate does not rewrite the caller's copy.
+func TestValidateAppliesContextDefaultsWithoutMutatingTheCaller(t *testing.T) {
+	config := validConfig(t)
+	config.Context = composition.Context{}
+	if err := config.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want Context zero value to default cleanly", err)
+	}
+	if config.Context != (composition.Context{}) {
+		t.Fatalf("Validate() mutated the caller's Context: %+v", config.Context)
 	}
 }
 

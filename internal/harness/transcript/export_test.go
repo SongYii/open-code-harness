@@ -161,6 +161,64 @@ func TestWriteSessionCompleteTrailerAndFactLines(t *testing.T) {
 	}
 }
 
+// TestWriteSessionExportsCompactionFacts proves a Session containing a
+// Context Engine compaction exports successfully end to end: before this
+// task's ProjectRecord/factPayloadKeys additions, the codec's own
+// default-case CodeUnsupportedEventType would have failed the whole export
+// the moment it reached a context.compaction.* event -- so this is a real
+// regression guard, not just new-feature coverage.
+func TestWriteSessionExportsCompactionFacts(t *testing.T) {
+	t.Parallel()
+
+	store := newExportStore(t)
+	sessionID := domain.SessionID("session-1")
+	appendEvents(t, store, sessionID,
+		domain.SessionCreated{WorkspaceRoot: "/workspace"},
+		domain.TurnStarted{TurnID: "turn-1", Input: "hi"},
+		domain.TurnCompleted{TurnID: "turn-1"},
+		domain.ContextCompactionStarted{
+			ID: "compaction-1", Trigger: domain.ContextTriggerManual, Strategy: domain.ContextStrategySummary,
+			BaseSourceHead: 3, SourceSchema: "och_source_v1", MeterID: "och_wire_estimate_v1",
+		},
+		domain.ContextCompactionCompleted{
+			ID: "compaction-1",
+			Checkpoint: domain.ContextCheckpointRecord{
+				ID: "checkpoint-1", Kind: domain.ContextCheckpointKindRollingSummary, SourceSchema: "och_source_v1",
+				ThroughSequence: 3, SourceDigestHex: strings.Repeat("0", 64), Summary: "a summary",
+			},
+		},
+	)
+
+	var buf bytes.Buffer
+	result, err := WriteSession(context.Background(), store, sessionID, exportNow, &buf)
+	if err != nil {
+		t.Fatalf("WriteSession() error = %v", err)
+	}
+	_, complete, facts := mustAcceptExport(t, buf.Bytes())
+	if result.HeadSequence != 5 || complete.FactLines != uint64(len(facts)) {
+		t.Fatalf("result = %+v, complete = %+v, facts = %d", result, complete, len(facts))
+	}
+	var sawStarted, sawCompleted bool
+	for _, fact := range facts {
+		switch fact.Type {
+		case domain.EventContextCompactionStarted:
+			sawStarted = true
+		case domain.EventContextCompactionCompleted:
+			sawCompleted = true
+			var payload contextCompactionCompletedPayload
+			if err := json.Unmarshal(fact.Payload, &payload); err != nil {
+				t.Fatalf("unmarshal completed payload: %v", err)
+			}
+			if payload.Checkpoint.Summary != "a summary" {
+				t.Fatalf("checkpoint summary = %q, want %q (transcript must carry the summary text)", payload.Checkpoint.Summary, "a summary")
+			}
+		}
+	}
+	if !sawStarted || !sawCompleted {
+		t.Fatalf("facts = %+v, want both context.compaction.started and .completed", facts)
+	}
+}
+
 // TestWriteSessionDeletedSessionExportsDeletionFact proves that logical
 // deletion is append-only evidence: the session.deleted fact survives export
 // with an empty payload, the snapshot/complete envelopes agree it is neither

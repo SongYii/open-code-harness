@@ -210,6 +210,79 @@ type approvalResolvedPayload struct {
 	Decision   string `json:"decision"`
 }
 
+type contextCompactionStartedPayload struct {
+	ID                string `json:"id"`
+	Trigger           string `json:"trigger"`
+	Strategy          string `json:"strategy"`
+	BaseSourceHead    uint64 `json:"baseSourceHead"`
+	PriorCheckpointID string `json:"priorCheckpointID,omitempty"`
+	PromptVersion     string `json:"promptVersion,omitempty"`
+	SourceSchema      string `json:"sourceSchema"`
+	MeterID           string `json:"meterID"`
+	PlannedRoute      string `json:"plannedRoute,omitempty"`
+}
+
+// contextCheckpointPayload mirrors domain.ContextCheckpointRecord field for
+// field: the transcript is an explicit content-bearing export (design
+// §20.3, distinct from ACP's canonical-only projection), so the summary
+// text and every checkpoint metric are included here, not omitted.
+type contextCheckpointPayload struct {
+	ID                     string `json:"id"`
+	Kind                   string `json:"kind"`
+	SourceSchema           string `json:"sourceSchema"`
+	SummaryFormat          string `json:"summaryFormat,omitempty"`
+	PromptVersion          string `json:"promptVersion,omitempty"`
+	CoveredEventCount      uint64 `json:"coveredEventCount"`
+	CoveredTurnCount       uint64 `json:"coveredTurnCount"`
+	ThroughSequence        uint64 `json:"throughSequence"`
+	SourceDigestHex        string `json:"sourceDigestHex"`
+	PreviousCheckpointID   string `json:"previousCheckpointID,omitempty"`
+	Summary                string `json:"summary,omitempty"`
+	Limitations            string `json:"limitations,omitempty"`
+	TokensBefore           uint64 `json:"tokensBefore"`
+	CheckpointTokens       uint64 `json:"checkpointTokens"`
+	RetainedTailTokens     uint64 `json:"retainedTailTokens"`
+	EstimatedRequestTokens uint64 `json:"estimatedRequestTokens"`
+	SummarizerRoute        string `json:"summarizerRoute,omitempty"`
+	SummarizerUsage        uint64 `json:"summarizerUsage,omitempty"`
+	SummaryChunks          uint32 `json:"summaryChunks,omitempty"`
+	PrunedToolResultCount  uint32 `json:"prunedToolResultCount,omitempty"`
+}
+
+type contextCompactionCompletedPayload struct {
+	ID         string                   `json:"id"`
+	Checkpoint contextCheckpointPayload `json:"checkpoint"`
+}
+
+type contextCompactionFailedPayload struct {
+	ID      string `json:"id"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type contextPreparedPayload struct {
+	TurnID                    string `json:"turnID"`
+	ItemID                    string `json:"itemID"`
+	AttemptIndex              uint32 `json:"attemptIndex"`
+	ContextDecisionID         string `json:"contextDecisionID"`
+	Trigger                   string `json:"trigger"`
+	SourceHeadVersion         uint64 `json:"sourceHeadVersion"`
+	CheckpointID              string `json:"checkpointID,omitempty"`
+	CheckpointKind            string `json:"checkpointKind,omitempty"`
+	RawTailFromSequence       uint64 `json:"rawTailFromSequence,omitempty"`
+	RawTailThroughSequence    uint64 `json:"rawTailThroughSequence,omitempty"`
+	BudgetHardInput           uint64 `json:"budgetHardInput"`
+	BudgetTrigger             uint64 `json:"budgetTrigger"`
+	BudgetTarget              uint64 `json:"budgetTarget"`
+	EstimatedMessageTokens    uint64 `json:"estimatedMessageTokens"`
+	EstimatedToolSchemaTokens uint64 `json:"estimatedToolSchemaTokens"`
+	EstimatedTotalTokens      uint64 `json:"estimatedTotalTokens"`
+	MeterID                   string `json:"meterID"`
+	UsageAnchorApplied        bool   `json:"usageAnchorApplied,omitempty"`
+	UsageAnchorTokens         uint64 `json:"usageAnchorTokens,omitempty"`
+	SerializedEnvelopeBytes   uint64 `json:"serializedEnvelopeBytes"`
+}
+
 func MarshalLine(line Line) ([]byte, error) {
 	if err := validateFactHeader(line); err != nil {
 		return nil, err
@@ -404,6 +477,45 @@ func ProjectRecord(record domain.RecordedEvent, steps map[domain.TurnID]uint32) 
 		})
 	case domain.ModelRequestRecorded, domain.PolicyDecisionRecorded:
 		return Line{}, false, nil
+	case domain.ContextCompactionStarted:
+		return makeLine(record, domain.EventContextCompactionStarted, contextCompactionStartedPayload{
+			ID: string(event.ID), Trigger: event.Trigger, Strategy: event.Strategy, BaseSourceHead: event.BaseSourceHead,
+			PriorCheckpointID: event.PriorCheckpointID, PromptVersion: event.PromptVersion,
+			SourceSchema: event.SourceSchema, MeterID: event.MeterID, PlannedRoute: event.PlannedRoute,
+		})
+	case domain.ContextCompactionCompleted:
+		checkpoint := event.Checkpoint
+		return makeLine(record, domain.EventContextCompactionCompleted, contextCompactionCompletedPayload{
+			ID: string(event.ID),
+			Checkpoint: contextCheckpointPayload{
+				ID: checkpoint.ID, Kind: checkpoint.Kind, SourceSchema: checkpoint.SourceSchema,
+				SummaryFormat: checkpoint.SummaryFormat, PromptVersion: checkpoint.PromptVersion,
+				CoveredEventCount: checkpoint.CoveredEventCount, CoveredTurnCount: checkpoint.CoveredTurnCount,
+				ThroughSequence: checkpoint.ThroughSequence, SourceDigestHex: checkpoint.SourceDigestHex,
+				PreviousCheckpointID: checkpoint.PreviousCheckpointID, Summary: checkpoint.Summary,
+				Limitations: checkpoint.Limitations, TokensBefore: checkpoint.TokensBefore,
+				CheckpointTokens: checkpoint.CheckpointTokens, RetainedTailTokens: checkpoint.RetainedTailTokens,
+				EstimatedRequestTokens: checkpoint.EstimatedRequestTokens, SummarizerRoute: checkpoint.SummarizerRoute,
+				SummarizerUsage: checkpoint.SummarizerUsage, SummaryChunks: checkpoint.SummaryChunks,
+				PrunedToolResultCount: checkpoint.PrunedToolResultCount,
+			},
+		})
+	case domain.ContextCompactionFailed:
+		return makeLine(record, domain.EventContextCompactionFailed, contextCompactionFailedPayload{
+			ID: string(event.ID), Code: event.Code, Message: event.Message,
+		})
+	case domain.ContextPreparedRecorded:
+		return makeLine(record, domain.EventContextPreparedRecorded, contextPreparedPayload{
+			TurnID: string(event.TurnID), ItemID: string(event.ItemID), AttemptIndex: event.AttemptIndex,
+			ContextDecisionID: string(event.ContextDecisionID), Trigger: event.Trigger,
+			SourceHeadVersion: event.SourceHeadVersion, CheckpointID: event.CheckpointID, CheckpointKind: event.CheckpointKind,
+			RawTailFromSequence: event.RawTailFromSequence, RawTailThroughSequence: event.RawTailThroughSequence,
+			BudgetHardInput: event.BudgetHardInput, BudgetTrigger: event.BudgetTrigger, BudgetTarget: event.BudgetTarget,
+			EstimatedMessageTokens: event.EstimatedMessageTokens, EstimatedToolSchemaTokens: event.EstimatedToolSchemaTokens,
+			EstimatedTotalTokens: event.EstimatedTotalTokens, MeterID: event.MeterID,
+			UsageAnchorApplied: event.UsageAnchorApplied, UsageAnchorTokens: event.UsageAnchorTokens,
+			SerializedEnvelopeBytes: event.SerializedEnvelopeBytes,
+		})
 	default:
 		return Line{}, false, &Error{Code: CodeUnsupportedEventType, Message: "unsupported event type"}
 	}
@@ -684,6 +796,21 @@ func factPayloadKeys(typ string) (required, optional []string, ok bool) {
 		return []string{"turnID", "itemID", "approvalID", "callID", "name", "reason"}, nil, true
 	case domain.EventApprovalResolved:
 		return []string{"turnID", "itemID", "approvalID", "decision"}, nil, true
+	case domain.EventContextCompactionStarted:
+		return []string{"id", "trigger", "strategy", "baseSourceHead", "sourceSchema", "meterID"},
+			[]string{"priorCheckpointID", "promptVersion", "plannedRoute"}, true
+	case domain.EventContextCompactionCompleted:
+		return []string{"id", "checkpoint"}, nil, true
+	case domain.EventContextCompactionFailed:
+		return []string{"id", "code", "message"}, nil, true
+	case domain.EventContextPreparedRecorded:
+		return []string{
+				"turnID", "itemID", "attemptIndex", "contextDecisionID", "trigger", "sourceHeadVersion",
+				"budgetHardInput", "budgetTrigger", "budgetTarget", "estimatedMessageTokens",
+				"estimatedToolSchemaTokens", "estimatedTotalTokens", "meterID", "serializedEnvelopeBytes",
+			},
+			[]string{"checkpointID", "checkpointKind", "rawTailFromSequence", "rawTailThroughSequence", "usageAnchorApplied", "usageAnchorTokens"},
+			true
 	default:
 		return nil, nil, false
 	}
