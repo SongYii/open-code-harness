@@ -112,6 +112,26 @@ func TestDecideStartContextCompactionManualRequiresNoActiveTurn(t *testing.T) {
 	}
 }
 
+// TestCheckStartAssistantTurnEligibilityRejectsWhileCompactionActive covers
+// design §13.3's own "a new Turn... reject while a compaction is active"
+// rule from the OTHER direction: decideStartContextCompaction already
+// rejected a pre_turn/manual start against a running Turn
+// (TestDecideStartContextCompactionManualRequiresNoActiveTurn above), but
+// nothing previously stopped a NEW Turn from starting while a compaction
+// was already active. Both CheckStartAssistantTurnEligibility (turn.go's
+// own pre-check) and decideStartAssistantTurn (which calls the same
+// function at Decide time) share this one fix.
+func TestCheckStartAssistantTurnEligibilityRejectsWhileCompactionActive(t *testing.T) {
+	idle := compactActiveSession(t)
+	compacting := applyCompactRecord(t, idle, validContextCompactionStarted("ctx-1", ContextTriggerManual, ContextStrategySummary))
+	if err := CheckStartAssistantTurnEligibility(compacting); !IsCode(err, CodeCompactionAlreadyRunning) {
+		t.Fatalf("CheckStartAssistantTurnEligibility() = %v, want CodeCompactionAlreadyRunning", err)
+	}
+	if _, err := Decide(compacting, StartAssistantTurn{SessionID: compacting.ID, TurnID: "turn-1", ItemID: "item-1", Input: "hi"}); !IsCode(err, CodeCompactionAlreadyRunning) {
+		t.Fatalf("Decide(StartAssistantTurn) = %v, want CodeCompactionAlreadyRunning", err)
+	}
+}
+
 func TestDecideStartContextCompactionRejectsSecondWhileOneActive(t *testing.T) {
 	idle := compactActiveSession(t)
 	active := applyCompactRecord(t, idle, validContextCompactionStarted("ctx-1", ContextTriggerPreTurn, ContextStrategySummary))
