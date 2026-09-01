@@ -204,7 +204,14 @@ func (store *Store) landReplica(ctx context.Context, replica *verifiedReplica) e
 	}
 
 	store.writeMu.Lock()
-	defer store.writeMu.Unlock()
+	unlocked := false
+	unlockOnce := func() {
+		if !unlocked {
+			unlocked = true
+			store.writeMu.Unlock()
+		}
+	}
+	defer unlockOnce()
 	conn := store.writer
 	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
 		return mapStorageError(err, "")
@@ -293,9 +300,19 @@ func (store *Store) landReplica(ctx context.Context, replica *verifiedReplica) e
 		return mapStorageError(err, "")
 	}
 	committed = true
+	// RebuildAndVerifyContextCheckpointHeads below acquires writeMu itself
+	// (a fresh transaction of its own, matching updateContextCheckpointHead's
+	// write-time discipline); release it here so that call does not deadlock
+	// against this still-held lock.
+	unlockOnce()
 
 	// Layer 8: rebuilt heads projection agrees with canonical replay.
 	if err := store.RebuildAndVerifySessionHeads(ctx); err != nil {
+		return err
+	}
+	// Layer 9: the context checkpoint projection, which import never writes
+	// directly, is rebuilt from the just-landed canonical events alone.
+	if err := store.RebuildAndVerifyContextCheckpointHeads(ctx); err != nil {
 		return err
 	}
 	var landed int

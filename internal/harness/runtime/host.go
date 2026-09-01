@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/sqlite"
+	"github.com/SongYii/open-code-harness/internal/harness/domain"
 )
 
 // ErrNotReady reports that reconciliation has not completed; commands are
@@ -134,14 +135,33 @@ func Launch(ctx context.Context, config Config) (*Host, error) {
 	return host, nil
 }
 
-// reconcileAll enumerates candidates from the session_heads projection and
-// confirms each by authoritative stream replay.
+// reconcileAll enumerates candidates from the session_heads projection
+// (Turn activity) and, separately, sessions whose own stream head is an
+// unmatched context.compaction.started (design §14.4) -- a manual or
+// pre-turn compaction crash session_heads alone cannot surface, since
+// compaction activity never updates it -- and confirms each by
+// authoritative stream replay.
 func reconcileAll(ctx context.Context, rec *reconciler, store *sqlite.Store) error {
-	sessions, err := store.ActiveSessions(ctx)
+	running, err := store.ActiveSessions(ctx)
 	if err != nil {
 		return err
 	}
-	for _, session := range sessions {
+	compacting, err := store.SessionsWithActiveCompaction(ctx)
+	if err != nil {
+		return err
+	}
+	seen := make(map[domain.SessionID]bool, len(running)+len(compacting))
+	candidates := make([]domain.SessionID, 0, len(running)+len(compacting))
+	for _, group := range [][]domain.SessionID{running, compacting} {
+		for _, session := range group {
+			if seen[session] {
+				continue
+			}
+			seen[session] = true
+			candidates = append(candidates, session)
+		}
+	}
+	for _, session := range candidates {
 		if _, err := rec.reconcileSession(ctx, session); err != nil {
 			return fmt.Errorf("reconcile %s: %w", session, err)
 		}
