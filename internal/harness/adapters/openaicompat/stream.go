@@ -601,6 +601,13 @@ func mapUsage(obj map[string]any) (*engine.TokenUsage, error) {
 	if err != nil {
 		return nil, err
 	}
+	// InputTokens is total prompt occupancy including cached input;
+	// CachedInputTokens is a strict subset of it (design §20.1). A
+	// provider reporting more cached tokens than total input tokens is a
+	// classified anomaly, not something to silently clamp or accept.
+	if cached > input {
+		return nil, errInvalidUsage
+	}
 	return &engine.TokenUsage{InputTokens: input, OutputTokens: output, CachedInputTokens: cached}, nil
 }
 

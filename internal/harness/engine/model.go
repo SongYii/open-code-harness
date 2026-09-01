@@ -6,6 +6,18 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 )
 
+// ModelRequestPurpose distinguishes a normal conversation attempt from a
+// Context Engine summarization attempt (design §6.3). It is attribution
+// only: an adapter may use it for a non-secret header, never to change
+// model-visible request semantics (messages, tools, or any JSON body
+// field).
+type ModelRequestPurpose string
+
+const (
+	ModelRequestPurposeConversation ModelRequestPurpose = "conversation"
+	ModelRequestPurposeCompaction   ModelRequestPurpose = "compaction"
+)
+
 // ModelRequest is one provider-neutral request for a single assistant item.
 // Empty Messages or Tools means Input-only; the runner does not consult a profile.
 type ModelRequest struct {
@@ -15,6 +27,15 @@ type ModelRequest struct {
 	Input     string
 	Messages  []domain.ModelPromptMessage
 	Tools     []domain.ToolSchema
+	// Purpose is attribution only (see ModelRequestPurpose); the zero
+	// value behaves exactly like ModelRequestPurposeConversation, so
+	// every caller that predates this field is unaffected.
+	Purpose ModelRequestPurpose
+	// MaxOutputTokens, when positive, overrides the route's statically
+	// configured maximum output for this one request; it must not exceed
+	// that route maximum. Zero means "use the route's own configured
+	// value," preserving every existing caller's current behavior.
+	MaxOutputTokens uint32
 }
 
 type StreamEventType string
