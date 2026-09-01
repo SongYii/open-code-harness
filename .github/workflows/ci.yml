@@ -21,6 +21,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cmd/acp-web-bridge/web/package-lock.json
+      - name: Build web bridge frontend
+        working-directory: cmd/acp-web-bridge/web
+        run: |
+          npm ci
+          npm run build
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -47,6 +57,16 @@ jobs:
         goos: [windows, darwin]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cmd/acp-web-bridge/web/package-lock.json
+      - name: Build web bridge frontend
+        working-directory: cmd/acp-web-bridge/web
+        run: |
+          npm ci
+          npm run build
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -86,6 +106,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cmd/acp-web-bridge/web/package-lock.json
+      - name: Build web bridge frontend
+        working-directory: cmd/acp-web-bridge/web
+        run: |
+          npm ci
+          npm run build
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -100,6 +130,16 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cmd/acp-web-bridge/web/package-lock.json
+      - name: Build web bridge frontend
+        working-directory: cmd/acp-web-bridge/web
+        run: |
+          npm ci
+          npm run build
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
