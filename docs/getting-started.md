@@ -146,6 +146,45 @@ through either client:
 
 Omit `-output` to write JSONL to stdout instead.
 
+## Context compaction
+
+`och` always constructs a Context Engine — there is no flag to turn it off.
+It builds every model-visible request from the canonical event log, meters
+it against `-context-window`/`-max-output` (the same flags shown above), and
+compacts older history behind a durable checkpoint before a request would
+otherwise exceed the budget. `cmd/och` does not yet expose flags to tune the
+trigger/target/tail percentages or the other `composition.Config.Context`
+settings — every session runs with their documented defaults (see
+[Context Engine](architecture/context-engine.md#budget-and-meter-contract)
+for the exact table); tuning them requires embedding `composition.Config`
+directly rather than going through the `och` binary.
+
+### Automatic compaction
+
+You do not trigger this yourself. As a session's history grows, once the
+estimated request size crosses the configured trigger threshold, `och`
+compacts the oldest safe prefix into a checkpoint before dispatching the
+next request — either just before a Turn's first Provider call, or between
+tool Steps within one Turn. This is transparent from `acp-client`'s or
+`acp-web-bridge`'s point of view: the trajectory keeps streaming normally,
+with no visible pause beyond the compaction's own latency. To see that it
+happened, export the session transcript (above) and look for
+`context.compaction.started`/`context.compaction.completed` facts — the
+transcript is the one export that carries the checkpoint's own summary
+text, unlike the live ACP trajectory, which never shows a checkpoint or a
+compaction event (canonical conversation history only).
+
+### Manual compaction
+
+Design CE-14 specifies an `och compact-session` command for operator-invoked
+compaction outside any running Turn. It is not implemented yet — the
+underlying capability it would call
+(`application.Service.CompactSession`, supporting either a `summary` or a
+`reset` strategy, with an optional focus string) is fully implemented and
+tested, but there is no CLI surface over it in this milestone. See
+[Context Engine — known limitations](architecture/context-engine.md#known-limitations)
+for the current state and what building the command needs.
+
 ## Where to go next
 
 - [Implemented ACP v1 Adapter](architecture/acp-v1.md) documents the wire

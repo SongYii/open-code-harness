@@ -95,8 +95,27 @@ The numbered milestone list lives in
   proof against the real `och` binary. Not milestone 7's fuller
   TypeScript TUI client, which remains unspecified.
 
-TUI, MCP, the Context Engine, evaluation, and OpenTelemetry are not yet
-implemented. The project remains pre-v0.
+- Context Engine (`internal/harness/contextengine`, wired through
+  `application`, `adapters/{sqlite,memory}`, and `composition`):
+  implemented and verified; not GA. One model-neutral engine constructs the
+  model-visible request from canonical Session events for both model-only
+  and tool-enabled Turns: deterministic token budgeting, bounded two-pass
+  event scanning, safe Turn-boundary cuts, and durable rolling-summary or
+  deterministic-reset checkpoints, triggered before a Turn's first Provider
+  call, between tool Steps, on operator request (`Service.CompactSession`),
+  or after a confirmed startup context overflow. SQLite checkpoint storage
+  is hash-chain-verified at write time and independently re-verified at
+  read and cold-rebuild time; Runtime Host recovery closes a dangling
+  compaction on restart, ordered correctly against its own enclosing Turn.
+  A benchmarked, disclosed known limitation remains open: the pre-turn
+  planning path re-scans a Session's whole canonical history on every call
+  rather than resuming from its own last checkpoint, an `O(history)` cost
+  the actually-dispatched request itself does not inherit. See the
+  [Context Engine contract](docs/architecture/context-engine.md) and its
+  [evidence ledger](docs/architecture/context-engine-evidence.md).
+
+TUI, MCP, evaluation, and OpenTelemetry are not yet implemented. The
+project remains pre-v0.
 
 ## Development
 
