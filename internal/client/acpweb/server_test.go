@@ -64,11 +64,27 @@ func TestServerRelaysOverRealWebSocketConnection(t *testing.T) {
 	conn := dialWS(t, baseURL, token, baseURL)
 	defer conn.CloseNow()
 
+	// Dial returns as soon as the WebSocket handshake completes, which can be
+	// just before the server handler installs the connection in the Relay. A
+	// client-to-agent round trip makes that activation observable before this
+	// test writes agent stdout, which is intentionally dropped without an
+	// active connection.
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText, []byte("relay-ready")); err != nil {
+		t.Fatalf("write readiness frame: %v", err)
+	}
+	line, err := readLine(stdinR, testTimeout)
+	if err != nil {
+		t.Fatalf("read readiness frame: %v", err)
+	}
+	if line != "relay-ready\n" {
+		t.Fatalf("got %q, want %q", line, "relay-ready\n")
+	}
+
 	if _, err := stdoutW.Write([]byte("hello-browser\n")); err != nil {
 		t.Fatalf("write stdout: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
-	defer cancel()
 	_, data, err := conn.Read(ctx)
 	if err != nil {
 		t.Fatalf("read ws: %v", err)
@@ -80,7 +96,7 @@ func TestServerRelaysOverRealWebSocketConnection(t *testing.T) {
 	if err := conn.Write(ctx, websocket.MessageText, []byte("hello-agent")); err != nil {
 		t.Fatalf("write ws: %v", err)
 	}
-	line, err := readLine(stdinR, testTimeout)
+	line, err = readLine(stdinR, testTimeout)
 	if err != nil {
 		t.Fatalf("read stdin: %v", err)
 	}
@@ -113,6 +129,30 @@ func TestServerSecondConnectionTakesOverFirst(t *testing.T) {
 	}
 	if string(data) != "to-second" {
 		t.Fatalf("got %q, want %q", data, "to-second")
+	}
+}
+
+func TestServerOlderConnectionCannotActivateAfterNewerConnection(t *testing.T) {
+	relay, _, _ := newTestRelay(t)
+	s := NewServer(relay, nil, Config{}, "test-token")
+
+	olderID := s.beginConnection()
+	newerID := s.beginConnection()
+	newer := newFakeConn()
+	if previous, activated := s.activateConnection(newerID, newer); !activated || previous != nil {
+		t.Fatalf("activate newer connection: activated=%v previous=%T", activated, previous)
+	}
+
+	older := newFakeConn()
+	if previous, activated := s.activateConnection(olderID, older); activated || previous != nil {
+		t.Fatalf("activate older connection: activated=%v previous=%T", activated, previous)
+	}
+
+	relay.mu.Lock()
+	active := relay.active
+	relay.mu.Unlock()
+	if active != Conn(newer) {
+		t.Fatalf("active connection = %T, want newer connection", active)
 	}
 }
 
