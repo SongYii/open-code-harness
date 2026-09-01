@@ -39,6 +39,22 @@ const (
 	CodeResourceLimit   = "resource_limit"
 )
 
+// Context Engine failure codes (design §16). The pre-existing
+// "context_overflow" string (request_result.go, turn.go, openaicompat's
+// classify.go) keeps its own meaning and is not redefined here; these are
+// new.
+const (
+	CodeContextBudgetInvalid     = "context_budget_invalid"
+	CodeContextProjectionInvalid = "context_projection_invalid"
+	CodeContextUnitTooLarge      = "context_unit_too_large"
+	CodeContextCompactionBusy    = "context_compaction_busy"
+	CodeContextNothingToCompact  = "context_nothing_to_compact"
+	CodeContextSummaryFailed     = "context_summary_failed"
+	CodeContextSummaryInvalid    = "context_summary_invalid"
+	CodeContextCheckpointInvalid = "context_checkpoint_invalid"
+	CodeContextCompactionLimit   = "context_compaction_limit"
+)
+
 const (
 	ToolTextPolicyDenied    = "policy denied this tool"
 	ToolTextApprovalDenied  = "approval denied this tool"

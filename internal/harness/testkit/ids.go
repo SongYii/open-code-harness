@@ -13,13 +13,15 @@ import (
 type SequenceIDs struct {
 	mu sync.Mutex
 
-	sessions  uint64
-	turns     uint64
-	items     uint64
-	commands  uint64
-	appends   uint64
-	events    uint64
-	approvals uint64
+	sessions           uint64
+	turns              uint64
+	items              uint64
+	commands           uint64
+	appends            uint64
+	events             uint64
+	approvals          uint64
+	contextCompactions uint64
+	contextDecisions   uint64
 }
 
 var _ application.IDGenerator = (*SequenceIDs)(nil)
@@ -73,4 +75,18 @@ func (ids *SequenceIDs) NewApprovalID() (domain.ApprovalID, error) {
 	defer ids.mu.Unlock()
 	ids.approvals++
 	return domain.ApprovalID(fmt.Sprintf("approval-%d", ids.approvals)), nil
+}
+
+func (ids *SequenceIDs) NewContextCompactionID() (domain.ContextCompactionID, error) {
+	ids.mu.Lock()
+	defer ids.mu.Unlock()
+	ids.contextCompactions++
+	return domain.ContextCompactionID(fmt.Sprintf("ctxcompaction-%d", ids.contextCompactions)), nil
+}
+
+func (ids *SequenceIDs) NewContextDecisionID() (domain.ContextDecisionID, error) {
+	ids.mu.Lock()
+	defer ids.mu.Unlock()
+	ids.contextDecisions++
+	return domain.ContextDecisionID(fmt.Sprintf("ctxdecision-%d", ids.contextDecisions)), nil
 }

@@ -63,6 +63,14 @@ func CloneEvent(event Event) (Event, error) {
 		return event, nil
 	case ApprovalResolved:
 		return event, nil
+	case ContextCompactionStarted:
+		return event, nil
+	case ContextCompactionCompleted:
+		return event, nil
+	case ContextCompactionFailed:
+		return event, nil
+	case ContextPreparedRecorded:
+		return event, nil
 	default:
 		return nil, domainError(CodeInvalidEvent, "event type cannot be cloned")
 	}

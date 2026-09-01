@@ -184,6 +184,12 @@ func (*intentIDs) NewTurnID() (domain.TurnID, error)         { return "turn-1", 
 func (*intentIDs) NewItemID() (domain.ItemID, error)         { return "item-1", nil }
 func (*intentIDs) NewCommandID() (domain.CommandID, error)   { return "command-1", nil }
 func (*intentIDs) NewApprovalID() (domain.ApprovalID, error) { return "approval-1", nil }
+func (*intentIDs) NewContextCompactionID() (domain.ContextCompactionID, error) {
+	return "ctxcompaction-1", nil
+}
+func (*intentIDs) NewContextDecisionID() (domain.ContextDecisionID, error) {
+	return "ctxdecision-1", nil
+}
 func (ids *intentIDs) NewAppendID() (domain.AppendID, error) {
 	ids.appendCalls++
 	return "append-1", ids.appendErr
