@@ -277,15 +277,26 @@ Session 关闭并发（同样的模式）；溢出恢复与调用者取消并发
    直接拒绝，而不是分块）；Tool Result 裁剪
    （`contextengine.ProjectToolResult`）从未被 `Materialize` 的流水
    线调用过。
-4. **`och compact-session`**（设计 CE-14 自身的 CLI 命令）尚未构建。
-   它需要一个真实的、已接入组装的 `ContextCheckpointStore` 才有意义，
-   本里程碑现在已经提供了这一点——它仍是一项范围清晰、已解除阻塞的后
-   续工作。
-5. **专门针对"当一个 `pre_turn` 自动压缩正在进行时,重复的 `RunTurnRequestID`
+4. **专门针对"当一个 `pre_turn` 自动压缩正在进行时,重复的 `RunTurnRequestID`
    合并"这一场景**（设计 §22.2 自身点名的场景）没有专门的测试；与之
    相邻的"手动压缩与 RunTurn 互斥"用例
    （`TestConcurrentManualCompactionAndRunTurnAreMutuallyExclusive`）
    已被覆盖，但这一更窄的自动触发变体没有。
+
+`och compact-session`（设计 CE-14 自身的 CLI 命令）现已构建——`cmd/och`
+自己的 `compact-session` 子命令打开正常的组装根，运行
+`Service.CompactSession`，并向 stdout 打印一个稳定的 JSON 对象（见
+[Getting Started](../getting-started.md#manual-compaction)）。第一次针
+对一个真实的、已接入组装的 `ContextCheckpointStore` 构建它（此前每一
+个 reset 策略测试都要么使用从不做任何校验的 `fakeCheckpointStore`，要
+么只依赖 `ValidateSuccessor` 自身的纯结构性检查，两者都不会从规范内
+容重新计算摘要），发现并修复了一个真实的缺陷：`buildResetCheckpoint`
+的 `Coverage.SourceDigest` 被留在了它的种子值上，从未真正对新覆盖的
+规范记录做延伸，即便 `ThroughSequence` 正确地前进了。这意味着此前构
+建过的**每一个**确定性重置检查点——无论是手动 `-strategy reset` 路径
+还是共享同一函数的自动溢出恢复重置路径——一旦被一个真正做校验的存储
+读回，都会在那一刻被拒绝。修复方式是像滚动摘要路径早已做的那样,对新
+覆盖的范围延伸摘要;已通过回归测试验证，并附带其自身的变异检查。
 
 ## 排除项
 

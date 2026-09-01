@@ -475,7 +475,7 @@ func runCompactionBracket(ctx context.Context, deps ContextOrchestratorDeps, sta
 	if err != nil {
 		return domain.Session{}, nil, false, err
 	}
-	resetCheckpoint, err := buildResetCheckpoint(deps, input, previous, plan, resetCompactionID)
+	resetCheckpoint, err := buildResetCheckpoint(ctx, deps, headVersion, input, previous, plan, resetCompactionID)
 	if err != nil {
 		cleanupCtx, cancel := cleanupContext(ctx, deps)
 		failedState, failErr := failCompaction(cleanupCtx, deps, state, input.SessionID, resetCompactionID, CodeContextCheckpointInvalid, "deterministic reset checkpoint could not be constructed")
@@ -706,7 +706,7 @@ func buildSummaryCheckpointWithFocus(ctx context.Context, deps ContextOrchestrat
 	return &checkpoint, nil
 }
 
-func buildResetCheckpoint(deps ContextOrchestratorDeps, input PrepareContextInput, previous *contextengine.ContextCheckpoint, plan contextengine.PlanResult, compactionID domain.ContextCompactionID) (*contextengine.ContextCheckpoint, error) {
+func buildResetCheckpoint(ctx context.Context, deps ContextOrchestratorDeps, headVersion uint64, input PrepareContextInput, previous *contextengine.ContextCheckpoint, plan contextengine.PlanResult, compactionID domain.ContextCompactionID) (*contextengine.ContextCheckpoint, error) {
 	checkpointID, err := newCheckpointID(compactionID)
 	if err != nil {
 		return nil, err
@@ -723,13 +723,26 @@ func buildResetCheckpoint(deps ContextOrchestratorDeps, input PrepareContextInpu
 		previousID = previous.ID
 	}
 	// The reset marker states no fact about covered content, so its own
-	// digest chain step is not extended by fabricated text -- coverage
-	// still advances by folding forward the newly covered units' own
-	// count/digest chain exactly as a rolling summary would, since the
-	// digest identifies *which canonical events* are covered, never the
-	// (absent, for reset) derived text.
-	digest := seed
-	newCount := countCoveredEvents(plan.CoveredUnits)
+	// digest chain step is never extended by fabricated text -- but
+	// coverage itself still advances over the newly covered units' own
+	// real canonical records, exactly as a rolling summary's own digest
+	// does: the digest identifies *which canonical events* are covered,
+	// independent of what (if any) derived text a checkpoint carries. A
+	// digest that never actually advances (this function's own bug until
+	// this task found it via a real store's independent hash-chain
+	// re-verification -- every prior test used either a fake checkpoint
+	// store or ValidateSuccessor's own structural-only check, neither of
+	// which recomputes a digest from canonical content) would claim
+	// coverage through a real sequence while proving nothing about it,
+	// and a genuinely verifying store correctly rejects it as corrupt.
+	coveredRecords, err := readSourceRecordsRange(ctx, deps.Store, input.SessionID, headVersion, priorThroughSequence(previous), plan.CoveredThroughSequence)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", CodeContextCheckpointInvalid, err)
+	}
+	digest, newCount, err := contextengine.ExtendSourceDigestOverRecords(seed, coveredRecords)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", CodeContextCheckpointInvalid, err)
+	}
 
 	retainedTailTokens := deps.Meter.EstimateMessages(unitMessages(plan.RetainedUnits))
 	prePassMessages := append(unitMessages(mergeUnits(previous, plan)), currentInputMessage(input.CurrentInput)...)

@@ -316,15 +316,31 @@ spend more time on.
    rejects, rather than chunks, source material too large for one call);
    Tool Result pruning (`contextengine.ProjectToolResult`) is never called
    from `Materialize`'s pipeline.
-4. **`och compact-session`** (design CE-14's own CLI command) is not built.
-   It needed a real, composition-wired `ContextCheckpointStore` to be
-   meaningful, which this milestone now provides — it remains a clearly
-   scoped, unblocked follow-up.
-5. A **duplicate `RunTurnRequestID` join specifically while a `pre_turn`
+4. A **duplicate `RunTurnRequestID` join specifically while a `pre_turn`
    automatic compaction is mid-flight** (design §22.2's own named scenario)
    has no dedicated test; the adjacent manual-compaction-vs-RunTurn
    exclusivity case (`TestConcurrentManualCompactionAndRunTurnAreMutuallyExclusive`)
    is covered, but this narrower automatic-trigger variant is not.
+
+`och compact-session` (design CE-14's own CLI command) is now built —
+`cmd/och`'s own `compact-session` subcommand opens the normal composition
+root, runs `Service.CompactSession`, and prints one stable JSON object to
+stdout (see [Getting Started](../getting-started.md#manual-compaction)).
+Building it against a real, composition-wired `ContextCheckpointStore` for
+the first time (every prior reset-strategy test used either
+`fakeCheckpointStore`, which never verifies anything, or
+`ValidateSuccessor`'s own structural-only checks, neither of which
+recomputes a digest from canonical content) surfaced and fixed a real bug:
+`buildResetCheckpoint`'s `Coverage.SourceDigest` was left at its seed value,
+never actually extended over the newly covered canonical records, even
+though `ThroughSequence` correctly advanced — every deterministic-reset
+checkpoint ever built (both the manual `-strategy reset` path and the
+automatic overflow-recovery reset path, which share this one function)
+would have been rejected by a genuinely verifying store the moment it was
+read back. Fixed by extending the digest exactly as the rolling-summary
+path already did; regression-tested against a real, independently
+verifying store (`TestCompactSessionResetCheckpointDigestSurvivesIndependentVerification`,
+plus the CLI's own end-to-end tests), with its own mutation check.
 
 ## Exclusions
 

@@ -143,6 +143,43 @@ func TestCompactSessionManualResetSucceeds(t *testing.T) {
 	}
 }
 
+// TestCompactSessionResetCheckpointDigestSurvivesIndependentVerification is
+// the regression test for a real bug buildResetCheckpoint had until this
+// task: its Coverage.SourceDigest was left at its seed value, never
+// actually extended over the newly covered canonical records, even though
+// ThroughSequence correctly advanced. Every prior reset test used
+// fakeCheckpointStore (blind storage, no verification) or relied only on
+// ValidateSuccessor (structural checks, never a canonical-content
+// recomputation), so this was never caught until a genuinely verifying
+// ContextCheckpointStore -- here the memory adapter's own independent
+// full-rescan verification (adapters/memory/context_checkpoint.go) -- was
+// used for a reset compaction for the first time.
+func TestCompactSessionResetCheckpointDigestSurvivesIndependentVerification(t *testing.T) {
+	store, state, _, historyIDs := buildHistorySession(t, 6)
+	checkpointStore, ok := store.(application.ContextCheckpointStore)
+	if !ok {
+		t.Fatal("buildHistorySession's store does not implement ContextCheckpointStore; this test needs a real, verifying store")
+	}
+	summarizer := &scriptedSummarizer{text: validSummaryText()}
+	service := newManualCompactionService(t, store, historyIDs, &acceptanceSuccessModel{}, summarizer, checkpointStore)
+
+	result, err := service.CompactSession(context.Background(), application.CompactSessionRequest{SessionID: state.ID, Strategy: domain.ContextStrategyReset})
+	if err != nil {
+		t.Fatalf("CompactSession() error = %v", err)
+	}
+	if !result.Ran || result.CheckpointKind != string(contextengine.CheckpointKindSourceTailReset) {
+		t.Fatalf("result = %#v", result)
+	}
+
+	lookup, err := checkpointStore.LoadLatestContextCheckpoint(context.Background(), state.ID)
+	if err != nil {
+		t.Fatalf("LoadLatestContextCheckpoint independently re-verifying the reset checkpoint's digest: %v", err)
+	}
+	if lookup.Status != application.ContextCheckpointLookupFound || lookup.Checkpoint.ID != result.CheckpointID {
+		t.Fatalf("lookup = %+v, want Found matching the reported checkpoint ID %q", lookup, result.CheckpointID)
+	}
+}
+
 func TestCompactSessionFocusIsRenderedIntoTheSummarizerPrompt(t *testing.T) {
 	store, state, _, historyIDs := buildHistorySession(t, 6)
 	summarizer := &scriptedSummarizer{text: validSummaryText()}

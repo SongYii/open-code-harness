@@ -176,14 +176,39 @@ compaction event (canonical conversation history only).
 
 ### Manual compaction
 
-Design CE-14 specifies an `och compact-session` command for operator-invoked
-compaction outside any running Turn. It is not implemented yet — the
-underlying capability it would call
-(`application.Service.CompactSession`, supporting either a `summary` or a
-`reset` strategy, with an optional focus string) is fully implemented and
-tested, but there is no CLI surface over it in this milestone. See
-[Context Engine — known limitations](architecture/context-engine.md#known-limitations)
-for the current state and what building the command needs.
+`och compact-session` (design CE-14) triggers compaction yourself, outside
+any running Turn. It opens the normal composition root exactly like `och`
+serving ACP does — same `-workspace`/`-database`/`-provider-url`/`-model`/
+`-context-window`/`-max-output` flags, and it takes the Runtime lease the
+same way, so it fails rather than running beside another live `och`
+process on the same database:
+
+```bash
+./och compact-session \
+  -workspace /tmp/och-demo/workspace \
+  -database /tmp/och-demo/db/och.db \
+  -runtime-id local-dev \
+  -provider-url https://api.example.com/v1 \
+  -model gpt-4o-mini \
+  -context-window 128000 \
+  -max-output 4096 \
+  -session <session-id>
+```
+
+It prints one JSON object to stdout — `{"ran":true,"sessionId":"...",
+"strategy":"summary","checkpointId":"...","checkpointKind":"rolling_summary_v1",
+"coveredEventCount":...,"coveredTurnCount":...,"throughSequence":...,
+"tokensBefore":...,"checkpointTokens":...,"estimatedRequestTokens":...}` —
+with a matching human-readable line on stderr. `"ran":false` (with no
+checkpoint fields) means there was nothing safe to compact; this is not an
+error.
+
+`-strategy reset` produces a deterministic tail-reset checkpoint instead of
+an LLM-generated summary — no Provider call at all, used when a hard
+capacity limit cannot wait for a trustworthy summary. `-focus "..."` (with
+`-strategy summary`, the default) names what the summary should emphasize,
+bounded to 4 KiB UTF-8; it is rendered into its own prompt section, never
+able to change the required output schema.
 
 ## Where to go next
 
