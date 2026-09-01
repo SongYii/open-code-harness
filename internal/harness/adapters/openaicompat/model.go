@@ -196,6 +196,9 @@ func (m *Model) Stream(ctx context.Context, request engine.ModelRequest) (engine
 	if m.profile.NativeTools == engine.CapabilityRequired && len(request.Tools) == 0 {
 		return nil, startupFailure(engine.FailureClassPermanent, "provider_permanent", 0, "", "invalid request")
 	}
+	if request.MaxOutputTokens > m.profile.MaxOutputTokens {
+		return nil, startupFailure(engine.FailureClassPermanent, "provider_permanent", 0, "", "invalid request")
+	}
 	key, err := m.apiKey.APIKey()
 	if err != nil || strings.TrimSpace(key) == "" {
 		return nil, startupFailure(engine.FailureClassAuth, "provider_auth", 0, "", "missing api key")
@@ -218,6 +221,11 @@ func (m *Model) Stream(ctx context.Context, request engine.ModelRequest) (engine
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 	httpReq.Header.Set("User-Agent", m.userAgent)
+	// Purpose is attribution only: a non-secret header, never a change to
+	// the JSON body a model reads (design §6.3).
+	if request.Purpose != "" {
+		httpReq.Header.Set("X-Och-Request-Purpose", string(request.Purpose))
+	}
 
 	started := time.Now()
 	resp, err := m.client.Do(httpReq)
@@ -254,8 +262,19 @@ func (m *Model) marshalRequest(request engine.ModelRequest) ([]byte, error) {
 	if m.hints.IncludeUsage {
 		payload.StreamOptions = &completionStreamOptions{IncludeUsage: true}
 	}
-	if m.profile.MaxOutputTokens > 0 {
-		tokens := m.profile.MaxOutputTokens
+	// A positive per-request MaxOutputTokens overrides the route's own
+	// statically configured maximum (design §6.3); Stream already
+	// rejected a request.MaxOutputTokens exceeding the route maximum, so
+	// this is always a legal narrowing, never a widening, of what the
+	// route allows. Zero preserves this adapter's original behavior
+	// exactly: every caller that predates this field still gets the
+	// route's own configured value.
+	maxOutputTokens := request.MaxOutputTokens
+	if maxOutputTokens == 0 {
+		maxOutputTokens = m.profile.MaxOutputTokens
+	}
+	if maxOutputTokens > 0 {
+		tokens := maxOutputTokens
 		switch m.hints.MaxTokensField {
 		case "max_tokens":
 			payload.MaxTokens = &tokens

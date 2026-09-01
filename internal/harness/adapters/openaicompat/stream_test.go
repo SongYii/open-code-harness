@@ -675,3 +675,48 @@ func TestStreamConcurrentCallsOwnRequests(t *testing.T) {
 		t.Fatalf("requests=%d bodies=%d", transport.requests.Load(), bodies)
 	}
 }
+
+// TestStreamRejectsCachedTokensExceedingInputTokens is Task 8's own
+// required case (design §20.1): CachedInputTokens must be a strict subset
+// of InputTokens; a provider reporting more cached tokens than total input
+// tokens is a classified anomaly, not something silently clamped or
+// accepted.
+func TestStreamRejectsCachedTokensExceedingInputTokens(t *testing.T) {
+	body := "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"prompt_tokens_details\":{\"cached_tokens\":10}}}\n\ndata: [DONE]\n"
+	transport := &scriptedTransport{roundTrip: func(*http.Request) (*http.Response, error) {
+		return sseResponse(http.StatusOK, body, nil), nil
+	}}
+	model := newTestModel(t, validConfig(transport))
+	stream, err := model.Stream(context.Background(), modelRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stream.Close() })
+	_, err = collectStream(t, stream)
+	requireProviderFailure(t, err, engine.CodeInvalidStream, "invalid_stream")
+}
+
+// TestStreamAcceptsCachedTokensEqualToInputTokens confirms the boundary:
+// CachedInputTokens exactly equal to InputTokens (the whole prompt served
+// from cache) is legal, not merely CachedInputTokens strictly less.
+func TestStreamAcceptsCachedTokensEqualToInputTokens(t *testing.T) {
+	body := "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"prompt_tokens_details\":{\"cached_tokens\":5}}}\n\ndata: [DONE]\n"
+	transport := &scriptedTransport{roundTrip: func(*http.Request) (*http.Response, error) {
+		return sseResponse(http.StatusOK, body, nil), nil
+	}}
+	model := newTestModel(t, validConfig(transport))
+	stream, err := model.Stream(context.Background(), modelRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stream.Close() })
+	events, err := collectStream(t, stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed := events[len(events)-1]
+	if completed.Usage == nil || completed.Usage.CachedInputTokens != 5 || completed.Usage.InputTokens != 5 {
+		t.Fatalf("usage = %#v, want InputTokens=5 CachedInputTokens=5", completed.Usage)
+	}
+}
