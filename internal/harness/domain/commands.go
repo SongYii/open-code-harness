@@ -33,6 +33,11 @@ const (
 	InterruptionCallerCanceled      = "caller_canceled"
 	InterruptionDeliveryFailed      = "runtime_delivery_failed"
 	InterruptionRequestAbandoned    = "request_abandoned"
+
+	CommandStartContextCompaction    = "context.compaction.start"
+	CommandCompleteContextCompaction = "context.compaction.complete"
+	CommandFailContextCompaction     = "context.compaction.fail"
+	CommandRecordContextPreparation  = "context.preparation.record"
 )
 
 type CreateSession struct {
@@ -288,3 +293,35 @@ type ResolveApproval struct {
 
 func (ResolveApproval) CommandType() string          { return CommandResolveApproval }
 func (c ResolveApproval) TargetSessionID() SessionID { return c.SessionID }
+
+type StartContextCompaction struct {
+	SessionID SessionID
+	ContextCompactionStarted
+}
+
+func (StartContextCompaction) CommandType() string          { return CommandStartContextCompaction }
+func (c StartContextCompaction) TargetSessionID() SessionID { return c.SessionID }
+
+type CompleteContextCompaction struct {
+	SessionID SessionID
+	ContextCompactionCompleted
+}
+
+func (CompleteContextCompaction) CommandType() string          { return CommandCompleteContextCompaction }
+func (c CompleteContextCompaction) TargetSessionID() SessionID { return c.SessionID }
+
+type FailContextCompaction struct {
+	SessionID SessionID
+	ContextCompactionFailed
+}
+
+func (FailContextCompaction) CommandType() string          { return CommandFailContextCompaction }
+func (c FailContextCompaction) TargetSessionID() SessionID { return c.SessionID }
+
+type RecordContextPreparation struct {
+	SessionID SessionID
+	ContextPreparedRecorded
+}
+
+func (RecordContextPreparation) CommandType() string          { return CommandRecordContextPreparation }
+func (c RecordContextPreparation) TargetSessionID() SessionID { return c.SessionID }

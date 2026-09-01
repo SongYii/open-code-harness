@@ -21,6 +21,10 @@ const (
 	CodeItemMismatch         ErrorCode = "item_mismatch"
 	CodeItemAlreadyExists    ErrorCode = "item_already_exists"
 	CodeSequenceMismatch     ErrorCode = "sequence_mismatch"
+
+	CodeCompactionAlreadyRunning ErrorCode = "compaction_already_running"
+	CodeCompactionNotRunning     ErrorCode = "compaction_not_running"
+	CodeCompactionMismatch       ErrorCode = "compaction_mismatch"
 )
 
 type DomainError struct {

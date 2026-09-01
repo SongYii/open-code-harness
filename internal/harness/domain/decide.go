@@ -247,6 +247,14 @@ func Decide(state Session, command Command) ([]UncommittedEvent, error) {
 		return decideCloseSession(state, command)
 	case DeleteSession:
 		return decideDeleteSession(state, command)
+	case StartContextCompaction:
+		return decideStartContextCompaction(state, command)
+	case CompleteContextCompaction:
+		return decideCompleteContextCompaction(state, command)
+	case FailContextCompaction:
+		return decideFailContextCompaction(state, command)
+	case RecordContextPreparation:
+		return decideRecordContextPreparation(state, command)
 	default:
 		return nil, domainError(CodeInvalidCommand, "command type cannot be decided")
 	}
@@ -634,6 +642,72 @@ func decideDeleteSession(state Session, command DeleteSession) ([]UncommittedEve
 		return nil, domainError(CodeTurnAlreadyRunning, "a turn is already running")
 	}
 	return deleteSessionEvents(), nil
+}
+
+func decideStartContextCompaction(state Session, command StartContextCompaction) ([]UncommittedEvent, error) {
+	if err := requireSessionForCommand(state, command.SessionID); err != nil {
+		return nil, err
+	}
+	if state.ContextCompaction != nil {
+		return nil, domainError(CodeCompactionAlreadyRunning, "a context compaction is already running")
+	}
+	if err := validateContextCompactionStartedPayload(command.ContextCompactionStarted, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	switch command.Trigger {
+	case ContextTriggerPreTurn, ContextTriggerManual:
+		if state.ActiveTurn != nil {
+			return nil, domainError(CodeTurnAlreadyRunning, "a turn is already running")
+		}
+	case ContextTriggerMidTurn, ContextTriggerOverflowRetry:
+		if state.ActiveTurn == nil {
+			return nil, domainError(CodeTurnNotRunning, "no turn is running")
+		}
+	}
+	return []UncommittedEvent{{Event: command.ContextCompactionStarted}}, nil
+}
+
+func requireActiveContextCompactionForCommand(state Session, sessionID SessionID, id ContextCompactionID) error {
+	if err := requireSessionForCommand(state, sessionID); err != nil {
+		return err
+	}
+	if state.ContextCompaction == nil {
+		return domainError(CodeCompactionNotRunning, "no context compaction is running")
+	}
+	if state.ContextCompaction.ID != id {
+		return domainError(CodeCompactionMismatch, "command compaction ID does not match active compaction")
+	}
+	return nil
+}
+
+func decideCompleteContextCompaction(state Session, command CompleteContextCompaction) ([]UncommittedEvent, error) {
+	if err := requireActiveContextCompactionForCommand(state, command.SessionID, command.ID); err != nil {
+		return nil, err
+	}
+	if err := validateContextCompactionCompletedPayload(command.ContextCompactionCompleted, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	return []UncommittedEvent{{Event: command.ContextCompactionCompleted}}, nil
+}
+
+func decideFailContextCompaction(state Session, command FailContextCompaction) ([]UncommittedEvent, error) {
+	if err := requireActiveContextCompactionForCommand(state, command.SessionID, command.ID); err != nil {
+		return nil, err
+	}
+	if err := validateContextCompactionFailedPayload(command.ContextCompactionFailed, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	return []UncommittedEvent{{Event: command.ContextCompactionFailed}}, nil
+}
+
+func decideRecordContextPreparation(state Session, command RecordContextPreparation) ([]UncommittedEvent, error) {
+	if _, err := requireRunningItemKindForCommand(state, command.SessionID, command.TurnID, command.ItemID, ItemKindAssistantMessage); err != nil {
+		return nil, err
+	}
+	if err := validateContextPreparedPayload(command.ContextPreparedRecorded, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	return []UncommittedEvent{{Event: command.ContextPreparedRecorded}}, nil
 }
 
 func requireSessionForCommand(state Session, sessionID SessionID) error {

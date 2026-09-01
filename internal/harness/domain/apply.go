@@ -106,6 +106,17 @@ func Apply(state Session, record RecordedEvent) (Session, error) {
 			return Session{}, err
 		}
 		return applyVersionOnlyRunningItemKind(state, record, event.TurnID, event.ItemID, ItemKindToolCall, "approval resolution timestamp precedes item start")
+	case ContextCompactionStarted:
+		return applyContextCompactionStarted(state, record, event)
+	case ContextCompactionCompleted:
+		return applyContextCompactionCompleted(state, record, event)
+	case ContextCompactionFailed:
+		return applyContextCompactionFailed(state, record, event)
+	case ContextPreparedRecorded:
+		if err := validateContextPreparedPayload(event, CodeInvalidEvent); err != nil {
+			return Session{}, err
+		}
+		return applyVersionOnlyRunningItemKind(state, record, event.TurnID, event.ItemID, ItemKindAssistantMessage, "context preparation timestamp precedes item start")
 	default:
 		return Session{}, domainError(CodeInvalidEvent, "event type cannot be applied")
 	}
@@ -351,6 +362,94 @@ func requireRunningItemKindForEvent(state Session, sessionID SessionID, turnID T
 		return Item{}, domainError(CodeInvalidEvent, "event item kind does not match active item")
 	}
 	return item, nil
+}
+
+// applyContextCompactionStarted enforces design §13.3's eligibility rules:
+// at most one compaction active at a time; pre_turn/manual triggers
+// require no active Turn; mid_turn/overflow_retry triggers require one.
+func applyContextCompactionStarted(state Session, record RecordedEvent, event ContextCompactionStarted) (Session, error) {
+	if err := requireActiveSession(state, record.SessionID); err != nil {
+		return Session{}, err
+	}
+	if state.ContextCompaction != nil {
+		return Session{}, domainError(CodeCompactionAlreadyRunning, "a context compaction is already running")
+	}
+	if err := validateContextCompactionStartedPayload(event, CodeInvalidEvent); err != nil {
+		return Session{}, err
+	}
+	switch event.Trigger {
+	case ContextTriggerPreTurn, ContextTriggerManual:
+		if state.ActiveTurn != nil {
+			return Session{}, domainError(CodeTurnAlreadyRunning, "a turn is already running")
+		}
+	case ContextTriggerMidTurn, ContextTriggerOverflowRetry:
+		if state.ActiveTurn == nil {
+			return Session{}, domainError(CodeTurnNotRunning, "no turn is running")
+		}
+	}
+	next := state.Clone()
+	next.ContextCompaction = &ContextCompaction{
+		ID:          event.ID,
+		Trigger:     event.Trigger,
+		Strategy:    event.Strategy,
+		BaseVersion: state.Version,
+		StartedAt:   record.OccurredAt,
+	}
+	next.Version = record.Sequence
+	return next, nil
+}
+
+// applyContextCompactionCompleted clears the active compaction. The
+// completed checkpoint embedded in event is never stored into the bounded
+// aggregate (design §13.3) — only the ContextCompactionCompleted event
+// itself carries it durably.
+func applyContextCompactionCompleted(state Session, record RecordedEvent, event ContextCompactionCompleted) (Session, error) {
+	active, err := requireActiveContextCompaction(state, record.SessionID, event.ID)
+	if err != nil {
+		return Session{}, err
+	}
+	if record.OccurredAt.Before(active.StartedAt) {
+		return Session{}, domainError(CodeInvalidEvent, "compaction terminal timestamp precedes compaction start")
+	}
+	if err := validateContextCompactionCompletedPayload(event, CodeInvalidEvent); err != nil {
+		return Session{}, err
+	}
+	next := state.Clone()
+	next.ContextCompaction = nil
+	next.Version = record.Sequence
+	return next, nil
+}
+
+// applyContextCompactionFailed clears the active compaction with a closed
+// stable code and safe message.
+func applyContextCompactionFailed(state Session, record RecordedEvent, event ContextCompactionFailed) (Session, error) {
+	active, err := requireActiveContextCompaction(state, record.SessionID, event.ID)
+	if err != nil {
+		return Session{}, err
+	}
+	if record.OccurredAt.Before(active.StartedAt) {
+		return Session{}, domainError(CodeInvalidEvent, "compaction terminal timestamp precedes compaction start")
+	}
+	if err := validateContextCompactionFailedPayload(event, CodeInvalidEvent); err != nil {
+		return Session{}, err
+	}
+	next := state.Clone()
+	next.ContextCompaction = nil
+	next.Version = record.Sequence
+	return next, nil
+}
+
+func requireActiveContextCompaction(state Session, sessionID SessionID, id ContextCompactionID) (ContextCompaction, error) {
+	if err := requireActiveSession(state, sessionID); err != nil {
+		return ContextCompaction{}, err
+	}
+	if state.ContextCompaction == nil {
+		return ContextCompaction{}, domainError(CodeCompactionNotRunning, "no context compaction is running")
+	}
+	if state.ContextCompaction.ID != id {
+		return ContextCompaction{}, domainError(CodeCompactionMismatch, "event compaction ID does not match active compaction")
+	}
+	return *state.ContextCompaction, nil
 }
 
 func validateItemTerminal(code, message string) (*ItemTerminal, error) {
