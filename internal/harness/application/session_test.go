@@ -871,3 +871,11 @@ func (ids *sessionIDs) NewApprovalID() (domain.ApprovalID, error) {
 	ids.calls++
 	return "approval-1", nil
 }
+func (ids *sessionIDs) NewContextCompactionID() (domain.ContextCompactionID, error) {
+	ids.calls++
+	return "ctxcompaction-1", nil
+}
+func (ids *sessionIDs) NewContextDecisionID() (domain.ContextDecisionID, error) {
+	ids.calls++
+	return "ctxdecision-1", nil
+}

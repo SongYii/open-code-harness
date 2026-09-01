@@ -545,9 +545,9 @@ type acceptanceSuccessModel struct {
 }
 
 type prefixedIDs struct {
-	mu                                          sync.Mutex
-	prefix                                      string
-	session, turn, item, command, append, event uint64
+	mu                                                                              sync.Mutex
+	prefix                                                                          string
+	session, turn, item, command, append, event, contextCompaction, contextDecision uint64
 }
 
 func newPrefixedIDs(prefix string) *prefixedIDs { return &prefixedIDs{prefix: prefix} }
@@ -577,6 +577,12 @@ func (ids *prefixedIDs) NewEventID() (domain.EventID, error) {
 }
 func (ids *prefixedIDs) NewApprovalID() (domain.ApprovalID, error) {
 	return domain.ApprovalID(ids.next("approval", &ids.event)), nil
+}
+func (ids *prefixedIDs) NewContextCompactionID() (domain.ContextCompactionID, error) {
+	return domain.ContextCompactionID(ids.next("ctxcompaction", &ids.contextCompaction)), nil
+}
+func (ids *prefixedIDs) NewContextDecisionID() (domain.ContextDecisionID, error) {
+	return domain.ContextDecisionID(ids.next("ctxdecision", &ids.contextDecision)), nil
 }
 
 type blockingAcceptanceModel struct {

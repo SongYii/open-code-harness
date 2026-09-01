@@ -39,13 +39,15 @@ func (testClock) Now() time.Time { return time.Time{} }
 
 type testIDs struct{}
 
-func (testIDs) NewSessionID() (domain.SessionID, error)   { return "", nil }
-func (testIDs) NewTurnID() (domain.TurnID, error)         { return "", nil }
-func (testIDs) NewItemID() (domain.ItemID, error)         { return "", nil }
-func (testIDs) NewCommandID() (domain.CommandID, error)   { return "", nil }
-func (testIDs) NewAppendID() (domain.AppendID, error)     { return "", nil }
-func (testIDs) NewEventID() (domain.EventID, error)       { return "", nil }
-func (testIDs) NewApprovalID() (domain.ApprovalID, error) { return "", nil }
+func (testIDs) NewSessionID() (domain.SessionID, error)                     { return "", nil }
+func (testIDs) NewTurnID() (domain.TurnID, error)                           { return "", nil }
+func (testIDs) NewItemID() (domain.ItemID, error)                           { return "", nil }
+func (testIDs) NewCommandID() (domain.CommandID, error)                     { return "", nil }
+func (testIDs) NewAppendID() (domain.AppendID, error)                       { return "", nil }
+func (testIDs) NewEventID() (domain.EventID, error)                         { return "", nil }
+func (testIDs) NewApprovalID() (domain.ApprovalID, error)                   { return "", nil }
+func (testIDs) NewContextCompactionID() (domain.ContextCompactionID, error) { return "", nil }
+func (testIDs) NewContextDecisionID() (domain.ContextDecisionID, error)     { return "", nil }
 
 func TestApplicationPortsHaveConsumerOwnedSignatures(t *testing.T) {
 	var _ EventStore = testEventStore{}

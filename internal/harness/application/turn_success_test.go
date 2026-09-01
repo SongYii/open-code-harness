@@ -1142,6 +1142,20 @@ func (ids *turnIDs) NewApprovalID() (domain.ApprovalID, error) {
 	return "approval-1", nil
 }
 
+func (ids *turnIDs) NewContextCompactionID() (domain.ContextCompactionID, error) {
+	ids.mu.Lock()
+	defer ids.mu.Unlock()
+	ids.totalCalls++
+	return "ctxcompaction-1", nil
+}
+
+func (ids *turnIDs) NewContextDecisionID() (domain.ContextDecisionID, error) {
+	ids.mu.Lock()
+	defer ids.mu.Unlock()
+	ids.totalCalls++
+	return "ctxdecision-1", nil
+}
+
 func (ids *turnIDs) Calls() []string {
 	ids.mu.Lock()
 	defer ids.mu.Unlock()

@@ -99,3 +99,19 @@ func (IDs) NewApprovalID() (domain.ApprovalID, error) {
 	}
 	return domain.ParseApprovalID(value)
 }
+
+func (IDs) NewContextCompactionID() (domain.ContextCompactionID, error) {
+	value, err := newID("ctxcompaction")
+	if err != nil {
+		return "", err
+	}
+	return domain.ParseContextCompactionID(value)
+}
+
+func (IDs) NewContextDecisionID() (domain.ContextDecisionID, error) {
+	value, err := newID("ctxdecision")
+	if err != nil {
+		return "", err
+	}
+	return domain.ParseContextDecisionID(value)
+}

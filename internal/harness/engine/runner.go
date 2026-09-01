@@ -151,6 +151,154 @@ func (runner *TurnRunner) Run(ctx context.Context, request RunRequest, emitter *
 	}
 }
 
+// CollectRequest describes one bounded, non-interactive, text-only model
+// call — the Context Engine's summarizer (design §6.3), never a
+// conversation attempt. No Tools may be sent; any tool_call the stream
+// nonetheless produces is a protocol violation (CodeInvalidStream), not a
+// collected result.
+type CollectRequest struct {
+	ModelRequest
+	MaxOutputBytes int
+}
+
+// CollectResult is the concatenated text from one completed Collect call.
+type CollectResult struct {
+	Text  string
+	Stats AttemptStats
+}
+
+// Collect synchronously runs one bounded model stream and returns only its
+// concatenated text. It shares Run's stream lifecycle and closed
+// ProviderFailure taxonomy over the same underlying Model — this is the
+// "shared bounded stream collector" the Context Engine's summarizer reuses
+// rather than re-implementing stream consumption — but unlike Run it takes
+// no Emitter: a summarization attempt is not part of any live Turn's
+// runtime event stream, never emits assistant deltas, and never accepts a
+// Tool Call.
+func (runner *TurnRunner) Collect(ctx context.Context, request CollectRequest) (CollectResult, error) {
+	if runner == nil || isNil(runner.model) || !validCollectRequest(request) || isNil(ctx) {
+		return CollectResult{}, engineError(CodeInvalidRequest, nil)
+	}
+	if cause := ctx.Err(); cause != nil {
+		return CollectResult{}, engineError(CodeCanceled, cause)
+	}
+
+	streamCtx, cancel := context.WithCancel(ctx)
+	stream, streamErr := runner.model.Stream(streamCtx, request.ModelRequest)
+	if isNil(stream) {
+		if cause := ctx.Err(); cause != nil {
+			cancel()
+			return CollectResult{}, engineError(CodeCanceled, cause)
+		}
+		cancel()
+		if streamErr != nil {
+			return CollectResult{}, engineError(CodeModelStartup, errorCause(streamErr, CodeModelStartup))
+		}
+		return CollectResult{}, engineError(CodeInvalidStream, nil)
+	}
+
+	if cause := ctx.Err(); cause != nil {
+		return runner.collectFail(cancel, stream, engineError(CodeCanceled, cause))
+	}
+	if streamErr != nil {
+		return runner.collectFail(cancel, stream, engineError(CodeModelStartup, errorCause(streamErr, CodeModelStartup)))
+	}
+
+	var builder strings.Builder
+	for {
+		if cause := ctx.Err(); cause != nil {
+			return runner.collectFail(cancel, stream, engineError(CodeCanceled, cause))
+		}
+		event, err := stream.Next(streamCtx)
+		if err != nil {
+			if cause := ctx.Err(); cause != nil {
+				return runner.collectFail(cancel, stream, engineError(CodeCanceled, cause))
+			}
+			if engineErr := classifiedEngineError(err); engineErr != nil {
+				return runner.collectFail(cancel, stream, &Error{Code: engineErr.Code, Cause: engineErr.Cause})
+			}
+			if isEOF(err) {
+				return runner.collectFail(cancel, stream, engineError(CodeInvalidStream, nil))
+			}
+			return runner.collectFail(cancel, stream, engineError(CodeModelStream, errorCause(err, CodeModelStream)))
+		}
+		if cause := ctx.Err(); cause != nil {
+			return runner.collectFail(cancel, stream, engineError(CodeCanceled, cause))
+		}
+
+		switch event.Type {
+		case StreamEventTextDelta:
+			if event.ToolCall != nil || event.Text == "" || !utf8.ValidString(event.Text) || event.Usage != nil {
+				return runner.collectFail(cancel, stream, engineError(CodeInvalidStream, nil))
+			}
+			if len(event.Text) > request.MaxOutputBytes-builder.Len() {
+				return runner.collectFail(cancel, stream, engineError(CodeOutputLimit, ErrAssistantOutputLimit))
+			}
+			builder.WriteString(event.Text)
+		case StreamEventToolCall:
+			return runner.collectFail(cancel, stream, engineError(CodeInvalidStream, nil))
+		case StreamEventCompleted:
+			if event.Text != "" || event.ToolCall != nil {
+				return runner.collectFail(cancel, stream, engineError(CodeInvalidStream, nil))
+			}
+			return runner.collectSucceed(ctx, cancel, stream, CollectResult{
+				Text:  builder.String(),
+				Stats: AttemptStats{Usage: copyTokenUsage(event.Usage)},
+			})
+		default:
+			return runner.collectFail(cancel, stream, engineError(CodeInvalidStream, nil))
+		}
+	}
+}
+
+func (runner *TurnRunner) collectFail(cancel context.CancelFunc, stream ModelStream, primary *Error) (CollectResult, error) {
+	stats := snapshotAttempt(stream)
+	stats.FinishReason = ""
+	cancel()
+	if closeErr := stream.Close(); closeErr != nil {
+		return CollectResult{Stats: stats}, &Error{Code: primary.Code, Cause: errors.Join(primary.Cause, errorCause(closeErr, CodeModelStream))}
+	}
+	return CollectResult{Stats: stats}, primary
+}
+
+func (runner *TurnRunner) collectSucceed(ctx context.Context, cancel context.CancelFunc, stream ModelStream, result CollectResult) (CollectResult, error) {
+	stats := snapshotAttempt(stream)
+	if result.Stats.Usage != nil {
+		stats.Usage = result.Stats.Usage
+	}
+	cancel()
+	closeErr := stream.Close()
+	if cause := ctx.Err(); cause != nil {
+		stats.FinishReason = ""
+		primary := engineError(CodeCanceled, cause)
+		if closeErr != nil {
+			return CollectResult{Stats: stats}, &Error{Code: primary.Code, Cause: errors.Join(primary.Cause, errorCause(closeErr, CodeModelStream))}
+		}
+		return CollectResult{Stats: stats}, primary
+	}
+	if closeErr != nil {
+		stats.FinishReason = ""
+		return CollectResult{Stats: stats}, engineError(CodeModelStream, errorCause(closeErr, CodeModelStream))
+	}
+	return CollectResult{Text: result.Text, Stats: stats}, nil
+}
+
+func validCollectRequest(request CollectRequest) bool {
+	if request.MaxOutputBytes <= 0 || len(request.Tools) != 0 {
+		return false
+	}
+	if len(request.Messages) == 0 && strings.TrimSpace(request.Input) == "" {
+		return false
+	}
+	if !utf8.ValidString(request.Input) {
+		return false
+	}
+	_, sessionErr := domain.ParseSessionID(string(request.SessionID))
+	_, turnErr := domain.ParseTurnID(string(request.TurnID))
+	_, itemErr := domain.ParseItemID(string(request.ItemID))
+	return sessionErr == nil && turnErr == nil && itemErr == nil
+}
+
 func (runner *TurnRunner) fail(cancel context.CancelFunc, stream ModelStream, primary *Error) (RunResult, error) {
 	stats := snapshotAttempt(stream)
 	stats.FinishReason = ""
