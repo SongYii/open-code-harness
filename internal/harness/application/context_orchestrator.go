@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/contextengine"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
@@ -16,6 +17,11 @@ import (
 // (loop.go) so a Scan-driven read behaves like every other pinned-head
 // stream read this package already performs.
 const defaultContextPageLimit = 256
+
+// defaultCompactionCleanupTimeout mirrors DefaultTerminalCommitTimeout
+// (service.go): the bound a failCompaction cleanup append gets once
+// detached from a canceled caller context.
+const defaultCompactionCleanupTimeout = DefaultTerminalCommitTimeout
 
 // maxCompactionSummaryOutputBytes is the byte cap Collect enforces on one
 // summarization call, matching contextengine's own 256 KiB absolute
@@ -118,11 +124,34 @@ type ContextOrchestratorDeps struct {
 	Budget          contextengine.Budget
 	// PageLimit bounds each Scan page; zero uses defaultContextPageLimit.
 	PageLimit uint32
+	// CleanupTimeout bounds the context.compaction.failed append issued
+	// when a compaction bracket must close after its own ctx was
+	// canceled (design's "manual cancellation closes a started bracket
+	// as failed within the configured cleanup timeout"); zero uses
+	// defaultCompactionCleanupTimeout. It is applied via
+	// context.WithoutCancel, mirroring Service.config.TerminalCommitTimeout's
+	// own established pattern (turn.go's terminalizeExecutionFailure).
+	CleanupTimeout time.Duration
 }
 
 func (deps ContextOrchestratorDeps) valid() bool {
 	return !isNilValue(deps.Store) && !isNilValue(deps.IDs) && !isNilValue(deps.Clock) && !isNilValue(deps.Authority) &&
 		!isNilValue(deps.CheckpointStore) && !isNilValue(deps.Summarizer) && !isNilValue(deps.Meter)
+}
+
+func (deps ContextOrchestratorDeps) cleanupTimeout() time.Duration {
+	if deps.CleanupTimeout <= 0 {
+		return defaultCompactionCleanupTimeout
+	}
+	return deps.CleanupTimeout
+}
+
+// cleanupContext detaches from ctx's own cancellation (which may be why a
+// failCompaction call is happening at all) while still bounding the
+// append attempt, exactly as turn.go's own terminal-commit cleanup paths
+// do (context.WithoutCancel + a configured timeout).
+func cleanupContext(ctx context.Context, deps ContextOrchestratorDeps) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), deps.cleanupTimeout())
 }
 
 func (deps ContextOrchestratorDeps) pageLimit() uint32 {
@@ -366,7 +395,9 @@ func runCompactionBracket(ctx context.Context, deps ContextOrchestratorDeps, sta
 		return completedState, checkpoint, true, nil
 	}
 
-	failedState, failErr := failCompaction(ctx, deps, state, input.SessionID, compactionID, summaryFailureCode(summaryErr), safeFailureMessage(summaryErr))
+	cleanupCtx, cancel := cleanupContext(ctx, deps)
+	failedState, failErr := failCompaction(cleanupCtx, deps, state, input.SessionID, compactionID, summaryFailureCode(summaryErr), safeFailureMessage(summaryErr))
+	cancel()
 	if failErr != nil {
 		return domain.Session{}, nil, false, failErr
 	}
@@ -396,7 +427,9 @@ func runCompactionBracket(ctx context.Context, deps ContextOrchestratorDeps, sta
 	}
 	resetCheckpoint, err := buildResetCheckpoint(deps, input, previous, plan, resetCompactionID)
 	if err != nil {
-		failedState, failErr := failCompaction(ctx, deps, state, input.SessionID, resetCompactionID, CodeContextCheckpointInvalid, "deterministic reset checkpoint could not be constructed")
+		cleanupCtx, cancel := cleanupContext(ctx, deps)
+		failedState, failErr := failCompaction(cleanupCtx, deps, state, input.SessionID, resetCompactionID, CodeContextCheckpointInvalid, "deterministic reset checkpoint could not be constructed")
+		cancel()
 		if failErr != nil {
 			return domain.Session{}, nil, false, failErr
 		}
@@ -504,7 +537,17 @@ func appendCompactOrchestrator(ctx context.Context, deps ContextOrchestratorDeps
 }
 
 func buildSummaryCheckpoint(ctx context.Context, deps ContextOrchestratorDeps, sessionID domain.SessionID, input PrepareContextInput, headVersion uint64, previous *contextengine.ContextCheckpoint, plan contextengine.PlanResult, compactionID domain.ContextCompactionID) (*contextengine.ContextCheckpoint, error) {
-	content := renderSummaryPrompt(previous, plan.CoveredUnits)
+	return buildSummaryCheckpointWithFocus(ctx, deps, sessionID, input, headVersion, previous, plan, compactionID, "")
+}
+
+// buildSummaryCheckpointWithFocus is buildSummaryCheckpoint plus an
+// optional manual focus string (design §11.1/§15.4) rendered into its own
+// "MANUAL FOCUS" prompt section -- additional data a human operator wants
+// emphasized, never able to change the required output schema. The
+// automatic paths (Tasks 9/10) always call buildSummaryCheckpoint with
+// focus == "".
+func buildSummaryCheckpointWithFocus(ctx context.Context, deps ContextOrchestratorDeps, sessionID domain.SessionID, input PrepareContextInput, headVersion uint64, previous *contextengine.ContextCheckpoint, plan contextengine.PlanResult, compactionID domain.ContextCompactionID, focus string) (*contextengine.ContextCheckpoint, error) {
+	content := renderSummaryPrompt(previous, plan.CoveredUnits, focus)
 	contentTokens := deps.Meter.EstimateMessages([]domain.ModelPromptMessage{{Role: domain.PromptRoleUser, Text: content}})
 	if contentTokens > deps.Budget.HardInput {
 		// Disclosed Step 1 scope narrowing: this implementation performs
@@ -682,12 +725,16 @@ func newCheckpointID(compactionID domain.ContextCompactionID) (string, error) {
 // units this compaction covers. Rendering happens here, in Application,
 // because ContextSummarizeRequest's own contract (ports.go) states this
 // port owns no prompt assembly of its own.
-func renderSummaryPrompt(previous *contextengine.ContextCheckpoint, covered []contextengine.ContextUnit) string {
+func renderSummaryPrompt(previous *contextengine.ContextCheckpoint, covered []contextengine.ContextUnit, focus string) string {
 	var b strings.Builder
 	b.WriteString(contextengine.SummaryPrompt)
 	if previous != nil && previous.Kind == contextengine.CheckpointKindRollingSummary && previous.Summary != "" {
 		b.WriteString("\n\n## PREVIOUS CHECKPOINT\n\n")
 		b.WriteString(previous.Summary)
+	}
+	if focus != "" {
+		b.WriteString("\n\n## MANUAL FOCUS\n\n")
+		b.WriteString(focus)
 	}
 	b.WriteString("\n\n## SOURCE MATERIAL\n\n")
 	renderUnits(&b, covered)
