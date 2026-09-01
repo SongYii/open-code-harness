@@ -33,7 +33,8 @@
 | `74d0063` | Task 13 | SQLite/memory checkpoint store, migration 5, and hash-chain verification |
 | `ead2399` | Task 14 | SQLite/runtime checkpoint recovery and crash reconciliation |
 | `2681249` | Task 15 | Composition, ACP, and transcript projection wiring |
-| (this commit) | Task 16 | Benchmarks, evidence ledger, and documentation |
+| `0423fb0` | Task 16 | Benchmarks, evidence ledger, and documentation |
+| (this commit) | Follow-up | `och compact-session` CLI, plus a real deterministic-reset checkpoint digest bug this CLI work found and fixed |
 
 Tasks 1–15 were each opened as an individual PR against `main`, watched
 through CI (`go`, `determinism`, `cross-build (darwin\|windows)`, `vulncheck`),
@@ -243,8 +244,71 @@ honesty convention, until at minimum:
 4. A wall-clock, multi-process soak of the recovery paths beyond this
    milestone's deterministic-time and scripted-outcome test evidence.
 5. The disclosed inert config surface (`MaxSummaryChunks`,
-   `MaxPrunedToolResultsPerRequest`), the unwired usage anchor
-   (`EvaluateUsageAnchor`), and `och compact-session` (design CE-14) each
-   remain open, clearly-scoped follow-ups — see
+   `MaxPrunedToolResultsPerRequest`) and the unwired usage anchor
+   (`EvaluateUsageAnchor`) remain open, clearly-scoped follow-ups — see
    [context-engine.md's "Known limitations"](context-engine.md#known-limitations)
-   for the complete list.
+   for the complete list. `och compact-session` (design CE-14) is no longer
+   one of them: see the follow-up section immediately below.
+
+## Follow-up: `och compact-session` CLI and a reset-checkpoint digest bug
+
+Delivered after Task 16 landed, once `cmd/och` review turned to the one
+item Task 16 itself left as a clearly-scoped, unblocked follow-up.
+
+`cmd/och` gains a `compact-session` subcommand (`cmd/och/main.go`,
+`cmd/och/compact_session_test.go`) implementing design CE-14: it opens the
+normal composition root exactly like the serve path does (a new
+`bindAssemblyFlags` helper shares the workspace/database/provider/policy
+flag surface between the two, since both need a full assembly — unlike
+`export-session`, which only ever opens a read-only `sqlite.OpenReader`),
+runs one `Service.CompactSession` call, and prints one stable JSON object
+to stdout (`compactSessionOutput`) with a human-readable line on stderr.
+`-strategy reset`/`-focus` map directly onto `CompactSessionRequest`'s own
+fields. Taking the Runtime lease through the ordinary `composition.Open`
+path means it fails rather than running beside another live writer for
+free, without any dedicated lease-collision code of its own.
+
+Building this CLI's own end-to-end tests against a **real** SQLite
+database — for the first time ever exercising a deterministic-reset
+compaction through a genuinely independent-verifying `ContextCheckpointStore`,
+rather than `context_manual_test.go`'s own `fakeCheckpointStore` (which
+never verifies anything) — found a real, previously-undetected bug:
+`buildResetCheckpoint`'s `Coverage.SourceDigest` was left at its seed value
+and never actually extended over the newly covered canonical records, even
+though `ThroughSequence` correctly advanced to claim that coverage.
+`ValidateSuccessor` (the only check every prior reset test exercised)
+verifies structural relationships only — predecessor linkage, coverage
+ordering, same-coverage-rewrite digest equality — and never recomputes a
+digest from canonical content, so it could not catch this. Every
+deterministic-reset checkpoint this codebase had ever built — both the
+manual `-strategy reset` path and the automatic overflow-recovery reset
+path, which share this one function — would have been rejected the moment
+a genuinely verifying store (SQLite's write-time hash-chain hook, or
+either adapter's own read-time re-verification) tried to read it back.
+
+Fixed by extending the digest over the newly covered range exactly as the
+rolling-summary path (`buildSummaryCheckpointWithFocus`) already did:
+`readSourceRecordsRange` plus `contextengine.ExtendSourceDigestOverRecords`,
+threaded through both call sites (`runCompactionBracket`'s automatic reset
+fallback and `Service.CompactSession`'s own manual reset path).
+Regression-tested at the application layer against the memory adapter's
+own real, independently-verifying checkpoint store
+(`TestCompactSessionResetCheckpointDigestSurvivesIndependentVerification`)
+and end to end through the new CLI against a real SQLite database
+(`TestCompactSessionSummaryStrategySucceeds`,
+`TestCompactSessionResetStrategyNeverCallsTheProvider`), both with their
+own mutation check (reverting the fix and confirming the corresponding
+test fails, then restoring).
+
+Verification: `go build`, `go vet`, `go test ./... -count=1`,
+`go test -race ./cmd/och/... ./internal/harness/application/... ./internal/harness/composition/... -count=1`,
+and a full `go test -race ./... -count=1` are clean, with one exception
+disclosed rather than silently ignored: `TestConformance/limits_copies_cancellation_and_corruption`
+(`internal/harness/adapters/sqlite`, a pre-existing, unmodified conformance
+test unrelated to this change) failed once under the combined system load
+of a whole-repository `-race` run (`writer_fenced`, a lease-duration-
+sensitive assertion) but passed cleanly in isolation immediately afterward
+(`go test -race ./internal/harness/adapters/sqlite/... -run TestConformance -count=1`,
+13.12s vs. 50.99s under full-repo load) — a load-induced timing flake in an
+unrelated, unmodified test, matching this project's own established
+precedent for distinguishing that from an actual regression.

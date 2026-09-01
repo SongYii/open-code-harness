@@ -144,7 +144,7 @@ func (service *Service) CompactSession(ctx context.Context, request CompactSessi
 	var checkpoint *contextengine.ContextCheckpoint
 	var buildErr error
 	if strategy == domain.ContextStrategyReset {
-		checkpoint, buildErr = buildResetCheckpoint(deps, input, previous, plan, compactionID)
+		checkpoint, buildErr = buildResetCheckpoint(ctx, deps, scan.HeadVersion, input, previous, plan, compactionID)
 	} else {
 		checkpoint, buildErr = buildSummaryCheckpointWithFocus(ctx, deps, request.SessionID, input, scan.HeadVersion, previous, plan, compactionID, request.Focus)
 	}
