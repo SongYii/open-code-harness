@@ -1,6 +1,6 @@
 # Context Engine：预算化历史、持久压缩与恢复（中文阅读版）
 
-**状态：** 草案——等待评审
+**状态：** 已接受——2026-09-01
 
 **日期：** 2026-09-01
 
@@ -72,7 +72,7 @@ context.compaction.started
 | CE-01 | `internal/harness/contextengine` 只拥有纯 projector、meter、planner、checkpoint validator、materializer。 |
 | CE-02 | Application 拥有生命周期、Provider call、CAS append、取消与 overflow retry。 |
 | CE-03 | 当前 `CapabilityProfile.ContextWindowTokens/MaxOutputTokens` 是容量权威。 |
-| CE-04 | 通用 meter 保守且确定；未来可替换精确 route meter。 |
+| CE-04 | 通用 meter 保守且确定；匹配的 durable provider usage 只能上调、不能下调估算。 |
 | CE-05 | 自动压缩只在干净 pre-Provider 边界同步执行。 |
 | CE-06 | 第一遍 pinned plan，必要时第二遍 pinned summarize/materialize。 |
 | CE-07 | 优先 Turn 边界；超大 Turn 可在 closed Step 间切；永不拆 Tool pair。 |
@@ -80,7 +80,7 @@ context.compaction.started
 | CE-09 | Checkpoint 是 canonical log event；latest 表只是可重建 index。 |
 | CE-10 | Tool Result projection 是 request shaping，不是第二 checkpoint authority。 |
 | CE-11 | Conversation Provider 每次 dispatch 前都提交完整 envelope。 |
-| CE-12 | 专用 summary route 可选、显式；默认 active route。 |
+| CE-12 | 本里程碑只用 active conversation route 摘要；独立 Summary Provider 延后。 |
 | CE-13 | 只有尚未交付 delta 的 startup overflow 可恢复。 |
 | CE-14 | 手动入口是 Application + `och compact-session`；ACP 不变。 |
 
@@ -92,7 +92,8 @@ RunTurn / CompactSession
 Application Context Orchestrator
         ↓                         ↓
 contextengine.Engine      ContextSummarizer
- meter/projector/planner    engine.Model
+ meter/projector/planner    active engine.Model
+                           purpose=context_summary
  prune/checkpoint/materialize
         ↓                         ↓
 EventStore pages ↔ ContextCheckpointStore
@@ -128,9 +129,9 @@ sourceDigest
 
 它只覆盖 compactable conversational source 的有序前缀。Digest 使用可延伸 SHA-256 hash chain：`D0=SHA256("och-context-source-v1\\n")`；每个 source event 令 `Di=SHA256("och-context-source-step-v1\\n" || Di-1 || uint64-big-endian(encoded-length) || domain.MarshalRecordedEvent(event))`；最终 `sourceDigest=Dn`。Rolling successor 从已验证的 predecessor digest 继续，cold rebuild 从 D0 完整重算；不依赖不可持久化的 hash-library 内部状态。
 
-Checkpoint 包含 ID、Session、kind、source/summary/prompt version、coverage、previousCheckpointID、summary/limitations、before/after/tail token、route/usage、chunk 数与 prune 数。Successor 必须推进 coverage；same-coverage rewrite 必须显式指向当前 checkpoint 且 source digest 不变。
+Checkpoint 包含 ID、Session、kind、source/summary/prompt version、coverage、previousCheckpointID、summary/limitations、before/after/tail token、active route/usage、chunk 数与 prune 数。Successor 必须推进 coverage；same-coverage rewrite 必须显式指向当前 checkpoint 且 source digest 不变。
 
-每次 conversation attempt 还有 `ContextDecisionID` 和 `ContextPreparedRecorded`：记录 trigger、attempt、pinned head、checkpoint、raw tail range、预算、meter、pruned-result provenance 与最终 serialized bytes。随后 `ModelRequestRecorded` 保存真正发送的完整 Messages/Tools。
+每次 conversation attempt 还有 `ContextDecisionID` 和 `ContextPreparedRecorded`：记录 trigger、attempt、pinned head、checkpoint、raw tail range、预算、meter、可选 usage-anchor request/attempt/observed-input/signed-delta/anchored-estimate、pruned-result provenance 与最终 serialized bytes。随后 `ModelRequestRecorded` 保存真正发送的完整 Messages/Tools。
 
 ## 8. 预算合同
 
@@ -147,7 +148,11 @@ summaryOutputCap = min(O, max(128, floor(hardInput * 0.10)))
 
 Composition 拒绝 `O + safety >= W`。默认 trigger/target/tail 为 80/55/25；summary chunks 8（最大 16）；per-Turn overflow compaction 2（最大 3）；compaction timeout 2 分钟（最大 10 分钟）；单请求最多记录 64 个 pruned result；现有 4 MiB envelope cap 不得被放宽。
 
-默认 meter `och_wire_estimate_v1`：文本/JSON `ceil(UTF-8 bytes/3)`；每消息固定 8；每 Tool Call/Result 再加 16；每 Tool Schema 为 16 加 canonical JSON bytes/3。它刻意高估典型 ASCII。Provider InputTokens 继续是 billing/observed usage 权威，但不能反向改写旧决定，也不能单独代表形状不同的下一请求。
+默认 meter `och_wire_estimate_v1`：文本/JSON `ceil(UTF-8 bytes/3)`；每消息固定 8；每 Tool Call/Result 再加 16；每 Tool Schema 为 16 加 canonical JSON bytes/3。它刻意高估典型 ASCII。
+
+最终 dispatch 使用 `budgetEstimate=max(wireEstimate, anchoredEstimate?)`。Usage anchor 只有在 committed events 能证明以下全部条件时才合格：它是满足其余规则且 `InputTokens>0` 的最新 prior completed conversation attempt；request/usage 由 Session/Turn/Item/AttemptIndex 精确配对；adapter/endpoint/model/purpose/meter 及 Tool Schemas 等非消息 envelope 完全相同；当前消息 surface 可由旧 request surface 通过同一 meter 可定价的有序 append 或 checkpoint/rewrite replacement 推导。合格时 `anchoredEstimate=max(0, observedInputTokens+signedSurfaceDelta)`。
+
+`signedSurfaceDelta` 包含 sampled request 之后持久化的 assistant output、Tool Result 和任何删改。原始 `OutputTokens` 可能含未持久化 reasoning，不能直接相加；Engine 合同下 `CachedInputTokens` 是 `InputTokens` 子集，只作 audit/billing，不能重复相加。缺失、为零、route/tool/meter 不匹配、畸形或无法证明的 observation 一律忽略。Usage 不反向改写旧决定、不降低 deterministic estimate，也不单独代表不同形状的请求；全部输入来自 canonical events，因此 replay 决定一致。
 
 ## 9. 投影、安全边界与两遍扫描
 
@@ -175,7 +180,7 @@ Prompt 是 `contextengine` 拥有的 versioned asset。它把 source、previous 
 
 `och_context_summary_v1` 必须且只能按顺序包含：Objective、User Constraints、Established Facts、Work Completed、Files and Commands、Open Work、Risks and Unknowns、Continuation。要求保留重要 path、ID、command、error code 与 uncertainty。
 
-Rolling successor 每 chunk 只输入上一份 validated summary 与 newly covered units；最多 MaxSummaryChunks。专用 route 非取消失败时，同一 chunk 最多 fallback active route 一次，总调用上限 `2*chunks`。
+Rolling successor 每 chunk 只输入上一份 validated summary 与 newly covered units；最多 MaxSummaryChunks。所有调用只走 active conversation route，设置 `purpose=context_summary`，不带 Tool Schemas，也不跨 Provider fallback；失败遵循统一 summary-failure 语义。
 
 写入前必须验证 UTF-8、非空、正常 finish、heading 恰好一次且有序、无未知 heading、token/256 KiB cap、无 Tool/non-text、redact 后仍合法、完整请求至少缩小 10%、checkpoint framing 小于 covered source。失败关闭 bracket，不产生 checkpoint。
 
@@ -241,9 +246,9 @@ Tool Result 全部提交后、下一 assistant item dispatch 前，在 post-tool
 
 Candidate completion append 未 committed/resolved 前不可使用；version conflict 使 candidate 失效并在同一 deadline 下最多重规划一次；request append 失败意味着 Provider 尚未调用；summary failure 低于 hard 可继续 source-derived request，到 hard 自动路径才可 reset；runtime delivery 不改变 durability。
 
-Local Session compaction registry + durable ActiveCompaction + Store CAS 共同串行化。Cancel 在 page/call/fallback/ID/append 前后检查；start 已提交后的 cleanup 用 `WithoutCancel` 与 bounded terminal commit。自动流程没有 background pointer 或 late candidate。
+Local Session compaction registry + durable ActiveCompaction + Store CAS 共同串行化。Cancel 在 page/summarizer-call/ID/append 前后检查；start 已提交后的 cleanup 用 `WithoutCancel` 与 bounded terminal commit。自动流程没有 background pointer 或 late candidate。
 
-Dedicated summary route 必须显式配置，credential 只从环境读取。Summary 先 `redact.Text` 后验证/持久；无 Tools；checkpoint 用固定 framing 的 user-role context message，不提升成 system policy。Tool excerpt 中 marker 要 escape；所有 content/error/focus 都有 UTF-8、byte/token cap。
+Summary request 复用 active conversation Provider 与 credential；本里程碑不增加第二 Provider、credential、transport 或跨 Provider history path。DeepSeek Harness 有独立 `summarizationProvider/summarizationModel` 的真实先例，Grok Build 也有专用 compaction model，但本项目在出现明确成本、容量或合规消费者前延后该配置面。Summary 先 `redact.Text` 后验证/持久；无 Tools；checkpoint 用固定 framing 的 user-role context message，不提升成 system policy。Tool excerpt 中 marker 要 escape；所有 content/error/focus 都有 UTF-8、byte/token cap。
 
 ## 16. 资源上限
 
@@ -253,7 +258,7 @@ Dedicated summary route 必须显式配置，credential 只从环境读取。Sum
 - serialized request：4 MiB；
 - summary output：summaryOutputCap 且 256 KiB；
 - chunks：默认 8、最大 16；
-- route calls：显式 fallback 时每 chunk 最多 2；
+- summary calls：active route 每 chunk 最多 1；
 - overflow compaction：默认 2、最大 3/Turn；
 - pruned results：64/request；
 - manual focus：4 KiB；
@@ -265,19 +270,19 @@ Canonical event/audit 在磁盘上随 Session 生命周期增长，这是 durabl
 
 ## 17. Adapter、协议与配置
 
-OpenAI-compatible Adapter 支持完整 mixed-role history、请求级 output cap/purpose，并保留 closed overflow classification。Memory/SQLite 共用 ContextCheckpointStore conformance；SQLite fault/migration/backup/import/rebuild 都覆盖新 projection。
+OpenAI-compatible Adapter 支持完整 mixed-role history、请求级 output cap/purpose；把 `InputTokens` 规范化为包含 cached input 的完整 prompt occupancy，把 `CachedInputTokens` 视作其子集并拒绝 cached 大于 total input；同时保留 closed overflow classification。Memory/SQLite 共用 ContextCheckpointStore conformance；SQLite fault/migration/backup/import/rebuild 都覆盖新 projection。
 
 Event codec 增加严格 context events；JSONL 正常哈希/导入；transcript 增 bounded compaction/prepared facts，completed 包含 checkpoint metadata/summary。ACP prompt 自动受益，但 session/load 仍显示 canonical conversation，不能用 checkpoint 替换用户可见历史，也不伪造 ACP live updates。
 
-`composition.Config.Context` 提供 trigger/target/tail、chunks、overflow cap、prune cap、timeout 与可选 `SummaryProvider`。Zero scalar 使用默认；关系非法在构造任何资源前失败。SummaryProvider 可 text-only，有独立非秘密 identity 和环境 credential；默认/fallback 是 active Provider，不引入 provider registry/plugin kernel。
+`composition.Config.Context` 提供 trigger/target/tail、chunks、overflow cap、prune cap 与 timeout。Zero scalar 使用默认；关系非法在构造任何资源前失败。Summarizer 接收已经构造好的 active conversation Provider；不引入 provider registry、第二 Provider config 或 plugin kernel。
 
-构造顺序：Host/store → conversation Provider/runner → optional summary Provider → Context Engine/summarizer → tools/catalog → Application → ACP。任何中途失败沿现有 release path 释放。
+构造顺序：Host/store → conversation Provider/runner → Context Engine/summarizer → tools/catalog → Application → ACP。任何中途失败沿现有 release path 释放。
 
 ## 18. 验证与发布
 
-纯包需要 budget/meter golden、中文/代码/JSON/schema fixture、投影/边界矩阵、Tool pair/prefix/fits fuzz、digest/lineage/current-budget、summary/redaction/reset goldens。
+纯包需要 budget/meter golden、中文/代码/JSON/schema fixture、usage anchor 精确匹配/append-replacement delta/全部 identity-envelope mismatch/zero-missing-malformed/non-lowering 矩阵、投影/边界矩阵、Tool pair/prefix/fits fuzz、digest/lineage/current-budget、summary/redaction/reset goldens。
 
-Application 场景覆盖工具/无工具等价、完整 request、四 trigger、route fallback/cancel、chunk cap/non-shrink/reset/oversized unit、所有 append phase 的 success/failure/unknown/conflict、duplicate RunTurn join、dispatch-before-append 禁止、overflow retry 与 crash recovery。
+Application 场景覆盖工具/无工具等价、完整 request、四 trigger、active-route summary/cancel/no-cross-provider-fallback、usage anchor 接受/拒绝/signed delta/route-tool-meter mismatch/zero-missing usage/cached-input 不重复计数、chunk cap/non-shrink/reset/oversized unit、所有 append phase 的 success/failure/unknown/conflict、duplicate RunTurn join、dispatch-before-append 禁止、overflow retry 与 crash recovery。
 
 Store/Host 覆盖 memory/SQLite conformance、projection transaction rollback、migration/import/rebuild/corruption、reconciliation idempotency、JSONL/transcript/backup/reader。
 
@@ -305,12 +310,12 @@ internal/harness/engine/          purpose/output cap/bounded collector
 internal/harness/adapters/        memory/sqlite/openaicompat
 internal/harness/runtime/         incomplete compaction reconciliation
 internal/harness/transcript/      facts
-internal/harness/composition/     config/summary route
+internal/harness/composition/     Context config
 cmd/och/                          compact-session
 ```
 
 ## 20. 被拒绝方案与评审红线
 
-拒绝 in-memory-only summary、重写事件、第二 Context 数据库权威、后台压缩、正常路径 tail-only truncation、只信上一请求 usage、没有实现的 native-compactor interface。
+拒绝 in-memory-only summary、重写事件、第二 Context 数据库权威、后台压缩、正常路径 tail-only truncation、只信上一请求 usage、没有实现的 native-compactor interface。本里程碑还延后独立 Summary Provider：pinned `0a53fb55` 的 DeepSeek Harness 在 `packages/compaction/compaction-basic/src/config.ts` 暴露成对的 `summarizationProvider/summarizationModel`，`bc7f02e` 的 Grok Build 也有专用 compaction model；但本项目没有第二 Provider 的部署消费者。未来必须由具体成本、容量或合规需求驱动，并明确 strict failure 与 fallback，不能静默跨越 privacy boundary。
 
-评审应拒绝任何能够：commit 前使用 summary、拆 Tool pair、覆盖非前缀事件、信任与 event 冲突的 index、发送超过 hard/byte cap 的请求、delta 后 retry、路由到未配置 Provider、把 cancel 变 reset、让 live heap 随 Session lifetime 增长、把 checkpoint 当 canonical history、或在缺少 recovery/conformance/race/mutation/benchmark/docs/evidence 时宣布 milestone 完成的实现。
+评审应拒绝任何能够：commit 前使用 summary、拆 Tool pair、覆盖非前缀事件、信任与 event 冲突的 index、发送超过 hard/byte cap 的请求、delta 后 retry、把 summary history 路由到 active conversation Provider 以外、把 cancel 变 reset、让 live heap 随 Session lifetime 增长、把 checkpoint 当 canonical history、或在缺少 recovery/conformance/race/mutation/benchmark/docs/evidence 时宣布 milestone 完成的实现。

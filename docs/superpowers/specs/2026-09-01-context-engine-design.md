@@ -1,6 +1,6 @@
 # Context Engine: Budgeted History, Durable Compaction, and Recovery
 
-**Status:** Draft — pending review
+**Status:** Accepted — 2026-09-01
 
 **Date:** 2026-09-01
 
@@ -118,7 +118,7 @@ This design does not add:
 | CE-01 | `internal/harness/contextengine` owns pure projection, metering, planning, checkpoint validation, and materialization. | Keeps token and history algorithms independently testable and out of Application orchestration. |
 | CE-02 | Application owns compaction lifecycle, Provider calls, CAS appends, cancellation, and overflow retry. | These are use-case and transaction concerns, not pure context logic. |
 | CE-03 | The routed `CapabilityProfile.ContextWindowTokens` and `MaxOutputTokens` are capacity authority. | Composition already validates both as positive; no unsafe unknown-window fallback is needed. |
-| CE-04 | The generic meter is conservative and deterministic; an interface permits route-specific exact meters later. | Model-neutral correctness cannot depend on one vendor tokenizer. |
+| CE-04 | The generic meter is conservative and deterministic; a matching durable provider-usage observation may raise, but never lower, its estimate. | Model-neutral correctness cannot depend on one vendor tokenizer, while proven same-route evidence should correct systematic underpricing. |
 | CE-05 | Every automatic compaction is synchronous at a clean pre-Provider boundary. | Eliminates stale-summary races and late commits while retaining deterministic ownership. |
 | CE-06 | Planning uses one pinned scan; compaction/materialization may use a second pinned scan. | Keeps memory bounded despite forward-only paged EventStore reads. |
 | CE-07 | Preferred boundaries are complete Turns; closed Steps may split an oversized historical or active Turn. | Preserves recency while never orphaning Tool calls/results. |
@@ -126,7 +126,7 @@ This design does not add:
 | CE-09 | Checkpoints are log events plus a rebuildable latest-checkpoint index. | The log remains authority while normal replay stays bounded. |
 | CE-10 | Tool Result projection is adjacent request shaping, not another checkpoint mechanism. | Prevents multiple compaction authorities and keeps exact source facts. |
 | CE-11 | The complete provider message envelope is recorded before every conversation attempt. | Restores request reconstructability and makes pruning/checkpoint use auditable. |
-| CE-12 | A dedicated summary route is optional and explicit; the active route is default. | Sending history to a different Provider is a security and privacy decision. |
+| CE-12 | This milestone summarizes only through the active conversation route; a separately configured summary Provider is deferred. | The repository has no consumer that justifies a second Provider lifecycle or cross-Provider data path in v1. |
 | CE-13 | Only startup overflow before any delivered delta is recoverable. | Retrying after streamed output could duplicate user-visible content or tool intent. |
 | CE-14 | Manual compaction is an Application command and `och compact-session`; ACP remains unchanged. | Delivers a real operator surface without inventing protocol semantics. |
 
@@ -142,8 +142,8 @@ Application.RunTurn / CompactSession
       |                                |
       v                                v
 contextengine.Engine             ContextSummarizer
-  Meter                            engine.Model
-  EventProjector                   optional summary route
+  Meter                            active engine.Model
+  EventProjector                   purpose=context_summary
   BoundaryPlanner
   ToolResultProjector
   CheckpointValidator
@@ -319,7 +319,7 @@ ContextCheckpoint
   checkpointTokens
   retainedTailTokens
   estimatedRequestTokens
-  summarizerRoute?         // non-secret identity
+  summarizerRoute?         // active non-secret route identity; summary only
   summarizerUsage?
   summaryChunks
   prunedToolResultCount
@@ -341,7 +341,9 @@ Every conversation attempt has a `ContextDecisionID` and
 - selected checkpoint ID/kind or none;
 - raw tail sequence range;
 - budget capacity/source, trigger, target, and hard input values;
-- estimated message, Tool Schema, and total input tokens;
+- deterministic message, Tool Schema, and total input estimates;
+- optional provider-usage anchor evidence: request event ID, Turn/Item/attempt,
+  observed input tokens, signed surface delta, and anchored estimate;
 - bounded Tool Result rewrite facts: source event ID, original bytes/tokens,
   projected bytes/tokens, and SHA-256 digest;
 - final serialized-envelope bytes and meter implementation ID.
@@ -394,9 +396,44 @@ meter may replace it behind the port only if it has contract tests for every
 message/tool shape. Meter identity is durable evidence so estimates are not
 compared across algorithms as though they were identical.
 
-Provider-reported `InputTokens` remains authoritative for billing and observed
-usage. It does not retroactively change a prior Context decision and is not
-used as the sole estimate for a differently shaped next request.
+The dispatch estimate is:
+
+```text
+budgetEstimate = max(wireEstimate, anchoredEstimate?)
+```
+
+where `wireEstimate` is the complete `och_wire_estimate_v1` envelope. A
+provider-usage anchor is eligible only when all of the following are provable
+from committed events:
+
+- it is the newest prior completed conversation attempt that has non-zero
+  `InputTokens` and satisfies every remaining eligibility rule;
+- its `ModelRequestRecorded` and `ModelUsageRecorded` match by
+  Session/Turn/Item/`AttemptIndex`;
+- adapter family, endpoint, model, request purpose, meter identity, and every
+  non-message envelope field including Tool Schemas match the candidate;
+- the candidate message surface is derivable from the recorded request surface
+  by ordered appends or checkpoint/rewrite replacements that the same meter can
+  price exactly.
+
+For an eligible anchor:
+
+```text
+anchoredEstimate = max(0, observedInputTokens + signedSurfaceDelta)
+```
+
+`signedSurfaceDelta` prices content added, removed, or replaced after the
+sampled request, including the persisted assistant output and subsequent Tool
+Results. Raw `OutputTokens` is not added because it may include reasoning or
+other output absent from the persisted surface. `CachedInputTokens` is a
+subset of `InputTokens` under the Engine contract and is audit/billing detail,
+not an additional occupancy count.
+
+An absent, zero, mismatched, malformed, or unprovable observation is ignored.
+Usage never retroactively changes a committed Context decision, never lowers
+the deterministic estimate, and is never the sole estimate for a differently
+shaped request. Because both the sampled request, usage, and surface mutations
+are canonical events, replay makes the same anchor decision.
 
 ## 9. Event projection and safe boundaries
 
@@ -545,10 +582,9 @@ W - summaryOutputCap - safety
 
 using complete Context units. Oversized Tool Result bodies inside the
 summarizer input use the same deterministic projection. At most
-`MaxSummaryChunks` model calls occur. If a configured dedicated summary route
-fails without cancellation, the active route may be tried once for that chunk;
-the total call bound is therefore `2 * MaxSummaryChunks`. No route is retried a
-second time.
+`MaxSummaryChunks` model calls occur, all through the active conversation
+route with `purpose=context_summary`, no Tool Schemas, and no cross-Provider
+fallback. A failed call follows the summary-failure semantics in §16.
 
 ### 11.3 Validation
 
@@ -846,8 +882,8 @@ New stable internal/Application codes:
 | `context_unit_too_large` | context/model | no | One protected projected unit exceeds hard input. |
 | `context_compaction_busy` | conflict | yes after owner finishes | Another durable compaction owns the Session. |
 | `context_nothing_to_compact` | validation for manual; no-op internally | no | No safe source prefix exists. |
-| `context_summary_failed` | model | yes by a later command | Summary Provider or stream failed. |
-| `context_summary_invalid` | model | yes with another route/prompt version | Output failed structure, truncation, redaction, or shrink validation. |
+| `context_summary_failed` | model | yes by a later command | Active-route summary call or stream failed. |
+| `context_summary_invalid` | model | yes after active-route or prompt-version change | Output failed structure, truncation, redaction, or shrink validation. |
 | `context_checkpoint_invalid` | internal/store | no | Candidate or loaded checkpoint violates coverage/lineage/schema. |
 | `context_compaction_limit` | model | no in current Turn | Chunk or overflow recovery cap was exhausted. |
 
@@ -884,7 +920,7 @@ Failure policy:
 - Mid-turn compaction is called only by the current Turn owner. No background
   task may retain a pointer to mutable projection state.
 - The summarizer receives the caller signal. Cancellation is checked before and
-  after every stream read, route fallback, pinned page, ID allocation, and
+  after every stream read, summarizer call, pinned page, ID allocation, and
   append.
 - After a compaction start commits, cleanup uses `context.WithoutCancel` plus
   the existing bounded terminal-commit pattern to append failed. If cleanup
@@ -900,12 +936,14 @@ RunTurn/close, overflow/cancel, and unknown-append/cancel winner tables.
 
 ## 18. Security, privacy, and prompt injection
 
-- A dedicated summary route is disabled unless explicitly configured. Its API
-  key is read from an environment variable and never enters config snapshots,
-  events, logs, summaries, or errors.
-- The summary request may contain the same user/tool content already eligible
-  for the conversation Provider. Routing it to a different Provider is a
-  deliberate operator choice documented at configuration.
+- Summary requests use the active conversation Provider and credential. This
+  milestone introduces no second Provider, credential, transport, or
+  cross-Provider history path.
+- DeepSeek Harness has a concrete independently configurable
+  `summarizationProvider`/`summarizationModel` precedent, and Grok Build has
+  a dedicated compaction-model precedent. Open Code Harness deliberately
+  defers that surface until a concrete cost, capacity, or compliance consumer
+  can define its fallback and data-boundary requirements.
 - Summary output passes the existing shape-specific secret redactor before
   persistence and use. Source events remain subject to their existing
   persistence rules; compaction is not retroactive data deletion.
@@ -932,7 +970,7 @@ RunTurn/close, overflow/cancel, and unknown-append/cancel winner tables.
 | Summary output | `summaryOutputCap` and 256 KiB |
 | Summary input | selected route input budget; complete-unit fitted |
 | Summary chunks | default 8, maximum 16 |
-| Summary route calls | at most 2 per chunk when an explicit fallback exists |
+| Summary calls | at most 1 per chunk through the active route |
 | Overflow compactions | default 2, maximum 3 per Turn |
 | Pruned Tool Results recorded per request | maximum 64 |
 | Manual focus | 4 KiB UTF-8 |
@@ -951,6 +989,9 @@ event count.
 
 - accepts full mixed-role message history in both tool and model-only modes;
 - accepts request-specific output cap and purpose;
+- normalizes `InputTokens` as total prompt occupancy including cached input,
+  treats `CachedInputTokens` as a subset, and rejects a cached count greater
+  than total input;
 - keeps current closed overflow classification;
 - rejects summary Tool Calls through the summarizer adapter, not vendor logic;
 - records no raw prompts in error text or logs.
@@ -993,22 +1034,19 @@ type Context struct {
     MaxOverflowCompactionsPerTurn   uint32
     MaxPrunedToolResultsPerRequest  uint32
     CompactionTimeout               time.Duration
-    SummaryProvider                 *Provider
 }
 ```
 
 Zero scalar values receive §8 defaults. Invalid relationships fail before any
-resource construction. `SummaryProvider`, when present, is validated like the
-conversation Provider, may be text-only, and gets its own model/endpoint/profile
-identity. The active Provider is always the fallback and default; no arbitrary
-provider registry or plugin kernel is introduced.
+resource construction. The summarizer receives the already-constructed active
+conversation Provider through an internal Application dependency; no Provider
+registry, second Provider config, or plugin kernel is introduced.
 
 Construction order becomes:
 
 ```text
 Runtime Host/store
 conversation Provider + runner
-optional summary Provider
 Context meter/engine + summarizer
 workspace tools/catalog
 Application service
@@ -1016,8 +1054,7 @@ ACP adapter
 ```
 
 Every resource constructed after Host launch participates in the existing
-release-on-failure path. Summary Provider HTTP resources are closed with the
-assembly if they later gain owned transports.
+release-on-failure path.
 
 ## 22. Testing and evaluation
 
@@ -1026,6 +1063,9 @@ assembly if they later gain owned transports.
 - table tests for exact budget math at 8K, 32K, 128K, and near-invalid routes;
 - golden meter fixtures for ASCII, Chinese, code, JSON, Tool Calls, Tool
   Results, schemas, checkpoint framing, and prune markers;
+- provider-usage anchor matrices for exact matches, append/replacement deltas,
+  every identity/envelope mismatch, zero/missing/malformed usage, and the
+  non-lowering rule;
 - projector fixtures covering complete/failed/interrupted Turns and interleaved
   multi-call Tool results;
 - boundary matrices for between-Turn, within-Turn, active Step, no safe prefix,
@@ -1042,7 +1082,10 @@ assembly if they later gain owned transports.
 - history works identically with empty and non-empty Tool Catalogs;
 - first request and every Step record the complete envelope they send;
 - pre-turn, mid-turn, explicit manual summary/reset, and startup overflow;
-- summary route success/failure/fallback/cancellation;
+- active-route summary success/failure/cancellation and absence of
+  cross-Provider fallback;
+- provider-usage anchor accept/reject, signed append/replacement deltas,
+  route/tool/meter mismatch, zero/missing usage, and cached-input non-addition;
 - chunk cap, non-shrinking output, hard-limit reset, and single-unit failure;
 - append success/failure/unknown/version conflict at start, completed, failed,
   context-prepared, and terminal Turn phases;
@@ -1144,7 +1187,7 @@ internal/harness/{transcript,adapters/acp}/
   canonical load/transcript behavior and explicit non-projection tests
 
 internal/harness/composition/, cmd/och/
-  configuration, optional summary route, manual command
+  Context configuration and manual command
 ```
 
 ## 25. Rejected alternatives
@@ -1176,10 +1219,24 @@ simpler and deterministic.
 Rejected because it discards goals and decisions on every long Session. It is
 retained only as an explicit, fact-free hard-limit fallback.
 
+### Separate summary Provider in this milestone
+
+Deferred despite real precedent: at pinned commit `0a53fb55`, DeepSeek
+Harness exposes a paired `summarizationProvider`/`summarizationModel` in
+`packages/compaction/compaction-basic/src/config.ts`; at `bc7f02e`, Grok
+Build exposes a dedicated compaction model. This repository has no current
+deployment consumer for a second Provider, while adding one now creates
+configuration, credential, transport shutdown, failure classification, and
+cross-Provider data-boundary semantics. The active conversation route is
+sufficient for v1. A later focused design requires a concrete cost, capacity,
+or compliance need and must choose strict failure versus fallback without
+silently crossing a configured privacy boundary.
+
 ### Provider usage as the only token truth
 
 Rejected because usage describes a previous request and may omit Tools,
-framing, route changes, or newly appended content. It remains observed evidence.
+framing, route changes, or newly appended content. Matching durable usage is
+used only as the non-lowering anchor defined in §8.
 
 ### Provider-native checkpoint interface without an implementation
 
@@ -1196,7 +1253,7 @@ Reviewers should reject the design if any implementation can:
 - trust a derived index over a disagreeing event;
 - send a Provider request larger than the hard input or byte cap;
 - retry after a delivered stream delta;
-- route history to an unconfigured Provider;
+- route summary history anywhere except the active conversation Provider;
 - turn cancellation into a reset or completion;
 - make live heap scale with Session lifetime;
 - claim the checkpoint is canonical history;
