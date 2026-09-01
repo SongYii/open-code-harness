@@ -12,6 +12,8 @@ credible path to production adapters.
 The project is currently pre-v0 and architecture-first; it is not yet a general
 availability release. Start with the [documentation authority map](docs/README.md)
 and the [foundational architecture charter](docs/superpowers/specs/2026-08-11-open-code-harness-architecture-design.md).
+To run something locally instead of reading about it, see
+[Getting Started](docs/getting-started.md).
 
 ## Current status
 
