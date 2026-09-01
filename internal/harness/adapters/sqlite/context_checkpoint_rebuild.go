@@ -10,6 +10,12 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 )
 
+// rebuildPageLimit bounds every canonical read this file performs, so a
+// rebuild's working set stays a small constant multiple of one page
+// regardless of how long a session's history is (design §22.4's "cold
+// projection rebuild may be O(history) but stays paged and heap-bounded").
+const rebuildPageLimit = 512
+
 // derivedCheckpointHead is the furthest independently-valid checkpoint found
 // by walking one session's canonical stream from D0, matching the same
 // successor-chain rules updateContextCheckpointHead enforces at write time
@@ -28,14 +34,15 @@ type derivedCheckpointHead struct {
 	digest          [32]byte
 }
 
-// readAllCanonicalRecords reads every canonical record for one session
-// within the given transaction/connection, unbounded above -- unlike
-// readCanonicalRange, whose upper bound must be a real sequence value: the
-// sqlite driver used here rejects a uint64 query argument with the high bit
-// set, so an unbounded scan cannot reuse it with a sentinel maximum.
-func readAllCanonicalRecords(ctx context.Context, conn *sql.Conn, sessionID domain.SessionID) ([]domain.RecordedEvent, error) {
+// readCanonicalPage reads up to limit canonical records for one session
+// with sequence > afterSequence, ordered by sequence -- the same bounded-
+// page shape every other paged reader in this adapter uses (read.go's own
+// readStream, application's ReadStream port), so no caller here ever holds
+// more than one page's worth of records at a time.
+func readCanonicalPage(ctx context.Context, conn *sql.Conn, sessionID domain.SessionID, afterSequence uint64, limit int) ([]domain.RecordedEvent, error) {
 	rows, err := conn.QueryContext(ctx,
-		"SELECT payload FROM events WHERE session_id = ? ORDER BY sequence", string(sessionID))
+		"SELECT payload FROM events WHERE session_id = ? AND sequence > ? ORDER BY sequence LIMIT ?",
+		string(sessionID), afterSequence, limit)
 	if err != nil {
 		return nil, mapStorageError(err, sessionID)
 	}
@@ -59,11 +66,88 @@ func readAllCanonicalRecords(ctx context.Context, conn *sql.Conn, sessionID doma
 	return records, nil
 }
 
-func deriveContextCheckpointHead(records []domain.RecordedEvent) derivedCheckpointHead {
+// findContextCompactionCompletions pages through one session's full
+// canonical stream once, returning only its ContextCompactionCompleted
+// records in sequence order. The full stream is still read once (O(history)
+// time, matching the design's own allowance), but never materialized at
+// once: only the -- typically far sparser -- completion records themselves
+// are retained across pages.
+func findContextCompactionCompletions(ctx context.Context, conn *sql.Conn, sessionID domain.SessionID) ([]domain.RecordedEvent, error) {
+	var found []domain.RecordedEvent
+	after := uint64(0)
+	for {
+		page, err := readCanonicalPage(ctx, conn, sessionID, after, rebuildPageLimit)
+		if err != nil {
+			return nil, err
+		}
+		for _, record := range page {
+			if _, ok := record.Event.(domain.ContextCompactionCompleted); ok {
+				found = append(found, record)
+			}
+		}
+		if len(page) < rebuildPageLimit {
+			return found, nil
+		}
+		after = page[len(page)-1].Sequence
+	}
+}
+
+// extendSourceDigestPaged extends seed over the canonical records with
+// afterSequence < sequence <= throughSequence, fetched in bounded pages --
+// the paged equivalent of readCanonicalRange plus
+// contextengine.ExtendSourceDigestOverRecords in one call, used instead of
+// that pair specifically so a single very-large-coverage checkpoint can
+// never force the whole covered range into memory at once.
+func extendSourceDigestPaged(ctx context.Context, conn *sql.Conn, sessionID domain.SessionID, seed [32]byte, afterSequence, throughSequence uint64) ([32]byte, error) {
+	if throughSequence <= afterSequence {
+		return seed, nil
+	}
+	after := afterSequence
+	for after < throughSequence {
+		page, err := readCanonicalPage(ctx, conn, sessionID, after, rebuildPageLimit)
+		if err != nil {
+			return [32]byte{}, err
+		}
+		if len(page) == 0 {
+			return [32]byte{}, newStoreError(application.StoreCodeCorrupt, sessionID,
+				wrapDetail("checkpoint claims coverage beyond the canonical stream", nil))
+		}
+		bounded := page
+		for i, record := range page {
+			if record.Sequence > throughSequence {
+				bounded = page[:i]
+				break
+			}
+		}
+		digest, _, err := contextengine.ExtendSourceDigestOverRecords(seed, bounded)
+		if err != nil {
+			return [32]byte{}, newStoreError(application.StoreCodeCorrupt, sessionID,
+				wrapDetail("context checkpoint source digest could not be recomputed during rebuild", err))
+		}
+		seed = digest
+		after = page[len(page)-1].Sequence
+		if len(page) < rebuildPageLimit {
+			break
+		}
+	}
+	return seed, nil
+}
+
+// derivePagedContextCheckpointHead independently re-derives the furthest
+// verified checkpoint for one session from canonical events alone (design
+// §14.2), never materializing the whole history at once: it finds every
+// ContextCompactionCompleted record with one paged scan, then re-verifies
+// each one's coverage boundary and hash chain in turn against a further
+// paged read of exactly the range it claims to cover.
+func derivePagedContextCheckpointHead(ctx context.Context, conn *sql.Conn, sessionID domain.SessionID) (derivedCheckpointHead, error) {
+	completions, err := findContextCompactionCompletions(ctx, conn, sessionID)
+	if err != nil {
+		return derivedCheckpointHead{}, err
+	}
 	seed := contextengine.InitialSourceDigest()
 	var through uint64
 	var head derivedCheckpointHead
-	for _, record := range records {
+	for _, record := range completions {
 		completed, ok := record.Event.(domain.ContextCompactionCompleted)
 		if !ok {
 			continue
@@ -72,28 +156,21 @@ func deriveContextCheckpointHead(records []domain.RecordedEvent) derivedCheckpoi
 		if checkpoint.ThroughSequence < through {
 			continue
 		}
-		var rangeRecords []domain.RecordedEvent
-		for _, candidate := range records {
-			if candidate.Sequence <= through {
-				continue
-			}
-			if candidate.Sequence > checkpoint.ThroughSequence {
-				break
-			}
-			rangeRecords = append(rangeRecords, candidate)
+		candidateSeed, err := extendSourceDigestPaged(ctx, conn, sessionID, seed, through, checkpoint.ThroughSequence)
+		if err != nil {
+			return derivedCheckpointHead{}, err
 		}
-		digest, _, err := contextengine.ExtendSourceDigestOverRecords(seed, rangeRecords)
-		if err != nil || hex.EncodeToString(digest[:]) != checkpoint.SourceDigestHex {
+		if hex.EncodeToString(candidateSeed[:]) != checkpoint.SourceDigestHex {
 			continue
 		}
-		seed = digest
+		seed = candidateSeed
 		through = checkpoint.ThroughSequence
 		head = derivedCheckpointHead{
 			found: true, checkpointID: checkpoint.ID, eventID: string(record.ID),
-			eventSequence: record.Sequence, throughSequence: through, digest: digest,
+			eventSequence: record.Sequence, throughSequence: through, digest: seed,
 		}
 	}
-	return head
+	return head, nil
 }
 
 // RebuildAndVerifyContextCheckpointHeads independently re-derives the
@@ -144,11 +221,10 @@ func (store *Store) RebuildAndVerifyContextCheckpointHeads(ctx context.Context) 
 	rows.Close()
 
 	for _, sessionID := range sessions {
-		records, err := readAllCanonicalRecords(ctx, conn, domain.SessionID(sessionID))
+		derived, err := derivePagedContextCheckpointHead(ctx, conn, domain.SessionID(sessionID))
 		if err != nil {
 			return err
 		}
-		derived := deriveContextCheckpointHead(records)
 
 		var storedID, storedEventID string
 		var storedEventSequence, storedThrough uint64
