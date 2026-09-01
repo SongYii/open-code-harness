@@ -281,6 +281,9 @@ func CheckStartAssistantTurnEligibility(state Session) error {
 		}
 		return domainError(CodeTurnAlreadyRunning, "a turn is already running")
 	}
+	if state.ContextCompaction != nil {
+		return domainError(CodeCompactionAlreadyRunning, "a context compaction is already running")
+	}
 	return nil
 }
 

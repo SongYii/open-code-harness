@@ -132,6 +132,17 @@ type ContextOrchestratorDeps struct {
 	// context.WithoutCancel, mirroring Service.config.TerminalCommitTimeout's
 	// own established pattern (turn.go's terminalizeExecutionFailure).
 	CleanupTimeout time.Duration
+	// AppendResolutionTimeout/AppendResolutionMaxOperations bound
+	// ResolveAppendIntent's own retry loop when one of this orchestrator's
+	// compaction-bracket appends (Start/Complete/Fail) returns an unknown
+	// commit outcome -- mirroring Service.config's own
+	// AppendResolutionTimeout/AppendResolutionMaxOperations
+	// (service.appendResolutionConfig()) so a compaction append is
+	// resolved exactly as durably as every other append this package
+	// makes, never left permanently uncertain. Zero uses
+	// DefaultAppendResolutionTimeout/DefaultAppendResolutionMaxOperations.
+	AppendResolutionTimeout       time.Duration
+	AppendResolutionMaxOperations uint32
 }
 
 func (deps ContextOrchestratorDeps) valid() bool {
@@ -152,6 +163,18 @@ func (deps ContextOrchestratorDeps) cleanupTimeout() time.Duration {
 // do (context.WithoutCancel + a configured timeout).
 func cleanupContext(ctx context.Context, deps ContextOrchestratorDeps) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), deps.cleanupTimeout())
+}
+
+func (deps ContextOrchestratorDeps) appendResolutionConfig() AppendResolutionConfig {
+	timeout := deps.AppendResolutionTimeout
+	if timeout <= 0 {
+		timeout = DefaultAppendResolutionTimeout
+	}
+	maxOperations := deps.AppendResolutionMaxOperations
+	if maxOperations == 0 {
+		maxOperations = DefaultAppendResolutionMaxOperations
+	}
+	return AppendResolutionConfig{Timeout: timeout, MaxOperations: maxOperations}
 }
 
 func (deps ContextOrchestratorDeps) pageLimit() uint32 {
@@ -395,6 +418,13 @@ func runCompactionBracket(ctx context.Context, deps ContextOrchestratorDeps, sta
 		return completedState, checkpoint, true, nil
 	}
 
+	// The caller's own cancellation must never silently become a reset
+	// (Global Constraint, design §26/§12's ResetEligibility.CallerCanceled):
+	// checked here, before the fail append, so a summary failure caused by
+	// ctx itself being canceled is recorded as such and the reset ladder
+	// below is skipped outright, never merely made less likely.
+	callerCanceled := contextError(ctx) != nil
+
 	cleanupCtx, cancel := cleanupContext(ctx, deps)
 	failedState, failErr := failCompaction(cleanupCtx, deps, state, input.SessionID, compactionID, summaryFailureCode(summaryErr), safeFailureMessage(summaryErr))
 	cancel()
@@ -403,6 +433,10 @@ func runCompactionBracket(ctx context.Context, deps ContextOrchestratorDeps, sta
 	}
 	state = failedState
 
+	if callerCanceled {
+		return state, nil, false, nil
+	}
+
 	uncompactedEstimate := deps.Meter.Estimate(contextengine.Envelope{
 		Messages: append(unitMessages(mergeUnits(previous, plan)), currentInputMessage(input.CurrentInput)...), Tools: input.Tools,
 	}).Tokens
@@ -410,7 +444,7 @@ func runCompactionBracket(ctx context.Context, deps ContextOrchestratorDeps, sta
 		// Below hard budget: log-and-proceed, per design §16.
 		return state, nil, false, nil
 	}
-	if !resetEligible(deps, input, previous, plan, uncompactedEstimate) {
+	if !resetEligible(deps, input, previous, plan, uncompactedEstimate, callerCanceled) {
 		// No safe fallback exists; the caller proceeds uncompacted and a
 		// downstream hard-budget rejection (outside this orchestrator's
 		// Step 1 scope) is the caller's problem to raise.
@@ -456,7 +490,7 @@ func mergeUnits(previous *contextengine.ContextCheckpoint, plan contextengine.Pl
 	return merged
 }
 
-func resetEligible(deps ContextOrchestratorDeps, input PrepareContextInput, previous *contextengine.ContextCheckpoint, plan contextengine.PlanResult, uncompactedEstimate uint64) bool {
+func resetEligible(deps ContextOrchestratorDeps, input PrepareContextInput, previous *contextengine.ContextCheckpoint, plan contextengine.PlanResult, uncompactedEstimate uint64, callerCanceled bool) bool {
 	if len(plan.CoveredUnits) == 0 {
 		return false
 	}
@@ -469,7 +503,12 @@ func resetEligible(deps ContextOrchestratorDeps, input PrepareContextInput, prev
 		RollingSummaryUnavailable: true,
 		SafeCoveredPrefixExists:   true,
 		ResetFitsHardInput:        resetEstimate <= deps.Budget.HardInput,
-		CallerCanceled:            false,
+		// CallerCanceled alone forces ineligibility regardless of the other
+		// four fields (design's own Global Constraint) -- runCompactionBracket
+		// already returns before ever reaching this call when true; this
+		// parameter is the second, independent guard over the same
+		// invariant, not the only one.
+		CallerCanceled: callerCanceled,
 	})
 }
 
@@ -533,7 +572,24 @@ func appendCompactOrchestrator(ctx context.Context, deps ContextOrchestratorDeps
 	if err != nil {
 		return domain.Session{}, nil, err
 	}
-	return CommitAppendIntent(ctx, deps.Store, state, intent)
+	nextState, records, err := CommitAppendIntent(ctx, deps.Store, state, intent)
+	if err == nil {
+		return nextState, records, nil
+	}
+	if !isAppendOutcomeUnknown(err) {
+		return domain.Session{}, nil, err
+	}
+	// design §16: "a completion-append unknown outcome is resolved before
+	// any further summarization is attempted" -- this compaction-bracket
+	// append (Start, Complete, or Fail) is never left permanently
+	// uncertain, mirroring turn.go's own resolveAdmissionUnknown pattern.
+	resolveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), deps.appendResolutionConfig().Timeout)
+	defer cancel()
+	receipt, resolveErr := ResolveAppendIntent(resolveCtx, deps.Store, intent, deps.appendResolutionConfig())
+	if resolveErr != nil {
+		return domain.Session{}, nil, resolveErr
+	}
+	return ApplyCommittedIntent(state, intent, receipt)
 }
 
 func buildSummaryCheckpoint(ctx context.Context, deps ContextOrchestratorDeps, sessionID domain.SessionID, input PrepareContextInput, headVersion uint64, previous *contextengine.ContextCheckpoint, plan contextengine.PlanResult, compactionID domain.ContextCompactionID) (*contextengine.ContextCheckpoint, error) {
