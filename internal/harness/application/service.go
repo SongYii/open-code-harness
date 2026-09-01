@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/SongYii/open-code-harness/internal/harness/contextengine"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
 	"github.com/SongYii/open-code-harness/internal/harness/policy"
@@ -39,6 +40,25 @@ type Config struct {
 	Files                         tools.FileSystem
 	Commands                      tools.CommandRunner
 	Approver                      tools.Approver
+	Context                       ContextConfig
+}
+
+// ContextConfig configures the Context Engine (design 2026-09-01). The
+// zero value (Enabled: false) is the default: RunTurn keeps its pre-
+// Context-Engine admission and dispatch behavior byte-for-byte, so no
+// existing caller of this package needs to change anything. The real
+// composition root (implementation plan Task 15) is what turns this on by
+// default once Tasks 10-14 land; until then it exists for direct Service
+// construction to opt into early (this package's own tests, and Task 9
+// Step 2's own new tests).
+type ContextConfig struct {
+	Enabled         bool
+	Budget          contextengine.Budget
+	Meter           contextengine.Meter
+	Summarizer      ContextSummarizer
+	CheckpointStore ContextCheckpointStore
+	// PageLimit bounds each Scan page; zero uses PrepareContext's own default.
+	PageLimit uint32
 }
 
 func DefaultConfig() Config {
@@ -111,6 +131,9 @@ func NewService(store EventStore, ids IDGenerator, clock Clock, runner *engine.T
 	if err := validateToolComposition(config, catalogEnabled); err != nil {
 		return nil, err
 	}
+	if config.Context.Enabled && (isNilValue(config.Context.Summarizer) || isNilValue(config.Context.CheckpointStore) || isNilValue(config.Context.Meter) || config.Context.Budget.HardInput == 0) {
+		return nil, applicationError(CategoryValidation, "invalid_configuration", false, nil)
+	}
 	approver := config.Approver
 	if isNilValue(approver) {
 		approver = tools.DenyApprover{}
@@ -174,6 +197,18 @@ func catalogPortNeeds(specs []domain.ToolSpec) (needsFiles, needsCommands bool) 
 
 func (service *Service) appendResolutionConfig() AppendResolutionConfig {
 	return AppendResolutionConfig{Timeout: service.config.AppendResolutionTimeout, MaxOperations: service.config.AppendResolutionMaxOperations}
+}
+
+func (service *Service) contextEnabled() bool {
+	return service != nil && service.config.Context.Enabled
+}
+
+func (service *Service) contextOrchestratorDeps() ContextOrchestratorDeps {
+	return ContextOrchestratorDeps{
+		Store: service.store, IDs: service.ids, Clock: service.clock, Authority: service.authority,
+		CheckpointStore: service.config.Context.CheckpointStore, Summarizer: service.config.Context.Summarizer,
+		Meter: service.config.Context.Meter, Budget: service.config.Context.Budget, PageLimit: service.config.Context.PageLimit,
+	}
 }
 
 func isNilValue(value any) bool {

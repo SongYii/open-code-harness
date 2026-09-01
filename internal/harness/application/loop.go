@@ -166,7 +166,16 @@ func (service *Service) catalogEnabled() bool {
 	return service != nil && catalogHasSpecs(service.catalog)
 }
 
-func (service *Service) runAfterAdmission(ctx context.Context, request RunTurnRequest, lease *executionLease, state domain.Session, result RunTurnResult, commandID domain.CommandID, emitter *engine.Emitter) (RunTurnResult, error) {
+// runAfterAdmission dispatches the first Provider attempt (and, when a
+// Tool Catalog is configured, the rest of the Step loop) once admission is
+// durable. contextPrefix/usedContextEngine let a Context-Engine-aware
+// admission (Task 9 Step 2's runTurnOwnedWithContextEngine) hand this
+// function the already-prepared, already-recorded history prefix instead
+// of the legacy projectPriorTurns re-derivation -- the ONLY way to satisfy
+// the Global Constraint that what gets dispatched exactly matches what
+// admission just durably recorded. When usedContextEngine is false (every
+// existing caller), behavior is byte-for-byte the pre-Context-Engine path.
+func (service *Service) runAfterAdmission(ctx context.Context, request RunTurnRequest, lease *executionLease, state domain.Session, result RunTurnResult, commandID domain.CommandID, emitter *engine.Emitter, contextPrefix []domain.ModelPromptMessage, usedContextEngine bool) (RunTurnResult, error) {
 	owned := &ownedTurn{
 		request:       request,
 		lease:         lease,
@@ -177,6 +186,10 @@ func (service *Service) runAfterAdmission(ctx context.Context, request RunTurnRe
 		assistantItem: result.ItemID,
 		started:       make(map[domain.ItemID]struct{}),
 		executed:      make(map[domain.ItemID]struct{}),
+	}
+	if usedContextEngine {
+		owned.projection = newTurnProjectionWithPrefix(contextPrefix, request.Input)
+		return service.runStepLoop(ctx, owned)
 	}
 	if !service.catalogEnabled() {
 		return service.runSingleAttempt(ctx, owned)
