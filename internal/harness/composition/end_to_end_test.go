@@ -105,6 +105,11 @@ func TestAssemblyRunsAToolCallingTurnEndToEnd(t *testing.T) {
 		domain.EventPolicyDecisionRecorded,
 		domain.EventToolCallCompleted,
 		domain.EventTurnCompleted,
+		// design §21: Open always constructs the Context Engine now, so a
+		// real Turn through the full assembly must durably record what it
+		// decided before dispatch -- proving Context.Enabled is genuinely
+		// wired, not silently left off.
+		domain.EventContextPreparedRecorded,
 	} {
 		if !containsString(types, wanted) {
 			t.Fatalf("durable stream = %v, missing %q", types, wanted)

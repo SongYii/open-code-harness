@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/memory"
 	"github.com/SongYii/open-code-harness/internal/harness/application"
@@ -39,6 +40,48 @@ func newManualCompactionService(t *testing.T, store application.EventStore, ids 
 		t.Fatal(err)
 	}
 	return service
+}
+
+// TestCompactSessionSummarizeTimeoutBoundsAHangingSummarizer proves
+// ContextConfig.CompactionTimeout (design §21/§8) actually bounds a
+// summarizer call: a summarizer that blocks forever without the caller's
+// own context ever being canceled must still fail within
+// CompactionTimeout, not hang indefinitely.
+func TestCompactSessionSummarizeTimeoutBoundsAHangingSummarizer(t *testing.T) {
+	store, state, _, historyIDs := buildHistorySession(t, 6)
+	summarizer := &blockingSummarizer{started: make(chan struct{}), release: make(chan struct{})}
+	runner, err := engine.NewTurnRunner(&acceptanceSuccessModel{text: "unused"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := application.DefaultConfig()
+	config.Context = application.ContextConfig{
+		Enabled:           true,
+		Budget:            contextengine.Budget{HardInput: 1_000_000, Trigger: 1_000_000, Target: 500_000, ProtectedTail: 1, SummaryOutputCap: 4_000},
+		Meter:             contextengine.WireEstimateMeter{},
+		Summarizer:        summarizer,
+		CheckpointStore:   &fakeCheckpointStore{},
+		CompactionTimeout: 50 * time.Millisecond,
+	}
+	service, err := application.NewService(store, historyIDs, testkit.FixedClock{Time: acceptanceTime}, runner,
+		application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := service.CompactSession(context.Background(), application.CompactSessionRequest{SessionID: state.ID})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("CompactSession() with a hanging summarizer = nil error, want a timeout failure")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("CompactSession() did not return within 5s; CompactionTimeout did not bound the summarizer call")
+	}
 }
 
 func TestCompactSessionManualSummarySucceedsBelowTrigger(t *testing.T) {

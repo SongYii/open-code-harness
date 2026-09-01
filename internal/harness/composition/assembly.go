@@ -16,6 +16,7 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/system"
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/workspacefs"
 	"github.com/SongYii/open-code-harness/internal/harness/application"
+	"github.com/SongYii/open-code-harness/internal/harness/contextengine"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
 	"github.com/SongYii/open-code-harness/internal/harness/runtime"
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
@@ -130,6 +131,25 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 		return release(fmt.Errorf("composition: turn runner: %w", err))
 	}
 
+	// Context meter/engine + summarizer (design §21's construction order):
+	// the summarizer is built over the SAME runner/model the conversation
+	// path uses, never a second Provider (design §18). budget was already
+	// proven constructible by Config.Validate; ComputeBudget is called
+	// again here (not carried through as a value) so this is the single
+	// place that ever derives it, matching every other resource's own
+	// build-not-thread-through convention in this function.
+	contextMeter := contextengine.WireEstimateMeter{}
+	contextBudget, err := contextengine.ComputeBudget(config.Provider.ContextWindow, config.Provider.MaxOutput, contextengine.BudgetConfig{
+		TriggerPercent: config.Context.TriggerPercent, TargetPercent: config.Context.TargetPercent, TailPercent: config.Context.TailPercent,
+	})
+	if err != nil {
+		return release(fmt.Errorf("composition: context budget: %w", err))
+	}
+	contextSummarizer, err := application.NewEngineContextSummarizer(runner)
+	if err != nil {
+		return release(fmt.Errorf("composition: context summarizer: %w", err))
+	}
+
 	files, err := workspacefs.New(config.WorkspaceRoot)
 	if err != nil {
 		return release(fmt.Errorf("composition: workspace filesystem: %w", err))
@@ -163,6 +183,15 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 	}
 	if config.Limits.ApprovalTimeout > 0 {
 		appConfig.ApprovalTimeout = config.Limits.ApprovalTimeout
+	}
+	appConfig.Context = application.ContextConfig{
+		Enabled:                      true,
+		Budget:                       contextBudget,
+		Meter:                        contextMeter,
+		Summarizer:                   contextSummarizer,
+		CheckpointStore:              sqliteStore,
+		MaxOverflowRecoveriesPerTurn: config.Context.MaxOverflowCompactionsPerTurn,
+		CompactionTimeout:            config.Context.CompactionTimeout,
 	}
 
 	// Pass the store itself as the AuthoritySource: the Service then reads

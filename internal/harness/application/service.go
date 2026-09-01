@@ -64,6 +64,15 @@ type ContextConfig struct {
 	// DefaultMaxOverflowRecoveriesPerTurn (2); values above
 	// MaxOverflowRecoveriesPerTurnCap (3) are rejected by NewService.
 	MaxOverflowRecoveriesPerTurn uint32
+	// CompactionTimeout bounds one summarizer call within a compaction
+	// bracket (design §21's own config surface; distinct from
+	// ContextOrchestratorDeps.CleanupTimeout, which bounds the *cleanup*
+	// append issued after a bracket must close). Zero uses
+	// DefaultCompactionTimeout (2 minutes). The 5s-10min range design §8's
+	// table documents is composition's own responsibility to enforce
+	// before any resource is constructed; NewService only rejects a
+	// negative value here.
+	CompactionTimeout time.Duration
 }
 
 // DefaultMaxOverflowRecoveriesPerTurn and MaxOverflowRecoveriesPerTurnCap
@@ -73,6 +82,10 @@ const (
 	DefaultMaxOverflowRecoveriesPerTurn = 2
 	MaxOverflowRecoveriesPerTurnCap     = 3
 )
+
+// DefaultCompactionTimeout is design §8's own default for
+// ContextConfig.CompactionTimeout.
+const DefaultCompactionTimeout = 2 * time.Minute
 
 func DefaultConfig() Config {
 	return Config{
@@ -154,6 +167,12 @@ func NewService(store EventStore, ids IDGenerator, clock Clock, runner *engine.T
 		if config.Context.MaxOverflowRecoveriesPerTurn > MaxOverflowRecoveriesPerTurnCap {
 			return nil, applicationError(CategoryValidation, "invalid_configuration", false, nil)
 		}
+		if config.Context.CompactionTimeout == 0 {
+			config.Context.CompactionTimeout = DefaultCompactionTimeout
+		}
+		if config.Context.CompactionTimeout < 0 {
+			return nil, applicationError(CategoryValidation, "invalid_configuration", false, nil)
+		}
 	}
 	approver := config.Approver
 	if isNilValue(approver) {
@@ -233,6 +252,7 @@ func (service *Service) contextOrchestratorDeps() ContextOrchestratorDeps {
 		Store: service.store, IDs: service.ids, Clock: service.clock, Authority: service.authority,
 		CheckpointStore: service.config.Context.CheckpointStore, Summarizer: service.config.Context.Summarizer,
 		Meter: service.config.Context.Meter, Budget: service.config.Context.Budget, PageLimit: service.config.Context.PageLimit,
+		SummarizeTimeout: service.config.Context.CompactionTimeout,
 	}
 }
 

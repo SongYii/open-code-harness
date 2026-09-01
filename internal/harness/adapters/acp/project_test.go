@@ -318,6 +318,28 @@ func TestProjectRecordedEvent(t *testing.T) {
 		{name: "policy.decision.recorded", record: domain.RecordedEvent{Event: domain.PolicyDecisionRecorded{TurnID: turn, ItemID: "item-2", CallID: "call-1", Effect: "allow"}}},
 		{name: "approval.requested", record: domain.RecordedEvent{Event: domain.ApprovalRequested{TurnID: turn, ItemID: "item-2", CallID: "call-1", Name: "write_file"}}},
 		{name: "approval.resolved", record: domain.RecordedEvent{Event: domain.ApprovalResolved{TurnID: turn, ItemID: "item-2", Decision: "granted"}}},
+		// design §20.4: a checkpoint or context preparation decision never
+		// replaces or supplements visible conversation history in the ACP
+		// projection -- these four assert non-projection explicitly, not
+		// merely by omission, matching every other event type's own case
+		// in this table.
+		{name: "context.compaction.started", record: domain.RecordedEvent{Event: domain.ContextCompactionStarted{
+			ID: "compaction-1", Trigger: domain.ContextTriggerManual, Strategy: domain.ContextStrategySummary,
+			MeterID: "och_wire_estimate_v1", SourceSchema: "och_source_v1",
+		}}},
+		{name: "context.compaction.completed", record: domain.RecordedEvent{Event: domain.ContextCompactionCompleted{
+			ID: "compaction-1",
+			Checkpoint: domain.ContextCheckpointRecord{
+				ID: "checkpoint-1", Kind: domain.ContextCheckpointKindRollingSummary, SourceSchema: "och_source_v1",
+				ThroughSequence: 3, SourceDigestHex: strings.Repeat("0", 64), Summary: "a summary a human would never see in ACP",
+			},
+		}}},
+		{name: "context.compaction.failed", record: domain.RecordedEvent{Event: domain.ContextCompactionFailed{
+			ID: "compaction-1", Code: "context_summary_failed", Message: "boom",
+		}}},
+		{name: "context.prepared", record: domain.RecordedEvent{Event: domain.ContextPreparedRecorded{
+			TurnID: turn, ItemID: "item-1", Trigger: domain.ContextTriggerPreTurn,
+		}}},
 	}
 	seen := map[string]bool{}
 	for _, test := range tests {
@@ -348,6 +370,10 @@ func TestProjectRecordedEvent(t *testing.T) {
 		domain.EventPolicyDecisionRecorded,
 		domain.EventApprovalRequested,
 		domain.EventApprovalResolved,
+		domain.EventContextCompactionStarted,
+		domain.EventContextCompactionCompleted,
+		domain.EventContextCompactionFailed,
+		domain.EventContextPreparedRecorded,
 	} {
 		if !seen[eventType] {
 			t.Errorf("missing domain event type %q", eventType)
