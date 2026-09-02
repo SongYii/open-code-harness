@@ -18,7 +18,7 @@ This milestone builds a local evaluation system for Open Code Harness (OCH).
 It runs real OCH Sessions, freezes experiment identity, preserves bounded
 evidence, and scores that evidence without requiring the agent to run again.
 
-The first slice has two concrete OCH executors:
+The v1 milestone has two concrete OCH executors:
 
 1. an in-process executor that drives the real Composition/Application path;
 2. a black-box executor that starts the real `och -acp` binary and drives it
@@ -28,6 +28,12 @@ The persistent model remains executor-neutral, but v1 does not run arbitrary
 external agents. A future external Subject requires a real consumer and a new
 isolation/conformance decision; this design does not create an unused generic
 Agent adapter.
+
+Delivery is staged. The first implementation slice establishes the frozen
+models, append-only evidence/regrade path, fixture isolation, and in-process
+executor only. It is useful but does not complete the milestone; the ACP
+executor and parity contract arrive in the next stage, and live judging arrives
+only after deterministic mechanisms are proven.
 
 OpenTelemetry is not part of this design. It remains a separate milestone 10
 subsystem with its own architecture gate and design.
@@ -54,7 +60,7 @@ The implementation must:
 
 ## 3. Non-goals
 
-The first slice does not include:
+The v1 milestone does not include:
 
 - arbitrary external agents or a Harbor-style agent adapter matrix;
 - container/cloud scheduling, distributed workers, or remote artifact storage;
@@ -62,6 +68,8 @@ The first slice does not include:
   Scenario schema;
 - arbitrary scenario-authored shell verifiers;
 - an MCP evaluation suite before the MCP client adapter exists;
+- ACP-subprocess execution on Windows in v1; Windows is cross-build-only until
+  a Job Object process-tree contract is separately accepted and implemented;
 - OpenTelemetry, an eval Web UI, or a second client protocol;
 - automatic network lookup of model prices;
 - a second trajectory schema parallel to `och.session.transcript`;
@@ -93,6 +101,12 @@ EvalSet
 - **Outcome** classifies execution and collection, not behavioral quality.
 - **Evidence Manifest** is the only artifact inventory a scorer may read.
 - **Score** is one immutable scorer result over one manifest digest.
+
+The architecture charter's **EvaluationResult** is resolved here as an
+eval-owned read DTO containing one immutable Outcome plus zero or more Score
+references. It is assembled from the authoritative Outcome and Score documents;
+it has no independent wire schema, is not a Domain event, and is never written
+to a Session stream.
 
 Scenario, Subject, Executor, Attempt, manifest, and Score identifiers are
 opaque lowercase ASCII IDs bounded to 128 bytes. User-provided IDs use
@@ -172,14 +186,43 @@ eval/scenarios/<suite>/<scenario>/
 - required and optional evidence roles;
 - deterministic verifier IDs and live judge criteria IDs;
 - per-Scenario limits that may only narrow EvalSet limits;
-- pairing tags used by baseline/candidate reports.
+- pairing tags used by baseline/candidate reports;
+- an approval script whose entries bind one prompt action ID, zero-based
+  approval ordinal within that action, expected tool name, and `allow` or
+  `deny` answer.
 
 v1 actions are `prompt`, `compact`, `cancel`, `restart`, and `collect`.
 `prompt` carries bounded UTF-8 text. `compact` carries the public summary/reset
 strategy and optional bounded focus. `cancel` names a prior in-flight action.
-`restart` requests a production-surface shutdown/crash/reopen sequence supported
-by the selected Executor. `collect` requests a declared workspace path or
-verifier fact.
+`restart` names one of three modes: `clean_shutdown`, `interrupt`, or `kill`.
+`clean_shutdown` is supported by both executors. `interrupt` and `kill` are
+ACP-subprocess-only capabilities: `interrupt` sends SIGINT to the currently
+owned process group, while `kill` sends SIGKILL. Each abrupt mode requires
+`Wait`/reap within the shutdown bound before starting a fresh process and using
+`session/load`; failure to prove reap is `indeterminate` and no new writer is
+started. An in-process Cell requesting either mode is rejected before Attempt
+creation. Dropping an Assembly without `Close` is not an in-process crash
+simulation: Runtime Host heartbeat and export work use independent contexts, so
+that shortcut can leave a real writer lease alive.
+`collect` requests a declared workspace path or verifier fact.
+
+Approval entries match on stable Scenario coordinates, not generated wire or
+domain IDs. Before each prompt action the runner resets the zero-based approval
+ordinal. For every permission request it must match all of:
+
+1. the current prompt action ID;
+2. the next ordinal for that prompt;
+3. the requested tool name.
+
+The same frozen script is compiled into the in-process `tools.Approver` and the
+ACP `session/request_permission` Handler. Tool-call IDs and permission request
+IDs are retained as evidence only. An undeclared, exhausted, out-of-order, or
+tool-name-mismatched request is denied, consumes no later declaration, and
+records an `approval_script_violation` fact. If the Scenario still reaches its
+declared boundary and required evidence is collected, the Attempt Outcome is
+`completed`; deterministic scoring fails unless denial was the declared
+expectation. A policy denial or script violation is not by itself a
+`subject_failed` Outcome.
 
 The runner rejects an unsupported Scenario/Executor pairing before creating an
 Attempt. It never silently skips an action or a required capability.
@@ -259,8 +302,9 @@ reported agent name/version from `initialize`.
 Parity comparisons require equal Scenario and Subject semantic digests and may
 compare only declared semantic invariants. Event IDs, command IDs, runtime IDs,
 timestamps, temp paths, scheduling order, and raw transcript/audit bytes are
-not parity fields. Session/Turn terminal state, tool facts, usage facts,
-workspace results, policy decisions, request-envelope properties, and artifact
+not parity fields. Executor process, Runtime Host, lease, shutdown, reload, and
+recovery lifecycle facts are also excluded. Session/Turn terminal state, tool
+facts, usage facts, workspace results, policy decisions, request-envelope properties, and artifact
 completeness are valid parity fields.
 
 ## 12. Attempt filesystem and atomic publication
@@ -353,11 +397,29 @@ A SQLite backup is optional and only valid when a recovery Scenario requires
 it. It is not default evidence. Scorers cannot open the live database or follow
 paths absent from the manifest.
 
-Evidence collection requires narrow Composition-owned helpers. Transcript
-collection uses the existing `composition.ExportSession`. The implementation
-adds a Composition-owned canonical audit snapshot/verification operation so
-eval never imports SQLite. Both executors call these helpers only after their
-writer has stopped.
+Evidence collection uses two new Composition-owned, read-only APIs whose
+request and result types are also owned by Composition:
+
+- `InspectEvaluationStore` opens an isolated database without migration or a
+  writer lease, pins the store and Session heads, verifies format and canonical
+  chains, and returns bounded Session/Turn/compaction terminal facts. It cannot
+  append recovery facts, acquire or release a lease, or mutate export state.
+- `ExportEvaluationEvidence` accepts an inspection identity plus empty
+  caller-owned transcript and audit staging destinations. It regenerates a
+  canonical audit-replica snapshot from the database and verifies the generated
+  snapshot before returning; it never copies the live replica directory.
+
+Both helpers refuse while a Runtime Host lease is live. They never wait for,
+take over, or release that lease. The export result records the pinned
+`sessionHeadSequence`, `storeHeadCommitPosition`, transcript digest, audit head
+digest, and proof that the audit snapshot contains the append covering the
+transcript's Session head. Session sequence and global commit position are
+different coordinate systems and are not compared numerically.
+
+The existing `composition.ExportSession` remains the general transcript-only
+API and may read beside a live writer. Eval uses the stricter helpers above only
+after its writer has stopped; `internal/harness/eval` never imports SQLite or
+opens an Assembly for evidence collection or orphan inspection.
 
 ## 15. In-process executor
 
@@ -410,17 +472,48 @@ The child receives a minimal allowlisted environment: required OS runtime
 variables, the named Provider credential, and explicitly declared fixture
 variables. The runner never forwards its complete environment.
 
-The ACP Handler is non-interactive. Scenario/Subject policy freezes approval
-responses; any undeclared permission request is denied and recorded. Manual
-`compact` stops the ACP writer cleanly, invokes the same binary's public
-`compact-session` command against the isolated database, restarts `och -acp`,
-and uses `session/load`. It never calls Application in-process.
+The ACP Handler is non-interactive and is compiled from the same approval script
+as the in-process Approver. It decodes `session/request_permission`, associates
+the live request with the current prompt action and approval ordinal, verifies
+the expected tool name, returns the declared allow-once/reject-once option, and
+records the wire tool-call ID as evidence. Script violations follow section 7.
+
+Every writer process receives a fresh runtime ID derived from the Attempt and a
+monotonic launch ordinal. Every `compact-session` invocation receives another
+fresh runtime ID derived from the Attempt and compact-action ordinal. An ACP
+writer, its successor, and a compactor never share a runtime ID; runtime IDs are
+Attempt facts and do not change the Subject semantic digest.
+
+Manual `compact` uses this ordered transaction:
+
+1. close the current ACP child's stdin and require a successful exit and reap;
+2. if exit/reap cannot be proved inside the shutdown bound, publish
+   `indeterminate` with code `acp_shutdown_unproven` and do not start compaction;
+   if the child is reaped but clean shutdown returns a nonzero status, publish
+   `infra_failed` with code `acp_shutdown_failed` and do not start compaction;
+3. invoke the same binary's public `compact-session` with the distinct compactor
+   runtime ID and otherwise identical validated Subject bindings;
+4. if the reaped clean child is nevertheless followed by `ErrLeaseHeld`, publish
+   `infra_failed` with code `runtime_lease_not_released`; if ownership or the
+   preceding action is itself uncertain, publish `indeterminate` instead;
+5. require the compactor to exit and be reaped, start `och -acp` under a third
+   fresh runtime ID, then use `session/load`.
+
+The executor never starts `compact-session` beside an un-reaped writer, never
+signals a PID recovered from disk, and never calls Application in-process.
 
 ## 17. Cancellation and subprocess cleanup
 
 In-process cancellation cancels the current action context, waits for its
 durable terminal result, then closes the Assembly within the shutdown bound.
 
+The ACP subprocess executor is runnable in v1 only on Linux and macOS. Windows
+CI cross-builds `och-eval` and tests schema/capability rejection, but a Windows
+`acp_subprocess` Cell fails validation before creating an Attempt. Runtime
+support requires a later accepted Job Object contract that contains and reaps
+the complete child tree; killing only the parent process is insufficient.
+
+On supported Unix hosts the runner creates a new process group for each child.
 ACP cancellation uses this fixed escalation:
 
 ```text
@@ -428,20 +521,22 @@ session/cancel
   → wait cancellation grace
   → close child stdin
   → wait shutdown grace
-  → SIGTERM/process-group terminate
+  → SIGTERM the currently-owned process group
   → wait final grace
-  → force-kill process group
+  → SIGKILL the currently-owned process group
   → reap
 ```
 
 `exec.CommandContext` is not the primary cancellation mechanism because an
-immediate kill can discard the Session terminal evidence the scenario measures.
-Every escalation stage is timed and recorded. The executor owns one process
-group and reaps it on all normal paths.
+immediate kill can discard the Session terminal evidence the Scenario measures.
+Every escalation stage is timed and recorded. The runner retains the live
+`os.Process` handle and process-group identity until `Wait` returns; it signals
+only that currently-owned, not-yet-reaped child. After reap, loss of the
+in-memory handle, or runner recovery, it never acts on a persisted PID.
 
 The ACP child's stdin belongs only to the runner. Parent death closes the pipe,
-which makes `och -acp` observe EOF and shut down. Recovery never signals a PID
-stored by an earlier process because PID reuse can target an unrelated process.
+which makes `och -acp` observe EOF and begin normal shutdown. If that cannot be
+proved, later recovery classifies durable evidence and never guesses cleanup.
 
 ## 18. Crash recovery and resume
 
@@ -449,14 +544,20 @@ Runner startup classifies each Attempt directory:
 
 - valid Outcome plus valid Manifest: immutable terminal Attempt;
 - Attempt plus Outcome but no Manifest: resume bounded evidence collection only;
-- Attempt with no Outcome: inspect the isolated canonical store without running
-  the Subject;
+- Attempt with no Outcome: call `composition.InspectEvaluationStore` against the
+  isolated database without running the Subject;
 - no valid Attempt document: uncommitted temp directory, never an Attempt.
 
 If canonical evidence proves a terminal Session/Turn, recovery publishes an
 Outcome with `recoveryStatus: recovered` and collects evidence. If the Session is
 active/running, commit outcome is unknown, the store is corrupt, or sources
 contradict each other, recovery publishes `indeterminate` with exact diagnostics.
+
+An unexpired Runtime Host lease with no currently-owned live process handle is
+`indeterminate` with code `orphan_live_lease`; recovery neither signals its PID
+nor opens a writer to take it over. A known, cleanly reaped child followed by a
+foreign live lease is the narrower `infra_failed/runtime_lease_not_released`
+case defined in section 16.
 
 Recovery never reruns a prompt, retries an append, resumes the Subject, or
 changes an existing Outcome. An operator retry appends a new Attempt.
@@ -568,10 +669,20 @@ loopback Provider endpoint or a live credential requirement. It uses no external
 network and no secrets. Loopback fixture HTTP is allowed as an in-process test
 transport, not external network access.
 
-Both executors run in PR CI. The ACP path builds the real `och` binary in the
-test and launches it; a fake ACP agent is insufficient completion evidence.
-Deterministic fixtures use frozen responses and compare semantic facts rather
-than timestamps or generated IDs.
+Ordinary PR CI runs a deliberately small frozen EvalSet of at most four Cells:
+
+1. exactly one paired parity Scenario through both executors, consuming two
+   Cells;
+2. one in-process tool/approval/failure Scenario;
+3. one in-process Context compaction Scenario.
+
+The paired ACP Cell builds and launches the real `och` binary; a fake ACP agent
+is insufficient evidence. Targeted ACP unit and subprocess integration tests
+for approval, compact, restart, and cleanup also remain PR checks, but the full
+suite-by-executor cross-product is not. The complete deterministic matrix runs
+only by explicit command and in scheduled CI. Live and model-judge quality Cells
+never enter ordinary PR CI. Deterministic fixtures use frozen responses and
+compare semantic facts rather than timestamps or generated IDs.
 
 ## 24. Live lane
 
@@ -592,13 +703,17 @@ honest Outcome and manifest possible within the evidence-collection bound.
 Runs the same deterministic Scenario and Subject semantics through both
 executors. It verifies terminal Session/Turn shape, tool and usage facts,
 workspace result, request/policy evidence, manifest completeness, and declared
-parity fields. It does not demand identical IDs, timestamps, paths, or bytes.
+parity fields. It uses `clean_shutdown` when restart is part of the paired
+Scenario and does not demand identical IDs, timestamps, paths, bytes, or
+executor lifecycle facts.
 
 ### 25.2 Tool/workspace deterministic suite
 
 Covers read, write, exec, Policy/approval, expected failure, cancellation,
 redaction, and artifact collection. It cross-checks workspace results against
-transcript and audit evidence and runs through both executors in PR CI.
+transcript and audit evidence. Both executors are supported in the explicit and
+scheduled deterministic matrix; ordinary PR CI runs the representative
+in-process Cell plus the single paired smoke defined in section 23.
 
 ### 25.3 Context mechanism fixture suite
 
@@ -606,7 +721,9 @@ Deterministically covers pre-turn/mid-turn triggers, checkpoints, manual
 summary/reset, overflow recovery, restart/crash evidence, transcript/audit
 projection, and resource bounds. Accepted-but-inert capabilities cannot pass by
 configuration presence alone; a Scenario claiming multi-chunk summary or Tool
-Result pruning must observe the behavior or fail.
+Result pruning must observe the behavior or fail. Clean restart is testable on
+both executors. `interrupt` and `kill` are separate ACP-only recovery Scenarios,
+not cross-executor parity claims.
 
 ### 25.4 Context real-model quality suite
 
@@ -650,20 +767,33 @@ Implementation tests must include:
 - fixture and evidence path traversal, symlink/hard-link/device rejection,
   file-count/byte caps, truncation, and digest tampering;
 - atomic publish fault injection at Attempt, Outcome, manifest, and Score stages;
-- restart classification for every partial filesystem state;
+- restart classification for every partial filesystem state and explicit
+  capability rejection for unsupported restart modes;
 - in-process proof through real `composition.Open` and Application methods;
+- approval-script proof through both adapters, including ordinal/tool mismatch,
+  fail-closed denial, evidence, and Outcome-versus-Score classification;
 - ACP proof against a freshly built real `och` binary, including initialize,
-  new/load/prompt/cancel, manual compact, restart, process-group cleanup, and
-  no leaked child;
+  new/load/prompt/cancel, manual compact, all supported restart modes,
+  process-group cleanup, and no leaked child;
+- manual-compact proof that the writer is reaped first, writer/compactor/restart
+  runtime IDs differ, a live lease prevents compaction, and lease uncertainty
+  maps to the specified `infra_failed` or `indeterminate` code;
+- Unix process-group escalation tests plus Windows cross-build and fail-closed
+  ACP capability rejection; no parent-only Windows cleanup claim;
 - exact Subject-to-CLI configuration parity for every Limits/Context field;
-- transcript trailer and audit-head agreement, request/policy evidence, and
-  missing/corrupt evidence fail-closed behavior;
+- Composition evidence-helper tests proving live-lease refusal, no database or
+  replica mutation, bounded orphan inspection, transcript-head inclusion in the
+  generated audit snapshot, request/policy evidence, and missing/corrupt
+  evidence fail-closed behavior;
 - offline regrade with Executor/Subject invocation made impossible;
 - deterministic verifier versus model-judge separation and strict judge parser;
 - fixture lane rejection of external Provider/credential use;
 - live dual-consent (`live` set plus `--live`) before credential access;
 - time/token/cost/concurrency/artifact limits and cancellation races;
-- semantic parity fixtures for both executors;
+- semantic parity fixtures for both executors that reject lifecycle facts as
+  parity fields;
+- a guard that the checked-in ordinary-PR EvalSet cannot expand above the
+  section 23 four-Cell contract;
 - initial suite golden fixtures and live-suite dry validation.
 
 Fresh completion evidence includes:
@@ -738,9 +868,28 @@ internal/harness/architecture/
   ownerEval dependency rules
 ```
 
-The later implementation plan must deliver independently reviewable slices. It
-may stage one executor before the other, but milestone completion requires both;
-ACP subprocess support is not an optional follow-up under this accepted design.
+The implementation plan must use independently reviewable stages; each stage
+may span multiple PRs:
+
+1. **Stage A — deterministic foundation and in-process path.** Land frozen
+   schema/digests/matrix expansion, safe fixtures, append-only
+   Attempt/Outcome/manifest/Score publication, the Composition read-only
+   evidence helpers, offline regrade/report, the in-process executor, and its
+   minimal fixture smoke. This is the first usable slice, not milestone
+   completion.
+2. **Stage B — ACP subprocess and parity.** Land the real-binary supervisor,
+   allowlisted environment and complete Subject flag mapping, shared approval
+   script adapter, Unix process-group cleanup, distinct-runtime-ID compact and
+   restart contracts, then the paired parity smoke. Model judging is not part of
+   this stage.
+3. **Stage C — suites and live quality.** Expand the deterministic Context and
+   tool/workspace suites, add explicit/scheduled full-matrix execution, then add
+   the dual-consent live judge and quality suite with documentation and evidence.
+
+Milestone completion requires both executors, offline regrade, the initial
+deterministic suites, and the live-quality mechanism. ACP subprocess support is
+not optional, but it is not required to merge Stage A. No stage is required to
+fit in one PR.
 
 ## 30. Acceptance summary
 
@@ -749,13 +898,25 @@ The design is satisfied only when:
 1. both executors run real OCH surfaces with equivalent frozen Subject semantics;
 2. every Attempt is isolated, bounded, append-only, and honestly classified;
 3. manifest-published evidence can be verified and regraded offline;
-4. transcript and audit evidence jointly cover declared scoring needs without a
+4. the shared approval script has identical match/deny semantics on in-process
+   and ACP surfaces, with classification separated from score;
+5. ACP manual compaction proves writer release and uses distinct runtime IDs;
+6. clean, interrupt, and kill restart modes have explicit executor/platform
+   capabilities and never emulate a crash by abandoning an Assembly;
+7. Composition-owned read-only helpers refuse live leases and produce verified
+   transcript/audit evidence with a head-inclusion proof, without eval importing
+   SQLite or copying a live replica;
+8. transcript and audit evidence jointly cover declared scoring needs without a
    second trajectory format;
-5. corrupt or missing required evidence never passes;
-6. deterministic PR and explicit live channels cannot be confused;
-7. retry/recovery never rewrites an Attempt or reruns unknown work in place;
-8. initial suites demonstrate executor neutrality and Context quality coverage;
-9. no MCP implementation is required to build the runner, and no MCP evaluation
-   is claimed before MCP exists;
-10. documentation and the evidence ledger disclose remaining quality and GA
+9. corrupt or missing required evidence never passes;
+10. ordinary PR CI is a bounded deterministic smoke, while full deterministic
+    and explicit live channels cannot be confused;
+11. retry/recovery never rewrites an Attempt, reruns unknown work in place, or
+    signals a persisted PID;
+12. initial suites demonstrate executor neutrality and Context quality coverage;
+13. no MCP implementation is required to build the runner, and no MCP evaluation
+    is claimed before MCP exists;
+14. staged delivery never treats the in-process-only slice as milestone
+    completion; and
+15. documentation and the evidence ledger disclose remaining quality and GA
     blockers rather than inferring them from fixture success.
