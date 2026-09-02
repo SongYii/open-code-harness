@@ -14,12 +14,27 @@ import (
 const FormatVersion = 1
 
 // Schema strings for the document kinds this package defines (design §6's
-// table). EvalSet, Attempt, Outcome, Evidence Manifest, Score, and Report are
-// not yet implemented here; see doc.go.
+// table). EvalSet and Report are not yet implemented here; see doc.go.
 const (
-	SchemaScenario = "och.eval.scenario"
-	SchemaSubject  = "och.eval.subject"
-	SchemaExecutor = "och.eval.executor"
+	SchemaScenario         = "och.eval.scenario"
+	SchemaSubject          = "och.eval.subject"
+	SchemaExecutor         = "och.eval.executor"
+	SchemaAttempt          = "och.eval.attempt"
+	SchemaOutcome          = "och.eval.outcome"
+	SchemaEvidenceManifest = "och.eval.evidence-manifest"
+	SchemaScore            = "och.eval.score"
+)
+
+// EvalLane distinguishes the deterministic PR-CI channel from explicit
+// live-model evaluation (design §9, §23, §24). It is independent of
+// SubjectProviderLane: a live EvalSet always uses a live Subject, but the
+// two are recorded on different documents (EvalSet identity versus Subject
+// identity) and validated separately.
+type EvalLane string
+
+const (
+	LaneFixture EvalLane = "fixture"
+	LaneLive    EvalLane = "live"
 )
 
 var (
