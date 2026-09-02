@@ -64,12 +64,10 @@ type Context struct {
 	// MaxOverflowRecoveriesPerTurn).
 	MaxOverflowCompactionsPerTurn uint32
 	// MaxPrunedToolResultsPerRequest bounds design §10's per-request Tool
-	// Result pruning count. Accepted and range-validated per design §8's
-	// table; Tool Result projection (contextengine.ProjectToolResult) is
-	// not yet wired into Materialize's own pipeline (a disclosed,
-	// pre-existing scope gap), so this field does not yet change behavior
-	// either -- kept for the same forward-compatibility reason as
-	// MaxSummaryChunks above.
+	// Result pruning count: PrepareContext's final Materialize call
+	// replaces at most this many oversized retained Tool Results with
+	// contextengine.ProjectToolResult's marker-framed excerpt. Accepted
+	// and range-validated per design §8's table.
 	MaxPrunedToolResultsPerRequest uint32
 	// CompactionTimeout bounds one summarizer call within a compaction
 	// bracket (application.ContextConfig's own CompactionTimeout).

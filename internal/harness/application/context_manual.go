@@ -98,18 +98,14 @@ func (service *Service) CompactSession(ctx context.Context, request CompactSessi
 		return CompactSessionResult{}, err
 	}
 	source := contextEventStorePageSource{store: deps.Store}
-	scan, err := contextengine.Scan(ctx, source, request.SessionID, deps.pageLimit())
+	scan, err := contextengine.Scan(ctx, source, request.SessionID, deps.pageLimit(), resumeSequence(previous))
 	if err != nil {
 		return CompactSessionResult{}, mapContextEngineScanError(err)
-	}
-	units := scan.Units
-	if previous != nil {
-		units = unitsAfter(units, previous.Coverage.ThroughSequence)
 	}
 	// Force: true -- design §15.4's own "below trigger, manual summary is
 	// still allowed if a safe prefix exists." No CurrentInput/Tools:
 	// manual compaction has no upcoming dispatch to plan around.
-	plan, err := contextengine.SelectCutPoint(contextengine.PlanInput{Units: units, Budget: deps.Budget, Meter: deps.Meter, Force: true})
+	plan, err := contextengine.SelectCutPoint(contextengine.PlanInput{Units: scan.Units, Budget: deps.Budget, Meter: deps.Meter, Force: true})
 	if err != nil {
 		return CompactSessionResult{}, mapContextEngineScanError(err)
 	}

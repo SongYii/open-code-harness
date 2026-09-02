@@ -64,7 +64,7 @@ Defaults (design §8's own table, all configurable via
 | `MaxSummaryChunks` | 8 | 1–16 |
 | `MaxOverflowCompactionsPerTurn` | 2 | 1–3 |
 | `CompactionTimeout` | 2 minutes | 5 seconds–10 minutes |
-| `MaxPrunedToolResultsPerRequest` | 64 | 1–64 (accepted and validated; **not yet consumed** — see [Known limitations](#known-limitations)) |
+| `MaxPrunedToolResultsPerRequest` | 64 | 1–64 |
 
 The default deterministic meter, `och_wire_estimate_v1`
 (`contextengine.WireEstimateMeter`): text/JSON payload `ceil(UTF-8 bytes / 3)`;
@@ -75,9 +75,18 @@ underestimating.
 
 `contextengine.EvaluateUsageAnchor` implements design §8's non-lowering
 provider-usage anchor (`budgetEstimate = max(wireEstimate, anchoredEstimate?)`)
-as pure, independently tested logic — but it is **not yet called from
-Application**; every real dispatch decision today uses only the deterministic
-wire estimate. See [Known limitations](#known-limitations).
+as pure, independently tested logic, and `PrepareContext` now calls it: when
+the plain wire estimate stays at or below `Budget.Trigger`, Application
+reconstructs the newest eligible anchor from the session's own recent
+`ModelRequestRecorded`/`ModelUsageRecorded`/`ContextPreparedRecorded`
+evidence (bounded to the same resumed-scan window `Scan` itself already
+read — see below — never a fresh full-history read of its own) and forces
+a compaction the wire estimate alone would have missed whenever the
+anchored estimate crosses Trigger instead. `ContextPreparedRecorded`'s own
+`UsageAnchorApplied`/`UsageAnchorTokens` evidence fields record whether
+this happened. See [Known limitations](#known-limitations) for this
+mechanism's own disclosed scope (only the ordered-append derivability
+case, and a per-Item rather than strictly per-attempt match).
 
 ## Projection, planning, and checkpoint pipeline
 
@@ -91,7 +100,14 @@ exactly one terminal result; duplicate, unknown, or missing IDs fail closed.
 
 `contextengine.Scan` performs the pinned-head, page-by-page read (Pass 1): the
 first page fixes `HeadVersion`; every following page is requested against
-that same value, failing closed (`ErrHeadMismatch`) on disagreement.
+that same value, failing closed (`ErrHeadMismatch`) on disagreement. `Scan`
+accepts an `afterSequence` resume point: `PrepareContext`/`CompactSession`
+pass a usable checkpoint's own `Coverage.ThroughSequence` — always a real
+Turn boundary a resumed scan needs no carried-over state to project
+correctly from — so the common steady-state cost is proportional to
+history since the last checkpoint, not the whole session (benchmarked flat
+across a 100x Turn-count sweep); `afterSequence == 0` (no checkpoint yet,
+or one that just failed replay validation) still scans from the beginning.
 `contextengine.SelectCutPoint` (Pass 2) walks backward from the head until
 `protectedTail` is met, then snaps older coverage to the nearest safe Turn
 boundary — coverage is always a full Turn, never a Turn split between
@@ -272,6 +288,15 @@ any resource.
   heap-bounded — it never materializes a whole session's canonical history
   in one slice; `TestRebuildContextCheckpointHeadsSpansMultiplePages` proves
   correctness across a page boundary specifically.
+- `Scan`'s own upfront read is flat regardless of total history once a
+  checkpoint exists to resume from — `BenchmarkScanFromCheckpoint`
+  (`internal/harness/contextengine/bench_test.go`) holds a fixed protected
+  tail while the preceding, already-checkpointed history grows 100x
+  (100 → 10,000 Turns) and measures ~73–82µs/~18.8KB/98 allocs throughout,
+  against `BenchmarkScan`'s (afterSequence 0) unchanged, still-linear
+  ~1.4ms → ~180ms over the same sweep for the one path that still pays it
+  (a checkpoint that just failed replay validation). See "Known
+  limitations" below for the fix this replaced.
 
 ## Known limitations
 
@@ -281,77 +306,132 @@ itself. None of these compromise correctness or safety; all of them trade
 away performance, completeness, or convenience this milestone chose not to
 spend more time on.
 
-1. **`Scan` and `SelectCutPoint`'s own upfront estimate are `O(history)` in
-   both time and transient memory, on every single call — not merely `O(1)`
-   relative to the configured budget window.** `Scan` re-reads and holds
-   every canonical source record from the beginning of the stream every
-   time `PrepareContext` runs; there is no "resume scanning from the last
-   checkpoint" mode, even once a checkpoint already covers everything but
-   the protected tail. `BenchmarkScan`/`BenchmarkSelectCutPoint`
-   (`internal/harness/contextengine/bench_test.go`) measure this directly:
-   allocations scale linearly with Turn count (100 → 1,000 Turns is roughly
-   a 10x jump in bytes/op for both). This means a below-trigger Turn's
-   admission on a long-lived session pays a cost proportional to the whole
-   session's history, not to the configured budget — the single most
-   significant gap this milestone's own benchmark work found. It does not
-   violate correctness (`BenchmarkMaterialize` confirms the envelope
-   actually dispatched stays bounded), but it does mean the "live heap
-   bounded by budget, not Turn count" property design §22.4 asks the
-   benchmark suite to check is *not* delivered on the planning path today.
-   Fixing it needs `Scan` to support an incremental, resume-from-checkpoint
-   scanning mode — a real architectural change to a pure, heavily
-   mutation-tested package, planned as a follow-up rather than rushed at
-   the tail of this milestone.
-2. **The non-lowering provider-usage anchor (`EvaluateUsageAnchor`) is
-   implemented and independently tested as pure logic, but is not called
-   from Application.** Every real dispatch decision uses only the
-   deterministic wire estimate; the anchor's potential to tighten that
-   estimate using observed usage is inert. Safe (the wire estimate is
-   always a valid, if conservative, upper bound) but incomplete relative to
-   design §8.
-3. ~~`MaxSummaryChunks` is accepted and range-validated but the summarizer
-   is single-shot only~~ **Resolved by a follow-up commit.**
-   `buildSummaryCheckpointWithFocus` now calls a new `summarizeChunks`
-   helper implementing design §11.2's rolling, chunked summarization:
-   source material too large for one summarizer call is split into as
-   many chunks as fit under a per-chunk budget (a conservative,
-   already-available stand-in for design's own `W - summaryOutputCap -
-   safety` formula: `deps.Budget.HardInput`, which is never smaller since
-   `summaryOutputCap <= O` always holds), each fed the immediately prior
-   chunk's own validated output as its "PREVIOUS CHECKPOINT" section (or
-   an existing rolling-summary checkpoint's own text for the very first
-   chunk, or nothing for a Session's first-ever compaction), up to
-   `ContextOrchestratorDeps.MaxSummaryChunks` calls. Every intermediate
-   chunk's own output is validated structurally (shape, redaction, size,
-   cap, shrink against that chunk's own covered content) via the same
-   `contextengine.ValidateSummary` this package always used, but not
-   against the actually-dispatched request's own pre/post-pass shrink
-   requirement, which has no meaning until the final chunk is known — the
-   final chunk still receives the exact same full validation (real
-   pre/post-pass, real `CoveredSourceTokens` over the complete covered
-   range) this package always performed, unchanged, regardless of how many
-   chunks produced its input. A chunk cap that cannot be met fails closed
-   with the (previously unused) `context_compaction_limit` code and falls
-   through to the same deterministic-reset ladder any other summary
-   failure above `hardInput` already uses — never silently truncating
-   source material or exceeding the configured cap.
-   `ContextOrchestratorDeps.MaxSummaryChunks` defaults to 1 (single-shot
-   only) when unset, so every existing caller's own behavior is unchanged
-   unless it explicitly opts in; `composition`'s own real assembly path
-   already sets it to `composition.Config.Context.MaxSummaryChunks`
-   (default 8), so a real deployment gets genuine multi-chunk behavior
-   without further configuration.
+All four of this milestone's own disclosed known limitations below have
+since been resolved by follow-up commits — see the evidence ledger's own
+follow-up sections for the complete mechanism-by-mechanism account of
+each.
+
+1. ~~`Scan` and `SelectCutPoint`'s own upfront estimate are `O(history)`~~
+   **Resolved by a follow-up commit.** `Scan` (`internal/harness/contextengine/planner.go`)
+   now takes an `afterSequence` resume point; `PrepareContext`/`CompactSession`
+   (`internal/harness/application/context_orchestrator.go`,
+   `context_manual.go`) pass a usable checkpoint's own
+   `Coverage.ThroughSequence` whenever one exists — always a real Turn
+   boundary, so a resumed scan needs no state carried over from before it.
+   `BenchmarkScanFromCheckpoint` proves the common steady-state cost is now
+   flat with total history, not merely with the retained tail (see
+   "Resource bounds" above). The one path that still pays the original
+   full-history cost is disclosed, not silently dropped: when an existing
+   checkpoint fails `ValidateCheckpointReplay` (most commonly a smaller
+   route after a model switch), `PrepareContext` cannot resume planning
+   from a checkpoint it just distrusted, so it re-scans from the beginning
+   exactly once for that round — `BenchmarkScan` (`afterSequence == 0`)
+   continues to measure exactly this rare path's own cost, unchanged.
+   `TestScanResumesFromAfterSequence` (`contextengine`) and
+   `TestPrepareContextResumesScanFromCheckpointRatherThanStreamStart`
+   (`application`) are this fix's own regression tests, the latter proving
+   — via a store wrapper recording every `ReadStream` call's own
+   `AfterSequence` — that `PrepareContext` never re-reads pre-checkpoint
+   history once a checkpoint exists.
+2. ~~The non-lowering provider-usage anchor is implemented but not called
+   from Application~~ **Resolved by the same follow-up commit.**
+   `PrepareContext` now reconstructs the newest eligible anchor
+   (`findLatestUsageAnchor`, `context_orchestrator.go`) from the identical
+   bounded `resumeSequence(previous)..scan.HeadVersion` window `Scan`
+   itself already read — no additional full-history read — and, whenever
+   the plain wire estimate stays at or below `Budget.Trigger`, calls
+   `EvaluateUsageAnchor` and forces a compaction the wire estimate alone
+   would have missed if the anchored estimate crosses Trigger instead.
+   `ContextPreparedRecorded`'s own `UsageAnchorApplied`/`UsageAnchorTokens`
+   fields now record this outcome — which, building this, surfaced a
+   second, previously undisclosed gap this same commit also fixed: those
+   fields (and `BudgetHardInput`/`BudgetTrigger`/`BudgetTarget`) existed in
+   the domain schema (`domain.ContextPreparedRecorded`) but
+   `ContextPreparedRecordedFromResult` never actually populated any of
+   them, for any request, ever. Two disclosed, narrower-than-design scoping
+   choices remain in how the anchor is matched: only design §8's
+   ordered-append derivability case is implemented (a request surface
+   rewritten by a checkpoint still falls through to the plain wire
+   estimate — the second, checkpoint-rewrite derivability case is
+   unimplemented, as `EvaluateUsageAnchor`'s own doc comment already
+   disclosed); and the match key is `TurnID`+`ItemID` only, not the full
+   `TurnID`/`ItemID`/`AttemptIndex` triple design §8 names, because
+   `turn.go`'s own `modelUsageFromStats` has never threaded `AttemptIndex`
+   onto `ModelUsageRecorded` at all (a real, separate, newly-noticed
+   pre-existing gap, not something this fix introduced) — `TurnID`+`ItemID`
+   remains a correct key today regardless, since every Step (including a
+   retried one) allocates its own fresh `ItemID`.
+   `TestPrepareContextUsageAnchorForcesCompactionTheWireEstimateWouldHaveMissed`
+   is this fix's own end-to-end regression test.
+3. ~~`MaxSummaryChunks`/`MaxPrunedToolResultsPerRequest` are accepted and
+   range-validated but do not yet change behavior~~ **Both resolved, by
+   two separate follow-up commits.**
+   `contextengine.MaterializeInput` gains `ProtectedTail`/
+   `MaxPrunedToolResults`/`HardInput` fields (all zero by default, so
+   every existing caller continues to dispatch byte-identical Tool Result
+   content unchanged); when enabled, `Materialize` replaces a retained
+   Tool Result whose own meter estimate exceeds
+   `MaxProjectedToolResultTokens(ProtectedTail)` with
+   `ProjectToolResult`'s marker-framed excerpt, oldest first, up to
+   `MaxPrunedToolResults` replacements per call.
+   `composition.Config.Context.MaxPrunedToolResultsPerRequest` is now
+   actually plumbed through `application.ContextConfig`/
+   `ContextOrchestratorDeps` into that call — previously it was accepted
+   and range-validated by composition but never even reached
+   `application.ContextConfig` at all, a real, disclosed plumbing gap
+   distinct from the pruning mechanism itself being unwired.
+   `TestMaterializePrunesOversizedToolResultsUpToTheCap` (`contextengine`)
+   and `TestMidTurnToolResultPruningIsWiredEndToEnd` (`application`, a
+   real read_file Tool Call through a real mid-turn Step) are this fix's
+   own regression tests, the latter proving the wiring holds all the way
+   from `composition.Config` to the actually-dispatched
+   `ModelRequestRecorded`.
+   Separately, `buildSummaryCheckpointWithFocus` now calls a new
+   `summarizeChunks` helper implementing design §11.2's rolling, chunked
+   summarization: source material too large for one summarizer call is
+   split into as many chunks as fit under a per-chunk budget (a
+   conservative, already-available stand-in for design's own
+   `W - summaryOutputCap - safety` formula: `deps.Budget.HardInput`, which
+   is never smaller since `summaryOutputCap <= O` always holds), each fed
+   the immediately prior chunk's own validated output as its "PREVIOUS
+   CHECKPOINT" section (or an existing rolling-summary checkpoint's own
+   text for the very first chunk, or nothing for a Session's first-ever
+   compaction), up to `ContextOrchestratorDeps.MaxSummaryChunks` calls.
+   Every intermediate chunk's own output is validated structurally
+   (shape, redaction, size, cap, shrink against that chunk's own covered
+   content) via the same `contextengine.ValidateSummary` this package
+   always used, but not against the actually-dispatched request's own
+   pre/post-pass shrink requirement, which has no meaning until the final
+   chunk is known — the final chunk still receives the exact same full
+   validation (real pre/post-pass, real `CoveredSourceTokens` over the
+   complete covered range) this package always performed, unchanged,
+   regardless of how many chunks produced its input. A chunk cap that
+   cannot be met fails closed with the (previously unused)
+   `context_compaction_limit` code and falls through to the same
+   deterministic-reset ladder any other summary failure above `hardInput`
+   already uses — never silently truncating source material or exceeding
+   the configured cap. `ContextOrchestratorDeps.MaxSummaryChunks` defaults
+   to 1 (single-shot only) when unset, so every existing caller's own
+   behavior is unchanged unless it explicitly opts in; `composition`'s own
+   real assembly path already sets it to
+   `composition.Config.Context.MaxSummaryChunks` (default 8), so a real
+   deployment gets genuine multi-chunk behavior without further
+   configuration.
    `TestPrepareContextChunkedSummarizationRollsMultipleCallsIntoOneCheckpoint`,
    `TestPrepareContextChunkCapExhaustedFallsBackToDeterministicReset`, and
    `TestPrepareContextMaxSummaryChunksDefaultsToSingleShot`
-   (`internal/harness/application`) are this fix's own regression tests.
-   `MaxPrunedToolResultsPerRequest`/Tool Result pruning is tracked and
-   resolved separately — see the evidence ledger's own follow-up sections.
-4. A **duplicate `RunTurnRequestID` join specifically while a `pre_turn`
-   automatic compaction is mid-flight** (design §22.2's own named scenario)
-   has no dedicated test; the adjacent manual-compaction-vs-RunTurn
-   exclusivity case (`TestConcurrentManualCompactionAndRunTurnAreMutuallyExclusive`)
-   is covered, but this narrower automatic-trigger variant is not.
+   (`internal/harness/application`) are this second fix's own regression
+   tests.
+4. ~~A duplicate `RunTurnRequestID` join specifically while a `pre_turn`
+   automatic compaction is mid-flight has no dedicated test~~ **Resolved.**
+   `TestDuplicateRunTurnJoinsWhilePreTurnCompactionIsActive`
+   (`internal/harness/application/context_concurrency_test.go`) forces the
+   overlap deterministically with a `blockingSummarizer` (rather than
+   retrying for scheduling luck, as the adjacent
+   `TestConcurrentManualCompactionAndRunTurnAreMutuallyExclusive` must) and
+   proves both the duplicate call's result matches the owner's exactly and
+   that the durable log shows exactly one Turn and one compaction bracket,
+   never two of either.
 
 `och compact-session` (design CE-14's own CLI command) is now built —
 `cmd/och`'s own `compact-session` subcommand opens the normal composition

@@ -107,10 +107,19 @@ The numbered milestone list lives in
   is hash-chain-verified at write time and independently re-verified at
   read and cold-rebuild time; Runtime Host recovery closes a dangling
   compaction on restart, ordered correctly against its own enclosing Turn.
-  A benchmarked, disclosed known limitation remains open: the pre-turn
-  planning path re-scans a Session's whole canonical history on every call
-  rather than resuming from its own last checkpoint, an `O(history)` cost
-  the actually-dispatched request itself does not inherit. See the
+  This milestone's own previously most significant disclosed limitation —
+  the pre-turn planning path re-scanning a Session's whole canonical
+  history on every call instead of resuming from its own last checkpoint —
+  is now fixed as a follow-up commit: `contextengine.Scan` accepts a
+  resume point, and `PrepareContext`/`CompactSession` pass a checkpoint's
+  own coverage boundary, making the common steady-state cost flat with
+  Turn count rather than `O(history)` (benchmarked; only a checkpoint's own
+  replay-validation failure still pays the full rescan, a disclosed rare
+  path). The non-lowering provider-usage anchor (design §8) is now wired
+  into that same decision too, including its own `ContextPreparedRecorded`
+  evidence fields. `MaxSummaryChunks` (multi-chunk summarization) and
+  `MaxPrunedToolResultsPerRequest` (Tool Result pruning) remain open,
+  accepted-but-inert config surface. See the
   [Context Engine contract](docs/architecture/context-engine.md) and its
   [evidence ledger](docs/architecture/context-engine-evidence.md).
 

@@ -160,6 +160,22 @@ type ContextOrchestratorDeps struct {
 	// fails immediately rather than chunking, unless a caller opts in by
 	// setting this field.
 	MaxSummaryChunks uint32
+	// MaxPrunedToolResultsPerRequest mirrors ContextConfig's own field of
+	// the same name: how many oversized retained Tool Results
+	// PrepareContext's final Materialize call may replace with
+	// ProjectToolResult's marker-framed excerpt (design §10). Zero
+	// disables pruning entirely.
+	MaxPrunedToolResultsPerRequest uint32
+	// Identity is the active route's identity, when known -- the same
+	// value turn.go/loop.go already pass to ModelRequestRecordedFromEnvelope
+	// (service.config.RequestIdentity). PrepareContext uses it only to
+	// evaluate design §8's non-lowering provider-usage anchor
+	// (contextengine.EvaluateUsageAnchor) against the session's own recent
+	// history; nil disables the anchor entirely (every call behaves exactly
+	// as it did before this field existed), never an error, since a request
+	// identity is genuinely optional context some callers (this package's
+	// own standalone tests) never had reason to supply.
+	Identity *engine.RequestIdentity
 }
 
 // maxSummaryChunks is deps.MaxSummaryChunks, defaulting to 1 (single-shot
@@ -251,6 +267,19 @@ type PrepareContextResult struct {
 	CompactionRan     bool
 	SourceHeadVersion uint64
 	Prepared          contextengine.PreparedContext
+	// Budget is deps.Budget as of this call, carried through so
+	// ContextPreparedRecordedFromResult can record design §7.4's
+	// BudgetHardInput/BudgetTrigger/BudgetTarget evidence fields without
+	// needing its own separate Budget parameter.
+	Budget contextengine.Budget
+	// UsageAnchorApplied/UsageAnchorTokens record whether design §8's
+	// non-lowering provider-usage anchor actually raised this decision's
+	// own Trigger comparison above what the plain wire estimate alone
+	// would have found (CE-04's own ContextPreparedRecorded evidence
+	// fields) -- both remain the zero value when no eligible anchor
+	// existed or none was needed.
+	UsageAnchorApplied bool
+	UsageAnchorTokens  uint64
 }
 
 // PrepareContext implements design §15.1's pre-turn (and §15.2/§15.4's
@@ -280,17 +309,13 @@ func PrepareContext(ctx context.Context, deps ContextOrchestratorDeps, state dom
 	}
 
 	source := contextEventStorePageSource{store: deps.Store}
-	scan, err := contextengine.Scan(ctx, source, input.SessionID, deps.pageLimit())
+	scan, err := contextengine.Scan(ctx, source, input.SessionID, deps.pageLimit(), resumeSequence(previous))
 	if err != nil {
 		return PrepareContextResult{}, mapContextEngineScanError(err)
 	}
 
-	units := scan.Units
-	if previous != nil {
-		units = unitsAfter(units, previous.Coverage.ThroughSequence)
-	}
 	plan, err := contextengine.SelectCutPoint(contextengine.PlanInput{
-		Units: units, Budget: deps.Budget, Meter: deps.Meter, Tools: input.Tools, CurrentInput: input.CurrentInput, Force: input.Force,
+		Units: scan.Units, Budget: deps.Budget, Meter: deps.Meter, Tools: input.Tools, CurrentInput: input.CurrentInput, Force: input.Force,
 	})
 	if err != nil {
 		return PrepareContextResult{}, mapContextEngineScanError(err)
@@ -306,8 +331,18 @@ func PrepareContext(ctx context.Context, deps ContextOrchestratorDeps, state dom
 			// A previously valid checkpoint failed replay validation (most
 			// commonly a smaller route after a model switch). It is never
 			// silently trusted: fall back to planning the complete,
-			// uncheckpointed history from scratch (design §14.3).
+			// uncheckpointed history from scratch (design §14.3). The scan
+			// above only read the post-checkpoint tail (resumeSequence), so
+			// it cannot supply the pre-checkpoint history a from-scratch
+			// plan needs — this is the one path that still pays the full
+			// O(history) rescan cost (contextengine.Scan's own doc comment),
+			// a disclosed, rare-path trade rather than the common-path cost
+			// it used to be.
 			previous = nil
+			scan, err = contextengine.Scan(ctx, source, input.SessionID, deps.pageLimit(), 0)
+			if err != nil {
+				return PrepareContextResult{}, mapContextEngineScanError(err)
+			}
 			plan, err = contextengine.SelectCutPoint(contextengine.PlanInput{
 				Units: scan.Units, Budget: deps.Budget, Meter: deps.Meter, Tools: input.Tools, CurrentInput: input.CurrentInput, Force: input.Force,
 			})
@@ -317,7 +352,50 @@ func PrepareContext(ctx context.Context, deps ContextOrchestratorDeps, state dom
 		}
 	}
 
-	result := PrepareContextResult{State: state, SourceHeadVersion: scan.HeadVersion}
+	// Design §8's non-lowering provider-usage anchor: budgetEstimate =
+	// max(wireEstimate, anchoredEstimate?). It only ever matters here --
+	// SelectCutPoint above already decided NeedsCompaction from the plain
+	// wireEstimate alone, so this can only ever turn a "no compaction
+	// needed" decision into a forced one, never the reverse (Force already
+	// means "always attempt a cut," so there is nothing left for the
+	// anchor to add once it is true). Reconstructing the anchor costs one
+	// more bounded read of the identical resumeSequence(previous)..
+	// scan.HeadVersion window Scan itself just covered -- proportional to
+	// history since the last checkpoint, never the whole session.
+	var usageAnchorApplied bool
+	var usageAnchorTokens uint64
+	if !plan.NeedsCompaction && !input.Force && deps.Identity != nil {
+		anchor, found, anchorErr := loadUsageAnchor(ctx, deps, input.SessionID, scan.HeadVersion, resumeSequence(previous))
+		if anchorErr != nil {
+			return PrepareContextResult{}, anchorErr
+		}
+		if found {
+			var checkpointArg *contextengine.ContextCheckpoint
+			if previous != nil {
+				checkpointArg = previous
+			}
+			currentMessages := contextengine.Materialize(contextengine.MaterializeInput{
+				Checkpoint: checkpointArg, RetainedTail: plan.RetainedUnits, CurrentInput: input.CurrentInput, Tools: input.Tools, Meter: deps.Meter,
+			}).Envelope.Messages
+			anchorEstimate := contextengine.EvaluateUsageAnchor(anchor, deps.Meter,
+				deps.Identity.AdapterFamily, deps.Identity.ModelID, deps.Identity.EndpointID, deps.Meter.ID(), input.Tools, currentMessages)
+			if anchorEstimate.Eligible && anchorEstimate.Tokens > deps.Budget.Trigger {
+				plan, err = contextengine.SelectCutPoint(contextengine.PlanInput{
+					Units: scan.Units, Budget: deps.Budget, Meter: deps.Meter, Tools: input.Tools, CurrentInput: input.CurrentInput, Force: true,
+				})
+				if err != nil {
+					return PrepareContextResult{}, mapContextEngineScanError(err)
+				}
+				usageAnchorApplied = true
+				usageAnchorTokens = anchorEstimate.Tokens
+			}
+		}
+	}
+
+	result := PrepareContextResult{
+		State: state, SourceHeadVersion: scan.HeadVersion, Budget: deps.Budget,
+		UsageAnchorApplied: usageAnchorApplied, UsageAnchorTokens: usageAnchorTokens,
+	}
 	activeCheckpoint := previous
 
 	if plan.NeedsCompaction {
@@ -352,6 +430,7 @@ func PrepareContext(ctx context.Context, deps ContextOrchestratorDeps, state dom
 	}
 	result.Prepared = contextengine.Materialize(contextengine.MaterializeInput{
 		Checkpoint: checkpointArg, RetainedTail: retainedUnits, CurrentInput: input.CurrentInput, Tools: input.Tools, Meter: deps.Meter,
+		ProtectedTail: deps.Budget.ProtectedTail, MaxPrunedToolResults: deps.MaxPrunedToolResultsPerRequest, HardInput: deps.Budget.HardInput,
 	})
 	return result, nil
 }
@@ -380,14 +459,101 @@ func loadUsableCheckpoint(ctx context.Context, deps ContextOrchestratorDeps, ses
 	return &checkpoint, nil
 }
 
-func unitsAfter(units []contextengine.ContextUnit, throughSequence uint64) []contextengine.ContextUnit {
-	var kept []contextengine.ContextUnit
-	for _, unit := range units {
-		if unit.LastSequence > throughSequence {
-			kept = append(kept, unit)
+// usageAnchorKey identifies one conversation attempt across the events its
+// own evidence is split over (ModelRequestRecorded, ModelUsageRecorded,
+// and, when the attempt went through the Context Engine,
+// ContextPreparedRecorded). Design §8 names TurnID/ItemID/AttemptIndex as
+// the matching triple, but this project's own current ModelUsageRecorded
+// producer (turn.go's modelUsageFromStats) never threads AttemptIndex
+// through at all -- it stays the Go zero value regardless of which attempt
+// actually produced it, a real, pre-existing gap this key does not attempt
+// to fix. TurnID+ItemID alone remains a correct match key today anyway:
+// every Step (including an overflow-retried one) allocates its own fresh
+// ItemID, so distinct attempts on distinct Items never collide, and the
+// one same-Item overflow-retry case (an initial attempt rejected, a retry
+// reusing the same ItemID) still resolves correctly because only the
+// retry that actually completes ever reaches decideTurnTerminal and
+// appends a ModelRequestRecorded+ModelUsageRecorded pair for that Item —
+// findLatestUsageAnchor's own backward walk finds it first regardless,
+// being newer in sequence than the rejected attempt's own request.
+type usageAnchorKey struct {
+	turnID domain.TurnID
+	itemID domain.ItemID
+}
+
+// findLatestUsageAnchor reconstructs design §8's non-lowering provider-
+// usage anchor from a bounded slice of canonical records, already in
+// ascending sequence order (readSourceRecordsRange's own contract): the
+// newest ModelRequestRecorded with conversation purpose that has a
+// matching ModelUsageRecorded (same usageAnchorKey) carrying non-zero
+// InputTokens. The matching attempt's own ContextPreparedRecorded, when
+// one exists, supplies MeterID; a request built outside the Context
+// Engine (turn.go's own disclosed "first attempt on the legacy path" case)
+// has none, which correctly makes it ineligible in
+// contextengine.EvaluateUsageAnchor's own MeterID comparison below rather
+// than needing a special case here.
+func findLatestUsageAnchor(records []domain.RecordedEvent) (contextengine.UsageAnchor, bool) {
+	usageByKey := make(map[usageAnchorKey]domain.ModelUsageRecorded)
+	meterByKey := make(map[usageAnchorKey]string)
+	for _, record := range records {
+		switch event := record.Event.(type) {
+		case domain.ModelUsageRecorded:
+			usageByKey[usageAnchorKey{event.TurnID, event.ItemID}] = event
+		case domain.ContextPreparedRecorded:
+			meterByKey[usageAnchorKey{event.TurnID, event.ItemID}] = event.MeterID
 		}
 	}
-	return kept
+	for i := len(records) - 1; i >= 0; i-- {
+		request, ok := records[i].Event.(domain.ModelRequestRecorded)
+		if !ok {
+			continue
+		}
+		if request.Purpose != "" && request.Purpose != string(engine.ModelRequestPurposeConversation) {
+			continue
+		}
+		key := usageAnchorKey{request.TurnID, request.ItemID}
+		usage, ok := usageByKey[key]
+		if !ok || usage.InputTokens == 0 {
+			continue
+		}
+		return contextengine.UsageAnchor{
+			AdapterFamily: request.AdapterFamily, ModelID: request.ModelID, EndpointID: request.EndpointID,
+			Purpose: contextengine.PurposeConversation, MeterID: meterByKey[key],
+			Tools: request.Tools, Messages: request.Messages,
+			ObservedInputTokens: usage.InputTokens, CachedInputTokens: usage.CachedInputTokens,
+		}, true
+	}
+	return contextengine.UsageAnchor{}, false
+}
+
+// loadUsageAnchor reads exactly the same bounded window
+// resumeSequence(previous)..headVersion that this round's own (possibly
+// resumed) Scan already covers -- no full-history read of its own -- and
+// extracts a usage anchor from it. A candidate whose own request surface
+// predates that window is never derivable via EvaluateUsageAnchor's own
+// ordered-append rule anyway (design §8's second, checkpoint-rewrite
+// derivability case is not yet implemented; see
+// contextengine.EvaluateUsageAnchor's own doc comment), so restricting the
+// search to this window narrows only what could never have been eligible
+// regardless.
+func loadUsageAnchor(ctx context.Context, deps ContextOrchestratorDeps, sessionID domain.SessionID, headVersion, fromSequence uint64) (contextengine.UsageAnchor, bool, error) {
+	records, err := readSourceRecordsRange(ctx, deps.Store, sessionID, headVersion, fromSequence, headVersion)
+	if err != nil {
+		return contextengine.UsageAnchor{}, false, err
+	}
+	anchor, ok := findLatestUsageAnchor(records)
+	return anchor, ok, nil
+}
+
+// resumeSequence is the afterSequence contextengine.Scan resumes from: a
+// checkpoint's own Coverage.ThroughSequence when one exists (always a real
+// Turn boundary, per Scan's own doc comment on why that is safe), or 0 (a
+// full scan) when there is none yet.
+func resumeSequence(previous *contextengine.ContextCheckpoint) uint64 {
+	if previous == nil {
+		return 0
+	}
+	return previous.Coverage.ThroughSequence
 }
 
 // currentInputMessage mirrors contextengine's own unexported
@@ -1167,8 +1333,10 @@ func ContextPreparedRecordedFromResult(result PrepareContextResult, trigger stri
 		Trigger: trigger, SourceHeadVersion: result.SourceHeadVersion,
 		CheckpointID: prepared.CheckpointID, CheckpointKind: string(prepared.CheckpointKind),
 		RawTailFromSequence: prepared.RetainedTailFromSequence, RawTailThroughSequence: prepared.RetainedTailThroughSequence,
+		BudgetHardInput: result.Budget.HardInput, BudgetTrigger: result.Budget.Trigger, BudgetTarget: result.Budget.Target,
 		EstimatedMessageTokens: prepared.EstimatedMessageTokens, EstimatedToolSchemaTokens: prepared.EstimatedToolSchemaTokens,
 		EstimatedTotalTokens: prepared.EstimatedTotalTokens, MeterID: prepared.MeterID,
+		UsageAnchorApplied: result.UsageAnchorApplied, UsageAnchorTokens: result.UsageAnchorTokens,
 		SerializedEnvelopeBytes: uint64(prepared.ApproximateSerializedBytes),
 	}
 }

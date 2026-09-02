@@ -185,14 +185,15 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 		appConfig.ApprovalTimeout = config.Limits.ApprovalTimeout
 	}
 	appConfig.Context = application.ContextConfig{
-		Enabled:                      true,
-		Budget:                       contextBudget,
-		Meter:                        contextMeter,
-		Summarizer:                   contextSummarizer,
-		CheckpointStore:              sqliteStore,
-		MaxOverflowRecoveriesPerTurn: config.Context.MaxOverflowCompactionsPerTurn,
-		CompactionTimeout:            config.Context.CompactionTimeout,
-		MaxSummaryChunks:             config.Context.MaxSummaryChunks,
+		Enabled:                        true,
+		Budget:                         contextBudget,
+		Meter:                          contextMeter,
+		Summarizer:                     contextSummarizer,
+		CheckpointStore:                sqliteStore,
+		MaxOverflowRecoveriesPerTurn:   config.Context.MaxOverflowCompactionsPerTurn,
+		CompactionTimeout:              config.Context.CompactionTimeout,
+		MaxSummaryChunks:               config.Context.MaxSummaryChunks,
+		MaxPrunedToolResultsPerRequest: config.Context.MaxPrunedToolResultsPerRequest,
 	}
 
 	// Pass the store itself as the AuthoritySource: the Service then reads

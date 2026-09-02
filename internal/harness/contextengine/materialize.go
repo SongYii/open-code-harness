@@ -24,6 +24,12 @@ type PreparedContext struct {
 	EstimatedToolSchemaTokens   uint64
 	EstimatedTotalTokens        uint64
 	MeterID                     string
+	// PrunedToolResultCount is how many retained Tool Result messages this
+	// call actually replaced with ProjectToolResult's marker-framed excerpt
+	// (design §10) — 0 when MaterializeInput never enabled pruning, or when
+	// every retained Tool Result already fit under
+	// MaxProjectedToolResultTokens(ProtectedTail).
+	PrunedToolResultCount uint32
 	// ApproximateSerializedBytes is this package's own JSON-encoded proxy
 	// for the envelope's size — not the literal wire bytes a Provider
 	// Adapter (Task 8) would produce, which this package has no visibility
@@ -42,6 +48,24 @@ type MaterializeInput struct {
 	CurrentInput domain.ModelPromptMessage
 	Tools        []domain.ToolSchema
 	Meter        Meter
+	// ProtectedTail, MaxPrunedToolResults, and HardInput together enable
+	// design §10's Tool Result projection over RetainedTail: a retained
+	// Tool Result message whose own meter estimate exceeds
+	// MaxProjectedToolResultTokens(ProtectedTail) is replaced by
+	// ProjectToolResult's marker-framed excerpt, oldest first (RetainedTail's
+	// own ascending sequence order), up to MaxPrunedToolResults such
+	// replacements per call; a Tool Result ProjectToolResult itself cannot
+	// fit under HardInput even with an empty excerpt is left byte-identical
+	// rather than failing this call (a disclosed, best-effort fallback —
+	// Materialize returns no error at all, so it cannot itself report
+	// ErrContextUnitTooLarge; a request that still cannot fit remains the
+	// existing overflow_retry trigger's problem to react to). Any of the
+	// three left at its zero value disables pruning entirely — every caller
+	// that built a MaterializeInput before these fields existed continues
+	// to receive byte-identical Tool Result content, unchanged.
+	ProtectedTail        uint64
+	MaxPrunedToolResults uint32
+	HardInput            uint64
 }
 
 // Materialize combines MaterializeInput into one PreparedContext: an
@@ -66,9 +90,27 @@ func Materialize(input MaterializeInput) PreparedContext {
 		result.RetainedTailFromSequence = input.RetainedTail[0].FirstSequence
 		result.RetainedTailThroughSequence = input.RetainedTail[len(input.RetainedTail)-1].LastSequence
 	}
-	for _, unit := range input.RetainedTail {
-		messages = append(messages, unit.Messages...)
+	pruningEnabled := input.ProtectedTail > 0 && input.MaxPrunedToolResults > 0
+	var maxToolResultTokens uint64
+	if pruningEnabled {
+		maxToolResultTokens = MaxProjectedToolResultTokens(input.ProtectedTail)
 	}
+	var prunedCount uint32
+	for _, unit := range input.RetainedTail {
+		for _, message := range unit.Messages {
+			if pruningEnabled && prunedCount < input.MaxPrunedToolResults && message.Role == domain.PromptRoleTool {
+				if estimateText(input.Meter, message.Text) > maxToolResultTokens {
+					projected, err := ProjectToolResult(message.ToolCallID, message.Text, maxToolResultTokens, input.Meter, input.HardInput)
+					if err == nil && projected.Projected {
+						message.Text = projected.Text
+						prunedCount++
+					}
+				}
+			}
+			messages = append(messages, message)
+		}
+	}
+	result.PrunedToolResultCount = prunedCount
 	messages = append(messages, currentInputMessages(input.CurrentInput)...)
 
 	envelope := Envelope{Messages: messages, Tools: input.Tools}
