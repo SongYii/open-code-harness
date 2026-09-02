@@ -61,6 +61,8 @@ func TestClassifyProductionDirectory(t *testing.T) {
 		{name: "composition production subpackage", directory: "internal/harness/composition/wiring", want: ownerComposition, inspect: true, hasOwner: true},
 		{name: "transcript root", directory: "internal/harness/transcript", want: ownerTranscript, inspect: true, hasOwner: true},
 		{name: "transcript production subpackage", directory: "internal/harness/transcript/internal", want: ownerTranscript, inspect: true, hasOwner: true},
+		{name: "eval root", directory: "internal/harness/eval", want: ownerEval, inspect: true, hasOwner: true},
+		{name: "eval production subpackage", directory: "internal/harness/eval/internal", want: ownerEval, inspect: true, hasOwner: true},
 		{name: "unowned adapter still inspected", directory: "internal/harness/adapters/other", inspect: true},
 		{name: "unowned nested adapter still inspected", directory: "internal/harness/adapters/other/internal", inspect: true},
 		{name: "harness root still inspected", directory: "internal/harness", inspect: true},
@@ -269,6 +271,27 @@ func TestForbiddenImport(t *testing.T) {
 		{name: "acp cannot import transcript", owner: ownerACP, importPath: modulePath + "/internal/harness/transcript", forbidden: true},
 		{name: "sqlite cannot import transcript", owner: ownerSQLite, importPath: modulePath + "/internal/harness/transcript", forbidden: true},
 		{name: "runtime cannot import transcript", owner: ownerRuntime, importPath: modulePath + "/internal/harness/transcript", forbidden: true},
+		{name: "eval may import application", owner: ownerEval, importPath: modulePath + "/internal/harness/application", forbidden: false},
+		{name: "eval may import composition", owner: ownerEval, importPath: modulePath + "/internal/harness/composition", forbidden: false},
+		{name: "eval may import transcript", owner: ownerEval, importPath: modulePath + "/internal/harness/transcript", forbidden: false},
+		{name: "eval cannot import adapters", owner: ownerEval, importPath: modulePath + "/internal/harness/adapters/sqlite", forbidden: true},
+		{name: "eval cannot import adapters root", owner: ownerEval, importPath: modulePath + "/internal/harness/adapters", forbidden: true},
+		{name: "eval cannot import testkit", owner: ownerEval, importPath: modulePath + "/internal/harness/testkit", forbidden: true},
+		{name: "domain cannot import eval", owner: ownerDomain, importPath: modulePath + "/internal/harness/eval", forbidden: true},
+		{name: "engine cannot import eval", owner: ownerEngine, importPath: modulePath + "/internal/harness/eval", forbidden: true},
+		{name: "application cannot import eval", owner: ownerApplication, importPath: modulePath + "/internal/harness/eval", forbidden: true},
+		{name: "policy cannot import eval", owner: ownerPolicy, importPath: modulePath + "/internal/harness/eval", forbidden: true},
+		{name: "tools cannot import eval", owner: ownerTools, importPath: modulePath + "/internal/harness/eval", forbidden: true},
+		{name: "transcript cannot import eval", owner: ownerTranscript, importPath: modulePath + "/internal/harness/eval", forbidden: true},
+		{name: "composition cannot import eval", owner: ownerComposition, importPath: modulePath + "/internal/harness/eval", forbidden: true},
+		{name: "sqlite cannot import eval", owner: ownerSQLite, importPath: modulePath + "/internal/harness/eval", forbidden: true},
+		{name: "runtime cannot import eval", owner: ownerRuntime, importPath: modulePath + "/internal/harness/eval", forbidden: true},
+		{name: "system cannot import eval", owner: ownerSystem, importPath: modulePath + "/internal/harness/eval", forbidden: true},
+		{name: "acp cannot import eval", owner: ownerACP, importPath: modulePath + "/internal/harness/eval", forbidden: true},
+		{name: "openaicompat cannot import eval", owner: ownerOpenAICompat, importPath: modulePath + "/internal/harness/eval", forbidden: true},
+		{name: "workspacefs cannot import eval", owner: ownerWorkspaceFS, importPath: modulePath + "/internal/harness/eval", forbidden: true},
+		{name: "localexec cannot import eval", owner: ownerLocalExec, importPath: modulePath + "/internal/harness/eval", forbidden: true},
+		{name: "memory cannot import eval", owner: ownerMemory, importPath: modulePath + "/internal/harness/eval", forbidden: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -377,6 +400,7 @@ const (
 	ownerACP          packageOwner = "acp"
 	ownerComposition  packageOwner = "composition"
 	ownerTranscript   packageOwner = "transcript"
+	ownerEval         packageOwner = "eval"
 )
 
 var excludedTestSupportDirectories = []string{
@@ -417,6 +441,7 @@ func packageOwnership(directory string) (packageOwner, bool) {
 		{root: "internal/harness/composition", owner: ownerComposition},
 		{root: "internal/harness/transcript", owner: ownerTranscript},
 		{root: "internal/harness/tools", owner: ownerTools},
+		{root: "internal/harness/eval", owner: ownerEval},
 	} {
 		if directoryWithin(directory, candidate.root) {
 			return candidate.owner, true
@@ -443,6 +468,7 @@ func unownedImport(importPath string) string {
 		modulePath + "/internal/harness/adapters",
 		modulePath + "/internal/harness/testkit",
 		modulePath + "/internal/harness/transcript",
+		modulePath + "/internal/harness/eval",
 	} {
 		if withinPackage(importPath, prefix) {
 			return "forbidden package dependency from an unowned package"
@@ -464,6 +490,7 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/tools",
 			modulePath+"/internal/harness/policy",
 			modulePath+"/internal/harness/transcript",
+			modulePath+"/internal/harness/eval",
 		)
 	case ownerEngine:
 		forbidden = append(forbidden,
@@ -473,6 +500,7 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/tools",
 			modulePath+"/internal/harness/policy",
 			modulePath+"/internal/harness/transcript",
+			modulePath+"/internal/harness/eval",
 		)
 	case ownerTools:
 		forbidden = append(forbidden,
@@ -482,18 +510,21 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/testkit",
 			modulePath+"/internal/harness/engine",
 			modulePath+"/internal/harness/transcript",
+			modulePath+"/internal/harness/eval",
 		)
 	case ownerApplication:
 		forbidden = append(forbidden,
 			modulePath+"/internal/harness/adapters",
 			modulePath+"/internal/harness/testkit",
 			modulePath+"/internal/harness/transcript",
+			modulePath+"/internal/harness/eval",
 		)
 	case ownerOpenAICompat:
 		forbidden = append(forbidden,
 			modulePath+"/internal/harness/application",
 			modulePath+"/internal/harness/testkit",
 			modulePath+"/internal/harness/tools",
+			modulePath+"/internal/harness/eval",
 		)
 	case ownerPolicy:
 		forbidden = append(forbidden,
@@ -503,6 +534,7 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/adapters",
 			modulePath+"/internal/harness/testkit",
 			modulePath+"/internal/harness/transcript",
+			modulePath+"/internal/harness/eval",
 		)
 	case ownerSQLite:
 		forbidden = append(forbidden,
@@ -511,6 +543,7 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/policy",
 			modulePath+"/internal/harness/testkit",
 			modulePath+"/internal/harness/transcript",
+			modulePath+"/internal/harness/eval",
 		)
 	case ownerRuntime:
 		// Runtime is denied the adapters root as a whole, with sqlite carved
@@ -524,6 +557,7 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/testkit",
 			modulePath+"/internal/harness/adapters",
 			modulePath+"/internal/harness/transcript",
+			modulePath+"/internal/harness/eval",
 		)
 	case ownerSystem:
 		forbidden = append(forbidden,
@@ -533,6 +567,7 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/runtime",
 			modulePath+"/internal/harness/testkit",
 			modulePath+"/internal/harness/adapters",
+			modulePath+"/internal/harness/eval",
 		)
 	case ownerACP:
 		forbidden = append(forbidden,
@@ -540,6 +575,7 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/policy",
 			modulePath+"/internal/harness/runtime",
 			modulePath+"/internal/harness/transcript",
+			modulePath+"/internal/harness/eval",
 		)
 	case ownerTranscript:
 		forbidden = append(forbidden,
@@ -549,14 +585,17 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/runtime",
 			modulePath+"/internal/harness/testkit",
 			modulePath+"/internal/harness/adapters",
+			modulePath+"/internal/harness/eval",
 		)
 	case ownerComposition:
 		// The composition root may name every adapter. That is the whole
 		// point of the package, and the reason no other package may.
 		// Test support stays forbidden: production wiring must not reach
-		// for a double.
+		// for a double. Eval is also forbidden: eval is a consumer of
+		// composition, never the reverse (design §5).
 		forbidden = append(forbidden,
 			modulePath+"/internal/harness/testkit",
+			modulePath+"/internal/harness/eval",
 		)
 	case ownerWorkspaceFS, ownerLocalExec:
 		forbidden = append(forbidden,
@@ -564,6 +603,23 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/testkit",
 			modulePath+"/internal/harness/policy",
 			modulePath+"/internal/harness/engine",
+			modulePath+"/internal/harness/eval",
+		)
+	case ownerMemory:
+		// Memory otherwise relies on the generic adapter/host-network rules
+		// below; it needs its own case only to add the eval restriction
+		// every other owner also gets (design §5: adapters must not import
+		// eval).
+		forbidden = append(forbidden,
+			modulePath+"/internal/harness/eval",
+		)
+	case ownerEval:
+		// Eval is a consumer of application/composition/transcript (design
+		// §5) but must not construct or import a concrete harness adapter;
+		// Composition remains the only adapter owner.
+		forbidden = append(forbidden,
+			modulePath+"/internal/harness/adapters",
+			modulePath+"/internal/harness/testkit",
 		)
 	}
 	// The Runtime Host owns the canonical store's lifecycle and its Config
@@ -800,6 +856,8 @@ func TestUnownedPackagesCannotImportAdapters(t *testing.T) {
 		{name: "test support", importPath: modulePath + "/internal/harness/testkit", forbidden: true},
 		{name: "transcript", importPath: modulePath + "/internal/harness/transcript", forbidden: true},
 		{name: "transcript subpackage", importPath: modulePath + "/internal/harness/transcript/internal", forbidden: true},
+		{name: "eval", importPath: modulePath + "/internal/harness/eval", forbidden: true},
+		{name: "eval subpackage", importPath: modulePath + "/internal/harness/eval/internal", forbidden: true},
 		{name: "similarly named package is not an adapter", importPath: modulePath + "/internal/harness/adaptersx", forbidden: false},
 		{name: "domain stays permitted", importPath: modulePath + "/internal/harness/domain", forbidden: false},
 		{name: "standard library stays permitted", importPath: "time", forbidden: false},
@@ -836,7 +894,7 @@ func TestOnlyCompositionAndRuntimeMayNameAnAdapter(t *testing.T) {
 		ownerDomain, ownerEngine, ownerApplication, ownerPolicy, ownerTools,
 		ownerRuntime, ownerMemory, ownerOpenAICompat, ownerSQLite,
 		ownerWorkspaceFS, ownerLocalExec, ownerSystem, ownerACP,
-		ownerTranscript,
+		ownerTranscript, ownerEval,
 	}
 	permitted := func(owner packageOwner, adapter string) bool {
 		if selfRoot, ok := adapterOwnerRoot(owner); ok && adapter == selfRoot {
