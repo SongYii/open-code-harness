@@ -252,7 +252,7 @@ func (service *Service) contextOrchestratorDeps() ContextOrchestratorDeps {
 		Store: service.store, IDs: service.ids, Clock: service.clock, Authority: service.authority,
 		CheckpointStore: service.config.Context.CheckpointStore, Summarizer: service.config.Context.Summarizer,
 		Meter: service.config.Context.Meter, Budget: service.config.Context.Budget, PageLimit: service.config.Context.PageLimit,
-		SummarizeTimeout: service.config.Context.CompactionTimeout,
+		SummarizeTimeout: service.config.Context.CompactionTimeout, Identity: service.config.RequestIdentity,
 	}
 }
 

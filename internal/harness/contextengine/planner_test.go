@@ -66,7 +66,7 @@ func TestScanAcrossMultiplePages(t *testing.T) {
 		seq++
 	}
 	source := &fakePageSource{records: records, headVersion: 42, pageSize: 3}
-	result, err := Scan(context.Background(), source, "sess1", 3)
+	result, err := Scan(context.Background(), source, "sess1", 3, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestScanAcrossMultiplePages(t *testing.T) {
 
 	// A second scan over the identical fixture must produce an identical
 	// digest — Scan's own determinism, not just ComputeSourceDigest's.
-	result2, err := Scan(context.Background(), source, "sess1", 3)
+	result2, err := Scan(context.Background(), source, "sess1", 3, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,9 +95,83 @@ func TestScanHeadMismatchFailsClosed(t *testing.T) {
 	records := turnAndAssistant(1, 2, "t1", "hi", "hello")
 	records = append(records, turnAndAssistant(3, 4, "t2", "hi again", "hello again")...)
 	source := &fakePageSource{records: records, headVersion: 1, pageSize: 2, mismatchAfterFirstPage: true}
-	_, err := Scan(context.Background(), source, "sess1", 2)
+	_, err := Scan(context.Background(), source, "sess1", 2, 0)
 	if !errors.Is(err, ErrHeadMismatch) {
 		t.Fatalf("got %v, want ErrHeadMismatch", err)
+	}
+}
+
+// TestScanResumesFromAfterSequence is this milestone's own regression test
+// for its most significant disclosed limitation (context-engine-evidence.md
+// "Remaining blockers" #3): a non-zero afterSequence must make Scan read
+// and project only the records after it, not the whole fixture, and the
+// resulting Units must be identical to what a full scan produces once
+// filtered to the same boundary.
+func TestScanResumesFromAfterSequence(t *testing.T) {
+	var records []domain.RecordedEvent
+	var seq uint64
+	const totalTurns = 20
+	for i := 0; i < totalTurns; i++ {
+		seq++
+		turnID := domain.TurnID(fmt.Sprintf("turn-%d", i))
+		records = append(records, turnAndAssistant(seq, seq+1, turnID, "hi", "hello")...)
+		seq++
+	}
+
+	fullSource := &fakePageSource{records: records, headVersion: 99, pageSize: 4}
+	full, err := Scan(context.Background(), fullSource, "sess1", 4, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(full.Units) != totalTurns*2 {
+		t.Fatalf("full scan Units = %d, want %d", len(full.Units), totalTurns*2)
+	}
+
+	// Resume from the boundary after the 15th Turn's own last unit (a real
+	// Turn boundary, exactly the shape a checkpoint's own
+	// Coverage.ThroughSequence would be).
+	const resumeFromTurn = 15
+	resumeAfter := full.Units[resumeFromTurn*2-1].LastSequence
+
+	resumeSource := &fakePageSource{records: records, headVersion: 99, pageSize: 4}
+	resumed, err := Scan(context.Background(), resumeSource, "sess1", 4, resumeAfter)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantUnits := full.Units[resumeFromTurn*2:]
+	if len(resumed.Units) != len(wantUnits) {
+		t.Fatalf("resumed scan Units = %d, want %d", len(resumed.Units), len(wantUnits))
+	}
+	for i := range wantUnits {
+		if resumed.Units[i].LastSequence != wantUnits[i].LastSequence {
+			t.Fatalf("resumed Units[%d].LastSequence = %d, want %d", i, resumed.Units[i].LastSequence, wantUnits[i].LastSequence)
+		}
+	}
+	if resumed.HeadVersion != full.HeadVersion {
+		t.Fatalf("resumed HeadVersion = %d, want %d (pinning is independent of the starting offset)", resumed.HeadVersion, full.HeadVersion)
+	}
+
+	// The whole point: resuming must read strictly fewer records than a
+	// full scan of the same fixture, not merely filter the same work after
+	// the fact.
+	if resumeSource.pagesServed >= fullSource.pagesServed {
+		t.Fatalf("resumed scan served %d pages, want fewer than the full scan's %d", resumeSource.pagesServed, fullSource.pagesServed)
+	}
+
+	// A resumed scan's own digest/count describe only the records it
+	// actually read, not the whole fixture: it must differ from a full
+	// scan's own digest over everything, and match an independently
+	// computed digest over exactly the same tail records.
+	if resumed.SourceDigest == full.SourceDigest {
+		t.Fatal("resumed scan's SourceDigest equals the full scan's despite covering fewer records")
+	}
+	wantDigest, wantCount, err := ComputeSourceDigest(records[resumeFromTurn*2:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.SourceDigest != wantDigest || resumed.CoveredCount != wantCount {
+		t.Fatalf("resumed scan digest/count = %x/%d, want %x/%d", resumed.SourceDigest, resumed.CoveredCount, wantDigest, wantCount)
 	}
 }
 
