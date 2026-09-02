@@ -11,14 +11,14 @@ import (
 // runHappyAttempt runs a minimal, real Attempt (an approved write_file
 // call, so there's a real workspace artifact) and returns everything
 // CollectEvidence needs.
-func runHappyAttempt(t *testing.T) (directories AttemptRootDirectories, execution ExecutionOutcome, scenario Scenario) {
+func runHappyAttempt(t *testing.T) (directories AttemptRootDirectories, execution ExecutionOutcome, documents EvidenceDocuments) {
 	t.Helper()
 	server := newApprovalProvider(t)
 	subject := testSubject(t, server.Server)
 	attemptID := testAttemptID(t)
 	directories = testDirectories(t, attemptID)
 
-	scenario = validScenario()
+	scenario := validScenario()
 	scenario.Actions = []ScenarioAction{
 		newEchoScenarioAction("prompt-1", "write the file"),
 		{ID: "collect-1", Type: ActionCollect, Collect: &CollectAction{WorkspacePath: "output.txt"}},
@@ -28,6 +28,8 @@ func runHappyAttempt(t *testing.T) (directories AttemptRootDirectories, executio
 	}
 	scenario.RequiredEvidenceRoles = []string{"transcript", "audit", "workspace"}
 	scenario.OptionalEvidenceRoles = nil
+	scenario.DeterministicVerifierIDs = allCatalogVerifierIDs
+	documents = publishTestEvidenceDocuments(t, directories, attemptID, scenario, subject)
 
 	matcher := NewApprovalMatcher(scenario.ApprovalScript)
 	var err error
@@ -38,13 +40,30 @@ func runHappyAttempt(t *testing.T) (directories AttemptRootDirectories, executio
 	if !execution.WriterStopped {
 		t.Fatal("RunAttempt() WriterStopped = false, want true")
 	}
-	return directories, execution, scenario
+	return directories, execution, documents
+}
+
+func publishTestEvidenceDocuments(t *testing.T, directories AttemptRootDirectories, attemptID AttemptID, scenario Scenario, subject Subject) EvidenceDocuments {
+	t.Helper()
+	executor := validExecutorInProcess()
+	attempt, err := buildAttemptDocument(
+		"test-set",
+		CellAttempt{Cell: Cell{ScenarioID: scenario.ID, SubjectID: subject.ID, ExecutorID: executor.ID}},
+		attemptID, directories, scenario, subject, executor,
+	)
+	if err != nil {
+		t.Fatalf("buildAttemptDocument: %v", err)
+	}
+	if err := PublishAttempt(directories.Root, attempt); err != nil {
+		t.Fatalf("PublishAttempt: %v", err)
+	}
+	return EvidenceDocuments{Scenario: scenario, Subject: subject, Executor: executor, Attempt: attempt}
 }
 
 func TestCollectEvidenceHappyPath(t *testing.T) {
-	directories, execution, scenario := runHappyAttempt(t)
+	directories, execution, documents := runHappyAttempt(t)
 
-	outcome, manifest, err := CollectEvidence(context.Background(), directories, execution, execution.Outcome, scenario, CollectionLimits{})
+	outcome, manifest, err := CollectEvidence(context.Background(), directories, execution, execution.Outcome, documents, CollectionLimits{})
 	if err != nil {
 		t.Fatalf("CollectEvidence() error = %v", err)
 	}
@@ -70,6 +89,11 @@ func TestCollectEvidenceHappyPath(t *testing.T) {
 	}
 	if roles["outcome"] != 1 {
 		t.Fatalf("outcome entries = %d, want 1", roles["outcome"])
+	}
+	for _, role := range []string{"scenario", "subject", "executor", "attempt"} {
+		if roles[role] != 1 {
+			t.Fatalf("%s entries = %d, want one frozen identity document", role, roles[role])
+		}
 	}
 
 	// The published documents must actually be readable back.
@@ -110,6 +134,7 @@ func TestCollectEvidenceMissingRequiredWorkspaceArtifactIsPartial(t *testing.T) 
 	scenario.ApprovalScript = nil
 	scenario.RequiredEvidenceRoles = []string{"transcript", "audit", "workspace"}
 	scenario.OptionalEvidenceRoles = nil
+	documents := publishTestEvidenceDocuments(t, directories, attemptID, scenario, subject)
 
 	matcher := NewApprovalMatcher(scenario.ApprovalScript)
 	execution, err := RunAttempt(context.Background(), attemptID, subject, directories, scenario, matcher)
@@ -117,7 +142,7 @@ func TestCollectEvidenceMissingRequiredWorkspaceArtifactIsPartial(t *testing.T) 
 		t.Fatalf("RunAttempt() error = %v", err)
 	}
 
-	outcome, manifest, err := CollectEvidence(context.Background(), directories, execution, execution.Outcome, scenario, CollectionLimits{})
+	outcome, manifest, err := CollectEvidence(context.Background(), directories, execution, execution.Outcome, documents, CollectionLimits{})
 	if err != nil {
 		t.Fatalf("CollectEvidence() error = %v", err)
 	}
@@ -153,6 +178,7 @@ func TestCollectEvidenceRejectsSymlinkArtifact(t *testing.T) {
 	scenario.ApprovalScript = nil
 	scenario.RequiredEvidenceRoles = []string{"transcript", "audit", "workspace"}
 	scenario.OptionalEvidenceRoles = nil
+	documents := publishTestEvidenceDocuments(t, directories, attemptID, scenario, subject)
 
 	matcher := NewApprovalMatcher(scenario.ApprovalScript)
 	execution, err := RunAttempt(context.Background(), attemptID, subject, directories, scenario, matcher)
@@ -168,7 +194,7 @@ func TestCollectEvidenceRejectsSymlinkArtifact(t *testing.T) {
 		t.Fatalf("create symlink: %v", err)
 	}
 
-	outcome, manifest, err := CollectEvidence(context.Background(), directories, execution, execution.Outcome, scenario, CollectionLimits{})
+	outcome, manifest, err := CollectEvidence(context.Background(), directories, execution, execution.Outcome, documents, CollectionLimits{})
 	if err != nil {
 		t.Fatalf("CollectEvidence() error = %v", err)
 	}
@@ -202,6 +228,7 @@ func TestCollectEvidenceRejectsHardLinkedArtifact(t *testing.T) {
 	scenario.ApprovalScript = nil
 	scenario.RequiredEvidenceRoles = []string{"transcript", "audit", "workspace"}
 	scenario.OptionalEvidenceRoles = nil
+	documents := publishTestEvidenceDocuments(t, directories, attemptID, scenario, subject)
 
 	matcher := NewApprovalMatcher(scenario.ApprovalScript)
 	execution, err := RunAttempt(context.Background(), attemptID, subject, directories, scenario, matcher)
@@ -218,7 +245,7 @@ func TestCollectEvidenceRejectsHardLinkedArtifact(t *testing.T) {
 		t.Fatalf("create hard link: %v", err)
 	}
 
-	outcome, manifest, err := CollectEvidence(context.Background(), directories, execution, execution.Outcome, scenario, CollectionLimits{})
+	outcome, manifest, err := CollectEvidence(context.Background(), directories, execution, execution.Outcome, documents, CollectionLimits{})
 	if err != nil {
 		t.Fatalf("CollectEvidence() error = %v", err)
 	}
@@ -249,6 +276,7 @@ func TestCollectEvidenceOversizedWorkspaceArtifactIsTruncated(t *testing.T) {
 	scenario.ApprovalScript = nil
 	scenario.RequiredEvidenceRoles = []string{"transcript", "audit"}
 	scenario.OptionalEvidenceRoles = []string{"workspace"}
+	documents := publishTestEvidenceDocuments(t, directories, attemptID, scenario, subject)
 
 	matcher := NewApprovalMatcher(scenario.ApprovalScript)
 	execution, err := RunAttempt(context.Background(), attemptID, subject, directories, scenario, matcher)
@@ -261,7 +289,7 @@ func TestCollectEvidenceOversizedWorkspaceArtifactIsTruncated(t *testing.T) {
 		t.Fatalf("write big file: %v", err)
 	}
 
-	outcome, manifest, err := CollectEvidence(context.Background(), directories, execution, execution.Outcome, scenario, CollectionLimits{MaxWorkspaceFileBytes: 16})
+	outcome, manifest, err := CollectEvidence(context.Background(), directories, execution, execution.Outcome, documents, CollectionLimits{MaxWorkspaceFileBytes: 16})
 	if err != nil {
 		t.Fatalf("CollectEvidence() error = %v", err)
 	}
@@ -282,10 +310,10 @@ func TestCollectEvidenceOversizedWorkspaceArtifactIsTruncated(t *testing.T) {
 }
 
 func TestCollectEvidenceRefusesWhenWriterNotStopped(t *testing.T) {
-	directories, execution, scenario := runHappyAttempt(t)
+	directories, execution, documents := runHappyAttempt(t)
 	execution.WriterStopped = false
 
-	_, _, err := CollectEvidence(context.Background(), directories, execution, execution.Outcome, scenario, CollectionLimits{})
+	_, _, err := CollectEvidence(context.Background(), directories, execution, execution.Outcome, documents, CollectionLimits{})
 	if err == nil {
 		t.Fatal("CollectEvidence() error = nil, want a refusal when the writer was not provably stopped")
 	}
@@ -295,14 +323,14 @@ func TestCollectEvidenceRefusesWhenWriterNotStopped(t *testing.T) {
 }
 
 func TestCollectEvidenceSecondCallFailsCleanlyAndNeverReplacesOutcome(t *testing.T) {
-	directories, execution, scenario := runHappyAttempt(t)
+	directories, execution, documents := runHappyAttempt(t)
 
-	first, _, err := CollectEvidence(context.Background(), directories, execution, execution.Outcome, scenario, CollectionLimits{})
+	first, _, err := CollectEvidence(context.Background(), directories, execution, execution.Outcome, documents, CollectionLimits{})
 	if err != nil {
 		t.Fatalf("first CollectEvidence() error = %v", err)
 	}
 
-	_, _, err = CollectEvidence(context.Background(), directories, execution, execution.Outcome, scenario, CollectionLimits{})
+	_, _, err = CollectEvidence(context.Background(), directories, execution, execution.Outcome, documents, CollectionLimits{})
 	if err == nil {
 		t.Fatal("second CollectEvidence() error = nil, want errAlreadyPublished (outcome.json already exists)")
 	}
@@ -328,7 +356,7 @@ func TestCollectEvidenceSecondCallFailsCleanlyAndNeverReplacesOutcome(t *testing
 }
 
 func TestCollectEvidenceCrashBeforeManifestLeavesOutcomeIntactAndManifestAbsent(t *testing.T) {
-	directories, execution, scenario := runHappyAttempt(t)
+	directories, execution, documents := runHappyAttempt(t)
 
 	injected := errors.New("injected: crash before manifest link")
 	original := linkTempFile
@@ -340,7 +368,7 @@ func TestCollectEvidenceCrashBeforeManifestLeavesOutcomeIntactAndManifestAbsent(
 	}
 	t.Cleanup(func() { linkTempFile = original })
 
-	_, _, err := CollectEvidence(context.Background(), directories, execution, execution.Outcome, scenario, CollectionLimits{})
+	_, _, err := CollectEvidence(context.Background(), directories, execution, execution.Outcome, documents, CollectionLimits{})
 	if !errors.Is(err, injected) {
 		t.Fatalf("CollectEvidence() error = %v, want wrapping the injected manifest-link failure", err)
 	}

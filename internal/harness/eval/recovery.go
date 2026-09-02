@@ -63,10 +63,10 @@ func ClassifyAttemptDirectory(directory string) (AttemptRecoveryState, error) {
 // Unlike CollectEvidence, ResumeCollection does not accept a tentative
 // Outcome to finalize and publish; it reads the one already published in
 // directories.Root and treats it as immutable input.
-func ResumeCollection(ctx context.Context, directories AttemptRootDirectories, execution ExecutionOutcome, scenario Scenario, limits CollectionLimits) (Outcome, EvidenceManifest, error) {
+func ResumeCollection(ctx context.Context, directories AttemptRootDirectories, execution ExecutionOutcome, documents EvidenceDocuments, limits CollectionLimits) (Outcome, EvidenceManifest, error) {
 	outcome, err := ReadOutcome(directories.Root)
 	if err != nil {
 		return Outcome{}, EvidenceManifest{}, err
 	}
-	return stageAndPublishManifestForExistingOutcome(ctx, directories, execution, outcome, scenario, limits)
+	return stageAndPublishManifestForExistingOutcome(ctx, directories, execution, outcome, documents, limits)
 }

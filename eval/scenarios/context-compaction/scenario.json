@@ -1,0 +1,71 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.scenario",
+  "id": "context-compaction",
+  "description": "Six padded prompt turns build up enough conversation history to exceed the Subject's tail-preservation budget, then a manual reset compaction runs. Passing requires canonical audit evidence of an actual context.compaction.started (trigger=manual, strategy=reset) and its completed source-tail-reset checkpoint -- configuration presence (a compact action in the Scenario) alone is not sufficient proof.",
+  "fixtureDigest": "sha256:f5043b2c09fb8ecfc394548860794027a0f22602668cee36597f41b9f349cefd",
+  "fixtureCopyPolicy": {
+    "maxFiles": 10,
+    "maxFileBytes": 1048576,
+    "maxTotalBytes": 1048576
+  },
+  "actions": [
+    {
+      "id": "prompt-1",
+      "type": "prompt",
+      "prompt": {
+        "text": "The workspace contains build artifacts, log files, and configuration snapshots that accumulate across every turn of this deterministic smoke scenario, and this padded sentence exists purely to push the session past its tail-preservation budget so a later manual reset compaction has real content to cover. The workspace contains build artifacts, log files, and configuration snapshots that accumulate across every turn of this deterministic smoke scenario, and this padded sentence exists purely to push the session past its tail-preservation budget so a later manual reset compaction has real content to cover."
+      }
+    },
+    {
+      "id": "prompt-2",
+      "type": "prompt",
+      "prompt": {
+        "text": "The workspace contains build artifacts, log files, and configuration snapshots that accumulate across every turn of this deterministic smoke scenario, and this padded sentence exists purely to push the session past its tail-preservation budget so a later manual reset compaction has real content to cover. The workspace contains build artifacts, log files, and configuration snapshots that accumulate across every turn of this deterministic smoke scenario, and this padded sentence exists purely to push the session past its tail-preservation budget so a later manual reset compaction has real content to cover."
+      }
+    },
+    {
+      "id": "prompt-3",
+      "type": "prompt",
+      "prompt": {
+        "text": "The workspace contains build artifacts, log files, and configuration snapshots that accumulate across every turn of this deterministic smoke scenario, and this padded sentence exists purely to push the session past its tail-preservation budget so a later manual reset compaction has real content to cover. The workspace contains build artifacts, log files, and configuration snapshots that accumulate across every turn of this deterministic smoke scenario, and this padded sentence exists purely to push the session past its tail-preservation budget so a later manual reset compaction has real content to cover."
+      }
+    },
+    {
+      "id": "prompt-4",
+      "type": "prompt",
+      "prompt": {
+        "text": "The workspace contains build artifacts, log files, and configuration snapshots that accumulate across every turn of this deterministic smoke scenario, and this padded sentence exists purely to push the session past its tail-preservation budget so a later manual reset compaction has real content to cover. The workspace contains build artifacts, log files, and configuration snapshots that accumulate across every turn of this deterministic smoke scenario, and this padded sentence exists purely to push the session past its tail-preservation budget so a later manual reset compaction has real content to cover."
+      }
+    },
+    {
+      "id": "prompt-5",
+      "type": "prompt",
+      "prompt": {
+        "text": "The workspace contains build artifacts, log files, and configuration snapshots that accumulate across every turn of this deterministic smoke scenario, and this padded sentence exists purely to push the session past its tail-preservation budget so a later manual reset compaction has real content to cover. The workspace contains build artifacts, log files, and configuration snapshots that accumulate across every turn of this deterministic smoke scenario, and this padded sentence exists purely to push the session past its tail-preservation budget so a later manual reset compaction has real content to cover."
+      }
+    },
+    {
+      "id": "prompt-6",
+      "type": "prompt",
+      "prompt": {
+        "text": "The workspace contains build artifacts, log files, and configuration snapshots that accumulate across every turn of this deterministic smoke scenario, and this padded sentence exists purely to push the session past its tail-preservation budget so a later manual reset compaction has real content to cover. The workspace contains build artifacts, log files, and configuration snapshots that accumulate across every turn of this deterministic smoke scenario, and this padded sentence exists purely to push the session past its tail-preservation budget so a later manual reset compaction has real content to cover."
+      }
+    },
+    {
+      "id": "compact-1",
+      "type": "compact",
+      "compact": {
+        "strategy": "reset"
+      }
+    }
+  ],
+  "requiredCapabilities": ["prompt", "compact"],
+  "requiredEvidenceRoles": ["transcript", "audit"],
+  "deterministicVerifierIds": [
+    "context-compaction-observed-v1",
+    "outcome-not-infra-failed-v1"
+  ],
+  "limits": {},
+  "pairingTags": ["smoke"]
+}

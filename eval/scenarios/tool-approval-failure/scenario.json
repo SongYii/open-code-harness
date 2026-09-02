@@ -1,0 +1,37 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.scenario",
+  "id": "tool-approval-failure",
+  "description": "A write_file tool call that requires approval under the default policy is denied by the scripted approval answer. Passing requires canonical audit evidence of the policy decision, the denial, and the resulting tool failure -- the approval script's own declaration is not sufficient proof on its own.",
+  "fixtureDigest": "sha256:f5043b2c09fb8ecfc394548860794027a0f22602668cee36597f41b9f349cefd",
+  "fixtureCopyPolicy": {
+    "maxFiles": 10,
+    "maxFileBytes": 1048576,
+    "maxTotalBytes": 1048576
+  },
+  "actions": [
+    {
+      "id": "prompt-1",
+      "type": "prompt",
+      "prompt": {
+        "text": "please write to the workspace file TRIGGER_WRITE_FILE_APPROVAL"
+      }
+    }
+  ],
+  "approvalScript": [
+    {
+      "promptActionId": "prompt-1",
+      "ordinal": 0,
+      "toolName": "write_file",
+      "answer": "deny"
+    }
+  ],
+  "requiredCapabilities": ["prompt"],
+  "requiredEvidenceRoles": ["transcript", "audit"],
+  "deterministicVerifierIds": [
+    "tool-approval-failure-observed-v1",
+    "outcome-not-infra-failed-v1"
+  ],
+  "limits": {},
+  "pairingTags": ["smoke"]
+}

@@ -10,17 +10,24 @@ import (
 // RunnerInputs bundles everything RunEvalSet needs beyond the EvalSet
 // itself: the full documents set's references name, keyed by ID (matching
 // ExpandAttempts' own parameters), and each referenced Scenario's fixture
-// source directory on disk. Verifying that a fixture source directory's
-// actual content digest matches Scenario.FixtureDigest is the caller's
-// responsibility (design §7/§8) — this package defines no fixture-
-// directory content-digest function of its own yet, so RunEvalSet trusts
-// FixtureSources as already verified.
+// source directory on disk. RunEvalSet verifies every fixture tree against
+// its frozen Scenario.FixtureDigest before creating any Attempt.
 type RunnerInputs struct {
 	Set            EvalSet
 	Scenarios      map[ScenarioID]Scenario
 	Subjects       map[SubjectID]Subject
 	Executors      map[ExecutorID]Executor
 	FixtureSources map[ScenarioID]string
+
+	// ProviderEndpointOverrides maps a frozen fixture Subject identity to
+	// this invocation's ephemeral HTTP loopback endpoint. It is an execution
+	// fact: ExpandAttempts and Attempt digests always use Subjects above.
+	ProviderEndpointOverrides map[SubjectID]string
+
+	// ArtifactRootOverride is this invocation's publication directory. The
+	// frozen EvalSet retains its declared artifactRoot for identity; absolute
+	// Attempt paths record where this invocation actually wrote artifacts.
+	ArtifactRootOverride string
 }
 
 // AttemptRunResult is one Cell repetition's outcome (design §9). Err is
@@ -61,7 +68,15 @@ func RunEvalSet(ctx context.Context, inputs RunnerInputs) ([]AttemptRunResult, e
 	if err != nil {
 		return nil, fmt.Errorf("eval: run eval set: %w", err)
 	}
-	if !filepath.IsAbs(inputs.Set.ArtifactRoot) {
+	executionSubjects, err := resolveExecutionSubjects(inputs.Subjects, inputs.ProviderEndpointOverrides)
+	if err != nil {
+		return nil, fmt.Errorf("eval: run eval set: %w", err)
+	}
+	artifactRoot := inputs.Set.ArtifactRoot
+	if inputs.ArtifactRootOverride != "" {
+		artifactRoot = inputs.ArtifactRootOverride
+	}
+	if !filepath.IsAbs(artifactRoot) {
 		return nil, fmt.Errorf("eval: run eval set: artifactRoot must be an absolute path")
 	}
 	for _, ref := range inputs.Set.Executors {
@@ -77,24 +92,33 @@ func RunEvalSet(ctx context.Context, inputs RunnerInputs) ([]AttemptRunResult, e
 		if !ok {
 			return nil, fmt.Errorf("eval: run eval set: no fixture source directory provided for scenario %q", scenario.ID)
 		}
-		if err := RefuseArtifactRootWithinFixture(inputs.Set.ArtifactRoot, source); err != nil {
+		if err := RefuseArtifactRootWithinFixture(artifactRoot, source); err != nil {
 			return nil, fmt.Errorf("eval: run eval set: scenario %q: %w", scenario.ID, err)
+		}
+		fixtureDigest, err := DigestFixtureTree(source)
+		if err != nil {
+			return nil, fmt.Errorf("eval: run eval set: scenario %q: %w", scenario.ID, err)
+		}
+		if fixtureDigest != Digest(scenario.FixtureDigest) {
+			return nil, fmt.Errorf("eval: run eval set: scenario %q: fixtureDigest changed: got %q, frozen %q",
+				scenario.ID, fixtureDigest, scenario.FixtureDigest)
 		}
 	}
 
 	executionLimits := resolveAttemptExecutionLimits(inputs.Set.Limits)
 	results := make([]AttemptRunResult, 0, len(cellAttempts))
 	for _, cellAttempt := range cellAttempts {
-		results = append(results, runOneAttempt(ctx, inputs, cellAttempt, executionLimits))
+		results = append(results, runOneAttempt(ctx, inputs, executionSubjects, artifactRoot, cellAttempt, executionLimits))
 	}
 	return results, nil
 }
 
-func runOneAttempt(ctx context.Context, inputs RunnerInputs, cellAttempt CellAttempt, executionLimits AttemptExecutionLimits) AttemptRunResult {
+func runOneAttempt(ctx context.Context, inputs RunnerInputs, executionSubjects map[SubjectID]Subject, artifactRoot string, cellAttempt CellAttempt, executionLimits AttemptExecutionLimits) AttemptRunResult {
 	result := AttemptRunResult{Cell: cellAttempt.Cell, RepetitionIndex: cellAttempt.RepetitionIndex}
 
 	scenario := inputs.Scenarios[cellAttempt.Cell.ScenarioID]
 	subject := inputs.Subjects[cellAttempt.Cell.SubjectID]
+	executionSubject := executionSubjects[cellAttempt.Cell.SubjectID]
 	executor := inputs.Executors[cellAttempt.Cell.ExecutorID]
 
 	attemptID, err := NewAttemptID()
@@ -104,7 +128,7 @@ func runOneAttempt(ctx context.Context, inputs RunnerInputs, cellAttempt CellAtt
 	}
 	result.AttemptID = attemptID
 
-	directories, err := NewAttemptRoot(inputs.Set.ArtifactRoot, attemptID)
+	directories, err := NewAttemptRoot(artifactRoot, attemptID)
 	if err != nil {
 		result.Err = fmt.Errorf("eval: run attempt: %w", err)
 		return result
@@ -120,6 +144,15 @@ func runOneAttempt(ctx context.Context, inputs RunnerInputs, cellAttempt CellAtt
 		return result
 	}
 
+	copiedDigest, err := DigestFixtureTree(directories.Workspace)
+	if err != nil {
+		result.Err = fmt.Errorf("eval: run attempt: digest copied fixture: %w", err)
+		return result
+	}
+	if copiedDigest != Digest(scenario.FixtureDigest) {
+		result.Err = fmt.Errorf("eval: run attempt: copied fixtureDigest %q disagrees with frozen %q", copiedDigest, scenario.FixtureDigest)
+		return result
+	}
 	attempt, err := buildAttemptDocument(inputs.Set.ID, cellAttempt, attemptID, directories, scenario, subject, executor)
 	if err != nil {
 		result.Err = fmt.Errorf("eval: run attempt: %w", err)
@@ -138,7 +171,7 @@ func runOneAttempt(ctx context.Context, inputs RunnerInputs, cellAttempt CellAtt
 	}
 
 	matcher := NewApprovalMatcher(scenario.ApprovalScript)
-	execution, err := RunAttempt(attemptCtx, attemptID, subject, directories, scenario, matcher)
+	execution, err := RunAttempt(attemptCtx, attemptID, executionSubject, directories, scenario, matcher)
 	if err != nil {
 		// RunAttempt returns a non-nil error only when nothing durable
 		// happened yet (its own doc comment): no Outcome exists to collect
@@ -147,7 +180,10 @@ func runOneAttempt(ctx context.Context, inputs RunnerInputs, cellAttempt CellAtt
 		return result
 	}
 
-	outcome, manifest, err := CollectEvidence(attemptCtx, directories, execution, execution.Outcome, scenario, executionLimits.CollectionLimits)
+	documents := EvidenceDocuments{
+		Scenario: scenario, Subject: subject, Executor: executor, Attempt: attempt,
+	}
+	outcome, manifest, err := CollectEvidence(attemptCtx, directories, execution, execution.Outcome, documents, executionLimits.CollectionLimits)
 	if err != nil {
 		result.Err = fmt.Errorf("eval: run attempt: collect evidence: %w", err)
 		return result

@@ -51,13 +51,14 @@ func TestRunScorerIndeterminateWhenRequiredEvidenceMissing(t *testing.T) {
 	scenario.RequiredEvidenceRoles = []string{"transcript", "audit", "workspace"}
 	scenario.OptionalEvidenceRoles = nil
 	scenario.DeterministicVerifierIDs = []string{"manifest-complete-v1"}
+	documents := publishTestEvidenceDocuments(t, directories, attemptID, scenario, subject)
 
 	matcher := NewApprovalMatcher(scenario.ApprovalScript)
 	execution, err := RunAttempt(context.Background(), attemptID, subject, directories, scenario, matcher)
 	if err != nil {
 		t.Fatalf("RunAttempt: %v", err)
 	}
-	if _, _, err := CollectEvidence(context.Background(), directories, execution, execution.Outcome, scenario, CollectionLimits{}); err != nil {
+	if _, _, err := CollectEvidence(context.Background(), directories, execution, execution.Outcome, documents, CollectionLimits{}); err != nil {
 		t.Fatalf("CollectEvidence: %v", err)
 	}
 
@@ -103,6 +104,7 @@ func TestVerifyOutcomeNotInfraFailedFailsOnInfraFailure(t *testing.T) {
 
 	scenario := runnerScenario("infra-fail-scenario")
 	scenario.DeterministicVerifierIDs = []string{"outcome-not-infra-failed-v1"}
+	documents := publishTestEvidenceDocuments(t, directories, attemptID, scenario, subject)
 
 	matcher := NewApprovalMatcher(scenario.ApprovalScript)
 	execution, err := RunAttempt(context.Background(), attemptID, subject, directories, scenario, matcher)
@@ -116,7 +118,7 @@ func TestVerifyOutcomeNotInfraFailedFailsOnInfraFailure(t *testing.T) {
 		t.Fatalf("Outcome.Status = %q, want %q", execution.Outcome.Status, OutcomeInfraFailed)
 	}
 
-	if _, _, err := CollectEvidence(context.Background(), directories, execution, execution.Outcome, scenario, CollectionLimits{}); err != nil {
+	if _, _, err := CollectEvidence(context.Background(), directories, execution, execution.Outcome, documents, CollectionLimits{}); err != nil {
 		t.Fatalf("CollectEvidence: %v", err)
 	}
 	reader, err := NewArtifactReader(directories)

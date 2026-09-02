@@ -1,0 +1,31 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.subject",
+  "id": "smoke-subject",
+  "repositoryRevision": "dev",
+  "repositoryDirty": false,
+  "provider": {
+    "adapterKind": "openaicompat",
+    "normalizedEndpoint": "fixture://smart",
+    "modelId": "smoke-model",
+    "contextWindow": 4096,
+    "maxOutput": 512,
+    "credentialEnvVar": "OCH_EVAL_SMOKE_API_KEY",
+    "lane": "fixture"
+  },
+  "context": {
+    "triggerPercent": 95,
+    "targetPercent": 50,
+    "tailPercent": 10,
+    "maxSummaryChunks": 8,
+    "maxOverflowCompactionsPerTurn": 2,
+    "maxPrunedToolResultsPerRequest": 64,
+    "compactionTimeout": 120000000000
+  },
+  "policy": {
+    "mode": "default",
+    "toolCatalogIdentity": "catalog-v1",
+    "limits": {},
+    "sandboxPolicy": "unsandboxed_allowed"
+  }
+}

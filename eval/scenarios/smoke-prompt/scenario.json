@@ -1,0 +1,32 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.scenario",
+  "id": "smoke-prompt",
+  "description": "A single prompt answered by the och-eval CLI's own embedded echo fixture script, with no tool calls or approvals. Stage A's deterministic in-process smoke check.",
+  "fixtureDigest": "sha256:f5043b2c09fb8ecfc394548860794027a0f22602668cee36597f41b9f349cefd",
+  "fixtureCopyPolicy": {
+    "maxFiles": 10,
+    "maxFileBytes": 1048576,
+    "maxTotalBytes": 1048576
+  },
+  "actions": [
+    {
+      "id": "prompt-1",
+      "type": "prompt",
+      "prompt": {
+        "text": "hello"
+      }
+    }
+  ],
+  "requiredCapabilities": ["prompt"],
+  "requiredEvidenceRoles": ["transcript"],
+  "optionalEvidenceRoles": ["audit"],
+  "deterministicVerifierIds": [
+    "manifest-complete-v1",
+    "transcript-present-v1",
+    "audit-included-v1",
+    "outcome-not-infra-failed-v1"
+  ],
+  "limits": {},
+  "pairingTags": ["smoke"]
+}

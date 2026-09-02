@@ -7,11 +7,11 @@ func TestRegradeAttemptPublishesScoreAndNeverReplacesEarlier(t *testing.T) {
 	scenario := validScenario()
 	scenario.DeterministicVerifierIDs = allCatalogVerifierIDs
 
-	first, err := RegradeAttempt(directories, scenario, Scorer{ID: "scorer-1", Version: "v1", VerifierIDs: allCatalogVerifierIDs}, LaneFixture)
+	first, err := RegradeAttempt(directories, Scorer{ID: "scorer-1", Version: "v1", VerifierIDs: allCatalogVerifierIDs})
 	if err != nil {
 		t.Fatalf("first RegradeAttempt: %v", err)
 	}
-	second, err := RegradeAttempt(directories, scenario, Scorer{ID: "scorer-1", Version: "v2", VerifierIDs: allCatalogVerifierIDs}, LaneFixture)
+	second, err := RegradeAttempt(directories, Scorer{ID: "scorer-1", Version: "v2", VerifierIDs: allCatalogVerifierIDs})
 	if err != nil {
 		t.Fatalf("second RegradeAttempt: %v", err)
 	}
@@ -35,10 +35,10 @@ func TestRegradeAttemptPublishesScoreAndNeverReplacesEarlier(t *testing.T) {
 }
 
 func TestRegradeAttemptRefusesWithoutACommittedManifest(t *testing.T) {
-	directories, execution, scenario := runHappyAttempt(t)
+	directories, execution, _ := runHappyAttempt(t)
 	_ = execution // Outcome/Manifest deliberately not published for this test.
 
-	_, err := RegradeAttempt(directories, scenario, Scorer{ID: "scorer-1", Version: "v1", VerifierIDs: allCatalogVerifierIDs}, LaneFixture)
+	_, err := RegradeAttempt(directories, Scorer{ID: "scorer-1", Version: "v1", VerifierIDs: allCatalogVerifierIDs})
 	if err == nil {
 		t.Fatal("RegradeAttempt() error = nil, want a refusal: no manifest has been published for this Attempt yet")
 	}
@@ -48,7 +48,7 @@ func TestAssembleEvaluationResultReadsPublishedScores(t *testing.T) {
 	directories, _, _ := collectedHappyAttempt(t)
 	scenario := validScenario()
 	scenario.DeterministicVerifierIDs = allCatalogVerifierIDs
-	if _, err := RegradeAttempt(directories, scenario, Scorer{ID: "scorer-1", Version: "v1", VerifierIDs: allCatalogVerifierIDs}, LaneFixture); err != nil {
+	if _, err := RegradeAttempt(directories, Scorer{ID: "scorer-1", Version: "v1", VerifierIDs: allCatalogVerifierIDs}); err != nil {
 		t.Fatalf("RegradeAttempt: %v", err)
 	}
 

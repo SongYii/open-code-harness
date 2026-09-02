@@ -13,10 +13,12 @@ type Verifier func(reader *ArtifactReader, scenario Scenario) CriterionResult
 // is Go code registered here, never loaded from a Scenario- or
 // EvalSet-supplied file).
 var verifierCatalog = map[string]Verifier{
-	"manifest-complete-v1":        verifyManifestComplete,
-	"transcript-present-v1":       verifyTranscriptPresent,
-	"audit-included-v1":           verifyAuditIncluded,
-	"outcome-not-infra-failed-v1": verifyOutcomeNotInfraFailed,
+	"manifest-complete-v1":              verifyManifestComplete,
+	"tool-approval-failure-observed-v1": verifyToolApprovalFailureObserved,
+	"context-compaction-observed-v1":    verifyContextCompactionObserved,
+	"transcript-present-v1":             verifyTranscriptPresent,
+	"audit-included-v1":                 verifyAuditIncluded,
+	"outcome-not-infra-failed-v1":       verifyOutcomeNotInfraFailed,
 }
 
 // LookupVerifier returns the compiled Verifier for id, and whether one is

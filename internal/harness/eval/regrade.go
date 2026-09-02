@@ -6,16 +6,24 @@ import "fmt"
 // evidence (design §20) and publishes a new Score. It never reads or
 // replaces any earlier Score — PublishScore names every Score by its own
 // freshly generated ID, so a regrade always appends rather than
-// overwrites — and it never invokes the Subject or constructs an
-// Executor, Provider, or Service: ArtifactReader is the only evidence
-// surface RegradeAttempt or any Verifier it runs ever touches.
-func RegradeAttempt(directories AttemptRootDirectories, scenario Scenario, scorer Scorer, lane EvalLane) (Score, error) {
+// overwrites — and it never invokes the Subject or constructs an Executor,
+// Provider, or Service. Scenario and lane come only from manifest-constrained
+// frozen evidence, never from caller-supplied execution configuration.
+func RegradeAttempt(directories AttemptRootDirectories, scorer Scorer) (Score, error) {
 	reader, err := NewArtifactReader(directories)
 	if err != nil {
 		return Score{}, fmt.Errorf("eval: regrade attempt: %w", err)
 	}
 
-	verdict, criteria, err := RunScorer(reader, scenario, scorer)
+	publishedAttempt, err := ReadAttempt(directories.Root)
+	if err != nil {
+		return Score{}, fmt.Errorf("eval: regrade attempt: %w", err)
+	}
+	documents, lane, err := readEvidenceDocuments(reader, publishedAttempt)
+	if err != nil {
+		return Score{}, fmt.Errorf("eval: regrade attempt: frozen evidence: %w", err)
+	}
+	verdict, criteria, err := RunScorer(reader, documents.Scenario, scorer)
 	if err != nil {
 		return Score{}, fmt.Errorf("eval: regrade attempt: %w", err)
 	}

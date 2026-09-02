@@ -106,7 +106,7 @@ func (budget *collectionBudget) track(entry ManifestEntry) {
 // commit marker. A failure after Outcome publication still returns
 // whatever manifest could be assembled — Outcome is never republished or
 // replaced.
-func CollectEvidence(ctx context.Context, directories AttemptRootDirectories, execution ExecutionOutcome, tentativeOutcome Outcome, scenario Scenario, limits CollectionLimits) (Outcome, EvidenceManifest, error) {
+func CollectEvidence(ctx context.Context, directories AttemptRootDirectories, execution ExecutionOutcome, tentativeOutcome Outcome, documents EvidenceDocuments, limits CollectionLimits) (Outcome, EvidenceManifest, error) {
 	if !execution.WriterStopped {
 		return Outcome{}, EvidenceManifest{}, fmt.Errorf("eval: collect evidence: refusing to collect: writer was not provably stopped")
 	}
@@ -121,8 +121,11 @@ func CollectEvidence(ctx context.Context, directories AttemptRootDirectories, ex
 	startedAt := time.Now().UTC()
 	budget := &collectionBudget{limits: limits}
 
+	if err := stageEvidenceDocuments(directories, documents, budget); err != nil {
+		return Outcome{}, EvidenceManifest{}, fmt.Errorf("eval: collect evidence: %w", err)
+	}
 	collectTranscriptAndAudit(collectCtx, directories, execution, budget)
-	collectWorkspaceArtifacts(directories, scenario, budget)
+	collectWorkspaceArtifacts(directories, documents.Scenario, budget)
 
 	finalOutcome := tentativeOutcome
 	finalOutcome.CollectionStatus = resolveCollectionStatus(budget.entries)
@@ -156,7 +159,7 @@ func resolveCollectionStatus(entries []ManifestEntry) CollectionStatus {
 // entry point: it re-runs the same staging collectTranscriptAndAudit/
 // collectWorkspaceArtifacts perform, against an Outcome that is already
 // published and must not be mutated, then publishes the manifest.
-func stageAndPublishManifestForExistingOutcome(ctx context.Context, directories AttemptRootDirectories, execution ExecutionOutcome, outcome Outcome, scenario Scenario, limits CollectionLimits) (Outcome, EvidenceManifest, error) {
+func stageAndPublishManifestForExistingOutcome(ctx context.Context, directories AttemptRootDirectories, execution ExecutionOutcome, outcome Outcome, documents EvidenceDocuments, limits CollectionLimits) (Outcome, EvidenceManifest, error) {
 	if !execution.WriterStopped {
 		return Outcome{}, EvidenceManifest{}, fmt.Errorf("eval: resume collection: refusing to collect: writer was not provably stopped")
 	}
@@ -169,8 +172,11 @@ func stageAndPublishManifestForExistingOutcome(ctx context.Context, directories 
 
 	startedAt := time.Now().UTC()
 	budget := &collectionBudget{limits: limits}
+	if err := stageEvidenceDocuments(directories, documents, budget); err != nil {
+		return outcome, EvidenceManifest{}, fmt.Errorf("eval: resume collection: %w", err)
+	}
 	collectTranscriptAndAudit(ctx, directories, execution, budget)
-	collectWorkspaceArtifacts(directories, scenario, budget)
+	collectWorkspaceArtifacts(directories, documents.Scenario, budget)
 
 	manifest, err := stageOutcomeCopyAndPublishManifest(directories, outcome, budget, startedAt)
 	if err != nil {

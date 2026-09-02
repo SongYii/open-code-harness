@@ -12,8 +12,8 @@ import (
 // evidence, returning everything an ArtifactReader test needs.
 func collectedHappyAttempt(t *testing.T) (directories AttemptRootDirectories, outcome Outcome, manifest EvidenceManifest) {
 	t.Helper()
-	directories, execution, scenario := runHappyAttempt(t)
-	outcome, manifest, err := CollectEvidence(context.Background(), directories, execution, execution.Outcome, scenario, CollectionLimits{})
+	directories, execution, documents := runHappyAttempt(t)
+	outcome, manifest, err := CollectEvidence(context.Background(), directories, execution, execution.Outcome, documents, CollectionLimits{})
 	if err != nil {
 		t.Fatalf("CollectEvidence: %v", err)
 	}
