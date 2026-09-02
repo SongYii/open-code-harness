@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -56,5 +57,57 @@ func TestShutdownFlushesPendingAuditExport(t *testing.T) {
 	if verified.HeadCommitPosition != receipt.CommitPosition {
 		t.Fatalf("audit head commit position = %d after Shutdown, want %d (the just-appended commit); "+
 			"Shutdown did not flush the pending export", verified.HeadCommitPosition, receipt.CommitPosition)
+	}
+}
+
+// TestShutdownIsIdempotent proves a second Shutdown call is a safe no-op:
+// it must not attempt a second flush, re-release an already-released lease,
+// or error.
+func TestShutdownIsIdempotent(t *testing.T) {
+	config := hostConfig(t)
+	audit := filepath.Join(t.TempDir(), "audit")
+	config.AuditDirectory = audit
+
+	host, err := Launch(context.Background(), config)
+	if err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	if err := host.Shutdown(context.Background()); err != nil {
+		t.Fatalf("first shutdown: %v", err)
+	}
+	if err := host.Shutdown(context.Background()); err != nil {
+		t.Fatalf("second shutdown: %v, want nil (idempotent)", err)
+	}
+}
+
+// TestShutdownReleasesLeaseAndSucceedsDespiteBlockedFlush proves design
+// §12's "export lag/failure must never block Shutdown either" extends to a
+// flush that outright fails, not just one that lags: Shutdown must still
+// release the lease and return successfully, and a caller must be able to
+// launch a successor immediately. The flush is blocked by replacing
+// AuditDirectory with a plain file, so ExportOnce's own MkdirAll fails.
+func TestShutdownReleasesLeaseAndSucceedsDespiteBlockedFlush(t *testing.T) {
+	config := hostConfig(t)
+	blockedAuditPath := filepath.Join(t.TempDir(), "audit-blocked")
+	if err := os.WriteFile(blockedAuditPath, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("seed blocking file: %v", err)
+	}
+	config.AuditDirectory = blockedAuditPath
+
+	host, err := Launch(context.Background(), config)
+	if err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	if err := host.Shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown: %v, want nil despite a blocked flush destination", err)
+	}
+
+	// The lease must actually be free: a successor can launch immediately.
+	successor, err := Launch(context.Background(), config)
+	if err != nil {
+		t.Fatalf("successor launch after a blocked-flush shutdown: %v", err)
+	}
+	if err := successor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("successor shutdown: %v", err)
 	}
 }
