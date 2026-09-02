@@ -18,7 +18,7 @@ This milestone builds a local evaluation system for Open Code Harness (OCH).
 It runs real OCH Sessions, freezes experiment identity, preserves bounded
 evidence, and scores that evidence without requiring the agent to run again.
 
-The first slice has two concrete OCH executors:
+The v1 milestone has two concrete OCH executors:
 
 1. an in-process executor that drives the real Composition/Application path;
 2. a black-box executor that starts the real `och -acp` binary and drives it
@@ -28,6 +28,12 @@ The persistent model remains executor-neutral, but v1 does not run arbitrary
 external agents. A future external Subject requires a real consumer and a new
 isolation/conformance decision; this design does not create an unused generic
 Agent adapter.
+
+Delivery is staged. The first implementation slice establishes the frozen
+models, append-only evidence/regrade path, fixture isolation, and in-process
+executor only. It is useful but does not complete the milestone; the ACP
+executor and parity contract arrive in the next stage, and live judging
+arrives only after deterministic mechanisms are proven.
 
 OpenTelemetry is not part of this design. It remains a separate milestone 10
 subsystem with its own architecture gate and design.
@@ -54,7 +60,7 @@ The implementation must:
 
 ## 3. Non-goals
 
-The first slice does not include:
+The v1 milestone does not include:
 
 - arbitrary external agents or a Harbor-style agent adapter matrix;
 - container/cloud scheduling, distributed workers, or remote artifact storage;

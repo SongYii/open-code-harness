@@ -16,13 +16,17 @@
 本里程碑建设 Open Code Harness（OCH）的本地评测系统。它运行真实 OCH Session，冻结实验身份，
 保存有界证据，并且无需再次运行 agent 就能对证据重新打分。
 
-第一刀有两个具体 OCH executor：
+v1 里程碑有两个具体 OCH executor：
 
 1. 进程内 executor，驱动真实 Composition/Application 路径；
 2. 黑盒 executor，启动真实 `och -acp` 二进制，并通过公开 ACP v1 client 协议驱动它。
 
 持久化模型保持 executor 中立，但 v1 不运行任意外部 agent。未来若加入外部 Subject，必须有真实
 消费者，并重新决定隔离和 conformance 合同；本设计不预造没有消费者的通用 Agent adapter。
+
+交付是分阶段的。第一个实现切片只建立冻结模型、仅追加的证据/重评路径、fixture 隔离，以及进程内
+executor。它是有用的，但并不完成本里程碑；ACP executor 与 parity 合同在下一阶段交付，而现场评审
+只有在确定性机制被验证之后才会引入。
 
 OpenTelemetry 不属于本设计。它仍是里程碑 10 中独立的子系统，需要自己的架构调研门和设计。
 
@@ -46,7 +50,7 @@ OpenTelemetry 不属于本设计。它仍是里程碑 10 中独立的子系统�
 
 ## 3. 非目标
 
-第一刀不包括：
+v1 里程碑不包括：
 
 - 任意外部 agent 或 Harbor 式 agent adapter 矩阵；
 - 容器/云调度、分布式 worker 或远端 artifact 存储；
