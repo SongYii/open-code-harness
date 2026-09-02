@@ -4,6 +4,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func mustAttemptID(t *testing.T) AttemptID {
@@ -32,6 +33,18 @@ func repeatHex(filler byte) string {
 	return string(out)
 }
 
+func validAttemptPaths() AttemptPaths {
+	return AttemptPaths{
+		Root:      "/attempts/attempt-1",
+		Workspace: "/attempts/attempt-1/workspace",
+		Database:  "/attempts/attempt-1/database",
+		Audit:     "/attempts/attempt-1/audit",
+		Process:   "/attempts/attempt-1/process",
+		Log:       "/attempts/attempt-1/log",
+		Evidence:  "/attempts/attempt-1/evidence",
+	}
+}
+
 func validAttempt(t *testing.T) Attempt {
 	t.Helper()
 	return Attempt{
@@ -46,6 +59,9 @@ func validAttempt(t *testing.T) Attempt {
 		ExecutorID:      "in-process",
 		ExecutorDigest:  mustDigest(t, 3),
 		RepetitionIndex: 0,
+		Paths:           validAttemptPaths(),
+		RuntimeID:       "runtime-attempt-1",
+		PublishedAt:     time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC),
 	}
 }
 
@@ -81,5 +97,37 @@ func TestAttemptValidateRejectsNegativeRepetitionIndex(t *testing.T) {
 	attempt.RepetitionIndex = -1
 	if err := attempt.Validate(); err == nil {
 		t.Fatal("Validate() accepted a negative repetitionIndex")
+	}
+}
+
+func TestAttemptValidateRejectsRelativePath(t *testing.T) {
+	attempt := validAttempt(t)
+	attempt.Paths.Workspace = "relative/workspace"
+	if err := attempt.Validate(); err == nil {
+		t.Fatal("Validate() accepted a relative paths.workspace")
+	}
+}
+
+func TestAttemptValidateRejectsEmptyPath(t *testing.T) {
+	attempt := validAttempt(t)
+	attempt.Paths.Audit = ""
+	if err := attempt.Validate(); err == nil {
+		t.Fatal("Validate() accepted an empty paths.audit")
+	}
+}
+
+func TestAttemptValidateRejectsMissingRuntimeID(t *testing.T) {
+	attempt := validAttempt(t)
+	attempt.RuntimeID = ""
+	if err := attempt.Validate(); err == nil {
+		t.Fatal("Validate() accepted a missing runtimeId")
+	}
+}
+
+func TestAttemptValidateRejectsMissingPublishedAt(t *testing.T) {
+	attempt := validAttempt(t)
+	attempt.PublishedAt = time.Time{}
+	if err := attempt.Validate(); err == nil {
+		t.Fatal("Validate() accepted a zero publishedAt")
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"syscall"
 )
 
@@ -143,6 +144,21 @@ func ReadScores(directory string) ([]Score, error) {
 	return scores, nil
 }
 
+// The five OS-call seams publishDocument drives, plus syncDirectoryFn below,
+// give a fault-injection test exactly one substitutable point per design
+// §12 publication stage: temp create, (partial) write, file sync, close,
+// no-overwrite rename, and directory sync. Matching composition/assembly.go's
+// own checkSandboxAvailability convention, production never reassigns
+// these; only publish_fault_test.go does, always restoring the original
+// before returning.
+var (
+	createTempFile = os.CreateTemp
+	writeTempFile  = func(file *os.File, data []byte) (int, error) { return file.Write(data) }
+	syncTempFile   = func(file *os.File) error { return file.Sync() }
+	closeTempFile  = func(file *os.File) error { return file.Close() }
+	linkTempFile   = os.Link
+)
+
 // publishDocument marshals value as canonical JSON and publishes it into
 // directory/filename at most once (design §12): a same-directory temporary
 // file, bounded to this one document's bytes, synced, closed, then linked
@@ -150,41 +166,88 @@ func ReadScores(directory string) ([]Score, error) {
 // filename fails instead of silently overwriting, then the directory itself
 // is synced where the platform supports it. Any failure leaves either the
 // prior state (if the target already existed) or an uncommitted, distinctly
-// named temp file — never a partially written target.
+// named temp file — never a partially written target. A failure after temp
+// creation always attempts to remove that exact temp file; if the process
+// dies before that cleanup runs, CleanupStaleTempFiles recognizes and
+// removes it later by its distinct naming scheme alone.
 func publishDocument(directory, filename string, value any) error {
 	data, err := json.Marshal(value)
 	if err != nil {
 		return fmt.Errorf("eval: encode %s: %w", filename, err)
 	}
 	finalPath := filepath.Join(directory, filename)
-	tempFile, err := os.CreateTemp(directory, tempNamePrefix+filename+".*")
+	tempFile, err := createTempFile(directory, tempNamePrefix+filename+".*")
 	if err != nil {
 		return fmt.Errorf("eval: create temp file for %s: %w", filename, err)
 	}
 	tempPath := tempFile.Name()
 	defer os.Remove(tempPath) // no-op once the link below succeeds and this is a stale temp name
-	if _, err := tempFile.Write(data); err != nil {
-		_ = tempFile.Close()
+	if _, err := writeTempFile(tempFile, data); err != nil {
+		_ = closeTempFile(tempFile)
 		return fmt.Errorf("eval: write %s: %w", filename, err)
 	}
-	if err := tempFile.Sync(); err != nil {
-		_ = tempFile.Close()
+	if err := syncTempFile(tempFile); err != nil {
+		_ = closeTempFile(tempFile)
 		return fmt.Errorf("eval: sync %s: %w", filename, err)
 	}
-	if err := tempFile.Close(); err != nil {
+	if err := closeTempFile(tempFile); err != nil {
 		return fmt.Errorf("eval: close %s: %w", filename, err)
 	}
-	if err := os.Link(tempPath, finalPath); err != nil {
+	if err := linkTempFile(tempPath, finalPath); err != nil {
 		if errors.Is(err, fs.ErrExist) {
 			return fmt.Errorf("%w: %s", errAlreadyPublished, filename)
 		}
 		return fmt.Errorf("eval: publish %s: %w", filename, err)
 	}
-	if err := syncDirectory(directory); err != nil {
+	if err := syncDirectoryFn(directory); err != nil {
 		return fmt.Errorf("eval: sync directory after publishing %s: %w", filename, err)
 	}
 	return nil
 }
+
+// StaleTempFile is one eval-owned uncommitted temp file
+// CleanupStaleTempFiles found and removed.
+type StaleTempFile struct {
+	Path string
+	Size int64
+}
+
+// CleanupStaleTempFiles walks root recursively and removes only files whose
+// name carries this package's exact temp-naming scheme (tempNamePrefix,
+// design §12: "Startup removes only eval-owned temp names after recording
+// diagnostics; it never guesses that an uncommitted file was complete"). It
+// never removes, inspects the content of, or otherwise touches any other
+// file, including a legitimately in-progress temp file from a still-running
+// process -- callers run this only at startup, before any new publish can
+// begin. It returns every file it removed, bounded by root's own contents,
+// as the recorded diagnostic.
+func CleanupStaleTempFiles(root string) ([]StaleTempFile, error) {
+	var removed []StaleTempFile
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), tempNamePrefix) {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return fmt.Errorf("eval: cleanup stale temp file %s: %w", path, err)
+		}
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("eval: cleanup stale temp file %s: %w", path, err)
+		}
+		removed = append(removed, StaleTempFile{Path: path, Size: info.Size()})
+		return nil
+	})
+	if err != nil {
+		return removed, err
+	}
+	return removed, nil
+}
+
+// syncDirectoryFn is the sixth fault-injection seam (directory sync).
+var syncDirectoryFn = syncDirectory
 
 // syncDirectory fsyncs directory so the rename above survives a crash. Not
 // every filesystem supports fsync on a directory descriptor; design §12
