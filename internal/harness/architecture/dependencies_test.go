@@ -723,7 +723,15 @@ func TestOsExecOnlyInLocalExec(t *testing.T) {
 	harnessRoot := filepath.Join(repositoryRoot, "internal", "harness")
 	fileSet := token.NewFileSet()
 	var violations []string
-	localExecRoot := filepath.Join(harnessRoot, "adapters", "localexec")
+	// localexec is the Application-facing exec tool adapter; eval is
+	// design §5/§16's own ACP-subprocess executor, which must launch a
+	// real och -acp child to supervise (implementation plan Task 12) —
+	// the one other package this repository's own design accepts os/exec
+	// in, not a new exception invented here.
+	allowedRoots := []string{
+		filepath.Join(harnessRoot, "adapters", "localexec"),
+		filepath.Join(harnessRoot, "eval"),
+	}
 
 	err := filepath.WalkDir(harnessRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -752,9 +760,16 @@ func TestOsExecOnlyInLocalExec(t *testing.T) {
 			if importPath != "os/exec" {
 				continue
 			}
-			if !directoryWithin(filepath.ToSlash(filepath.Dir(path)), filepath.ToSlash(localExecRoot)) {
+			allowed := false
+			for _, root := range allowedRoots {
+				if directoryWithin(filepath.ToSlash(filepath.Dir(path)), filepath.ToSlash(root)) {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
 				position := fileSet.Position(spec.Pos())
-				violations = append(violations, position.String()+": os/exec is only allowed in adapters/localexec")
+				violations = append(violations, position.String()+": os/exec is only allowed in adapters/localexec or eval")
 			}
 		}
 		return nil
