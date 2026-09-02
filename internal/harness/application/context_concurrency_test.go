@@ -205,6 +205,125 @@ func TestConcurrentManualCompactionAndRunTurnAreMutuallyExclusive(t *testing.T) 
 	}
 }
 
+// TestDuplicateRunTurnJoinsWhilePreTurnCompactionIsActive is the
+// regression test for design §22.2's own named scenario ("duplicate
+// RunTurn joins while pre-turn compaction is active") that
+// context-engine-evidence.md's "Remaining blockers" disclosed as having
+// no dedicated test -- the adjacent
+// TestConcurrentManualCompactionAndRunTurnAreMutuallyExclusive above
+// covers a different pair (manual compaction racing an UNRELATED RunTurn
+// call), not this one (the SAME RunTurnRequestID submitted twice while
+// the first submission's own automatic pre_turn compaction is still
+// mid-flight).
+//
+// Unlike the retry-loop-for-flakiness pattern above, this test forces the
+// overlap deterministically rather than hoping for it: the second
+// RunTurn call is only launched once blockingSummarizer's own started
+// channel proves the first call is already the request's registered
+// owner and is genuinely blocked inside its own pre_turn compaction
+// bracket (executionRegistry.acquire happens synchronously, well before
+// PrepareContext ever calls the summarizer, so this ordering guarantees
+// the second call finds the existing entry and joins it rather than
+// racing to become owner itself).
+func TestDuplicateRunTurnJoinsWhilePreTurnCompactionIsActive(t *testing.T) {
+	store, state, scan, historyIDs := buildHistorySession(t, 6)
+	fullEstimate := contextengine.WireEstimateMeter{}.EstimateMessages(flattenScanMessages(scan))
+	summarizer := &blockingSummarizer{started: make(chan struct{}), release: make(chan struct{}), text: validSummaryText()}
+	config := application.DefaultConfig()
+	config.Context = application.ContextConfig{
+		Enabled: true,
+		Budget: contextengine.Budget{
+			HardInput: fullEstimate * 10, Trigger: fullEstimate / 4, Target: fullEstimate / 8,
+			ProtectedTail: fullEstimate / 20, SummaryOutputCap: 400,
+		},
+		Meter: contextengine.WireEstimateMeter{}, Summarizer: summarizer, CheckpointStore: &liveCheckpointStore{store: store},
+	}
+	runner, err := engine.NewTurnRunner(&acceptanceSuccessModel{text: "reply"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := application.NewService(store, historyIDs, testkit.FixedClock{Time: acceptanceTime}, runner, application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const requestID = domain.RunTurnRequestID("request-duplicate-pre-turn")
+	type outcome struct {
+		result application.RunTurnResult
+		err    error
+	}
+	first := make(chan outcome, 1)
+	go func() {
+		result, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+			SessionID: state.ID, RequestID: requestID, Input: "next after the checkpoint", Sink: &testkit.RecordingSink{},
+		})
+		first <- outcome{result, err}
+	}()
+
+	select {
+	case <-summarizer.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the first RunTurn's own pre_turn compaction to reach the summarizer")
+	}
+
+	second := make(chan outcome, 1)
+	go func() {
+		result, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+			SessionID: state.ID, RequestID: requestID, Input: "next after the checkpoint", Sink: &testkit.RecordingSink{},
+		})
+		second <- outcome{result, err}
+	}()
+
+	// Give the second call a chance to actually reach lease.wait before
+	// unblocking the summarizer -- not required for correctness (acquire
+	// already happened before summarizer.started fired), but makes the
+	// intended overlap the one this run actually exercises rather than an
+	// accident of scheduling.
+	time.Sleep(20 * time.Millisecond)
+	close(summarizer.release)
+
+	firstOutcome := <-first
+	secondOutcome := <-second
+
+	if firstOutcome.err != nil {
+		t.Fatalf("first RunTurn() error = %v", firstOutcome.err)
+	}
+	if secondOutcome.err != nil {
+		t.Fatalf("second (duplicate) RunTurn() error = %v", secondOutcome.err)
+	}
+	if firstOutcome.result.TurnID != secondOutcome.result.TurnID || firstOutcome.result.ItemID != secondOutcome.result.ItemID {
+		t.Fatalf("duplicate RunTurn did not join the first: first=%#v second=%#v", firstOutcome.result, secondOutcome.result)
+	}
+	if firstOutcome.result.Text != secondOutcome.result.Text || firstOutcome.result.Status != secondOutcome.result.Status {
+		t.Fatalf("joined duplicate returned a different result than the owner: first=%#v second=%#v", firstOutcome.result, secondOutcome.result)
+	}
+
+	records, err := application.ReadWholeStreamPinned(context.Background(), store, state.ID, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var turnStarts, compactionStarts int
+	for _, record := range records {
+		switch record.Event.(type) {
+		case domain.TurnStarted:
+			turnStarts++
+		case domain.ContextCompactionStarted:
+			compactionStarts++
+		}
+	}
+	// buildHistorySession's own 6 Turns ran through a Context-Engine-disabled
+	// service (newAcceptanceService), so they contribute 6 of the
+	// TurnStarted events seen here; this round's own joined pair must add
+	// exactly one more Turn and exactly one compaction bracket, never two
+	// of either.
+	if turnStarts != 7 {
+		t.Fatalf("turn.started count = %d, want 7 (6 from history + exactly 1 for the joined duplicate pair)", turnStarts)
+	}
+	if compactionStarts != 1 {
+		t.Fatalf("context.compaction.started count = %d, want exactly 1 (a duplicate join must never open a second compaction bracket)", compactionStarts)
+	}
+}
+
 // assertNoCompactionTurnOverlap walks the durable event log in commit
 // order and fails if a Turn lifecycle event (TurnStarted/Completed/
 // Failed/Interrupted) is ever committed while a compaction bracket is

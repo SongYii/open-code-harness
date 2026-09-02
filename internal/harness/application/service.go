@@ -260,6 +260,7 @@ func (service *Service) contextOrchestratorDeps() ContextOrchestratorDeps {
 		Meter: service.config.Context.Meter, Budget: service.config.Context.Budget, PageLimit: service.config.Context.PageLimit,
 		SummarizeTimeout:               service.config.Context.CompactionTimeout,
 		MaxPrunedToolResultsPerRequest: service.config.Context.MaxPrunedToolResultsPerRequest,
+		Identity:                       service.config.RequestIdentity,
 	}
 }
 

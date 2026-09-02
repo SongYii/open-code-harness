@@ -10,29 +10,29 @@ import (
 )
 
 // This file's benchmarks measure design §22.4's own required properties at
-// 100/1,000/10,000-Turn scale (10x steps) and, in the process, quantify a
-// real gap this task's own investigation found rather than assumed away:
-// PrepareContext's pre-turn pipeline (Scan, then SelectCutPoint's upfront
-// Trigger-comparison estimate) currently re-reads and re-flattens EVERY
-// canonical source record from the beginning of the stream on every single
-// call -- there is no "resume scanning from the last checkpoint" mode, even
-// though a checkpoint already covers everything but the protected tail once
-// one exists. BenchmarkScan and BenchmarkSelectCutPoint below measure this
-// directly: allocations scale linearly with Turn count (100 -> 1,000 turns
-// is roughly a 10x jump in bytes/op for both). This means a below-trigger
-// Turn's admission on a long-lived session pays a cost proportional to the
-// WHOLE session's history, not to the configured budget window -- violating
-// the "live heap bounded by budget, not Turn count" property this
-// benchmark suite exists to check, even though it does not violate
-// correctness or safety (BenchmarkMaterialize below confirms the envelope
-// actually dispatched DOES stay bounded once SelectCutPoint has decided
-// what to retain). Fixing this needs Scan to support an incremental,
-// resume-from-checkpoint scanning mode -- a real architectural change to a
-// pure, heavily mutation-tested package, not something to rush at the tail
-// of this task. It is disclosed here, in context-engine-evidence.md, and
-// in context-engine.md as this milestone's most significant known
-// limitation, not silently left for a benchmark number to speak for
-// itself.
+// 100/1,000/10,000-Turn scale (10x steps).
+//
+// BenchmarkScan and BenchmarkSelectCutPoint measure the ORIGINAL gap this
+// task's own investigation found: called with afterSequence == 0 (a full
+// scan from the beginning of the stream, e.g. this package's own
+// fixtures below, or a real caller's rare "checkpoint failed replay
+// validation" fallback), both re-read/re-flatten EVERY canonical source
+// record and scale linearly with Turn count (100 -> 1,000 turns is roughly
+// a 10x jump in bytes/op for both) -- a real, disclosed cost that remains
+// exactly this expensive on that specific, no-longer-common path.
+// BenchmarkScanFromCheckpoint below measures the fix: Scan's own
+// afterSequence parameter (planner.go) lets a caller holding a checkpoint
+// resume scanning from its own Coverage.ThroughSequence -- a genuine Turn
+// boundary -- instead of always starting at the beginning of the stream,
+// which is what Application's PrepareContext/CompactSession now do
+// whenever a usable checkpoint exists. BenchmarkScanFromCheckpoint holds
+// the *distance since the last checkpoint* fixed while the *total* history
+// preceding it grows 100x, and shows flat cost -- the "live heap bounded
+// by budget, not Turn count" property design §22.4 requires, now delivered
+// on the common steady-state path, not merely on BenchmarkMaterialize's
+// own output side. This does not change BenchmarkScan/BenchmarkSelectCutPoint's
+// own numbers below: they intentionally keep measuring the afterSequence
+// == 0 case, since that path's cost is real and unchanged.
 
 // syntheticHistory builds turnCount Turns' worth of canonical source
 // records (TurnStarted + AssistantMessageCompleted per Turn, a modest
@@ -69,7 +69,34 @@ func BenchmarkScan(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				source := &fakePageSource{records: records, headVersion: uint64(len(records)), pageSize: 256}
-				if _, err := Scan(context.Background(), source, "bench-session", 256); err != nil {
+				if _, err := Scan(context.Background(), source, "bench-session", 256, 0); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkScanFromCheckpoint measures the same Pass 1 read with a
+// checkpoint already covering everything except a fixed-size recent tail
+// (protectedTailTurns), as afterSequence lets Scan resume from that
+// checkpoint's own boundary instead of the beginning of the stream. Unlike
+// BenchmarkScan above, the per-op cost here is expected to stay FLAT as
+// turnCount (the history BEFORE the checkpoint) grows 100x, since none of
+// that history is read at all -- this is the steady-state cost a
+// long-lived, regularly compacted session actually pays on the pre-turn
+// planning path today.
+func BenchmarkScanFromCheckpoint(b *testing.B) {
+	const protectedTailTurns = 5
+	for _, turnCount := range []int{100, 1000, 10000} {
+		b.Run(fmt.Sprintf("turns=%d", turnCount), func(b *testing.B) {
+			records := syntheticHistory(turnCount)
+			afterSequence := uint64(len(records) - protectedTailTurns*2)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				source := &fakePageSource{records: records, headVersion: uint64(len(records)), pageSize: 256}
+				if _, err := Scan(context.Background(), source, "bench-session", 256, afterSequence); err != nil {
 					b.Fatal(err)
 				}
 			}
