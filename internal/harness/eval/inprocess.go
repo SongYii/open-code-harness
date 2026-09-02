@@ -3,7 +3,6 @@ package eval
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"time"
 	"unicode/utf8"
 
@@ -59,7 +58,7 @@ func BuildConfig(subject Subject, directories AttemptRootDirectories, runtimeID 
 	}
 	return composition.Config{
 		WorkspaceRoot:  directories.Workspace,
-		DatabasePath:   filepath.Join(directories.Database, "harness.db"),
+		DatabasePath:   AttemptDatabasePath(directories),
 		RuntimeID:      runtimeID,
 		AuditDirectory: directories.Audit,
 		Provider: composition.Provider{

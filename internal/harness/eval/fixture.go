@@ -66,6 +66,17 @@ func NewAttemptRoot(baseDirectory string, attemptID AttemptID) (AttemptRootDirec
 	return directories, nil
 }
 
+// attemptDatabaseFilename is the canonical SQLite file name BuildConfig and
+// evidence collection both use inside directories.Database, so the two
+// never drift.
+const attemptDatabaseFilename = "harness.db"
+
+// AttemptDatabasePath is directories.Database's canonical SQLite file
+// path (design §8).
+func AttemptDatabasePath(directories AttemptRootDirectories) string {
+	return filepath.Join(directories.Database, attemptDatabaseFilename)
+}
+
 // FixtureCopyLimits are the concrete, positive, already-resolved fixture
 // copy bounds one CopyFixture call enforces (design §8/§19). A Scenario's
 // own FixtureCopyPolicy only narrows an EvalSet's fixture limits (design
