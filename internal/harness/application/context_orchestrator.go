@@ -152,6 +152,25 @@ type ContextOrchestratorDeps struct {
 	// bracket (design §21/§8's own CompactionTimeout config, distinct
 	// from CleanupTimeout above). Zero uses defaultSummarizeTimeout.
 	SummarizeTimeout time.Duration
+	// MaxSummaryChunks bounds design §11.2's rolling, chunked
+	// summarization: at most this many summarizer calls occur while
+	// building one checkpoint. Zero means 1 (maxSummaryChunks below),
+	// preserving every existing caller's own single-shot-only behavior
+	// exactly: source material that does not fit in one summarizer call
+	// fails immediately rather than chunking, unless a caller opts in by
+	// setting this field.
+	MaxSummaryChunks uint32
+}
+
+// maxSummaryChunks is deps.MaxSummaryChunks, defaulting to 1 (single-shot
+// only) when unset -- see the field's own doc comment for why 1, not
+// composition's own DefaultMaxSummaryChunks (8), is the zero-value default
+// here specifically.
+func (deps ContextOrchestratorDeps) maxSummaryChunks() uint32 {
+	if deps.MaxSummaryChunks == 0 {
+		return 1
+	}
+	return deps.MaxSummaryChunks
 }
 
 func (deps ContextOrchestratorDeps) valid() bool {
@@ -619,28 +638,9 @@ func buildSummaryCheckpoint(ctx context.Context, deps ContextOrchestratorDeps, s
 // automatic paths (Tasks 9/10) always call buildSummaryCheckpoint with
 // focus == "".
 func buildSummaryCheckpointWithFocus(ctx context.Context, deps ContextOrchestratorDeps, sessionID domain.SessionID, input PrepareContextInput, headVersion uint64, previous *contextengine.ContextCheckpoint, plan contextengine.PlanResult, compactionID domain.ContextCompactionID, focus string) (*contextengine.ContextCheckpoint, error) {
-	content := renderSummaryPrompt(previous, plan.CoveredUnits, focus)
-	contentTokens := deps.Meter.EstimateMessages([]domain.ModelPromptMessage{{Role: domain.PromptRoleUser, Text: content}})
-	if contentTokens > deps.Budget.HardInput {
-		// Disclosed Step 1 scope narrowing: this implementation performs
-		// single-shot summarization only (SummaryChunks is always 1 when
-		// it succeeds). Content too large for one summarizer call is
-		// treated as "rolling summary unavailable" and left to the
-		// deterministic reset fallback (design §12), never split into
-		// multiple chunked summarizer calls — a real, disclosed gap
-		// relative to the design's own multi-chunk rolling successor,
-		// closed by a follow-up change if a benchmark shows it matters.
-		return nil, fmt.Errorf("%s: source material for one summarizer call exceeds hard input budget", CodeContextSummaryFailed)
-	}
-
-	summarizeCtx, cancelSummarize := context.WithTimeout(ctx, deps.summarizeTimeout())
-	summarizeResult, err := deps.Summarizer.Summarize(summarizeCtx, ContextSummarizeRequest{
-		SessionID: sessionID, TurnID: input.TurnID, ItemID: input.ItemID, Content: content,
-		MaxOutputTokens: uint32(minUint64(deps.Budget.SummaryOutputCap, 1<<31)), MaxOutputBytes: maxCompactionSummaryOutputBytes,
-	})
-	cancelSummarize()
+	summarizeResultText, chunkCount, totalOutputTokens, err := summarizeChunks(ctx, deps, sessionID, input, previous, plan, focus)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", CodeContextSummaryFailed, err)
+		return nil, err
 	}
 
 	coveredThroughSequence := plan.CoveredThroughSequence
@@ -668,12 +668,12 @@ func buildSummaryCheckpointWithFocus(ctx context.Context, deps ContextOrchestrat
 	prePassMessages := append(unitMessages(mergeUnits(previous, plan)), currentInputMessage(input.CurrentInput)...)
 	prePassTokens := deps.Meter.Estimate(contextengine.Envelope{Messages: prePassMessages, Tools: input.Tools}).Tokens
 
-	postPassMessages := append([]domain.ModelPromptMessage{{Role: domain.PromptRoleUser, Text: summarizeResult.Text}}, unitMessages(plan.RetainedUnits)...)
+	postPassMessages := append([]domain.ModelPromptMessage{{Role: domain.PromptRoleUser, Text: summarizeResultText}}, unitMessages(plan.RetainedUnits)...)
 	postPassMessages = append(postPassMessages, currentInputMessage(input.CurrentInput)...)
 	postPassTokens := deps.Meter.Estimate(contextengine.Envelope{Messages: postPassMessages, Tools: input.Tools}).Tokens
 
 	validation := contextengine.ValidateSummary(contextengine.SummaryValidationInput{
-		RawOutput: summarizeResult.Text, TerminatedNormally: true, ContainsToolCall: false, ContainsNonText: false,
+		RawOutput: summarizeResultText, TerminatedNormally: true, ContainsToolCall: false, ContainsNonText: false,
 		SummaryOutputCap: deps.Budget.SummaryOutputCap, Meter: deps.Meter,
 		PrePassRequestTokens: prePassTokens, PostPassRequestTokens: postPassTokens, HardInput: deps.Budget.HardInput,
 		CoveredSourceTokens: coveredSourceTokens,
@@ -698,7 +698,7 @@ func buildSummaryCheckpointWithFocus(ctx context.Context, deps ContextOrchestrat
 		},
 		PreviousCheckpointID: previousID, Summary: validation.RedactedText,
 		TokensBefore: prePassTokens, CheckpointTokens: checkpointTokens, RetainedTailTokens: retainedTailTokens,
-		EstimatedRequestTokens: postPassTokens, SummarizerUsage: summarizeResult.Usage.OutputTokens, SummaryChunks: 1,
+		EstimatedRequestTokens: postPassTokens, SummarizerUsage: totalOutputTokens, SummaryChunks: chunkCount,
 	}
 	if err := contextengine.ValidateSuccessor(previous, checkpoint); err != nil {
 		return nil, fmt.Errorf("%s: %w", CodeContextCheckpointInvalid, err)
@@ -807,17 +807,24 @@ func newCheckpointID(compactionID domain.ContextCompactionID) (string, error) {
 
 // renderSummaryPrompt combines contextengine's own versioned prompt asset
 // with a deterministically rendered "PREVIOUS CHECKPOINT" section (only
-// when previous is a rolling summary; a reset checkpoint carries no
-// summary text to roll forward) and a "SOURCE MATERIAL" section over the
-// units this compaction covers. Rendering happens here, in Application,
-// because ContextSummarizeRequest's own contract (ports.go) states this
-// port owns no prompt assembly of its own.
-func renderSummaryPrompt(previous *contextengine.ContextCheckpoint, covered []contextengine.ContextUnit, focus string) string {
+// when previousSummaryText is non-empty -- a Session's first-ever
+// compaction, or a checkpoint that is a deterministic reset rather than a
+// rolling summary, has none to roll forward) and a "SOURCE MATERIAL"
+// section over the units this chunk covers. Rendering happens here, in
+// Application, because ContextSummarizeRequest's own contract (ports.go)
+// states this port owns no prompt assembly of its own.
+//
+// previousSummaryText is a plain string, not *contextengine.ContextCheckpoint,
+// specifically so summarizeChunks below can pass an intermediate chunk's
+// own just-validated output as the "previous" text for the next chunk
+// (design §11.2's own rolling-chunk shape) without needing to fabricate a
+// ContextCheckpoint value that does not really exist yet.
+func renderSummaryPrompt(previousSummaryText string, covered []contextengine.ContextUnit, focus string) string {
 	var b strings.Builder
 	b.WriteString(contextengine.SummaryPrompt)
-	if previous != nil && previous.Kind == contextengine.CheckpointKindRollingSummary && previous.Summary != "" {
+	if previousSummaryText != "" {
 		b.WriteString("\n\n## PREVIOUS CHECKPOINT\n\n")
-		b.WriteString(previous.Summary)
+		b.WriteString(previousSummaryText)
 	}
 	if focus != "" {
 		b.WriteString("\n\n## MANUAL FOCUS\n\n")
@@ -826,6 +833,146 @@ func renderSummaryPrompt(previous *contextengine.ContextCheckpoint, covered []co
 	b.WriteString("\n\n## SOURCE MATERIAL\n\n")
 	renderUnits(&b, covered)
 	return b.String()
+}
+
+// rollingSummaryText extracts the rolling-summary text a checkpoint
+// carries forward as the next chunk's/checkpoint's own "PREVIOUS
+// CHECKPOINT" section -- "" for a nil checkpoint (a Session's first-ever
+// compaction) or a deterministic reset (design's own "no summary of the
+// omitted history was produced" checkpoint, which has nothing to roll
+// forward).
+func rollingSummaryText(previous *contextengine.ContextCheckpoint) string {
+	if previous != nil && previous.Kind == contextengine.CheckpointKindRollingSummary {
+		return previous.Summary
+	}
+	return ""
+}
+
+// fitUnitsUnderBudget returns how many leading units of candidates fit,
+// together with previousSummaryText and this package's own fixed prompt
+// framing, at or under budget tokens: at least 1 if even the single
+// leading unit alone fits, 0 if even that alone does not (the caller's
+// own "cannot make any progress" failure case).
+func fitUnitsUnderBudget(meter contextengine.Meter, previousSummaryText string, candidates []contextengine.ContextUnit, budget uint64) int {
+	fitCount := 0
+	for fitCount < len(candidates) {
+		probe := renderSummaryPrompt(previousSummaryText, candidates[:fitCount+1], "")
+		tokens := meter.EstimateMessages([]domain.ModelPromptMessage{{Role: domain.PromptRoleUser, Text: probe}})
+		if tokens > budget {
+			break
+		}
+		fitCount++
+	}
+	return fitCount
+}
+
+// summarizeChunks implements design §11.2's rolling, chunked
+// summarization: at most deps.maxSummaryChunks() summarizer calls, each
+// fed the immediately prior chunk's own validated output (or previous's
+// own rolling summary for the very first chunk, or nothing at all for a
+// Session's first-ever compaction) plus as many of plan.CoveredUnits, in
+// order, as fit under one chunk's own budget. It approximates design
+// §11.2's own per-chunk budget (W - summaryOutputCap - safety) with the
+// simpler, already-available deps.Budget.HardInput (= W - O - safety):
+// since summaryOutputCap <= O always holds (design §8), the real
+// per-chunk budget is never smaller than HardInput, so this is a safe,
+// merely conservative substitute that needs no new Budget field.
+//
+// It validates every INTERMEDIATE chunk's own output structurally (shape,
+// redaction, size, cap, and shrink against that chunk's own covered
+// content) via contextengine.ValidateSummary, but never against the
+// actually-dispatched request's own pre/post-pass shrink requirement,
+// which has no meaning for a chunk whose own output is never itself
+// dispatched -- only fed forward as the next chunk's "previous checkpoint"
+// text. It returns the LAST chunk's raw, not-yet-validated summarizer
+// output, the total chunk count, and the summed summarizer output-token
+// usage; buildSummaryCheckpointWithFocus performs its own final
+// validation (real pre/post-pass, real CoveredSourceTokens over the
+// complete plan.CoveredUnits) over that raw text exactly as it always
+// has, whether one chunk or several produced it.
+func summarizeChunks(ctx context.Context, deps ContextOrchestratorDeps, sessionID domain.SessionID, input PrepareContextInput, previous *contextengine.ContextCheckpoint, plan contextengine.PlanResult, focus string) (rawText string, chunkCount uint32, totalOutputTokens uint64, err error) {
+	maxChunks := deps.maxSummaryChunks()
+	chunkBudget := deps.Budget.HardInput
+	// The manual-focus section only ever renders into the LAST chunk
+	// (design's own focus is meant to steer the final synthesis, not every
+	// intermediate rolling pass), but which chunk turns out to be last is
+	// not known until fitting is already underway -- reserving its own
+	// rendered token cost from every chunk's own budget up front is a
+	// simple, safe, always-sufficient way to guarantee the actual last
+	// chunk (focus included) never exceeds chunkBudget, at the cost of
+	// possibly chunking one unit earlier than strictly necessary when a
+	// focus string is set.
+	var focusTokens uint64
+	if focus != "" {
+		focusTokens = deps.Meter.EstimateMessages([]domain.ModelPromptMessage{{Role: domain.PromptRoleUser, Text: "\n\n## MANUAL FOCUS\n\n" + focus}})
+	}
+	fitBudget := uint64(0)
+	if chunkBudget > focusTokens {
+		fitBudget = chunkBudget - focusTokens
+	}
+
+	remaining := plan.CoveredUnits
+	previousText := rollingSummaryText(previous)
+	for len(remaining) > 0 {
+		chunkCount++
+		if chunkCount > maxChunks {
+			return "", 0, 0, fmt.Errorf("%s: source material needs more than the configured %d summarizer chunks", CodeContextCompactionLimit, maxChunks)
+		}
+
+		fitCount := fitUnitsUnderBudget(deps.Meter, previousText, remaining, fitBudget)
+		if fitCount == 0 {
+			return "", 0, 0, fmt.Errorf("%s: source material for one summarizer chunk exceeds hard input budget", CodeContextSummaryFailed)
+		}
+		chunkUnits := remaining[:fitCount]
+		remaining = remaining[fitCount:]
+		isLast := len(remaining) == 0
+		chunkFocus := ""
+		if isLast {
+			chunkFocus = focus
+		}
+		content := renderSummaryPrompt(previousText, chunkUnits, chunkFocus)
+
+		summarizeCtx, cancel := context.WithTimeout(ctx, deps.summarizeTimeout())
+		summarizeResult, summarizeErr := deps.Summarizer.Summarize(summarizeCtx, ContextSummarizeRequest{
+			SessionID: sessionID, TurnID: input.TurnID, ItemID: input.ItemID, Content: content,
+			MaxOutputTokens: uint32(minUint64(deps.Budget.SummaryOutputCap, 1<<31)), MaxOutputBytes: maxCompactionSummaryOutputBytes,
+		})
+		cancel()
+		if summarizeErr != nil {
+			return "", 0, 0, fmt.Errorf("%s: %w", CodeContextSummaryFailed, summarizeErr)
+		}
+		totalOutputTokens += summarizeResult.Usage.OutputTokens
+
+		if isLast {
+			return summarizeResult.Text, chunkCount, totalOutputTokens, nil
+		}
+
+		chunkCoveredTokens := deps.Meter.EstimateMessages(unitMessages(chunkUnits))
+		validation := contextengine.ValidateSummary(contextengine.SummaryValidationInput{
+			RawOutput: summarizeResult.Text, TerminatedNormally: true, ContainsToolCall: false, ContainsNonText: false,
+			SummaryOutputCap: deps.Budget.SummaryOutputCap, Meter: deps.Meter,
+			CoveredSourceTokens: chunkCoveredTokens,
+			// This intermediate chunk's own output is never itself
+			// dispatched, so design §11.3's shrink-vs-the-actual-request
+			// pre/post-pass check has no real request to compare against
+			// yet -- PrePassRequestTokens/PostPassRequestTokens/HardInput
+			// are set so that specific pair of checks is always vacuously
+			// satisfied, while every structural check (shape, redaction,
+			// size, cap, and shrink against what THIS chunk covers) still
+			// fully applies.
+			PrePassRequestTokens: 1, PostPassRequestTokens: 0, HardInput: ^uint64(0),
+		})
+		if !validation.Valid {
+			return "", 0, 0, fmt.Errorf("%s: %s", CodeContextSummaryInvalid, validation.FailureReason)
+		}
+		previousText = validation.RedactedText
+	}
+	// Unreachable: runCompactionBracket never calls buildSummaryCheckpoint
+	// with an empty plan.CoveredUnits (it returns early itself in that
+	// case), so the loop above always takes its own isLast return path at
+	// least once. A defensive error, not a panic, satisfies the compiler
+	// without asserting a precondition this function does not itself own.
+	return "", 0, 0, fmt.Errorf("%s: no source units to summarize", CodeContextCompactionLimit)
 }
 
 func renderUnits(b *strings.Builder, units []contextengine.ContextUnit) {
@@ -919,21 +1066,28 @@ func decodeDigestHex(value string) ([32]byte, error) {
 }
 
 func summaryFailureCode(err error) string {
-	if strings.HasPrefix(err.Error(), CodeContextSummaryInvalid) {
+	switch {
+	case strings.HasPrefix(err.Error(), CodeContextSummaryInvalid):
 		return CodeContextSummaryInvalid
+	case strings.HasPrefix(err.Error(), CodeContextCompactionLimit):
+		return CodeContextCompactionLimit
+	default:
+		return CodeContextSummaryFailed
 	}
-	return CodeContextSummaryFailed
 }
 
 // safeFailureMessage never includes raw model output or provider detail —
 // design §13.2's "never embeds partial model output" for
 // ContextCompactionFailed.
 func safeFailureMessage(err error) string {
-	code := summaryFailureCode(err)
-	if code == CodeContextSummaryInvalid {
+	switch summaryFailureCode(err) {
+	case CodeContextSummaryInvalid:
 		return "summary output failed validation"
+	case CodeContextCompactionLimit:
+		return "source material exceeds the configured summary chunk limit"
+	default:
+		return "summary generation failed"
 	}
-	return "summary generation failed"
 }
 
 func mapDomainDecideError(err error) error {

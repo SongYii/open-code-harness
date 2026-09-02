@@ -54,13 +54,10 @@ type Context struct {
 	TriggerPercent uint32
 	TargetPercent  uint32
 	TailPercent    uint32
-	// MaxSummaryChunks bounds how many summarizer calls one compaction may
-	// use. Accepted and range-validated per design §8's table; the current
-	// summarizer implementation is single-shot only (a disclosed scope
-	// narrowing in context_orchestrator.go's buildSummaryCheckpointWithFocus),
-	// so this field does not yet change behavior -- it exists so the
-	// config surface already matches the design's contract for when
-	// multi-chunk summarization lands.
+	// MaxSummaryChunks bounds design §11.2's rolling, chunked
+	// summarization: how many summarizer calls one compaction may use when
+	// its covered source material does not fit in a single call.
+	// Accepted and range-validated per design §8's table.
 	MaxSummaryChunks uint32
 	// MaxOverflowCompactionsPerTurn bounds design §15.3/§19's per-Turn
 	// Provider overflow recovery count (application.ContextConfig's own

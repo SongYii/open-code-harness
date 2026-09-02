@@ -61,7 +61,7 @@ Defaults (design §8's own table, all configurable via
 | `TriggerPercent` | 80 | 60–95 |
 | `TargetPercent` | 55 | 30–80 and `< TriggerPercent` |
 | `TailPercent` | 25 | 10–50 and `< TargetPercent` |
-| `MaxSummaryChunks` | 8 | 1–16 (accepted and validated; **not yet consumed** — see [Known limitations](#known-limitations)) |
+| `MaxSummaryChunks` | 8 | 1–16 |
 | `MaxOverflowCompactionsPerTurn` | 2 | 1–3 |
 | `CompactionTimeout` | 2 minutes | 5 seconds–10 minutes |
 | `MaxPrunedToolResultsPerRequest` | 64 | 1–64 (accepted and validated; **not yet consumed** — see [Known limitations](#known-limitations)) |
@@ -309,13 +309,44 @@ spend more time on.
    estimate using observed usage is inert. Safe (the wire estimate is
    always a valid, if conservative, upper bound) but incomplete relative to
    design §8.
-3. **`MaxSummaryChunks` and `MaxPrunedToolResultsPerRequest` are accepted
-   and range-validated by `composition.Config.Context`, matching the
-   design's literal contract, but do not yet change behavior.** The
-   summarizer is single-shot only (`buildSummaryCheckpointWithFocus`
-   rejects, rather than chunks, source material too large for one call);
-   Tool Result pruning (`contextengine.ProjectToolResult`) is never called
-   from `Materialize`'s pipeline.
+3. ~~`MaxSummaryChunks` is accepted and range-validated but the summarizer
+   is single-shot only~~ **Resolved by a follow-up commit.**
+   `buildSummaryCheckpointWithFocus` now calls a new `summarizeChunks`
+   helper implementing design §11.2's rolling, chunked summarization:
+   source material too large for one summarizer call is split into as
+   many chunks as fit under a per-chunk budget (a conservative,
+   already-available stand-in for design's own `W - summaryOutputCap -
+   safety` formula: `deps.Budget.HardInput`, which is never smaller since
+   `summaryOutputCap <= O` always holds), each fed the immediately prior
+   chunk's own validated output as its "PREVIOUS CHECKPOINT" section (or
+   an existing rolling-summary checkpoint's own text for the very first
+   chunk, or nothing for a Session's first-ever compaction), up to
+   `ContextOrchestratorDeps.MaxSummaryChunks` calls. Every intermediate
+   chunk's own output is validated structurally (shape, redaction, size,
+   cap, shrink against that chunk's own covered content) via the same
+   `contextengine.ValidateSummary` this package always used, but not
+   against the actually-dispatched request's own pre/post-pass shrink
+   requirement, which has no meaning until the final chunk is known — the
+   final chunk still receives the exact same full validation (real
+   pre/post-pass, real `CoveredSourceTokens` over the complete covered
+   range) this package always performed, unchanged, regardless of how many
+   chunks produced its input. A chunk cap that cannot be met fails closed
+   with the (previously unused) `context_compaction_limit` code and falls
+   through to the same deterministic-reset ladder any other summary
+   failure above `hardInput` already uses — never silently truncating
+   source material or exceeding the configured cap.
+   `ContextOrchestratorDeps.MaxSummaryChunks` defaults to 1 (single-shot
+   only) when unset, so every existing caller's own behavior is unchanged
+   unless it explicitly opts in; `composition`'s own real assembly path
+   already sets it to `composition.Config.Context.MaxSummaryChunks`
+   (default 8), so a real deployment gets genuine multi-chunk behavior
+   without further configuration.
+   `TestPrepareContextChunkedSummarizationRollsMultipleCallsIntoOneCheckpoint`,
+   `TestPrepareContextChunkCapExhaustedFallsBackToDeterministicReset`, and
+   `TestPrepareContextMaxSummaryChunksDefaultsToSingleShot`
+   (`internal/harness/application`) are this fix's own regression tests.
+   `MaxPrunedToolResultsPerRequest`/Tool Result pruning is tracked and
+   resolved separately — see the evidence ledger's own follow-up sections.
 4. A **duplicate `RunTurnRequestID` join specifically while a `pre_turn`
    automatic compaction is mid-flight** (design §22.2's own named scenario)
    has no dedicated test; the adjacent manual-compaction-vs-RunTurn

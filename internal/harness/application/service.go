@@ -73,6 +73,11 @@ type ContextConfig struct {
 	// before any resource is constructed; NewService only rejects a
 	// negative value here.
 	CompactionTimeout time.Duration
+	// MaxSummaryChunks bounds design §11.2's rolling, chunked
+	// summarization (ContextOrchestratorDeps.MaxSummaryChunks). Zero means
+	// 1 (single-shot only), matching every caller that built a
+	// ContextConfig before this field existed.
+	MaxSummaryChunks uint32
 }
 
 // DefaultMaxOverflowRecoveriesPerTurn and MaxOverflowRecoveriesPerTurnCap
@@ -252,7 +257,7 @@ func (service *Service) contextOrchestratorDeps() ContextOrchestratorDeps {
 		Store: service.store, IDs: service.ids, Clock: service.clock, Authority: service.authority,
 		CheckpointStore: service.config.Context.CheckpointStore, Summarizer: service.config.Context.Summarizer,
 		Meter: service.config.Context.Meter, Budget: service.config.Context.Budget, PageLimit: service.config.Context.PageLimit,
-		SummarizeTimeout: service.config.Context.CompactionTimeout,
+		SummarizeTimeout: service.config.Context.CompactionTimeout, MaxSummaryChunks: service.config.Context.MaxSummaryChunks,
 	}
 }
 
