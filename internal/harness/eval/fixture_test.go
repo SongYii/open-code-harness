@@ -155,3 +155,67 @@ func writeFile(t *testing.T, path, content string, mode os.FileMode) {
 		t.Fatalf("WriteFile(%s): %v", path, err)
 	}
 }
+
+func TestResolveFixtureCopyLimitsUsesEvalSetDefaultForZeroMaxFiles(t *testing.T) {
+	setLimits := validEvalSetLimits()
+	policy := FixtureCopyPolicy{MaxFileBytes: 1024, MaxTotalBytes: 4096}
+	resolved, err := ResolveFixtureCopyLimits(setLimits, policy)
+	if err != nil {
+		t.Fatalf("ResolveFixtureCopyLimits: %v", err)
+	}
+	if resolved.MaxFiles != DefaultFixtureFiles {
+		t.Fatalf("MaxFiles = %d, want the EvalSet default %d", resolved.MaxFiles, DefaultFixtureFiles)
+	}
+	if resolved.MaxFileBytes != 1024 || resolved.MaxTotalBytes != 4096 {
+		t.Fatalf("resolved = %+v, want the Scenario's own byte limits carried through", resolved)
+	}
+}
+
+func TestResolveFixtureCopyLimitsRejectsWideningMaxFiles(t *testing.T) {
+	setLimits := validEvalSetLimits()
+	policy := FixtureCopyPolicy{MaxFiles: DefaultFixtureFiles + 1, MaxFileBytes: 1024, MaxTotalBytes: 4096}
+	if _, err := ResolveFixtureCopyLimits(setLimits, policy); err == nil {
+		t.Fatal("ResolveFixtureCopyLimits accepted a Scenario maxFiles wider than the EvalSet limit")
+	}
+}
+
+func TestResolveFixtureCopyLimitsRequiresExplicitByteBounds(t *testing.T) {
+	setLimits := validEvalSetLimits()
+	if _, err := ResolveFixtureCopyLimits(setLimits, FixtureCopyPolicy{MaxTotalBytes: 4096}); err == nil {
+		t.Fatal("ResolveFixtureCopyLimits accepted a zero maxFileBytes")
+	}
+	if _, err := ResolveFixtureCopyLimits(setLimits, FixtureCopyPolicy{MaxFileBytes: 1024}); err == nil {
+		t.Fatal("ResolveFixtureCopyLimits accepted a zero maxTotalBytes")
+	}
+}
+
+func TestRefuseArtifactRootWithinFixtureRejectsNesting(t *testing.T) {
+	tests := []struct {
+		name         string
+		artifactRoot string
+		fixtureRoot  string
+	}{
+		{"artifact inside fixture", "/repo/eval/scenarios/s1/fixture/.eval", "/repo/eval/scenarios/s1/fixture"},
+		{"fixture inside artifact", "/repo/.eval", "/repo/.eval/scenarios/s1/fixture"},
+		{"identical", "/repo/.eval", "/repo/.eval"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := RefuseArtifactRootWithinFixture(test.artifactRoot, test.fixtureRoot); err == nil {
+				t.Fatalf("RefuseArtifactRootWithinFixture(%q, %q) accepted nested roots", test.artifactRoot, test.fixtureRoot)
+			}
+		})
+	}
+}
+
+func TestRefuseArtifactRootWithinFixtureAllowsDisjointRoots(t *testing.T) {
+	if err := RefuseArtifactRootWithinFixture("/repo/.eval", "/repo/eval/scenarios/s1/fixture"); err != nil {
+		t.Fatalf("RefuseArtifactRootWithinFixture rejected disjoint roots: %v", err)
+	}
+}
+
+func TestRefuseArtifactRootWithinFixtureRequiresAbsolutePaths(t *testing.T) {
+	if err := RefuseArtifactRootWithinFixture("relative", "/repo/fixture"); err == nil {
+		t.Fatal("RefuseArtifactRootWithinFixture accepted a relative artifactRoot")
+	}
+}

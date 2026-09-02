@@ -7,7 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"syscall"
+	"strings"
 )
 
 // AttemptRootDirectories are design §8's isolated per-Attempt execution
@@ -92,6 +92,73 @@ func (limits FixtureCopyLimits) validate() error {
 	return nil
 }
 
+// ResolveFixtureCopyLimits derives concrete FixtureCopyLimits for one
+// Scenario within one EvalSet (design §7: "per-Scenario limits that may
+// only narrow EvalSet limits"). MaxFiles narrows EvalSetLimits.FixtureFiles,
+// the one design §19 default this package has for fixture copies; a
+// Scenario's declared MaxFiles must not exceed it, and zero means "use the
+// EvalSet default." MaxFileBytes and MaxTotalBytes have no EvalSet-level
+// default in design §19's table (only a file *count* default exists there),
+// so a Scenario must set both explicitly and positively -- this function
+// fails closed rather than inventing an unstated default.
+func ResolveFixtureCopyLimits(setLimits EvalSetLimits, policy FixtureCopyPolicy) (FixtureCopyLimits, error) {
+	if err := policy.validate(); err != nil {
+		return FixtureCopyLimits{}, fmt.Errorf("eval: resolve fixture copy limits: %w", err)
+	}
+	setLimits = setLimits.withDefaults()
+
+	maxFiles := policy.MaxFiles
+	switch {
+	case maxFiles == 0:
+		maxFiles = setLimits.FixtureFiles
+	case maxFiles > setLimits.FixtureFiles:
+		return FixtureCopyLimits{}, fmt.Errorf(
+			"eval: resolve fixture copy limits: %w: fixtureCopyPolicy.maxFiles (%d) exceeds the EvalSet limit (%d)",
+			errInvalidDocument, maxFiles, setLimits.FixtureFiles)
+	}
+	if policy.MaxFileBytes <= 0 {
+		return FixtureCopyLimits{}, fmt.Errorf(
+			"eval: resolve fixture copy limits: %w: fixtureCopyPolicy.maxFileBytes must be set (design §19 has no fixture byte default)",
+			errInvalidDocument)
+	}
+	if policy.MaxTotalBytes <= 0 {
+		return FixtureCopyLimits{}, fmt.Errorf(
+			"eval: resolve fixture copy limits: %w: fixtureCopyPolicy.maxTotalBytes must be set (design §19 has no fixture byte default)",
+			errInvalidDocument)
+	}
+	return FixtureCopyLimits{MaxFiles: maxFiles, MaxFileBytes: policy.MaxFileBytes, MaxTotalBytes: policy.MaxTotalBytes}, nil
+}
+
+// RefuseArtifactRootWithinFixture fails closed if artifactRoot and
+// fixtureRoot nest inside one another in either direction (implementation
+// plan Task 3 / design §26: "run refuses an artifact root inside a fixture
+// workspace"). Live evidence must never land inside a checked-in fixture
+// source tree, and a fixture source must never be pointed at a live
+// artifact root either. Both paths must already be absolute and cleaned;
+// this function does not resolve symlinks.
+func RefuseArtifactRootWithinFixture(artifactRoot, fixtureRoot string) error {
+	if !filepath.IsAbs(artifactRoot) || !filepath.IsAbs(fixtureRoot) {
+		return fmt.Errorf("%w: artifactRoot and fixtureRoot must be absolute paths", errInvalidDocument)
+	}
+	artifactRoot = filepath.Clean(artifactRoot)
+	fixtureRoot = filepath.Clean(fixtureRoot)
+	if artifactRoot == fixtureRoot || pathWithin(artifactRoot, fixtureRoot) || pathWithin(fixtureRoot, artifactRoot) {
+		return fmt.Errorf("%w: artifact root %q and fixture root %q must not nest within one another",
+			errInvalidDocument, artifactRoot, fixtureRoot)
+	}
+	return nil
+}
+
+// pathWithin reports whether candidate is strictly inside root (candidate
+// != root).
+func pathWithin(candidate, root string) bool {
+	relative, err := filepath.Rel(root, candidate)
+	if err != nil {
+		return false
+	}
+	return relative != "." && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
 // FixtureCopyResult reports what CopyFixture actually copied.
 type FixtureCopyResult struct {
 	FileCount  int
@@ -156,7 +223,11 @@ func CopyFixture(sourceDirectory, destinationDirectory string, limits FixtureCop
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("eval: copy fixture: %s: %w: unsupported file type %s", relative, errFixtureRejected, info.Mode().Type())
 		}
-		if hardLinkCount(info) > 1 {
+		links, err := hardLinkCount(path, info)
+		if err != nil {
+			return fmt.Errorf("eval: copy fixture: %s: check hard link count: %w", relative, err)
+		}
+		if links > 1 {
 			return fmt.Errorf("eval: copy fixture: %s: %w: hard-linked file", relative, errFixtureRejected)
 		}
 
@@ -193,15 +264,10 @@ func requireEmptyDirectory(directory string) error {
 	return nil
 }
 
-// hardLinkCount reports the on-disk link count Lstat observed. It returns 1
-// (the ordinary case) when the platform does not expose it.
-func hardLinkCount(info fs.FileInfo) uint64 {
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return 1
-	}
-	return uint64(stat.Nlink)
-}
+// hardLinkCount (implementation plan Task 3) is defined per-platform in
+// fixture_stat_unix.go and fixture_stat_windows.go, so this file stays free
+// of any platform-specific stat type and GOOS=windows go build/test still
+// compiles this package.
 
 // copyRegularFile copies one already-validated regular file's bytes,
 // preserving only whether it was executable (design §8: "preserves only
