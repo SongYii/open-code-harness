@@ -106,3 +106,85 @@ func TestExpandAttemptsRejectsExceedingMaxExpandedAttempts(t *testing.T) {
 		t.Fatal("ExpandAttempts accepted an expansion exceeding limits.maxExpandedAttempts")
 	}
 }
+
+func TestExpandAttemptsRejectsLiveSubjectInFixtureSet(t *testing.T) {
+	set, scenarios, subjects, executors := expansionFixtures(t)
+	for id, subject := range subjects {
+		subject.Provider.Lane = ProviderLaneLive
+		digest, err := SubjectDigest(subject)
+		if err != nil {
+			t.Fatalf("SubjectDigest: %v", err)
+		}
+		subjects[id] = subject
+		for index, ref := range set.Subjects {
+			if ref.ID == id {
+				set.Subjects[index].Digest = digest
+			}
+		}
+	}
+	if _, err := ExpandAttempts(set, scenarios, subjects, executors); err == nil {
+		t.Fatal("ExpandAttempts accepted a live-provider Subject inside a fixture-lane EvalSet")
+	}
+}
+
+func TestExpandAttemptsRejectsFixtureSubjectInLiveSet(t *testing.T) {
+	set, scenarios, subjects, executors := expansionFixtures(t)
+	set.Lane = LaneLive
+	if _, err := ExpandAttempts(set, scenarios, subjects, executors); err == nil {
+		t.Fatal("ExpandAttempts accepted a fixture-provider Subject inside a live-lane EvalSet")
+	}
+}
+
+func TestExpandAttemptsRejectsCostCapWithoutPriceTable(t *testing.T) {
+	set, scenarios, subjects, executors := expansionFixtures(t)
+	set.Limits.CostCapMicrounits = 1
+	if _, err := ExpandAttempts(set, scenarios, subjects, executors); err == nil {
+		t.Fatal("ExpandAttempts accepted a cost cap when the Subject has no priceTableDigest")
+	}
+}
+
+func TestExpandAttemptsAllowsCostCapWithPriceTable(t *testing.T) {
+	set, scenarios, subjects, executors := expansionFixtures(t)
+	set.Limits.CostCapMicrounits = 1
+	for id, subject := range subjects {
+		subject.PriceTableDigest = string(mustDigest(t, 8))
+		digest, err := SubjectDigest(subject)
+		if err != nil {
+			t.Fatalf("SubjectDigest: %v", err)
+		}
+		subjects[id] = subject
+		for index, ref := range set.Subjects {
+			if ref.ID == id {
+				set.Subjects[index].Digest = digest
+			}
+		}
+	}
+	if _, err := ExpandAttempts(set, scenarios, subjects, executors); err != nil {
+		t.Fatalf("ExpandAttempts rejected a cost cap with a priced Subject: %v", err)
+	}
+}
+
+func TestExpandAttemptsRejectsMissingDerivedCapability(t *testing.T) {
+	set, scenarios, subjects, executors := expansionFixtures(t)
+	for id, scenario := range scenarios {
+		scenario.Actions = []ScenarioAction{
+			{ID: "restart-1", Type: ActionRestart, Restart: &RestartAction{Mode: RestartModeInterrupt}},
+		}
+		scenario.ApprovalScript = nil
+		digest, err := ScenarioDigest(scenario)
+		if err != nil {
+			t.Fatalf("ScenarioDigest: %v", err)
+		}
+		scenarios[id] = scenario
+		for index, ref := range set.Scenarios {
+			if ref.ID == id {
+				set.Scenarios[index].Digest = digest
+			}
+		}
+	}
+	// The fixture executor's capabilities were frozen from the Scenario's
+	// RequiredCapabilities alone; it never advertised restart_interrupt.
+	if _, err := ExpandAttempts(set, scenarios, subjects, executors); err == nil {
+		t.Fatal("ExpandAttempts accepted a Scenario whose derived restart_interrupt capability the Executor does not advertise")
+	}
+}

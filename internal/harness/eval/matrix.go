@@ -80,6 +80,30 @@ func ExpandAttempts(set EvalSet, scenarios map[ScenarioID]Scenario, subjects map
 		if digest != ref.Digest {
 			return nil, fmt.Errorf("eval: expand attempts: subject %q digest changed since the EvalSet was frozen", ref.ID)
 		}
+		// Lane consistency (design §23/§24): a fixture EvalSet accepts only
+		// deterministic fixture-provider Subjects; a live EvalSet requires
+		// live Subjects. Mixing lanes inside one EvalSet would let a
+		// fixture-lane run silently reach a live credential, or a live run
+		// silently score against a deterministic double.
+		switch set.Lane {
+		case LaneFixture:
+			if subject.Provider.Lane != ProviderLaneFixture {
+				return nil, fmt.Errorf("eval: expand attempts: subject %q has provider lane %q, want %q for a fixture EvalSet",
+					ref.ID, subject.Provider.Lane, ProviderLaneFixture)
+			}
+		case LaneLive:
+			if subject.Provider.Lane != ProviderLaneLive {
+				return nil, fmt.Errorf("eval: expand attempts: subject %q has provider lane %q, want %q for a live EvalSet",
+					ref.ID, subject.Provider.Lane, ProviderLaneLive)
+			}
+		}
+		// design §19: "a configured cost cap with unavailable pricing fails
+		// validation" -- checked here, not in EvalSetLimits.validate, because
+		// only the full Subject document (not the EvalSet's own ref) carries
+		// PriceTableDigest.
+		if set.Limits.CostCapMicrounits > 0 && subject.PriceTableDigest == "" {
+			return nil, fmt.Errorf("eval: expand attempts: subject %q has no priceTableDigest, but limits.costCapMicrounits is set", ref.ID)
+		}
 	}
 	for _, ref := range set.Executors {
 		executor, ok := executors[ref.ID]
@@ -97,9 +121,10 @@ func ExpandAttempts(set EvalSet, scenarios map[ScenarioID]Scenario, subjects map
 
 	for _, scenarioRef := range set.Scenarios {
 		scenario := scenarios[scenarioRef.ID]
+		required := append(append([]string{}, scenario.RequiredCapabilities...), scenario.DerivedRequiredCapabilities()...)
 		for _, executorRef := range set.Executors {
 			executor := executors[executorRef.ID]
-			if missing := missingCapability(scenario.RequiredCapabilities, executor.Capabilities); missing != "" {
+			if missing := missingCapability(required, executor.Capabilities); missing != "" {
 				return nil, fmt.Errorf("eval: expand attempts: executor %q lacks capability %q required by scenario %q",
 					executorRef.ID, missing, scenarioRef.ID)
 			}

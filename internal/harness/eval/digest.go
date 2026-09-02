@@ -65,6 +65,19 @@ func EvidenceManifestDigest(manifest EvidenceManifest) (Digest, error) {
 	return canonicalDigest(manifest)
 }
 
+// EvalSetDigest is the design §6 canonical identity digest of a validated
+// EvalSet (implementation plan Task 3: "freeze verifier/judge config
+// digests, pairing seed, artifact root, and ordered references into the
+// EvalSet digest") -- every one of those is already a field on EvalSet, so
+// this is the same whole-document digest ScenarioDigest/SubjectDigest/
+// ExecutorDigest already use.
+func EvalSetDigest(set EvalSet) (Digest, error) {
+	if err := set.Validate(); err != nil {
+		return "", fmt.Errorf("eval: eval set digest: %w", err)
+	}
+	return canonicalDigest(set)
+}
+
 // canonicalDigest marshals value with encoding/json (which emits struct
 // fields in a fixed declaration order and sorts map keys, so the output is
 // already deterministic without a separate canonicalization pass — the same
