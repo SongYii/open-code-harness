@@ -35,6 +35,79 @@ func TestScenarioDigestSensitiveToChange(t *testing.T) {
 	}
 }
 
+// TestScenarioDigestSensitiveToApprovalScript is a golden mutation check
+// (implementation plan Task 1): if ApprovalScript were ever accidentally
+// dropped from Scenario's canonical encoding (a stray `json:"-"`, a field
+// removed from the digested struct), this test fails, because two Scenarios
+// that differ only in ApprovalScript would then digest identically.
+func TestScenarioDigestSensitiveToApprovalScript(t *testing.T) {
+	base, err := ScenarioDigest(validScenario())
+	if err != nil {
+		t.Fatalf("ScenarioDigest: %v", err)
+	}
+	changed := validScenario()
+	changed.ApprovalScript = []ApprovalScriptEntry{
+		{PromptActionID: "prompt-1", Ordinal: 0, ToolName: "read_file", Answer: ApprovalDeny},
+	}
+	other, err := ScenarioDigest(changed)
+	if err != nil {
+		t.Fatalf("ScenarioDigest: %v", err)
+	}
+	if base == other {
+		t.Fatal("ScenarioDigest did not change when ApprovalScript changed")
+	}
+}
+
+// TestScenarioDigestSensitiveToRestartMode is the same golden mutation check
+// (implementation plan Task 1) for RestartAction.Mode.
+func TestScenarioDigestSensitiveToRestartMode(t *testing.T) {
+	base := validScenario()
+	base.Actions = []ScenarioAction{
+		{ID: "restart-1", Type: ActionRestart, Restart: &RestartAction{Mode: RestartModeCleanShutdown}},
+	}
+	base.ApprovalScript = nil
+	baseDigest, err := ScenarioDigest(base)
+	if err != nil {
+		t.Fatalf("ScenarioDigest: %v", err)
+	}
+	changed := base
+	changed.Actions = []ScenarioAction{
+		{ID: "restart-1", Type: ActionRestart, Restart: &RestartAction{Mode: RestartModeInterrupt}},
+	}
+	changedDigest, err := ScenarioDigest(changed)
+	if err != nil {
+		t.Fatalf("ScenarioDigest: %v", err)
+	}
+	if baseDigest == changedDigest {
+		t.Fatal("ScenarioDigest did not change when RestartAction.Mode changed")
+	}
+}
+
+// TestScenarioDigestSensitiveToActionID is the same golden mutation check
+// for ScenarioAction.ID, the new stable coordinate Task 1 introduces.
+func TestScenarioDigestSensitiveToActionID(t *testing.T) {
+	base := validScenario()
+	base.ApprovalScript = nil
+	base.Actions = []ScenarioAction{
+		{ID: "prompt-1", Type: ActionPrompt, Prompt: &PromptAction{Text: "hello"}},
+	}
+	baseDigest, err := ScenarioDigest(base)
+	if err != nil {
+		t.Fatalf("ScenarioDigest: %v", err)
+	}
+	changed := base
+	changed.Actions = []ScenarioAction{
+		{ID: "prompt-2", Type: ActionPrompt, Prompt: &PromptAction{Text: "hello"}},
+	}
+	changedDigest, err := ScenarioDigest(changed)
+	if err != nil {
+		t.Fatalf("ScenarioDigest: %v", err)
+	}
+	if baseDigest == changedDigest {
+		t.Fatal("ScenarioDigest did not change when a ScenarioAction's ID changed")
+	}
+}
+
 func TestScenarioDigestRejectsInvalidScenario(t *testing.T) {
 	invalid := validScenario()
 	invalid.ID = ""

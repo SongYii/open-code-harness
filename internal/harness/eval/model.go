@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"sort"
 	"time"
 )
 
@@ -61,6 +62,10 @@ type Scenario struct {
 
 	Actions []ScenarioAction `json:"actions"`
 
+	// ApprovalScript freezes every scripted approval decision (design §7).
+	// Empty means the Scenario expects no permission requests at all.
+	ApprovalScript []ApprovalScriptEntry `json:"approvalScript,omitempty"`
+
 	RequiredCapabilities []string `json:"requiredCapabilities"`
 
 	RequiredEvidenceRoles []string `json:"requiredEvidenceRoles"`
@@ -72,6 +77,30 @@ type Scenario struct {
 	Limits ScenarioLimits `json:"limits"`
 
 	PairingTags []string `json:"pairingTags,omitempty"`
+}
+
+// DerivedRequiredCapabilities returns the capability names this Scenario
+// implicitly requires beyond RequiredCapabilities, derived from its actions.
+// A restart action requesting `interrupt` or `kill` requires the matching
+// ACP-only capability (design: those two modes are ACP-subprocess-only);
+// `clean_shutdown` and every other action type derive nothing, since both
+// executors support them. Matrix expansion's capability check (design §9)
+// should refuse a Cell missing a capability from either this method or
+// RequiredCapabilities.
+func (scenario Scenario) DerivedRequiredCapabilities() []string {
+	var derived []string
+	for _, action := range scenario.Actions {
+		if action.Type != ActionRestart || action.Restart == nil {
+			continue
+		}
+		switch action.Restart.Mode {
+		case RestartModeInterrupt:
+			derived = append(derived, "restart_interrupt")
+		case RestartModeKill:
+			derived = append(derived, "restart_kill")
+		}
+	}
+	return derived
 }
 
 // FixtureCopyPolicy bounds one Scenario's fixture copy (design §7/§8). A
@@ -105,10 +134,14 @@ const (
 	ActionCollect ScenarioActionType = "collect"
 )
 
-// ScenarioAction is one ordered Scenario action (design §7). Exactly the
-// field matching Type is populated; the runner (a later PR) rejects an
-// unsupported Scenario/Executor pairing before creating an Attempt.
+// ScenarioAction is one ordered Scenario action (design §7). ID is a stable
+// coordinate other structures reference (CancelAction.TargetActionID,
+// ApprovalScriptEntry.PromptActionID) instead of a fragile slice index.
+// Exactly the field matching Type is populated; the runner (a later PR)
+// rejects an unsupported Scenario/Executor pairing before creating an
+// Attempt.
 type ScenarioAction struct {
+	ID   ActionID           `json:"id"`
 	Type ScenarioActionType `json:"type"`
 
 	Prompt  *PromptAction  `json:"prompt,omitempty"`
@@ -131,23 +164,59 @@ type CompactAction struct {
 	Focus    string `json:"focus,omitempty"`
 }
 
-// CancelAction names a prior in-flight action by its index within the same
-// Scenario's Actions slice (design §7: "cancel names a prior in-flight
-// action").
+// CancelAction names a prior prompt action by its stable ID (design §7:
+// "cancel names a prior in-flight action"). The target must be an earlier
+// action of type prompt; a self, forward, or unknown target is invalid.
 type CancelAction struct {
-	TargetActionIndex int `json:"targetActionIndex"`
+	TargetActionID ActionID `json:"targetActionId"`
 }
 
-// RestartAction requests a production-surface shutdown/crash/reopen
-// sequence supported by the selected Executor (design §7). It carries no
-// fields of its own; presence is the request.
-type RestartAction struct{}
+// RestartMode is one of design's three restart request shapes.
+// `RestartModeCleanShutdown` is supported by every executor this package
+// defines; `RestartModeInterrupt` and `RestartModeKill` are ACP-subprocess-
+// only and require the matching derived capability
+// (Scenario.DerivedRequiredCapabilities) before a Cell may be paired with
+// any executor.
+type RestartMode string
+
+const (
+	RestartModeCleanShutdown RestartMode = "clean_shutdown"
+	RestartModeInterrupt     RestartMode = "interrupt"
+	RestartModeKill          RestartMode = "kill"
+)
+
+// RestartAction requests a production-surface shutdown/reopen sequence
+// (design §7). Mode is required.
+type RestartAction struct {
+	Mode RestartMode `json:"mode"`
+}
 
 // CollectAction requests a declared workspace path or verifier fact (design
 // §7). Exactly one of WorkspacePath or VerifierFact must be set.
 type CollectAction struct {
 	WorkspacePath string `json:"workspacePath,omitempty"`
 	VerifierFact  string `json:"verifierFact,omitempty"`
+}
+
+// ApprovalAnswer is one scripted permission-request decision (design §7).
+type ApprovalAnswer string
+
+const (
+	ApprovalAllow ApprovalAnswer = "allow"
+	ApprovalDeny  ApprovalAnswer = "deny"
+)
+
+// ApprovalScriptEntry binds one prompt action's zero-based approval ordinal
+// and expected tool name to a frozen allow/deny decision (design §7). The
+// in-process and ACP executors compile the same script; a request matching
+// none of {current prompt action, next ordinal, expected tool name} is
+// denied and recorded as an approval_script_violation rather than consuming
+// a later declaration.
+type ApprovalScriptEntry struct {
+	PromptActionID ActionID       `json:"promptActionId"`
+	Ordinal        int            `json:"ordinal"`
+	ToolName       string         `json:"toolName"`
+	Answer         ApprovalAnswer `json:"answer"`
 }
 
 // DecodeScenario strictly decodes and validates one `och.eval.scenario`
@@ -188,10 +257,37 @@ func (scenario Scenario) Validate() error {
 	if len(scenario.Actions) == 0 {
 		return fmt.Errorf("%w: at least one action is required", errInvalidDocument)
 	}
+	actionIndex := make(map[ActionID]int, len(scenario.Actions))
 	for index, action := range scenario.Actions {
+		actionID, err := ParseActionID(string(action.ID))
+		if err != nil {
+			return fmt.Errorf("%w: action %d: %w", errInvalidDocument, index, err)
+		}
+		if _, exists := actionIndex[actionID]; exists {
+			return fmt.Errorf("%w: action %d: duplicate action id %q", errInvalidDocument, index, actionID)
+		}
+		actionIndex[actionID] = index
 		if err := action.validate(index); err != nil {
 			return err
 		}
+	}
+	for index, action := range scenario.Actions {
+		if action.Type != ActionCancel {
+			continue
+		}
+		targetIndex, exists := actionIndex[action.Cancel.TargetActionID]
+		if !exists {
+			return fmt.Errorf("%w: action %d: cancel.targetActionId %q does not name a known action", errInvalidDocument, index, action.Cancel.TargetActionID)
+		}
+		if targetIndex >= index {
+			return fmt.Errorf("%w: action %d: cancel.targetActionId must name an earlier action", errInvalidDocument, index)
+		}
+		if scenario.Actions[targetIndex].Type != ActionPrompt {
+			return fmt.Errorf("%w: action %d: cancel.targetActionId must name a prompt action", errInvalidDocument, index)
+		}
+	}
+	if err := scenario.validateApprovalScript(actionIndex); err != nil {
+		return err
 	}
 	if err := requireNonEmptyEntries("requiredCapabilities", scenario.RequiredCapabilities); err != nil {
 		return err
@@ -240,6 +336,66 @@ func (limits ScenarioLimits) validate() error {
 	return nil
 }
 
+// approvalCoordinate is one (prompt action, ordinal) pair an approval script
+// entry declares. Coordinates, not generated wire/domain IDs, are what the
+// runner matches a live permission request against (design §7).
+type approvalCoordinate struct {
+	promptActionID ActionID
+	ordinal        int
+}
+
+// validateApprovalScript checks every entry references a known prompt
+// action, no two entries share a coordinate, ordinals are contiguous from
+// zero per prompt, tool names are non-empty and bounded, and every answer is
+// allow or deny. actionIndex is the same action-ID-to-position map Validate
+// already built while walking Actions.
+func (scenario Scenario) validateApprovalScript(actionIndex map[ActionID]int) error {
+	seen := make(map[approvalCoordinate]struct{}, len(scenario.ApprovalScript))
+	ordinalsByPrompt := make(map[ActionID][]int)
+	for index, entry := range scenario.ApprovalScript {
+		promptActionID, err := ParseActionID(string(entry.PromptActionID))
+		if err != nil {
+			return fmt.Errorf("%w: approvalScript %d: %w", errInvalidDocument, index, err)
+		}
+		targetIndex, exists := actionIndex[promptActionID]
+		if !exists {
+			return fmt.Errorf("%w: approvalScript %d: promptActionId %q does not name a known action", errInvalidDocument, index, promptActionID)
+		}
+		if scenario.Actions[targetIndex].Type != ActionPrompt {
+			return fmt.Errorf("%w: approvalScript %d: promptActionId %q must name a prompt action", errInvalidDocument, index, promptActionID)
+		}
+		if entry.Ordinal < 0 {
+			return fmt.Errorf("%w: approvalScript %d: ordinal must not be negative", errInvalidDocument, index)
+		}
+		if !hasText(entry.ToolName) {
+			return fmt.Errorf("%w: approvalScript %d: toolName is required", errInvalidDocument, index)
+		}
+		if len(entry.ToolName) > maxIDBytes {
+			return fmt.Errorf("%w: approvalScript %d: toolName must not exceed %d bytes", errInvalidDocument, index, maxIDBytes)
+		}
+		switch entry.Answer {
+		case ApprovalAllow, ApprovalDeny:
+		default:
+			return fmt.Errorf("%w: approvalScript %d: answer must be %q or %q", errInvalidDocument, index, ApprovalAllow, ApprovalDeny)
+		}
+		coordinate := approvalCoordinate{promptActionID: promptActionID, ordinal: entry.Ordinal}
+		if _, exists := seen[coordinate]; exists {
+			return fmt.Errorf("%w: approvalScript %d: duplicate coordinate (promptActionId=%q, ordinal=%d)", errInvalidDocument, index, promptActionID, entry.Ordinal)
+		}
+		seen[coordinate] = struct{}{}
+		ordinalsByPrompt[promptActionID] = append(ordinalsByPrompt[promptActionID], entry.Ordinal)
+	}
+	for promptActionID, ordinals := range ordinalsByPrompt {
+		sort.Ints(ordinals)
+		for want, got := range ordinals {
+			if got != want {
+				return fmt.Errorf("%w: approvalScript: prompt %q ordinals must be contiguous from 0, got %v", errInvalidDocument, promptActionID, ordinals)
+			}
+		}
+	}
+	return nil
+}
+
 func (action ScenarioAction) validate(index int) error {
 	switch action.Type {
 	case ActionPrompt:
@@ -260,12 +416,21 @@ func (action ScenarioAction) validate(index int) error {
 		if action.Cancel == nil {
 			return fmt.Errorf("%w: action %d: type cancel requires a cancel payload", errInvalidDocument, index)
 		}
-		if action.Cancel.TargetActionIndex < 0 || action.Cancel.TargetActionIndex >= index {
-			return fmt.Errorf("%w: action %d: cancel.targetActionIndex must name an earlier action", errInvalidDocument, index)
+		if _, err := ParseActionID(string(action.Cancel.TargetActionID)); err != nil {
+			return fmt.Errorf("%w: action %d: cancel.targetActionId: %w", errInvalidDocument, index, err)
 		}
+		// Whether the target exists, precedes this action, and names a
+		// prompt is checked by Scenario.Validate's second pass, once every
+		// action ID is known.
 	case ActionRestart:
 		if action.Restart == nil {
 			return fmt.Errorf("%w: action %d: type restart requires a restart payload", errInvalidDocument, index)
+		}
+		switch action.Restart.Mode {
+		case RestartModeCleanShutdown, RestartModeInterrupt, RestartModeKill:
+		default:
+			return fmt.Errorf("%w: action %d: restart.mode must be %q, %q, or %q", errInvalidDocument, index,
+				RestartModeCleanShutdown, RestartModeInterrupt, RestartModeKill)
 		}
 	case ActionCollect:
 		if action.Collect == nil {

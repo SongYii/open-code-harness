@@ -18,11 +18,14 @@ func validScenario() Scenario {
 		FixtureDigest:     "sha256:" + strings.Repeat("a", 64),
 		FixtureCopyPolicy: FixtureCopyPolicy{},
 		Actions: []ScenarioAction{
-			{Type: ActionPrompt, Prompt: &PromptAction{Text: "hello"}},
-			{Type: ActionCompact, Compact: &CompactAction{Strategy: "summary"}},
-			{Type: ActionCancel, Cancel: &CancelAction{TargetActionIndex: 0}},
-			{Type: ActionRestart, Restart: &RestartAction{}},
-			{Type: ActionCollect, Collect: &CollectAction{WorkspacePath: "output.txt"}},
+			{ID: "prompt-1", Type: ActionPrompt, Prompt: &PromptAction{Text: "hello"}},
+			{ID: "compact-1", Type: ActionCompact, Compact: &CompactAction{Strategy: "summary"}},
+			{ID: "cancel-1", Type: ActionCancel, Cancel: &CancelAction{TargetActionID: "prompt-1"}},
+			{ID: "restart-1", Type: ActionRestart, Restart: &RestartAction{Mode: RestartModeCleanShutdown}},
+			{ID: "collect-1", Type: ActionCollect, Collect: &CollectAction{WorkspacePath: "output.txt"}},
+		},
+		ApprovalScript: []ApprovalScriptEntry{
+			{PromptActionID: "prompt-1", Ordinal: 0, ToolName: "read_file", Answer: ApprovalAllow},
 		},
 		RequiredCapabilities:     []string{"prompt"},
 		RequiredEvidenceRoles:    []string{"transcript"},
@@ -179,11 +182,99 @@ func TestScenarioValidateRejectsEmptyActions(t *testing.T) {
 func TestScenarioValidateRejectsCancelTargetingFutureAction(t *testing.T) {
 	scenario := validScenario()
 	scenario.Actions = []ScenarioAction{
-		{Type: ActionCancel, Cancel: &CancelAction{TargetActionIndex: 1}},
-		{Type: ActionPrompt, Prompt: &PromptAction{Text: "hi"}},
+		{ID: "cancel-1", Type: ActionCancel, Cancel: &CancelAction{TargetActionID: "prompt-1"}},
+		{ID: "prompt-1", Type: ActionPrompt, Prompt: &PromptAction{Text: "hi"}},
 	}
 	if err := scenario.Validate(); err == nil {
 		t.Fatal("Validate() accepted a cancel action targeting a later action")
+	}
+}
+
+func TestScenarioValidateRejectsCancelTargetingItself(t *testing.T) {
+	scenario := validScenario()
+	scenario.Actions = []ScenarioAction{
+		{ID: "cancel-1", Type: ActionCancel, Cancel: &CancelAction{TargetActionID: "cancel-1"}},
+	}
+	if err := scenario.Validate(); err == nil {
+		t.Fatal("Validate() accepted a cancel action targeting itself")
+	}
+}
+
+func TestScenarioValidateRejectsCancelTargetingUnknownAction(t *testing.T) {
+	scenario := validScenario()
+	scenario.Actions = []ScenarioAction{
+		{ID: "cancel-1", Type: ActionCancel, Cancel: &CancelAction{TargetActionID: "does-not-exist"}},
+	}
+	if err := scenario.Validate(); err == nil {
+		t.Fatal("Validate() accepted a cancel action targeting an unknown action")
+	}
+}
+
+func TestScenarioValidateRejectsCancelTargetingNonPromptAction(t *testing.T) {
+	scenario := validScenario()
+	scenario.Actions = []ScenarioAction{
+		{ID: "compact-1", Type: ActionCompact, Compact: &CompactAction{Strategy: "summary"}},
+		{ID: "cancel-1", Type: ActionCancel, Cancel: &CancelAction{TargetActionID: "compact-1"}},
+	}
+	if err := scenario.Validate(); err == nil {
+		t.Fatal("Validate() accepted a cancel action targeting a non-prompt action")
+	}
+}
+
+func TestScenarioValidateRejectsDuplicateActionID(t *testing.T) {
+	scenario := validScenario()
+	scenario.Actions = []ScenarioAction{
+		{ID: "prompt-1", Type: ActionPrompt, Prompt: &PromptAction{Text: "a"}},
+		{ID: "prompt-1", Type: ActionPrompt, Prompt: &PromptAction{Text: "b"}},
+	}
+	if err := scenario.Validate(); err == nil {
+		t.Fatal("Validate() accepted two actions with the same id")
+	}
+}
+
+func TestScenarioValidateRejectsMissingActionID(t *testing.T) {
+	scenario := validScenario()
+	scenario.Actions = []ScenarioAction{
+		{Type: ActionPrompt, Prompt: &PromptAction{Text: "a"}},
+	}
+	if err := scenario.Validate(); !errors.Is(err, errInvalidID) {
+		t.Fatalf("Validate() error = %v, want wrapping errInvalidID", err)
+	}
+}
+
+func TestScenarioValidateRejectsUnknownRestartMode(t *testing.T) {
+	scenario := validScenario()
+	scenario.Actions = []ScenarioAction{
+		{ID: "restart-1", Type: ActionRestart, Restart: &RestartAction{Mode: "reboot"}},
+	}
+	if err := scenario.Validate(); err == nil {
+		t.Fatal("Validate() accepted an unknown restart mode")
+	}
+}
+
+func TestScenarioDerivedRequiredCapabilitiesForAbruptRestart(t *testing.T) {
+	for mode, want := range map[RestartMode]string{
+		RestartModeInterrupt: "restart_interrupt",
+		RestartModeKill:      "restart_kill",
+	} {
+		scenario := validScenario()
+		scenario.Actions = []ScenarioAction{
+			{ID: "restart-1", Type: ActionRestart, Restart: &RestartAction{Mode: mode}},
+		}
+		derived := scenario.DerivedRequiredCapabilities()
+		if len(derived) != 1 || derived[0] != want {
+			t.Fatalf("DerivedRequiredCapabilities() for mode %q = %v, want [%q]", mode, derived, want)
+		}
+	}
+}
+
+func TestScenarioDerivedRequiredCapabilitiesEmptyForCleanShutdown(t *testing.T) {
+	scenario := validScenario()
+	scenario.Actions = []ScenarioAction{
+		{ID: "restart-1", Type: ActionRestart, Restart: &RestartAction{Mode: RestartModeCleanShutdown}},
+	}
+	if derived := scenario.DerivedRequiredCapabilities(); len(derived) != 0 {
+		t.Fatalf("DerivedRequiredCapabilities() = %v, want none for clean_shutdown", derived)
 	}
 }
 
@@ -193,7 +284,7 @@ func TestScenarioValidateRejectsCollectWithBothOrNeitherTarget(t *testing.T) {
 		{WorkspacePath: "a", VerifierFact: "b"},
 	} {
 		scenario := validScenario()
-		scenario.Actions = []ScenarioAction{{Type: ActionCollect, Collect: collect}}
+		scenario.Actions = []ScenarioAction{{ID: "collect-1", Type: ActionCollect, Collect: collect}}
 		if err := scenario.Validate(); err == nil {
 			t.Fatalf("Validate() accepted collect action %+v", collect)
 		}
@@ -203,10 +294,72 @@ func TestScenarioValidateRejectsCollectWithBothOrNeitherTarget(t *testing.T) {
 func TestScenarioValidateRejectsMismatchedActionPayload(t *testing.T) {
 	scenario := validScenario()
 	scenario.Actions = []ScenarioAction{
-		{Type: ActionPrompt, Prompt: &PromptAction{Text: "hi"}, Compact: &CompactAction{Strategy: "summary"}},
+		{ID: "prompt-1", Type: ActionPrompt, Prompt: &PromptAction{Text: "hi"}, Compact: &CompactAction{Strategy: "summary"}},
 	}
 	if err := scenario.Validate(); err == nil {
 		t.Fatal("Validate() accepted an action with two populated payloads")
+	}
+}
+
+func TestScenarioValidateRejectsApprovalScriptForUnknownPrompt(t *testing.T) {
+	scenario := validScenario()
+	scenario.ApprovalScript = []ApprovalScriptEntry{
+		{PromptActionID: "does-not-exist", Ordinal: 0, ToolName: "read_file", Answer: ApprovalAllow},
+	}
+	if err := scenario.Validate(); err == nil {
+		t.Fatal("Validate() accepted an approval entry referencing an unknown action")
+	}
+}
+
+func TestScenarioValidateRejectsApprovalScriptForNonPromptAction(t *testing.T) {
+	scenario := validScenario()
+	scenario.ApprovalScript = []ApprovalScriptEntry{
+		{PromptActionID: "compact-1", Ordinal: 0, ToolName: "read_file", Answer: ApprovalAllow},
+	}
+	if err := scenario.Validate(); err == nil {
+		t.Fatal("Validate() accepted an approval entry referencing a non-prompt action")
+	}
+}
+
+func TestScenarioValidateRejectsDuplicateApprovalCoordinate(t *testing.T) {
+	scenario := validScenario()
+	scenario.ApprovalScript = []ApprovalScriptEntry{
+		{PromptActionID: "prompt-1", Ordinal: 0, ToolName: "read_file", Answer: ApprovalAllow},
+		{PromptActionID: "prompt-1", Ordinal: 0, ToolName: "write_file", Answer: ApprovalDeny},
+	}
+	if err := scenario.Validate(); err == nil {
+		t.Fatal("Validate() accepted two approval entries with the same coordinate")
+	}
+}
+
+func TestScenarioValidateRejectsNonContiguousApprovalOrdinals(t *testing.T) {
+	scenario := validScenario()
+	scenario.ApprovalScript = []ApprovalScriptEntry{
+		{PromptActionID: "prompt-1", Ordinal: 0, ToolName: "read_file", Answer: ApprovalAllow},
+		{PromptActionID: "prompt-1", Ordinal: 2, ToolName: "write_file", Answer: ApprovalDeny},
+	}
+	if err := scenario.Validate(); err == nil {
+		t.Fatal("Validate() accepted non-contiguous approval ordinals")
+	}
+}
+
+func TestScenarioValidateRejectsUnknownApprovalAnswer(t *testing.T) {
+	scenario := validScenario()
+	scenario.ApprovalScript = []ApprovalScriptEntry{
+		{PromptActionID: "prompt-1", Ordinal: 0, ToolName: "read_file", Answer: "maybe"},
+	}
+	if err := scenario.Validate(); err == nil {
+		t.Fatal("Validate() accepted an unknown approval answer")
+	}
+}
+
+func TestScenarioValidateRejectsEmptyApprovalToolName(t *testing.T) {
+	scenario := validScenario()
+	scenario.ApprovalScript = []ApprovalScriptEntry{
+		{PromptActionID: "prompt-1", Ordinal: 0, ToolName: "", Answer: ApprovalAllow},
+	}
+	if err := scenario.Validate(); err == nil {
+		t.Fatal("Validate() accepted an empty approval toolName")
 	}
 }
 

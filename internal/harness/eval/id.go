@@ -21,13 +21,17 @@ var generatedIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 var errInvalidID = errors.New("eval: invalid identifier")
 
-// ScenarioID, SubjectID, and ExecutorID are distinct named types over the
-// same validated string shape so a Scenario ID cannot be silently accepted
-// where a Subject or Executor ID was expected, matching the domain package's
-// SessionID/EventID/CommandID convention.
+// ScenarioID, SubjectID, ExecutorID, and ActionID are distinct named types
+// over the same validated string shape so a Scenario ID cannot be silently
+// accepted where a Subject or Executor ID was expected, matching the domain
+// package's SessionID/EventID/CommandID convention. ActionID is a Scenario
+// action's own stable coordinate (design §7): other structures within the
+// same Scenario (CancelAction.TargetActionID, ApprovalScriptEntry.
+// PromptActionID) reference it instead of a fragile slice index.
 type ScenarioID string
 type SubjectID string
 type ExecutorID string
+type ActionID string
 
 // GeneratedID is design §4's generated-identifier shape: cryptographically
 // random 128-bit lowercase hex. Attempt and Score IDs (not yet defined in
@@ -57,6 +61,14 @@ func ParseExecutorID(raw string) (ExecutorID, error) {
 		return "", fmt.Errorf("eval: executor ID: %w", err)
 	}
 	return ExecutorID(raw), nil
+}
+
+// ParseActionID validates a Scenario action's stable ID (design §7).
+func ParseActionID(raw string) (ActionID, error) {
+	if err := validateUserProvidedID(raw); err != nil {
+		return "", fmt.Errorf("eval: action ID: %w", err)
+	}
+	return ActionID(raw), nil
 }
 
 // NewGeneratedID produces a fresh design §4 generated identifier: 128 bits
