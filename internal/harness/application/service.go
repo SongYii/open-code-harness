@@ -73,6 +73,11 @@ type ContextConfig struct {
 	// before any resource is constructed; NewService only rejects a
 	// negative value here.
 	CompactionTimeout time.Duration
+	// MaxSummaryChunks bounds design §11.2's rolling, chunked
+	// summarization (ContextOrchestratorDeps.MaxSummaryChunks). Zero means
+	// 1 (single-shot only), matching every caller that built a
+	// ContextConfig before this field existed.
+	MaxSummaryChunks uint32
 	// MaxPrunedToolResultsPerRequest bounds design §10's per-request Tool
 	// Result pruning count (contextengine.MaterializeInput.MaxPrunedToolResults).
 	// Zero disables pruning entirely, matching every caller that built a
@@ -259,6 +264,7 @@ func (service *Service) contextOrchestratorDeps() ContextOrchestratorDeps {
 		CheckpointStore: service.config.Context.CheckpointStore, Summarizer: service.config.Context.Summarizer,
 		Meter: service.config.Context.Meter, Budget: service.config.Context.Budget, PageLimit: service.config.Context.PageLimit,
 		SummarizeTimeout:               service.config.Context.CompactionTimeout,
+		MaxSummaryChunks:               service.config.Context.MaxSummaryChunks,
 		MaxPrunedToolResultsPerRequest: service.config.Context.MaxPrunedToolResultsPerRequest,
 		Identity:                       service.config.RequestIdentity,
 	}

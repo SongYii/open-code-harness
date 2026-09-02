@@ -107,19 +107,19 @@ The numbered milestone list lives in
   is hash-chain-verified at write time and independently re-verified at
   read and cold-rebuild time; Runtime Host recovery closes a dangling
   compaction on restart, ordered correctly against its own enclosing Turn.
-  This milestone's own previously most significant disclosed limitation —
-  the pre-turn planning path re-scanning a Session's whole canonical
-  history on every call instead of resuming from its own last checkpoint —
-  is now fixed as a follow-up commit: `contextengine.Scan` accepts a
-  resume point, and `PrepareContext`/`CompactSession` pass a checkpoint's
-  own coverage boundary, making the common steady-state cost flat with
-  Turn count rather than `O(history)` (benchmarked; only a checkpoint's own
-  replay-validation failure still pays the full rescan, a disclosed rare
-  path). The non-lowering provider-usage anchor (design §8) is now wired
-  into that same decision too, including its own `ContextPreparedRecorded`
-  evidence fields. `MaxSummaryChunks` (multi-chunk summarization) and
-  `MaxPrunedToolResultsPerRequest` (Tool Result pruning) remain open,
-  accepted-but-inert config surface. See the
+  This milestone's own four disclosed known limitations have all since
+  been resolved by follow-up commits: the pre-turn planning path's
+  `O(history)` re-scan now resumes from a checkpoint's own coverage
+  boundary (`contextengine.Scan`'s resume point), making the common
+  steady-state cost flat with Turn count (benchmarked; only a checkpoint's
+  own replay-validation failure still pays a full rescan, a disclosed rare
+  path); the non-lowering provider-usage anchor (design §8) is wired into
+  that same Trigger decision, including its own `ContextPreparedRecorded`
+  evidence fields; `MaxPrunedToolResultsPerRequest` now actually prunes
+  oversized retained Tool Results via `contextengine.Materialize`; and
+  `MaxSummaryChunks` now drives real rolling, chunked summarization
+  (design §11.2) when a checkpoint's source material does not fit one
+  summarizer call. See the
   [Context Engine contract](docs/architecture/context-engine.md) and its
   [evidence ledger](docs/architecture/context-engine-evidence.md).
 

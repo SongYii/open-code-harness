@@ -61,7 +61,7 @@ Defaults (design §8's own table, all configurable via
 | `TriggerPercent` | 80 | 60–95 |
 | `TargetPercent` | 55 | 30–80 and `< TriggerPercent` |
 | `TailPercent` | 25 | 10–50 and `< TargetPercent` |
-| `MaxSummaryChunks` | 8 | 1–16 (accepted and validated; **not yet consumed** — see [Known limitations](#known-limitations)) |
+| `MaxSummaryChunks` | 8 | 1–16 |
 | `MaxOverflowCompactionsPerTurn` | 2 | 1–3 |
 | `CompactionTimeout` | 2 minutes | 5 seconds–10 minutes |
 | `MaxPrunedToolResultsPerRequest` | 64 | 1–64 |
@@ -306,6 +306,11 @@ itself. None of these compromise correctness or safety; all of them trade
 away performance, completeness, or convenience this milestone chose not to
 spend more time on.
 
+All four of this milestone's own disclosed known limitations below have
+since been resolved by follow-up commits — see the evidence ledger's own
+follow-up sections for the complete mechanism-by-mechanism account of
+each.
+
 1. ~~`Scan` and `SelectCutPoint`'s own upfront estimate are `O(history)`~~
    **Resolved by a follow-up commit.** `Scan` (`internal/harness/contextengine/planner.go`)
    now takes an `afterSequence` resume point; `PrepareContext`/`CompactSession`
@@ -358,17 +363,19 @@ spend more time on.
    retried one) allocates its own fresh `ItemID`.
    `TestPrepareContextUsageAnchorForcesCompactionTheWireEstimateWouldHaveMissed`
    is this fix's own end-to-end regression test.
-3. ~~`MaxPrunedToolResultsPerRequest` is accepted and range-validated but
-   Tool Result pruning is never called from `Materialize`'s pipeline~~
-   **Resolved by a follow-up commit.** `contextengine.MaterializeInput`
-   gains `ProtectedTail`/`MaxPrunedToolResults`/`HardInput` fields (all
-   zero by default, so every existing caller continues to dispatch
-   byte-identical Tool Result content unchanged); when enabled, `Materialize`
-   replaces a retained Tool Result whose own meter estimate exceeds
+3. ~~`MaxSummaryChunks`/`MaxPrunedToolResultsPerRequest` are accepted and
+   range-validated but do not yet change behavior~~ **Both resolved, by
+   two separate follow-up commits.**
+   `contextengine.MaterializeInput` gains `ProtectedTail`/
+   `MaxPrunedToolResults`/`HardInput` fields (all zero by default, so
+   every existing caller continues to dispatch byte-identical Tool Result
+   content unchanged); when enabled, `Materialize` replaces a retained
+   Tool Result whose own meter estimate exceeds
    `MaxProjectedToolResultTokens(ProtectedTail)` with
    `ProjectToolResult`'s marker-framed excerpt, oldest first, up to
-   `MaxPrunedToolResults` replacements per call. `composition.Config.Context.MaxPrunedToolResultsPerRequest`
-   is now actually plumbed through `application.ContextConfig`/
+   `MaxPrunedToolResults` replacements per call.
+   `composition.Config.Context.MaxPrunedToolResultsPerRequest` is now
+   actually plumbed through `application.ContextConfig`/
    `ContextOrchestratorDeps` into that call — previously it was accepted
    and range-validated by composition but never even reached
    `application.ContextConfig` at all, a real, disclosed plumbing gap
@@ -378,18 +385,43 @@ spend more time on.
    real read_file Tool Call through a real mid-turn Step) are this fix's
    own regression tests, the latter proving the wiring holds all the way
    from `composition.Config` to the actually-dispatched
-   `ModelRequestRecorded`. **`MaxSummaryChunks` remains open, its own
-   separate follow-up**: the summarizer is still single-shot only
-   (`buildSummaryCheckpointWithFocus` rejects, rather than chunks, source
-   material too large for one call) — unlike Tool Result pruning,
-   multi-chunk summarization has a genuine chicken-and-egg sizing
-   dependency (each chunk's own input budget depends on the *previous*
-   chunk's own summarizer output, which is not known until that call
-   returns) and a different validation shape per chunk (design §11.3's
-   shrink/pre-pass/post-pass checks only mean anything for the final,
-   actually-dispatched result, not an intermediate chunk feeding the
-   next one) — a real architectural design, not a mechanical wiring
-   change like this task's other three items.
+   `ModelRequestRecorded`.
+   Separately, `buildSummaryCheckpointWithFocus` now calls a new
+   `summarizeChunks` helper implementing design §11.2's rolling, chunked
+   summarization: source material too large for one summarizer call is
+   split into as many chunks as fit under a per-chunk budget (a
+   conservative, already-available stand-in for design's own
+   `W - summaryOutputCap - safety` formula: `deps.Budget.HardInput`, which
+   is never smaller since `summaryOutputCap <= O` always holds), each fed
+   the immediately prior chunk's own validated output as its "PREVIOUS
+   CHECKPOINT" section (or an existing rolling-summary checkpoint's own
+   text for the very first chunk, or nothing for a Session's first-ever
+   compaction), up to `ContextOrchestratorDeps.MaxSummaryChunks` calls.
+   Every intermediate chunk's own output is validated structurally
+   (shape, redaction, size, cap, shrink against that chunk's own covered
+   content) via the same `contextengine.ValidateSummary` this package
+   always used, but not against the actually-dispatched request's own
+   pre/post-pass shrink requirement, which has no meaning until the final
+   chunk is known — the final chunk still receives the exact same full
+   validation (real pre/post-pass, real `CoveredSourceTokens` over the
+   complete covered range) this package always performed, unchanged,
+   regardless of how many chunks produced its input. A chunk cap that
+   cannot be met fails closed with the (previously unused)
+   `context_compaction_limit` code and falls through to the same
+   deterministic-reset ladder any other summary failure above `hardInput`
+   already uses — never silently truncating source material or exceeding
+   the configured cap. `ContextOrchestratorDeps.MaxSummaryChunks` defaults
+   to 1 (single-shot only) when unset, so every existing caller's own
+   behavior is unchanged unless it explicitly opts in; `composition`'s own
+   real assembly path already sets it to
+   `composition.Config.Context.MaxSummaryChunks` (default 8), so a real
+   deployment gets genuine multi-chunk behavior without further
+   configuration.
+   `TestPrepareContextChunkedSummarizationRollsMultipleCallsIntoOneCheckpoint`,
+   `TestPrepareContextChunkCapExhaustedFallsBackToDeterministicReset`, and
+   `TestPrepareContextMaxSummaryChunksDefaultsToSingleShot`
+   (`internal/harness/application`) are this second fix's own regression
+   tests.
 4. ~~A duplicate `RunTurnRequestID` join specifically while a `pre_turn`
    automatic compaction is mid-flight has no dedicated test~~ **Resolved.**
    `TestDuplicateRunTurnJoinsWhilePreTurnCompactionIsActive`

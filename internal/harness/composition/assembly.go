@@ -192,6 +192,7 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 		CheckpointStore:                sqliteStore,
 		MaxOverflowRecoveriesPerTurn:   config.Context.MaxOverflowCompactionsPerTurn,
 		CompactionTimeout:              config.Context.CompactionTimeout,
+		MaxSummaryChunks:               config.Context.MaxSummaryChunks,
 		MaxPrunedToolResultsPerRequest: config.Context.MaxPrunedToolResultsPerRequest,
 	}
 

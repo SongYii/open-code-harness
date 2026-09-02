@@ -244,13 +244,14 @@ honesty convention, until at minimum:
    below.
 4. A wall-clock, multi-process soak of the recovery paths beyond this
    milestone's deterministic-time and scripted-outcome test evidence.
-5. The disclosed inert config surface (`MaxSummaryChunks`) remains open, a
-   clearly-scoped follow-up — see
-   [context-engine.md's "Known limitations"](context-engine.md#known-limitations)
-   for the complete, current list. `och compact-session` (design CE-14),
-   the non-lowering usage anchor (`EvaluateUsageAnchor`), and
-   `MaxPrunedToolResultsPerRequest`/Tool Result pruning are no longer
-   among them: see the follow-up sections below.
+5. ~~The disclosed inert config surface (`MaxSummaryChunks`,
+   `MaxPrunedToolResultsPerRequest`) and the unwired usage anchor
+   (`EvaluateUsageAnchor`)~~ **all resolved.** See
+   [context-engine.md's "Known limitations"](context-engine.md#known-limitations),
+   now empty of open items, and the follow-up sections below for the
+   complete, mechanism-by-mechanism account of each: `och compact-session`
+   (design CE-14), the non-lowering usage anchor, `MaxPrunedToolResultsPerRequest`/
+   Tool Result pruning, and `MaxSummaryChunks`/chunked summarization.
 
 ## Follow-up: `och compact-session` CLI and a reset-checkpoint digest bug
 
@@ -563,3 +564,114 @@ Unchanged from the original evidence ledger's own numbers (within noise):
 this benchmark's own fixture never enables pruning, so the new code path
 adds one cheap boolean short-circuit per message and nothing else when a
 caller leaves the three new fields at their zero value.
+
+## Follow-up: rolling, chunked summarization (`MaxSummaryChunks`)
+
+Delivered as a further follow-up: closes `MaxSummaryChunks`'s own
+disclosed "accepted but inert" gap, the more architecturally involved of
+the two config-surface items on the "Remaining blockers" list above (Tool
+Result pruning, the other, was resolved separately — see its own
+follow-up section above).
+
+**Mechanism.** `buildSummaryCheckpointWithFocus`
+(`internal/harness/application/context_orchestrator.go`) now calls a new
+`summarizeChunks` helper implementing design §11.2: it walks
+`plan.CoveredUnits` in order, greedily packing as many leading units as
+fit — together with the immediately prior chunk's own validated output as
+a "PREVIOUS CHECKPOINT" section — under one chunk's own budget, calling
+the summarizer once per chunk, up to `ContextOrchestratorDeps.MaxSummaryChunks`
+times. The per-chunk budget is a deliberately conservative stand-in for
+design's own `W - summaryOutputCap - safety` formula:
+`deps.Budget.HardInput` (`= W - O - safety`) is never larger than the true
+per-chunk budget, since `summaryOutputCap <= O` always holds (design §8),
+so reusing it needed no new `Budget` field or `ComputeBudget` change, at
+the cost of possibly chunking slightly more finely than the exact formula
+would strictly require. Every intermediate chunk's own output is validated
+structurally (shape, redaction, size, cap, and shrink against that
+chunk's own covered content) via the same `contextengine.ValidateSummary`
+this package always used — but never against the actually-dispatched
+request's own pre/post-pass shrink requirement, which has no meaning for
+a chunk whose own output is never itself dispatched, only fed forward.
+The final chunk's own raw output still receives the identical full
+validation (real pre/post-pass over the complete
+`mergeUnits(previous, plan)` range, real `CoveredSourceTokens`) this
+function has always performed, unchanged, whether one chunk or several
+produced that text — `buildSummaryCheckpointWithFocus`'s own digest,
+coverage, and `ValidateSuccessor` logic needed no changes at all, since
+chunking only changes how many summarizer calls produce the checkpoint's
+summary text, never what source range it covers.
+
+A chunk cap that cannot be satisfied (the covered material needs more
+chunks than `MaxSummaryChunks` allows) fails closed with a new
+`context_compaction_limit` code — design's own failure algebra already
+named this code, but nothing in this codebase had ever produced it before
+this change, since chunk-cap exhaustion was structurally unreachable
+without chunking existing at all — and falls through to the exact same
+deterministic-reset ladder any other summary failure above `hardInput`
+already uses; `summaryFailureCode`/`safeFailureMessage` gained a case for
+it alongside the pre-existing `context_summary_invalid`/
+`context_summary_failed` pair.
+
+**Backward compatibility.** `ContextOrchestratorDeps.MaxSummaryChunks`
+defaults to 1 (single-shot only, the exact pre-existing behavior) when
+left unset — deliberately *not* `composition`'s own real default of 8,
+since a caller that built a `ContextOrchestratorDeps` literal before this
+field existed (every test this milestone wrote, and any external caller)
+must keep failing exactly as it always did on source material too large
+for one call, never silently start chunking just because the underlying
+mechanism now exists. `composition/assembly.go` now passes
+`config.Context.MaxSummaryChunks` through to `application.ContextConfig`
+(itself now threaded to `ContextOrchestratorDeps` via
+`service.contextOrchestratorDeps()`), so a real assembled deployment does
+get genuine multi-chunk behavior at composition's own configured default
+without any further configuration.
+
+**Tests.**
+`TestPrepareContextChunkedSummarizationRollsMultipleCallsIntoOneCheckpoint`
+builds a 30-Turn Session and a `HardInput` sized specifically smaller than
+what rendering all covered Turns in one call would need, with a
+`sequencedSummarizer` returning a distinct, individually-markered valid
+summary per call — proving not just that more than one call happened, but
+that each call's own request Content actually contains the *previous*
+call's own returned text as its rolling "PREVIOUS CHECKPOINT" section
+(the chain design §11.2 requires, not merely N independent calls), that
+the very first chunk carries no such section at all, and that the
+completed checkpoint's `SummaryChunks`/`Summary` fields reflect the total
+call count and the *last* chunk's own output specifically.
+`TestPrepareContextChunkCapExhaustedFallsBackToDeterministicReset` reuses
+the identical fixture with `MaxSummaryChunks: 1`, proving the cap failure
+carries the `context_compaction_limit` code and still reaches a completed
+deterministic reset.
+`TestPrepareContextMaxSummaryChunksDefaultsToSingleShot` reuses it again
+with the field left unset, proving the single-shot default is preserved
+byte-for-byte (exactly one summarizer call, then a reset, exactly as
+before this change existed).
+
+### Mechanism → test → mutation result
+
+| Mechanism | Test | Mutation check |
+| --- | --- | --- |
+| `MaxSummaryChunks` defaults to 1 (single-shot) when unset | `TestPrepareContextMaxSummaryChunksDefaultsToSingleShot` | Changing the default from 1 to 100 makes this fixture's own chunked summary succeed instead of falling back to reset — caught. |
+| Rolling chain: each chunk's own validated output becomes the next chunk's own "PREVIOUS CHECKPOINT" text | `TestPrepareContextChunkedSummarizationRollsMultipleCallsIntoOneCheckpoint` | Dropping the `previousText = validation.RedactedText` assignment (leaving every chunk after the first with no rolling context at all) makes the chain-content assertion fail — caught. |
+| Chunk cap enforcement (`chunkCount > maxChunks`) | `TestPrepareContextChunkCapExhaustedFallsBackToDeterministicReset` | Disabling the cap comparison lets this fixture's own chunking succeed outright instead of failing with `context_compaction_limit` — caught. |
+
+### Verification command output
+
+```text
+$ go build ./...
+(clean)
+
+$ go vet ./...
+(clean)
+
+$ CGO_ENABLED=0 go build ./...
+(clean)
+
+$ go test ./... -count=1
+(all packages ok)
+
+$ go test -race ./... -count=1
+(all packages ok)
+```
+
+No flakes, no exceptions, and no `-race` findings across either run.
