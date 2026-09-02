@@ -21,17 +21,25 @@ var generatedIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 var errInvalidID = errors.New("eval: invalid identifier")
 
-// ScenarioID, SubjectID, ExecutorID, and ActionID are distinct named types
-// over the same validated string shape so a Scenario ID cannot be silently
-// accepted where a Subject or Executor ID was expected, matching the domain
-// package's SessionID/EventID/CommandID convention. ActionID is a Scenario
-// action's own stable coordinate (design §7): other structures within the
-// same Scenario (CancelAction.TargetActionID, ApprovalScriptEntry.
-// PromptActionID) reference it instead of a fragile slice index.
+// ScenarioID, SubjectID, ExecutorID, EvalSetID, and ActionID are distinct
+// named types over the same validated user-provided string shape so a
+// Scenario ID cannot be silently accepted where a Subject or Executor ID
+// was expected, matching the domain package's SessionID/EventID/CommandID
+// convention. ActionID is a Scenario action's own stable coordinate (design
+// §7): other structures within the same Scenario (CancelAction.
+// TargetActionID, ApprovalScriptEntry.PromptActionID) reference it instead
+// of a fragile slice index.
 type ScenarioID string
 type SubjectID string
 type ExecutorID string
+type EvalSetID string
 type ActionID string
+
+// AttemptID and ScoreID are distinct named types over the generated-ID
+// shape (design §4: "generated Attempt and Score IDs use cryptographically
+// random 128-bit lowercase hex").
+type AttemptID string
+type ScoreID string
 
 // GeneratedID is design §4's generated-identifier shape: cryptographically
 // random 128-bit lowercase hex. Attempt and Score IDs (not yet defined in
@@ -69,6 +77,50 @@ func ParseActionID(raw string) (ActionID, error) {
 		return "", fmt.Errorf("eval: action ID: %w", err)
 	}
 	return ActionID(raw), nil
+}
+
+// ParseEvalSetID validates a user-provided EvalSet ID (design §4/§9).
+func ParseEvalSetID(raw string) (EvalSetID, error) {
+	if err := validateUserProvidedID(raw); err != nil {
+		return "", fmt.Errorf("eval: eval set ID: %w", err)
+	}
+	return EvalSetID(raw), nil
+}
+
+// NewAttemptID mints a fresh generated Attempt ID (design §4).
+func NewAttemptID() (AttemptID, error) {
+	generated, err := NewGeneratedID()
+	if err != nil {
+		return "", fmt.Errorf("eval: attempt ID: %w", err)
+	}
+	return AttemptID(generated), nil
+}
+
+// ParseAttemptID validates an already-generated Attempt ID read back from a
+// published document.
+func ParseAttemptID(raw string) (AttemptID, error) {
+	if _, err := ParseGeneratedID(raw); err != nil {
+		return "", fmt.Errorf("eval: attempt ID: %w", err)
+	}
+	return AttemptID(raw), nil
+}
+
+// NewScoreID mints a fresh generated Score ID (design §4).
+func NewScoreID() (ScoreID, error) {
+	generated, err := NewGeneratedID()
+	if err != nil {
+		return "", fmt.Errorf("eval: score ID: %w", err)
+	}
+	return ScoreID(generated), nil
+}
+
+// ParseScoreID validates an already-generated Score ID read back from a
+// published document.
+func ParseScoreID(raw string) (ScoreID, error) {
+	if _, err := ParseGeneratedID(raw); err != nil {
+		return "", fmt.Errorf("eval: score ID: %w", err)
+	}
+	return ScoreID(raw), nil
 }
 
 // NewGeneratedID produces a fresh design §4 generated identifier: 128 bits
