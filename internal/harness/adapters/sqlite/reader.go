@@ -58,9 +58,18 @@ func (reader *Reader) Close() error {
 }
 
 func (reader *Reader) verifyFormat(ctx context.Context) error {
+	return verifyExactFormatVersion(ctx, reader.db)
+}
+
+// verifyExactFormatVersion is shared by every cold, non-migrating open path
+// (Reader and the evaluation.go cold evidence path): the database must
+// already be at exactly latestMigrationVersion. A newer format is a refused
+// upgrade direction (FormatNewerError); an older one means the writer must
+// migrate first -- neither path migrates on the caller's behalf.
+func verifyExactFormatVersion(ctx context.Context, db *sql.DB) error {
 	var version int
-	if err := reader.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
-		return fmt.Errorf("sqlite reader: read user_version: %w", err)
+	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return fmt.Errorf("sqlite: read user_version: %w", err)
 	}
 	if version > latestMigrationVersion {
 		return &FormatNewerError{Have: version, Supported: latestMigrationVersion}
