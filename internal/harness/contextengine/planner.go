@@ -56,12 +56,37 @@ type ScanResult struct {
 // (§9.3): the first page fixes HeadVersion for the whole scan; every
 // following page is requested against that same pinned value, and
 // ErrHeadMismatch fails closed if a page ever disagrees. It reads forward
-// to the end of the stream — touching full history is expected and
-// bounded only in page count, not skipped (design §22.4 accepts an
-// O(history) scan as long as it is paged) — never through a single
+// to the end of the stream from afterSequence — never through a single
 // whole-stream call; no function in this package is the "read everything
 // in one call" shape ReadWholeStreamPinned is on the Application side
 // (internal/harness/application/loop.go:187).
+//
+// afterSequence lets a caller resume scanning rather than always starting
+// at the beginning of the stream: passing 0 scans full history exactly as
+// every caller did before this parameter existed. A caller holding an
+// existing checkpoint passes that checkpoint's own Coverage.ThroughSequence
+// instead, so this scan only reads and projects the records the checkpoint
+// does not already cover. This is only safe when afterSequence falls
+// exactly on a unit boundary this package itself produced (never a value
+// obtained any other way): every ContextUnit this package emits is a whole,
+// balanced conversational unit (a full Turn, or a full Step whose every
+// Tool Call has a terminal result), so a scan resumed at the LastSequence
+// of one requires no state carried over from before it — there is no
+// straddling Tool Call/result pair, no partially seen Turn, for the
+// projector to reconstruct. `SelectCutPoint`'s own snap-to-Turn-boundary
+// rule (this file, below) guarantees CoveredThroughSequence — and so any
+// checkpoint's own Coverage.ThroughSequence built from it — always is such
+// a boundary. Resuming from any other value is not validated here and can
+// silently mis-project; the caller owns this invariant, exactly as it
+// already owns pinning HeadVersion correctly across calls.
+//
+// Because this scan may start mid-stream, SourceDigest and CoveredCount
+// describe only the records this call actually read (from afterSequence
+// forward), never the whole session's source history. A caller chaining a
+// digest across a resume boundary extends a previously known seed over the
+// newly read records instead (contextengine.ExtendSourceDigestOverRecords),
+// exactly as Application's own checkpoint-building path already does
+// independently of this result's own digest fields.
 //
 // Scope disclosure: this implementation accumulates every fetched record
 // before projecting them (via ProjectSourceEvents) once at the end of the
@@ -70,18 +95,19 @@ type ScanResult struct {
 // bounded-heap property (Global Constraint: "no live heap scales with
 // Session lifetime") is fully delivered by SelectCutPoint's own output —
 // only the retained tail, the current open unit, and one below-trigger
-// envelope are ever carried forward past planning — but this Scan
-// function's own transient working set during the scan itself is O(history
-// records read), not O(protectedTail). A streaming, page-boundary-crossing
-// incremental projector able to bound Scan's own transient memory too is a
-// real refinement Task 16's 10,000-Turn benchmark must weigh, not
-// something this task silently claims to already deliver.
-func Scan(ctx context.Context, source PageSource, sessionID domain.SessionID, pageLimit uint32) (ScanResult, error) {
+// envelope are ever carried forward past planning — and, once a caller
+// passes a non-zero afterSequence, this Scan function's own transient
+// working set is bounded by the range actually scanned (design §22.4's
+// target), not by total Turn count; only a fallback caller forced to
+// rescan from scratch (afterSequence == 0, e.g. after a checkpoint fails
+// replay validation) still pays the full O(history) cost this scan has
+// always had.
+func Scan(ctx context.Context, source PageSource, sessionID domain.SessionID, pageLimit uint32, afterSequence uint64) (ScanResult, error) {
 	var (
 		records     []domain.RecordedEvent
 		headVersion uint64
 		pinned      bool
-		after       uint64
+		after       = afterSequence
 	)
 	for {
 		var headPointer *uint64

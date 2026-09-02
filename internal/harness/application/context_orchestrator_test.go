@@ -12,6 +12,7 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/application"
 	"github.com/SongYii/open-code-harness/internal/harness/contextengine"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
+	"github.com/SongYii/open-code-harness/internal/harness/engine"
 	"github.com/SongYii/open-code-harness/internal/harness/testkit"
 )
 
@@ -121,7 +122,7 @@ func buildHistorySession(t *testing.T, turnCount int) (application.EventStore, d
 	if err != nil {
 		t.Fatal(err)
 	}
-	scan, err := contextengine.Scan(context.Background(), testPageSource{store: store}, created.SessionID, 256)
+	scan, err := contextengine.Scan(context.Background(), testPageSource{store: store}, created.SessionID, 256, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,6 +365,262 @@ func TestPrepareContextRollingSuccessorContinuesTheDigestChainFromThePriorCheckp
 	}
 	if secondCheckpoint.SourceDigestHex != hex.EncodeToString(expectedDigest[:]) {
 		t.Fatalf("second checkpoint digest = %s, want %s (the chain continued from the first checkpoint's own digest)", secondCheckpoint.SourceDigestHex, hex.EncodeToString(expectedDigest[:]))
+	}
+}
+
+// readCountingStore wraps a real EventStore, recording every AfterSequence
+// value and record count ReadStream is actually called with. Used below to
+// prove PrepareContext, once a usable checkpoint exists, never asks the
+// store to read from before that checkpoint's own coverage -- the
+// regression test for this milestone's own most significant disclosed
+// limitation (context-engine-evidence.md "Remaining blockers" #3): before
+// the fix, contextengine.Scan always started at AfterSequence 0 regardless
+// of any existing checkpoint.
+type readCountingStore struct {
+	application.EventStore
+	mu             sync.Mutex
+	afterSequences []uint64
+	recordsRead    int
+}
+
+func (store *readCountingStore) ReadStream(ctx context.Context, request application.ReadStreamRequest) (application.StreamPage, error) {
+	page, err := store.EventStore.ReadStream(ctx, request)
+	store.mu.Lock()
+	store.afterSequences = append(store.afterSequences, request.AfterSequence)
+	store.recordsRead += len(page.Records)
+	store.mu.Unlock()
+	return page, err
+}
+
+func (store *readCountingStore) reset() {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.afterSequences = nil
+	store.recordsRead = 0
+}
+
+func (store *readCountingStore) minAfterSequence() uint64 {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	min := uint64(0)
+	for i, value := range store.afterSequences {
+		if i == 0 || value < min {
+			min = value
+		}
+	}
+	return min
+}
+
+func TestPrepareContextResumesScanFromCheckpointRatherThanStreamStart(t *testing.T) {
+	rawStore, state, scan, historyIDs := buildHistorySession(t, 20)
+	store := &readCountingStore{EventStore: rawStore}
+	fullEstimate := contextengine.WireEstimateMeter{}.EstimateMessages(flattenScanMessages(scan))
+	checkpointStore := &fakeCheckpointStore{}
+	deps := application.ContextOrchestratorDeps{
+		Store: store, IDs: historyIDs, Clock: testkit.FixedClock{Time: acceptanceTime},
+		Authority:       application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1},
+		CheckpointStore: checkpointStore, Summarizer: &scriptedSummarizer{text: validSummaryText()}, Meter: contextengine.WireEstimateMeter{},
+		Budget: contextengine.Budget{
+			HardInput: fullEstimate * 10, Trigger: fullEstimate / 4, Target: fullEstimate / 8,
+			ProtectedTail: fullEstimate / 20, SummaryOutputCap: 400,
+		},
+	}
+	input := application.PrepareContextInput{
+		SessionID: state.ID, TurnID: "turn-pending", ItemID: "item-pending", Trigger: domain.ContextTriggerPreTurn,
+		CurrentInput: domain.ModelPromptMessage{Role: domain.PromptRoleUser, Text: "next"},
+	}
+	first, err := application.PrepareContext(context.Background(), deps, state, input)
+	if err != nil {
+		t.Fatalf("first PrepareContext() error = %v", err)
+	}
+	if !first.CompactionRan || first.Prepared.CheckpointID == "" {
+		t.Fatalf("first PrepareContext() did not build a checkpoint: %#v", first)
+	}
+	firstRecords, err := application.ReadWholeStreamPinned(context.Background(), store, state.ID, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var firstCheckpoint domain.ContextCheckpointRecord
+	for _, record := range firstRecords {
+		if event, ok := record.Event.(domain.ContextCompactionCompleted); ok {
+			firstCheckpoint = event.Checkpoint
+		}
+	}
+	checkpointStore.set(firstCheckpoint)
+
+	// A handful more real Turns so the second round has genuine new
+	// post-checkpoint history, small relative to the 20-Turn history
+	// already committed before the checkpoint.
+	longAssistantText := strings.Repeat("assistant response covering more prior work in detail. ", 6)
+	moreTurnsService := newAcceptanceService(t, store, historyIDs, &acceptanceSuccessModel{text: longAssistantText})
+	for index := 0; index < 3; index++ {
+		if _, err := moreTurnsService.RunTurn(context.Background(), application.RunTurnRequest{
+			SessionID: state.ID, RequestID: domain.RunTurnRequestID(fmt.Sprintf("second-round-request-%d", index)),
+			Input: fmt.Sprintf("second round turn %d: continue the long-running task with more detail.", index),
+			Sink:  &testkit.RecordingSink{},
+		}); err != nil {
+			t.Fatalf("second-round RunTurn(%d) error = %v", index, err)
+		}
+	}
+
+	preSecondRecords, err := application.ReadWholeStreamPinned(context.Background(), store, state.ID, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondState, err := domain.Replay(preSecondRecords)
+	if err != nil {
+		t.Fatal(err)
+	}
+	totalRecordsSoFar := len(preSecondRecords)
+
+	store.reset()
+	second, err := application.PrepareContext(context.Background(), deps, secondState, input)
+	if err != nil {
+		t.Fatalf("second PrepareContext() error = %v", err)
+	}
+	if second.CompactionRan {
+		// A small post-checkpoint tail alone should stay below Trigger
+		// (unlike the digest-chain-continuation test above, this test
+		// leaves Trigger at its original, generous value): it exists to
+		// prove Scan's own read pattern, not to force a second compaction.
+		t.Fatalf("second PrepareContext() unexpectedly ran a compaction bracket over a small below-trigger tail")
+	}
+
+	if got := store.minAfterSequence(); got < firstCheckpoint.ThroughSequence {
+		t.Fatalf("ReadStream was called with AfterSequence=%d during the second PrepareContext, want every call >= the checkpoint's own ThroughSequence=%d (a resumed scan must never re-read pre-checkpoint history)",
+			got, firstCheckpoint.ThroughSequence)
+	}
+	if store.recordsRead >= totalRecordsSoFar {
+		t.Fatalf("second PrepareContext read %d records, want fewer than the %d records the whole session has accumulated (a resumed scan must not re-read the full history)",
+			store.recordsRead, totalRecordsSoFar)
+	}
+}
+
+// usageReportingModel is a scripted engine.Model reporting a fixed,
+// caller-controlled Usage on every completed attempt -- used below to
+// fabricate a real ModelRequestRecorded/ModelUsageRecorded pair with a
+// deliberately inflated ObservedInputTokens, so a test can prove design
+// §8's non-lowering usage anchor actually changes PrepareContext's own
+// Trigger decision, not merely that contextengine.EvaluateUsageAnchor is
+// correct in isolation (already covered by contextengine's own
+// budget_test.go).
+type usageReportingModel struct {
+	text  string
+	usage engine.TokenUsage
+}
+
+func (model *usageReportingModel) Stream(_ context.Context, request engine.ModelRequest) (engine.ModelStream, error) {
+	usage := model.usage
+	events := []engine.StreamEvent{
+		{Type: engine.StreamEventTextDelta, Text: model.text},
+		{Type: engine.StreamEventCompleted, Usage: &usage},
+	}
+	return &acceptanceStream{events: events}, nil
+}
+
+func newUsageAnchorAwareService(t *testing.T, store application.EventStore, ids application.IDGenerator, model engine.Model, budget contextengine.Budget) *application.Service {
+	t.Helper()
+	runner, err := engine.NewTurnRunner(model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := validTurnRequestIdentity()
+	config := application.DefaultConfig()
+	config.RequestIdentity = &identity
+	config.Context = application.ContextConfig{
+		Enabled: true, Budget: budget, Meter: contextengine.WireEstimateMeter{},
+		Summarizer: &scriptedSummarizer{text: validSummaryText()}, CheckpointStore: &fakeCheckpointStore{},
+	}
+	service, err := application.NewService(store, ids, testkit.FixedClock{Time: acceptanceTime}, runner, application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service
+}
+
+// runsCompactionOnNextTurn builds a fresh Session, runs 3 short Turns
+// through it with usageTokens as every attempt's own reported
+// Usage.InputTokens, then runs one more Turn and reports whether THAT
+// admission's own pre_turn preparation ran a compaction bracket. Budget is
+// deliberately generous enough that the plain wire estimate of this small,
+// short-text history alone never crosses Trigger on its own -- only an
+// eligible, sufically large usage anchor could force it.
+// runsCompactionOnNextTurn returns whether the final Turn's own admission
+// ran a compaction bracket, plus that same admission's own recorded
+// ContextPreparedRecorded evidence (design §7.4/CE-04).
+func runsCompactionOnNextTurn(t *testing.T, usageTokens uint64) (bool, domain.ContextPreparedRecorded) {
+	t.Helper()
+	authority := application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1}
+	store, err := memory.NewEventStore(authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := testkit.NewSequenceIDs()
+	model := &usageReportingModel{text: "short reply", usage: engine.TokenUsage{InputTokens: usageTokens}}
+	budget := contextengine.Budget{
+		HardInput: 1_000_000, Trigger: 50_000, Target: 20_000, ProtectedTail: 1, SummaryOutputCap: 400,
+	}
+	service := newUsageAnchorAwareService(t, store, ids, model, budget)
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 3; index++ {
+		if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+			SessionID: created.SessionID, RequestID: domain.RunTurnRequestID(fmt.Sprintf("request-%d", index)),
+			Input: fmt.Sprintf("short turn %d", index), Sink: &testkit.RecordingSink{},
+		}); err != nil {
+			t.Fatalf("RunTurn(%d) error = %v", index, err)
+		}
+	}
+	beforeRecords, err := application.ReadWholeStreamPinned(context.Background(), store, created.SessionID, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+		SessionID: created.SessionID, RequestID: "request-final", Input: "one more short turn", Sink: &testkit.RecordingSink{},
+	}); err != nil {
+		t.Fatalf("final RunTurn() error = %v", err)
+	}
+	afterRecords, err := application.ReadWholeStreamPinned(context.Background(), store, created.SessionID, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ran bool
+	var prepared domain.ContextPreparedRecorded
+	for _, record := range afterRecords[len(beforeRecords):] {
+		switch event := record.Event.(type) {
+		case domain.ContextCompactionStarted:
+			ran = true
+		case domain.ContextPreparedRecorded:
+			prepared = event
+		}
+	}
+	return ran, prepared
+}
+
+func TestPrepareContextUsageAnchorForcesCompactionTheWireEstimateWouldHaveMissed(t *testing.T) {
+	controlRan, controlPrepared := runsCompactionOnNextTurn(t, 5)
+	if controlRan {
+		t.Fatal("control case (small, realistic usage) unexpectedly ran a compaction bracket -- the wire estimate of this tiny history should stay below Trigger on its own")
+	}
+	if controlPrepared.UsageAnchorApplied {
+		t.Fatal("control case: UsageAnchorApplied = true, want false (no anchor should have been needed)")
+	}
+	if controlPrepared.BudgetHardInput != 1_000_000 || controlPrepared.BudgetTrigger != 50_000 || controlPrepared.BudgetTarget != 20_000 {
+		t.Fatalf("control case: recorded budget = {HardInput:%d Trigger:%d Target:%d}, want {1000000 50000 20000}",
+			controlPrepared.BudgetHardInput, controlPrepared.BudgetTrigger, controlPrepared.BudgetTarget)
+	}
+
+	forcedRan, forcedPrepared := runsCompactionOnNextTurn(t, 200_000)
+	if !forcedRan {
+		t.Fatal("a usage anchor reporting 200,000 observed input tokens (far above Trigger=50,000) did not force a compaction bracket the plain wire estimate of this tiny history would have missed")
+	}
+	if !forcedPrepared.UsageAnchorApplied {
+		t.Fatal("forced case: UsageAnchorApplied = false, want true (the anchor is exactly what forced this round's compaction)")
+	}
+	if forcedPrepared.UsageAnchorTokens <= 50_000 {
+		t.Fatalf("forced case: UsageAnchorTokens = %d, want > Trigger (50000) -- it is what forced compaction", forcedPrepared.UsageAnchorTokens)
 	}
 }
 

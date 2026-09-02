@@ -237,18 +237,20 @@ honesty convention, until at minimum:
    actual model's summarization quality.
 2. Wider provider coverage than the single OpenAI-compatible adapter this
    milestone exercises.
-3. `Scan`/`SelectCutPoint`'s `O(history)` planning-path cost (see above) is
-   resolved, or explicitly accepted for the production scale this project
-   targets — an architectural change to a pure, heavily mutation-tested
-   package, not attempted at the tail of this milestone.
+3. ~~`Scan`/`SelectCutPoint`'s `O(history)` planning-path cost~~ resolved by
+   a follow-up commit: see
+   ["Follow-up: resume-from-checkpoint Scan and the non-lowering usage
+   anchor"](#follow-up-resume-from-checkpoint-scan-and-the-non-lowering-usage-anchor)
+   below.
 4. A wall-clock, multi-process soak of the recovery paths beyond this
    milestone's deterministic-time and scripted-outcome test evidence.
 5. The disclosed inert config surface (`MaxSummaryChunks`,
-   `MaxPrunedToolResultsPerRequest`) and the unwired usage anchor
-   (`EvaluateUsageAnchor`) remain open, clearly-scoped follow-ups — see
+   `MaxPrunedToolResultsPerRequest`) remains open, a clearly-scoped
+   follow-up — see
    [context-engine.md's "Known limitations"](context-engine.md#known-limitations)
-   for the complete list. `och compact-session` (design CE-14) is no longer
-   one of them: see the follow-up section immediately below.
+   for the complete, current list. `och compact-session` (design CE-14) and
+   the non-lowering usage anchor (`EvaluateUsageAnchor`) are no longer
+   among them: see the two follow-up sections below.
 
 ## Follow-up: `och compact-session` CLI and a reset-checkpoint digest bug
 
@@ -312,3 +314,158 @@ sensitive assertion) but passed cleanly in isolation immediately afterward
 13.12s vs. 50.99s under full-repo load) — a load-induced timing flake in an
 unrelated, unmodified test, matching this project's own established
 precedent for distinguishing that from an actual regression.
+
+## Follow-up: resume-from-checkpoint Scan and the non-lowering usage anchor
+
+Delivered as a further follow-up once `och compact-session` landed, this
+change closes two of "Remaining blockers"' own named items above — the
+`O(history)` planning-path cost and the unwired usage anchor — plus a
+missing test the same list named, and a third, previously-undisclosed gap
+this work found while wiring the second item.
+
+**`Scan` resumes from a checkpoint.** `contextengine.Scan`
+(`internal/harness/contextengine/planner.go`) gains an `afterSequence`
+parameter: `0` scans from the beginning exactly as every existing caller
+did before this parameter existed; a non-zero value starts the pinned,
+paged read there instead. This is safe specifically because every
+`ContextUnit` this package emits is a whole, balanced conversational unit
+(design §9.1), and `SelectCutPoint`'s own snap-to-Turn-boundary rule
+guarantees a checkpoint's own `Coverage.ThroughSequence` always lands
+exactly on such a boundary — a resumed scan needs no state carried over
+from before it. `PrepareContext` and `Service.CompactSession`
+(`internal/harness/application/context_orchestrator.go`,
+`context_manual.go`) now call `Scan` with `resumeSequence(previous)`
+(the active checkpoint's own `Coverage.ThroughSequence`, or `0` when none
+exists) instead of always `0`, and the `unitsAfter` post-filter this
+replaced is deleted as dead code, not left behind unused. The one caller
+that must still request a full rescan is `PrepareContext`'s own checkpoint-
+replay-validation-failure fallback: a checkpoint that just failed
+`ValidateCheckpointReplay` cannot supply the pre-checkpoint history a
+from-scratch plan needs, so that specific, rare branch re-scans from `0`
+exactly as before — disclosed in `Scan`'s own doc comment, not silently
+narrowed away.
+
+**The non-lowering usage anchor is wired in.** `PrepareContext` now calls
+`contextengine.EvaluateUsageAnchor` whenever the plain wire estimate stays
+at or below `Budget.Trigger` and an `Identity` is configured
+(`ContextOrchestratorDeps.Identity`, populated from
+`service.config.RequestIdentity` — the same identity that already gates
+whether `ModelUsageRecorded` is ever appended at all, so the two are
+naturally aligned). `findLatestUsageAnchor` reconstructs the newest
+eligible anchor from the identical `resumeSequence(previous)..
+scan.HeadVersion` window `Scan` itself already read for this same call —
+no additional full-history read — by walking the window's own
+`ModelRequestRecorded`/`ModelUsageRecorded`/`ContextPreparedRecorded`
+events backward for the newest conversation-purpose request with a
+matching, non-zero-`InputTokens` usage record. When the resulting
+anchored estimate is eligible and exceeds `Budget.Trigger`, `PrepareContext`
+recomputes `SelectCutPoint` with `Force: true` — the only thing an anchor
+can ever do is turn a "no compaction needed" decision into a forced one,
+since `Force` already means "always attempt a cut."
+
+Building this surfaced a second, previously undisclosed gap: `domain.
+ContextPreparedRecorded`'s own `BudgetHardInput`/`BudgetTrigger`/
+`BudgetTarget`/`UsageAnchorApplied`/`UsageAnchorTokens` fields (design §8/
+CE-04's own evidence contract) existed in the schema but
+`ContextPreparedRecordedFromResult` never populated any of them, for any
+request, ever — every `ContextPreparedRecorded` this codebase had ever
+committed carried these five fields at their zero value regardless of the
+real Budget or anchor outcome. Fixed in the same change:
+`PrepareContextResult` now carries `Budget`/`UsageAnchorApplied`/
+`UsageAnchorTokens` through from `PrepareContext`'s own decision, and
+`ContextPreparedRecordedFromResult` copies all five fields onto the
+committed event.
+
+Two disclosed, narrower-than-design scoping choices remain, both stated in
+code comments at their exact location, not merely here: only design §8's
+ordered-append derivability case is implemented (`EvaluateUsageAnchor`'s
+own pre-existing doc comment already disclosed the second,
+checkpoint-rewrite case as unimplemented); and `findLatestUsageAnchor`
+matches by `TurnID`+`ItemID` only, not the full `TurnID`/`ItemID`/
+`AttemptIndex` triple design §8 names, because `turn.go`'s own
+`modelUsageFromStats` has never threaded `AttemptIndex` onto
+`ModelUsageRecorded` at all — a real, separate, pre-existing gap this task
+found but did not fix, since `TurnID`+`ItemID` remains a correct match key
+today regardless (every Step, including a retried one, allocates its own
+fresh `ItemID`).
+
+**The missing duplicate-join test is added.**
+`TestDuplicateRunTurnJoinsWhilePreTurnCompactionIsActive`
+(`internal/harness/application/context_concurrency_test.go`) is the
+dedicated regression test design §22.2 named ("duplicate RunTurn joins
+while pre-turn compaction is active") that this evidence ledger's own
+"Remaining blockers" had disclosed as missing. Unlike the adjacent
+`TestConcurrentManualCompactionAndRunTurnAreMutuallyExclusive`'s five-retry
+loop (which cannot force the overlap deterministically), this test uses a
+`blockingSummarizer` to force it exactly once: the second, duplicate
+`RunTurn` call is only ever launched after the first call's own
+`executionRegistry.acquire` (synchronous, well before `PrepareContext`
+ever reaches the summarizer) is proven to have already happened, so the
+duplicate is guaranteed to find the existing entry and join it rather than
+race to become owner itself. It asserts both that the joined call's result
+exactly matches the owner's own result and that the durable log shows
+exactly one `turn.started` and exactly one `context.compaction.started`
+for the round, never two of either.
+
+### Mechanism → test → mutation result
+
+| Mechanism | Test | Mutation check |
+| --- | --- | --- |
+| `Scan` resumes from `afterSequence` | `TestScanResumesFromAfterSequence` (`contextengine`) | Reverting `Scan` to always start at `0` makes the resumed-scan assertions (fewer pages served, Units restricted to the tail, a digest independently recomputed over only that tail) fail — caught. |
+| `PrepareContext`/`CompactSession` pass `resumeSequence(previous)` | `TestPrepareContextResumesScanFromCheckpointRatherThanStreamStart` (`application`), via a `readCountingStore` wrapper recording every `ReadStream` call's own `AfterSequence` and record count | Reverting the call site back to `Scan(..., 0)` makes both this test's own read-bound assertion fail AND (independently) makes `TestPrepareContextRollingSuccessorContinuesTheDigestChainFromThePriorCheckpoint`-style below-trigger cases start re-triggering unnecessary compaction, since the removed `unitsAfter` post-filter is no longer there to compensate — caught two ways, not one. |
+| `EvaluateUsageAnchor` wired into the Trigger decision | `TestPrepareContextUsageAnchorForcesCompactionTheWireEstimateWouldHaveMissed` (`application`) | Disabling the anchor-forcing block makes the "forced" case fail to run a compaction bracket at all — caught. |
+| `ContextPreparedRecorded`'s Budget/UsageAnchor evidence fields | Same test, asserting `BudgetHardInput`/`BudgetTrigger`/`BudgetTarget` in the control case and `UsageAnchorApplied`/`UsageAnchorTokens` in the forced case | Covered by the same test above; these fields were previously always zero regardless of input, so any assertion on their real values is itself the mutation-sensitive check. |
+| Duplicate `RunTurnRequestID` join during an active `pre_turn` compaction | `TestDuplicateRunTurnJoinsWhilePreTurnCompactionIsActive` (`application`) | A regression in `executionRegistry.acquire`'s join behavior would make the two calls' results diverge or double the `turn.started`/`context.compaction.started` counts this test asserts on directly. |
+
+### Benchmark evidence
+
+```text
+$ go test ./internal/harness/contextengine/... -bench . -benchmem -run '^$'
+BenchmarkScan/turns=100-2                    800    1485229 ns/op     367483 B/op    1812 allocs/op
+BenchmarkScan/turns=1000-2                    80   16769648 ns/op    4309619 B/op   18037 allocs/op
+BenchmarkScan/turns=10000-2                    6  175205592 ns/op   47198025 B/op  180083 allocs/op
+BenchmarkScanFromCheckpoint/turns=100-2     16034      73139 ns/op      18765 B/op      98 allocs/op
+BenchmarkScanFromCheckpoint/turns=1000-2    15889      74825 ns/op      18767 B/op      98 allocs/op
+BenchmarkScanFromCheckpoint/turns=10000-2   14461      83055 ns/op      18926 B/op      98 allocs/op
+BenchmarkSelectCutPoint/turns=100-2         72649      16652 ns/op      49008 B/op       9 allocs/op
+BenchmarkSelectCutPoint/turns=1000-2         2596     487099 ns/op     892784 B/op      15 allocs/op
+BenchmarkSelectCutPoint/turns=10000-2          100   10052567 ns/op    9748336 B/op      23 allocs/op
+```
+
+`BenchmarkScanFromCheckpoint` holds a fixed five-Turn protected tail while
+the preceding, already-checkpointed history grows 100x (100 → 10,000
+Turns) and stays flat (~73–82µs, 98 allocs throughout) — the "live heap
+bounded by budget, not Turn count" property design §22.4 requires,
+delivered on the common steady-state planning path for the first time.
+`BenchmarkScan` (`afterSequence == 0`) is retained unchanged and continues
+to measure the one path that still pays the original linear cost: a
+checkpoint that just failed replay validation, forcing a full rescan for
+that one round.
+
+### Verification command output
+
+```text
+$ go build ./...
+(clean)
+
+$ go vet ./...
+(clean)
+
+$ CGO_ENABLED=0 go build ./...
+(clean)
+
+$ go test ./... -count=1
+(all packages ok)
+
+$ go test -race ./... -count=1
+(all packages ok)
+
+$ go test -race -count=5 ./internal/harness/application/... ./internal/harness/domain/... ./internal/harness/contextengine/...
+ok  	.../internal/harness/application	136.790s
+ok  	.../internal/harness/domain	19.028s
+ok  	.../internal/harness/contextengine	1.255s
+```
+
+No flakes, no exceptions, and no `-race` findings across any of the runs
+above — a cleaner result than the `och compact-session` follow-up's own
+one-off, load-induced, unrelated `sqlite` conformance flake.
