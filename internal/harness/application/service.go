@@ -73,6 +73,12 @@ type ContextConfig struct {
 	// before any resource is constructed; NewService only rejects a
 	// negative value here.
 	CompactionTimeout time.Duration
+	// MaxPrunedToolResultsPerRequest bounds design §10's per-request Tool
+	// Result pruning count (contextengine.MaterializeInput.MaxPrunedToolResults).
+	// Zero disables pruning entirely, matching every caller that built a
+	// ContextConfig before this field existed; composition's own
+	// 1-64 range check happens before any resource is constructed.
+	MaxPrunedToolResultsPerRequest uint32
 }
 
 // DefaultMaxOverflowRecoveriesPerTurn and MaxOverflowRecoveriesPerTurnCap
@@ -252,7 +258,8 @@ func (service *Service) contextOrchestratorDeps() ContextOrchestratorDeps {
 		Store: service.store, IDs: service.ids, Clock: service.clock, Authority: service.authority,
 		CheckpointStore: service.config.Context.CheckpointStore, Summarizer: service.config.Context.Summarizer,
 		Meter: service.config.Context.Meter, Budget: service.config.Context.Budget, PageLimit: service.config.Context.PageLimit,
-		SummarizeTimeout: service.config.Context.CompactionTimeout,
+		SummarizeTimeout:               service.config.Context.CompactionTimeout,
+		MaxPrunedToolResultsPerRequest: service.config.Context.MaxPrunedToolResultsPerRequest,
 	}
 }
 

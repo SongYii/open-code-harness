@@ -243,12 +243,13 @@ honesty convention, until at minimum:
    package, not attempted at the tail of this milestone.
 4. A wall-clock, multi-process soak of the recovery paths beyond this
    milestone's deterministic-time and scripted-outcome test evidence.
-5. The disclosed inert config surface (`MaxSummaryChunks`,
-   `MaxPrunedToolResultsPerRequest`) and the unwired usage anchor
-   (`EvaluateUsageAnchor`) remain open, clearly-scoped follow-ups — see
+5. The disclosed inert config surface — `MaxSummaryChunks` and the unwired
+   usage anchor (`EvaluateUsageAnchor`) — remain open, clearly-scoped
+   follow-ups — see
    [context-engine.md's "Known limitations"](context-engine.md#known-limitations)
-   for the complete list. `och compact-session` (design CE-14) is no longer
-   one of them: see the follow-up section immediately below.
+   for the complete, current list. `och compact-session` (design CE-14)
+   and `MaxPrunedToolResultsPerRequest`/Tool Result pruning are no longer
+   among them: see the two follow-up sections below.
 
 ## Follow-up: `och compact-session` CLI and a reset-checkpoint digest bug
 
@@ -312,3 +313,97 @@ sensitive assertion) but passed cleanly in isolation immediately afterward
 13.12s vs. 50.99s under full-repo load) — a load-induced timing flake in an
 unrelated, unmodified test, matching this project's own established
 precedent for distinguishing that from an actual regression.
+
+## Follow-up: Tool Result pruning wired into `Materialize`
+
+Delivered as a further follow-up: closes `MaxPrunedToolResultsPerRequest`'s
+own disclosed "accepted but inert" gap, leaving `MaxSummaryChunks` as the
+one remaining item on that list (see context-engine.md's "Known
+limitations" #3 for why multi-chunk summarization is a separate,
+larger, not-yet-attempted follow-up rather than bundled here).
+
+**Mechanism.** `contextengine.MaterializeInput` gains three fields —
+`ProtectedTail`, `MaxPrunedToolResults`, `HardInput` — all zero by
+default, so every existing caller (this package's own tests included)
+continues to dispatch byte-identical Tool Result content, unchanged.
+When all three are set, `Materialize` walks `RetainedTail` in its own
+ascending sequence order and replaces a Tool Result message whose own
+meter estimate exceeds `MaxProjectedToolResultTokens(ProtectedTail)`
+(design §10) with `ProjectToolResult`'s existing, already-tested
+marker-framed excerpt, oldest first, up to `MaxPrunedToolResults`
+replacements. A Tool Result `ProjectToolResult` itself cannot fit even
+as an empty-content marker (`ErrContextUnitTooLarge`) is left
+byte-identical rather than failing the call — `Materialize` returns no
+error today, so it cannot itself surface that code; a request that still
+cannot fit remains `overflow_retry`'s own problem to react to, exactly as
+before this change for any oversized content.
+
+**Plumbing.** Building this surfaced a second, previously undisclosed gap
+distinct from the pruning mechanism itself being unwired:
+`composition.Config.Context.MaxPrunedToolResultsPerRequest` was accepted
+and range-validated by `composition`, but `composition/assembly.go` never
+actually passed it into `application.ContextConfig` at all — the value
+was silently dropped between the two layers regardless of what
+`Materialize` itself could do with it. Fixed by adding the field all the
+way through: `application.ContextConfig` and `ContextOrchestratorDeps`
+both gain `MaxPrunedToolResultsPerRequest uint32` (zero by default,
+matching every existing caller), `service.contextOrchestratorDeps()`
+copies it from `Config.Context`, `composition/assembly.go` now passes
+`config.Context.MaxPrunedToolResultsPerRequest` through, and
+`PrepareContext`'s own final `Materialize` call passes
+`deps.Budget.ProtectedTail`/`deps.MaxPrunedToolResultsPerRequest`/
+`deps.Budget.HardInput`.
+
+**Tests.**
+`TestMaterializeToolResultPruningDisabledByDefaultLeavesContentByteIdentical`
+and `TestMaterializePrunesOversizedToolResultsUpToTheCap` (`contextengine`)
+cover the pure mechanism: disabled-by-default byte-identity, oversized
+Tool Results actually replaced up to the configured cap, results beyond
+the cap left untouched, and non-Tool-Result messages never altered.
+`TestMidTurnToolResultPruningIsWiredEndToEnd` (`application`) is the
+end-to-end regression test: a real `read_file` Tool Call through a real
+mid-turn Step, with a ~50 KiB fixture file (comfortably under Tool
+Runtime's own `MaxToolResultBytes` cap, but far above design §10's own
+largest possible per-result cap of 2048 tokens) — with pruning left at
+its zero-value default, the second (mid_turn) `ModelRequestRecorded`
+carries the byte-identical original file content; with
+`MaxPrunedToolResultsPerRequest` configured, that same request instead
+carries `ProjectToolResult`'s own marker-framed excerpt naming the same
+Tool Call ID, strictly smaller than the original.
+
+### Mechanism → test → mutation result
+
+| Mechanism | Test | Mutation check |
+| --- | --- | --- |
+| `Materialize` prunes an oversized retained Tool Result up to the configured cap | `TestMaterializePrunesOversizedToolResultsUpToTheCap` (`contextengine`) | Forcing `pruningEnabled` to `false` makes the assertion on `PrunedToolResultCount` (and the byte-identity check in the disabled-by-default test) fail — caught. |
+| `PrepareContext` passes `Budget.ProtectedTail`/`MaxPrunedToolResultsPerRequest`/`Budget.HardInput` into `Materialize` | `TestMidTurnToolResultPruningIsWiredEndToEnd` (`application`) | Hardcoding the `Materialize` call's own `MaxPrunedToolResults` argument to `0` makes the "pruning enabled" half of this test fail (the dispatched Tool Result stays the full, unpruned original) — caught. |
+| `composition/assembly.go` forwards `MaxPrunedToolResultsPerRequest` into `application.ContextConfig` | `TestValidateRejectsEveryDocumentedCause`/`TestValidateAppliesContextDefaultsWithoutMutatingTheCaller` (`composition`, pre-existing) plus the application-level end-to-end test above, which would silently see pruning never activate if this line were dropped again | Covered transitively: the application-level test above exercises the real `composition`-shaped `ContextConfig` field name, not a hand-rolled one. |
+
+### Verification command output
+
+```text
+$ go build ./...
+(clean)
+
+$ go vet ./...
+(clean)
+
+$ CGO_ENABLED=0 go build ./...
+(clean)
+
+$ go test ./... -count=1
+(all packages ok)
+
+$ go test -race ./... -count=1
+(all packages ok)
+
+$ go test ./internal/harness/contextengine/... -bench BenchmarkMaterialize -benchmem -run '^$'
+BenchmarkMaterialize/turns=100-2      7862   153076 ns/op   19814 dispatched_tokens  115758 B/op  11 allocs/op
+BenchmarkMaterialize/turns=1000-2     6116   187794 ns/op   23576 dispatched_tokens  125653 B/op  11 allocs/op
+BenchmarkMaterialize/turns=10000-2    5464   227906 ns/op   23576 dispatched_tokens  124099 B/op  11 allocs/op
+```
+
+Unchanged from the original evidence ledger's own numbers (within noise):
+this benchmark's own fixture never enables pruning, so the new code path
+adds one cheap boolean short-circuit per message and nothing else when a
+caller leaves the three new fields at their zero value.
