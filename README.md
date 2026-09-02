@@ -114,8 +114,10 @@ The numbered milestone list lives in
   [Context Engine contract](docs/architecture/context-engine.md) and its
   [evidence ledger](docs/architecture/context-engine-evidence.md).
 
-TUI, MCP, evaluation, and OpenTelemetry are not yet implemented. The
-project remains pre-v0.
+TUI, MCP, evaluation, and OpenTelemetry are not yet implemented. Evaluation
+now has an accepted [normative design](docs/superpowers/specs/2026-09-02-evaluation-design.md)
+for real in-process and ACP-subprocess OCH Sessions, append-only evidence, and
+offline regrading; implementation has not started. The project remains pre-v0.
 
 ## Development
 
