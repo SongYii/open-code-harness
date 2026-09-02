@@ -228,6 +228,16 @@ func (host *Host) Shutdown(ctx context.Context) error {
 	case <-ctx.Done():
 		return fmt.Errorf("runtime host: shutdown wait exceeded its bound: %w", ctx.Err())
 	}
+	if host.config.AuditDirectory != "" {
+		// runExporter (heartbeat.go) stops as soon as its context is
+		// canceled above and may not have drained everything appended
+		// since its last tick. A caller that reads AuditDirectory once
+		// Shutdown returns must see it caught up to the writer's own final
+		// state, not merely "as of the last heartbeat" -- best-effort,
+		// matching the periodic exporter's own error tolerance: export lag
+		// must never block Shutdown either.
+		_, _ = host.store.ExportOnce(context.Background(), sqlite.ExportConfig{Directory: host.config.AuditDirectory})
+	}
 	if err := host.store.ReleaseLease(context.Background()); err != nil {
 		_ = host.store.Close()
 		return err
