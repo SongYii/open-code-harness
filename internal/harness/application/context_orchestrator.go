@@ -152,6 +152,12 @@ type ContextOrchestratorDeps struct {
 	// bracket (design §21/§8's own CompactionTimeout config, distinct
 	// from CleanupTimeout above). Zero uses defaultSummarizeTimeout.
 	SummarizeTimeout time.Duration
+	// MaxPrunedToolResultsPerRequest mirrors ContextConfig's own field of
+	// the same name: how many oversized retained Tool Results
+	// PrepareContext's final Materialize call may replace with
+	// ProjectToolResult's marker-framed excerpt (design §10). Zero
+	// disables pruning entirely.
+	MaxPrunedToolResultsPerRequest uint32
 	// Identity is the active route's identity, when known -- the same
 	// value turn.go/loop.go already pass to ModelRequestRecordedFromEnvelope
 	// (service.config.RequestIdentity). PrepareContext uses it only to
@@ -405,6 +411,7 @@ func PrepareContext(ctx context.Context, deps ContextOrchestratorDeps, state dom
 	}
 	result.Prepared = contextengine.Materialize(contextengine.MaterializeInput{
 		Checkpoint: checkpointArg, RetainedTail: retainedUnits, CurrentInput: input.CurrentInput, Tools: input.Tools, Meter: deps.Meter,
+		ProtectedTail: deps.Budget.ProtectedTail, MaxPrunedToolResults: deps.MaxPrunedToolResultsPerRequest, HardInput: deps.Budget.HardInput,
 	})
 	return result, nil
 }
