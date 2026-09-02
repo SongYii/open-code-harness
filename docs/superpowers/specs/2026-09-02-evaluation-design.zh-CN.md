@@ -16,13 +16,17 @@
 本里程碑建设 Open Code Harness（OCH）的本地评测系统。它运行真实 OCH Session，冻结实验身份，
 保存有界证据，并且无需再次运行 agent 就能对证据重新打分。
 
-第一刀有两个具体 OCH executor：
+v1 里程碑有两个具体 OCH executor：
 
 1. 进程内 executor，驱动真实 Composition/Application 路径；
 2. 黑盒 executor，启动真实 `och -acp` 二进制，并通过公开 ACP v1 client 协议驱动它。
 
 持久化模型保持 executor 中立，但 v1 不运行任意外部 agent。未来若加入外部 Subject，必须有真实
 消费者，并重新决定隔离和 conformance 合同；本设计不预造没有消费者的通用 Agent adapter。
+
+交付按阶段推进。第一实现切片只建立冻结模型、只追加证据/重评路径、fixture 隔离与进程内
+executor；它有独立价值，但不代表里程碑完成。下一阶段再交付 ACP executor 与 parity 合同，
+只有在确定性机制得到证明后才加入 live judging。
 
 OpenTelemetry 不属于本设计。它仍是里程碑 10 中独立的子系统，需要自己的架构调研门和设计。
 
@@ -46,13 +50,15 @@ OpenTelemetry 不属于本设计。它仍是里程碑 10 中独立的子系统�
 
 ## 3. 非目标
 
-第一刀不包括：
+v1 里程碑不包括：
 
 - 任意外部 agent 或 Harbor 式 agent adapter 矩阵；
 - 容器/云调度、分布式 worker 或远端 artifact 存储；
 - 把 Terminal-Bench、SWE-bench 或其他项目数据集当作 OCH 原生 Scenario schema；
 - scenario 自带的任意 shell verifier；
 - MCP client adapter 尚未实现时的 MCP 评测 suite；
+- v1 在 Windows 上运行 ACP 子进程；Windows 只做 cross-build，直到另行接受并实现完整的
+  Job Object 进程树合同；
 - OpenTelemetry、eval Web UI 或第二套 client protocol；
 - 联网自动查询模型价格；
 - 与 `och.session.transcript` 平行的第二套 trajectory schema；
@@ -81,6 +87,10 @@ EvalSet
 - **Outcome** 分类执行和证据收集，不判断行为质量。
 - **Evidence Manifest** 是 scorer 唯一可以读取的 artifact 清单。
 - **Score** 是一个 scorer 针对一个 manifest digest 产生的一份不可变结果。
+
+架构章程中的 **EvaluationResult** 在此明确为 eval 所有的只读 DTO：包含一个不可变 Outcome 和
+零到多个 Score 引用。它从权威 Outcome/Score 文档组装，没有独立 wire schema，不是 Domain event，
+也绝不写入 Session stream。
 
 Scenario、Subject、Executor、Attempt、manifest 和 Score ID 都是最多 128 字节的小写 ASCII 不透明 ID。
 用户提供的 ID 使用 `[a-z0-9][a-z0-9._-]*`；生成的 Attempt/Score ID 使用密码学随机的 128-bit
@@ -151,12 +161,27 @@ eval/scenarios/<suite>/<scenario>/
 - required/optional evidence role；
 - deterministic verifier ID 和 live judge criterion ID；
 - 只能收紧 EvalSet limits 的单 Scenario 限额；
-- baseline/candidate report 使用的 pairing tag。
+- baseline/candidate report 使用的 pairing tag；
+- approval script；每项绑定一个 prompt action ID、该 action 内从零开始的 approval ordinal、
+  预期 tool 名以及 `allow` 或 `deny` 答案。
 
 v1 action 是 `prompt`、`compact`、`cancel`、`restart`、`collect`。`prompt` 带有界 UTF-8 文本；
 `compact` 带公开 summary/reset strategy 以及可选的有界 focus；`cancel` 指向一个先前的 in-flight action；
-`restart` 请求所选 Executor 支持的生产表面 shutdown/crash/reopen 序列；`collect` 请求声明过的
-workspace path 或 verifier fact。
+`restart` 明确指定 `clean_shutdown`、`interrupt` 或 `kill`。两个 executor 都支持 `clean_shutdown`；
+`interrupt` 与 `kill` 是 ACP 子进程专属 capability：前者向当前持有的 process group 发 SIGINT，
+后者发 SIGKILL。两种 abrupt mode 都必须在 shutdown bound 内 `Wait`/reap，才能启动新进程并
+`session/load`；无法证明 reap 时发布 `indeterminate`，且不启动新 writer。进程内 Cell 若请求这两种 mode，
+必须在创建 Attempt 前被拒绝。直接丢弃未 `Close` 的 Assembly 不构成进程内 crash 模拟：Runtime Host
+heartbeat/export 使用独立 context，这会留下真实 writer lease。
+`collect` 请求声明过的 workspace path 或 verifier fact。
+
+approval entry 只用稳定 Scenario 坐标匹配，不用生成的 wire/domain ID。每个 prompt action 开始时，
+runner 将 approval ordinal 重置为零；每次 permission request 必须同时匹配当前 prompt action ID、
+该 prompt 的下一个 ordinal 与所请求 tool 名。同一份冻结 script 编译为进程内 `tools.Approver` 和 ACP
+`session/request_permission` Handler；toolCallId/request ID 只作为证据。未声明、已耗尽、乱序或 tool 名
+不匹配时一律拒绝，不消费后续声明，并记录 `approval_script_violation` fact。若 Scenario 仍到达声明边界
+且必需证据收集完成，Outcome 是 `completed`；除非拒绝本来就是预期，确定性 Score 失败。policy 拒绝或
+script violation 本身不自动构成 `subject_failed`。
 
 runner 在创建 Attempt 前拒绝不支持的 Scenario/Executor 配对。它绝不静默跳过 action 或必需 capability。
 
@@ -221,8 +246,9 @@ Executor identity 与 Subject identity 分开。
 
 Parity comparison 要求 Scenario 和 Subject 语义 digest 相等，而且只能比较声明的语义不变量。
 Event ID、command ID、runtime ID、时间戳、临时路径、调度顺序和原始 transcript/audit 字节都不是 parity
-字段。Session/Turn 终态、tool fact、usage fact、workspace 结果、policy decision、request-envelope
-属性和 artifact 完整性可以作为 parity 字段。
+字段。executor process、Runtime Host、lease、shutdown、reload 和 recovery lifecycle fact 也不比较。
+Session/Turn 终态、tool fact、usage fact、workspace 结果、policy decision、request-envelope 属性和
+artifact 完整性可以作为 parity 字段。
 
 ## 12. Attempt 文件系统与原子发布
 
@@ -302,9 +328,20 @@ transcript 仍是 trajectory 表面。audit replica 不是第二套 transcript�
 SQLite backup 是 optional，只能由 recovery Scenario 明确要求；不是默认证据。scorer 不能打开 live database，
 也不能跟随 manifest 中不存在的路径。
 
-证据收集需要窄的 Composition-owned helper。transcript 使用已有 `composition.ExportSession`；实现增加一个
-由 Composition 所有的 canonical audit snapshot/verification 操作，使 eval 不 import SQLite。两个 executor
-都只能在各自 writer 停止后调用这些 helper。
+证据收集使用两个新的 Composition-owned 只读 API；request/result 类型同样归 Composition：
+
+- `InspectEvaluationStore` 不迁移、不获取 writer lease 地打开隔离 database，固定 store/Session head，
+  校验格式与 canonical chain，并返回有界 Session/Turn/compaction terminal fact；它不能追加 recovery fact、
+  获取/释放 lease 或修改 export 状态。
+- `ExportEvaluationEvidence` 接收 inspection identity 与调用者提供的空 transcript/audit staging destination；
+  从 database 重新生成 canonical audit-replica snapshot 并在返回前校验，绝不复制 live replica directory。
+
+两个 helper 遇到 live Runtime Host lease 必须拒绝；不等待、接管或释放 lease。export result 分别记录
+`sessionHeadSequence`、`storeHeadCommitPosition`、transcript digest、audit head digest，以及 audit snapshot
+包含覆盖 transcript Session head 的 append 证明。Session sequence 与全局 commit position 是不同坐标，
+不能直接数值比较。已有 `composition.ExportSession` 保持通用 transcript-only API，可以与 live writer
+并存；eval 只能在 writer 停止后使用上述严格 helper。`internal/harness/eval` 绝不 import SQLite，也不为
+证据收集或 orphan inspection 打开 Assembly。
 
 ## 15. 进程内 executor
 
@@ -348,32 +385,54 @@ executor 用 `-acp`、隔离 workspace/database/audit、唯一 runtime ID 和 Su
 child 只接收 allowlist 环境：必需 OS runtime 变量、命名 Provider credential 和显式声明的 fixture 变量。
 runner 绝不转发完整环境。
 
-ACP Handler 非交互。Scenario/Subject policy 冻结 approval 响应；任何未声明 permission request 都被拒绝
-并记录。manual `compact` 先干净停止 ACP writer，再对隔离 database 调同一 binary 的公开
-`compact-session` 命令，随后重启 `och -acp` 并 `session/load`；绝不进程内调用 Application。
+ACP Handler 非交互，并由与进程内 Approver 相同的 approval script 编译。它解析
+`session/request_permission`，关联当前 prompt action 与 approval ordinal，校验预期 tool 名，返回声明的
+allow-once/reject-once option，并把 wire tool-call ID 记为证据；script violation 遵循第 7 节。
+
+每个 writer process 的 runtime ID 由 Attempt 与单调递增 launch ordinal 派生；每次 `compact-session`
+使用由 Attempt 与 compact-action ordinal 派生的另一个新 runtime ID。writer、successor 和 compactor
+绝不共享 runtime ID；它们是 Attempt fact，不改变 Subject semantic digest。
+
+manual `compact` 必须依序执行：
+
+1. 关闭当前 ACP child stdin，并要求在 shutdown bound 内成功 exit 且 reap；
+2. 无法证明 exit/reap 时发布 `indeterminate/acp_shutdown_unproven`，且不启动 compaction；若 child
+   已 reap，但 clean shutdown 返回非零状态，则发布 `infra_failed/acp_shutdown_failed`，也不启动 compaction；
+3. 用不同 compactor runtime ID 和其余完全一致的已校验 Subject binding 调同一 binary 的
+   `compact-session`；
+4. 已知 child 干净 reap 后仍得到 `ErrLeaseHeld`，发布
+   `infra_failed/runtime_lease_not_released`；若 ownership 或前一 action 不确定，则发布 `indeterminate`；
+5. 要求 compactor exit/reap，以第三个新 runtime ID 启动 `och -acp`，再 `session/load`。
+
+executor 不在未 reap writer 旁启动 compaction，不 signal 从磁盘恢复出的 PID，也不进程内调用 Application。
 
 ## 17. 取消与子进程清理
 
 进程内取消会 cancel 当前 action context，等待 durable terminal result，再在 shutdown bound 内关闭 Assembly。
 
-ACP 取消使用固定升级顺序：
+v1 ACP 子进程 executor 只在 Linux/macOS 可运行。Windows CI 只 cross-build `och-eval` 并测试
+schema/capability 拒绝；Windows `acp_subprocess` Cell 必须在创建 Attempt 前校验失败。未来运行支持需要
+另行接受 Job Object 合同，包含并 reap 完整 child tree；只 kill parent 不够。
+
+受支持的 Unix host 为每个 child 建立新 process group。ACP 取消使用固定升级顺序：
 
 ```text
 session/cancel
   → 等待 cancellation grace
   → 关闭 child stdin
   → 等待 shutdown grace
-  → SIGTERM/process-group terminate
+  → SIGTERM 当前持有的 process group
   → 等待 final grace
-  → force-kill process group
+  → SIGKILL 当前持有的 process group
   → reap
 ```
 
 `exec.CommandContext` 不是主要取消机制，因为立即 kill 会丢掉 Scenario 正在测量的 Session terminal evidence。
-每个升级阶段都要计时并记录。executor 拥有一个 process group，并在所有正常路径 reap。
+每个升级阶段都要计时并记录。runner 在 `Wait` 返回前保留 live `os.Process` handle 与 process-group identity；
+只 signal 当前持有、尚未 reap 的 child。reap、内存 handle 丢失或 runner recovery 后绝不操作 persisted PID。
 
-ACP child stdin 只属于 runner。parent death 会关闭 pipe，使 `och -acp` 观察 EOF 并退出。恢复绝不 signal
-前一进程存下来的 PID，因为 PID reuse 可能命中无关进程。
+ACP child stdin 只属于 runner。parent death 会关闭 pipe，使 `och -acp` 观察 EOF 并开始正常 shutdown；
+若无法证明完成，后续 recovery 只分类 durable evidence，绝不猜测清理。
 
 ## 18. 崩溃恢复与 resume
 
@@ -381,13 +440,17 @@ runner 启动时分类每个 Attempt 目录：
 
 - 有效 Outcome + 有效 Manifest：不可变 terminal Attempt；
 - 有 Attempt + Outcome、无 Manifest：只 resume 有界证据收集；
-- 有 Attempt、无 Outcome：不运行 Subject，只检查隔离 canonical store；
+- 有 Attempt、无 Outcome：不运行 Subject，调用 `composition.InspectEvaluationStore` 检查隔离 database；
 - 没有有效 Attempt 文档：未提交 temp directory，不是 Attempt。
 
 若 canonical evidence 能证明 terminal Session/Turn，恢复发布带 `recoveryStatus: recovered` 的 Outcome
 并收集证据。
 若 Session 仍 active/running、commit outcome unknown、store 损坏或不同来源互相矛盾，则发布
 `indeterminate` 和准确 diagnostics。
+
+若存在未过期 Runtime Host lease，却没有当前 runner 持有的 live process handle，发布
+`indeterminate/orphan_live_lease`；recovery 不 signal PID，也不开 writer 接管。已知 child 干净 reap 后仍有
+foreign live lease，才是第 16 节较窄的 `infra_failed/runtime_lease_not_released`。
 
 恢复永不重跑 prompt、重试 append、resume Subject 或修改已有 Outcome。operator retry 追加新 Attempt。
 
@@ -481,8 +544,16 @@ quality floor 只是里程碑信号。
 fixture lane 是默认通道。若配置非 loopback Provider endpoint 或需要 live credential，则 fail-closed。
 它不使用外部网络和密钥。Loopback fixture HTTP 只是进程内测试 transport，不是外部网络访问。
 
-两个 executor 都进入 PR CI。ACP 路径在测试中构建真实 `och` binary 并启动它；fake ACP agent 不构成
-完成证据。确定性 fixture 使用冻结响应，比较语义 fact，不比较时间戳或生成 ID。
+普通 PR CI 运行一个刻意很小、最多四个 Cell 的冻结 EvalSet：
+
+1. 恰好一个 paired parity Scenario 通过两个 executor，使用两个 Cell；
+2. 一个进程内 tool/approval/failure Scenario；
+3. 一个进程内 Context compaction Scenario。
+
+paired ACP Cell 必须构建并启动真实 `och` binary；fake ACP agent 不构成证据。approval、compact、restart
+与 cleanup 的 targeted ACP unit/subprocess integration test 仍是 PR check，但完整 suite × executor 笛卡尔积
+不是。完整确定性矩阵只在显式命令和 scheduled CI 运行；live/model-judge quality Cell 永不进入普通 PR CI。
+确定性 fixture 使用冻结响应，比较语义 fact，不比较时间戳或生成 ID。
 
 ## 24. Live lane
 
@@ -498,19 +569,21 @@ operator cancellation 或 infrastructure 中断，也要在 evidence-collection 
 ### 25.1 Executor parity fixture
 
 用两个 executor 跑相同 deterministic Scenario 和 Subject 语义。验证 terminal Session/Turn shape、tool/usage
-fact、workspace 结果、request/policy evidence、manifest 完整性和声明的 parity 字段；不要求 ID、时间戳、
-路径或字节完全相同。
+fact、workspace 结果、request/policy evidence、manifest 完整性和声明的 parity 字段。若 paired Scenario
+包含 restart，只使用 `clean_shutdown`；不要求 ID、时间戳、路径、字节或 executor lifecycle fact 相同。
 
 ### 25.2 Tool/workspace deterministic suite
 
-覆盖 read、write、exec、Policy/approval、预期失败、取消、redaction 和 artifact 收集。用 transcript/audit
-交叉校验 workspace 结果，并在 PR CI 通过两个 executor 运行。
+覆盖 read、write、exec、Policy/approval、预期失败、取消、redaction 和 artifact 收集，并以 transcript/audit
+交叉校验 workspace 结果。显式/scheduled 确定性矩阵支持两个 executor；普通 PR CI 只跑代表性进程内 Cell
+与第 23 节的单个 paired smoke。
 
 ### 25.3 Context mechanism fixture suite
 
 确定性覆盖 pre-turn/mid-turn trigger、checkpoint、manual summary/reset、overflow recovery、restart/crash
 证据、transcript/audit projection 和资源上限。已接受但 inert 的 capability 不能仅靠配置存在就通过；
-声称 multi-chunk summary 或 Tool Result pruning 的 Scenario 必须实际观察行为，否则失败。
+声称 multi-chunk summary 或 Tool Result pruning 的 Scenario 必须实际观察行为，否则失败。两个 executor
+都可测试 clean restart；`interrupt` 与 `kill` 是单独 ACP-only recovery Scenario，不是跨 executor parity。
 
 ### 25.4 Context real-model quality suite
 
@@ -546,18 +619,26 @@ Subject Executor flag 或 Subject Provider credential。model-judge scorer 可�
 - matrix expansion、capability mismatch、pairing 和 4,096 Attempt 拒绝；
 - fixture/evidence path traversal、symlink/hard-link/device 拒绝、文件数/字节 cap、truncation 和 digest 篡改；
 - Attempt、Outcome、manifest、Score 每阶段的 atomic publish fault injection；
-- 每种 partial filesystem state 的 restart classification；
+- 每种 partial filesystem state 的 restart classification，以及 unsupported restart mode capability 拒绝；
 - 通过真实 `composition.Open` 和 Application method 的进程内证明；
+- 两个 adapter 的 approval script 证明，包括 ordinal/tool mismatch、fail-closed deny、证据以及
+  Outcome/Score 分类分离；
 - 针对新构建真实 `och` binary 的 ACP 证明，包括 initialize、new/load/prompt/cancel、manual compact、
-  restart、process-group cleanup 和无泄漏 child；
+  全部受支持 restart mode、process-group cleanup 和无泄漏 child；
+- manual compact 证明：先 reap writer，writer/compactor/restart runtime ID 不同，live lease 阻止 compaction，
+  lease 不确定性映射到指定 `infra_failed` 或 `indeterminate` code；
+- Unix process-group escalation、Windows cross-build 与 fail-closed ACP capability rejection；不声称只清理
+  Windows parent 即可；
 - 每个 Limits/Context 字段的 Subject-to-CLI 配置等价；
-- transcript trailer 与 audit head 一致、request/policy evidence、missing/corrupt evidence fail-closed；
+- Composition evidence helper 证明 live-lease refusal、不修改 database/replica、有界 orphan inspection、
+  生成 audit snapshot 包含 transcript head、request/policy evidence，以及 missing/corrupt fail-closed；
 - 在 Executor/Subject 调用被做成不可能时仍能离线 regrade；
 - deterministic verifier 与 model-judge 分离、严格 judge parser；
 - fixture lane 拒绝外部 Provider/credential；
 - 在访问 credential 前验证 live 双重许可（live set + `--live`）；
 - time/token/cost/concurrency/artifact limit 和 cancellation race；
-- 两个 executor 的语义 parity fixture；
+- 两个 executor 的语义 parity fixture，并拒绝把 lifecycle fact 当 parity 字段；
+- guard 保证仓库内 ordinary-PR EvalSet 不会展开超过第 23 节四 Cell 合同；
 - 首批 suite golden fixture 与 live-suite dry validation。
 
 完成证据必须包含新的：
@@ -626,8 +707,19 @@ internal/harness/architecture/
   ownerEval dependency rules
 ```
 
-后续实施计划必须给出可独立 review 的 slice。它可以先落一个 executor，再落另一个，但里程碑完成必须同时
-拥有二者；在这份已接受设计下，ACP subprocess support 不是 optional follow-up。
+实施计划必须按可独立 review 的阶段交付；每阶段可以包含多个 PR：
+
+1. **Stage A — 确定性基础与进程内路径。** 交付冻结 schema/digest/matrix、安全 fixture、只追加
+   Attempt/Outcome/manifest/Score、Composition 只读 evidence helper、offline regrade/report、进程内
+   executor 和最小 fixture smoke。这是首个可用切片，不是里程碑完成。
+2. **Stage B — ACP 子进程与 parity。** 交付真实 binary supervisor、allowlist environment、完整 Subject
+   flag mapping、共享 approval adapter、Unix process-group cleanup、不同 runtime ID 的 compact/restart
+   合同及 paired parity smoke；不含 model judging。
+3. **Stage C — suites 与 live quality。** 扩展确定性 Context/tool-workspace suites，加入显式/scheduled
+   完整矩阵，最后加入双重许可 live judge、quality suite、文档与证据。
+
+里程碑完成仍要求两个 executor、offline regrade、首批确定性 suites 与 live-quality mechanism。ACP
+subprocess 不是 optional，但不阻塞 Stage A 合并；任何 stage 都不要求塞进一个 PR。
 
 ## 30. 验收摘要
 
@@ -636,10 +728,16 @@ internal/harness/architecture/
 1. 两个 executor 都运行真实 OCH 表面，并使用语义等价的冻结 Subject；
 2. 每个 Attempt 都隔离、有界、只追加且诚实分类；
 3. manifest-published evidence 可以校验并离线重评；
-4. transcript 与 audit evidence 共同覆盖声明的 scoring 需要，不创建第二套 trajectory；
-5. 损坏或缺失的必需证据绝不能通过；
-6. deterministic PR 与显式 live 通道不能混淆；
-7. retry/recovery 不重写 Attempt，也不在原处重跑 outcome unknown 的工作；
-8. 首批 suite 证明 executor 中立和 Context 质量覆盖；
-9. 构建 runner 不需要先实现 MCP，且 MCP 存在前不声称 MCP 评测；
-10. 文档与 evidence ledger 披露剩余质量/GA blocker，不从 fixture 成功反推它们已解决。
+4. 同一 approval script 在进程内与 ACP 表面有相同 match/deny 语义，且分类与 score 分离；
+5. ACP manual compaction 证明 writer 已释放，并使用不同 runtime ID；
+6. clean/interrupt/kill restart 有显式 executor/platform capability，且不以丢弃 Assembly 模拟 crash；
+7. Composition-owned 只读 helper 拒绝 live lease，产生带 head-inclusion proof 的 verified transcript/audit
+   evidence，eval 不 import SQLite，也不复制 live replica；
+8. transcript 与 audit evidence 共同覆盖声明的 scoring 需要，不创建第二套 trajectory；
+9. 损坏或缺失的必需证据绝不能通过；
+10. 普通 PR CI 是有界确定性 smoke，不得与完整确定性矩阵和显式 live 通道混淆；
+11. retry/recovery 不重写 Attempt、不原地重跑未知工作，也不 signal persisted PID；
+12. 首批 suite 证明 executor 中立和 Context 质量覆盖；
+13. 构建 runner 不需要先实现 MCP，且 MCP 存在前不声称 MCP 评测；
+14. 分阶段交付绝不把 in-process-only 切片当作里程碑完成；
+15. 文档与 evidence ledger 披露剩余质量/GA blocker，不从 fixture 成功反推它们已解决。
