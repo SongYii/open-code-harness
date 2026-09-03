@@ -25,7 +25,7 @@ var (
 // cmd/acp-client's own buildOchBinary helper — conformance here means
 // driving an actual, independently built och -acp subprocess, not a
 // fixture standing in for one.
-func buildOchBinary(t *testing.T) string {
+func buildOchBinary(t testing.TB) string {
 	t.Helper()
 	ochBinaryBuildOnce.Do(func() {
 		wd, err := os.Getwd() // .../internal/harness/eval
