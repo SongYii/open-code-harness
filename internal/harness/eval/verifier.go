@@ -23,6 +23,16 @@ var verifierCatalog = map[string]Verifier{
 	"redaction-observed-v1":             verifyRedactionObserved,
 	"expected-tool-failure-observed-v1": verifyExpectedToolFailureObserved,
 	"containment-refused-v1":            verifyContainmentRefused,
+
+	// Context mechanism suite. context-compaction-observed-v1 above remains
+	// a compatibility alias for the old smoke Scenario; its semantics are
+	// deliberately not broadened.
+	VerifierContextManualReset:     verifyContextManualReset,
+	VerifierContextManualSummary:   verifyContextManualSummary,
+	VerifierContextPreTurnSummary:  verifyContextPreTurnSummary,
+	VerifierContextCheckpointReuse: verifyContextCheckpointReuse,
+	VerifierContextBudgetBounds:    verifyContextBudgetBounds,
+	VerifierContextProjection:      verifyContextProjection,
 }
 
 // LookupVerifier returns the compiled Verifier for id, and whether one is

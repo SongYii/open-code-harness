@@ -325,3 +325,23 @@ func TestBuildContextTraceOnRealCollectedEvidence(t *testing.T) {
 		t.Fatal("a real Attempt produced no provider usage evidence")
 	}
 }
+
+// writeExtraEvidenceEntry adds one more collected manifest entry to a
+// fixture reader, so a test can pair audit evidence with a transcript.
+func writeExtraEvidenceEntry(t *testing.T, reader *ArtifactReader, path, role, content string) {
+	t.Helper()
+	data := []byte(content)
+	full := filepath.Join(reader.evidenceRoot, filepath.FromSlash(path))
+	if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(full, data, 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+	sum := sha256.Sum256(data)
+	reader.manifest.Entries = append(reader.manifest.Entries, ManifestEntry{
+		Path: path, Role: role, MediaType: "application/x-ndjson", Required: true,
+		State: EntryCollected, SHA256: hex.EncodeToString(sum[:]), ByteLength: int64(len(data)),
+		ProducedBy: "test",
+	})
+}
