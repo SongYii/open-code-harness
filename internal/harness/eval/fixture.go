@@ -46,15 +46,7 @@ func NewAttemptRoot(baseDirectory string, attemptID AttemptID) (AttemptRootDirec
 	if err := os.Mkdir(root, 0o700); err != nil {
 		return AttemptRootDirectories{}, fmt.Errorf("eval: new attempt root: %w", err)
 	}
-	directories := AttemptRootDirectories{
-		Root:      root,
-		Workspace: filepath.Join(root, "workspace"),
-		Database:  filepath.Join(root, "database"),
-		Audit:     filepath.Join(root, "audit"),
-		Process:   filepath.Join(root, "process"),
-		Log:       filepath.Join(root, "log"),
-		Evidence:  filepath.Join(root, "evidence"),
-	}
+	directories := AttemptRootDirectoriesFor(root)
 	for _, directory := range []string{
 		directories.Workspace, directories.Database, directories.Audit,
 		directories.Process, directories.Log, directories.Evidence,
@@ -64,6 +56,23 @@ func NewAttemptRoot(baseDirectory string, attemptID AttemptID) (AttemptRootDirec
 		}
 	}
 	return directories, nil
+}
+
+// AttemptRootDirectoriesFor reconstructs one Attempt's isolated directory
+// paths from its own root alone, following the exact fixed subdirectory
+// names NewAttemptRoot itself creates (design §8). A caller that only has
+// an Attempt's root path on disk (e.g. a CLI given -attempt PATH) uses
+// this instead of re-deriving the naming convention itself.
+func AttemptRootDirectoriesFor(root string) AttemptRootDirectories {
+	return AttemptRootDirectories{
+		Root:      root,
+		Workspace: filepath.Join(root, "workspace"),
+		Database:  filepath.Join(root, "database"),
+		Audit:     filepath.Join(root, "audit"),
+		Process:   filepath.Join(root, "process"),
+		Log:       filepath.Join(root, "log"),
+		Evidence:  filepath.Join(root, "evidence"),
+	}
 }
 
 // attemptDatabaseFilename is the canonical SQLite file name BuildConfig and

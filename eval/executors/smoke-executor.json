@@ -1,0 +1,10 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.executor",
+  "id": "smoke-executor",
+  "kind": "in_process",
+  "ochRevision": "dev",
+  "evalBuildRevision": "dev",
+  "compositionContractVersion": "v1",
+  "capabilities": ["prompt", "compact", "collect"]
+}

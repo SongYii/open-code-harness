@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -27,6 +28,12 @@ func runnerScenario(id ScenarioID) Scenario {
 func runnerInputs(t *testing.T, server *echoProvider, artifactRoot string) RunnerInputs {
 	t.Helper()
 	scenario := runnerScenario("runner-scenario")
+	fixtureSource := t.TempDir()
+	fixtureDigest, err := DigestFixtureTree(fixtureSource)
+	if err != nil {
+		t.Fatalf("DigestFixtureTree: %v", err)
+	}
+	scenario.FixtureDigest = string(fixtureDigest)
 	subject := testSubject(t, server.Server)
 	subject.ID = "runner-subject"
 	executor := validExecutorInProcess()
@@ -58,7 +65,6 @@ func runnerInputs(t *testing.T, server *echoProvider, artifactRoot string) Runne
 		Lane:            LaneFixture,
 	}
 
-	fixtureSource := t.TempDir()
 	return RunnerInputs{
 		Set:            set,
 		Scenarios:      map[ScenarioID]Scenario{scenario.ID: scenario},
@@ -108,6 +114,128 @@ func TestRunEvalSetHappyPath(t *testing.T) {
 	}
 	if _, err := ReadEvidenceManifest(attemptDirectory); err != nil {
 		t.Fatalf("ReadEvidenceManifest: %v", err)
+	}
+}
+
+// A fixture:// endpoint is the frozen semantic identity of a compiled fixture
+// script. Its ephemeral loopback port is an execution fact, so resolving that
+// port must not require mutating or repinning the Subject document.
+func TestRunEvalSetUsesRuntimeProviderEndpointWithoutChangingFrozenSubject(t *testing.T) {
+	server := newEchoProvider(t)
+	artifactRoot := filepath.Join(t.TempDir(), "artifacts")
+	if err := os.Mkdir(artifactRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	inputs := runnerInputs(t, server, artifactRoot)
+
+	subjectID := inputs.Set.Subjects[0].ID
+	frozen := inputs.Subjects[subjectID]
+	frozen.Provider.NormalizedEndpoint = "fixture://echo"
+	frozenDigest, err := SubjectDigest(frozen)
+	if err != nil {
+		t.Fatalf("SubjectDigest(frozen): %v", err)
+	}
+	inputs.Subjects[subjectID] = frozen
+	inputs.Set.Subjects[0].Digest = frozenDigest
+	inputs.ProviderEndpointOverrides = map[SubjectID]string{subjectID: server.URL}
+
+	results, err := RunEvalSet(context.Background(), inputs)
+	if err != nil {
+		t.Fatalf("RunEvalSet() error = %v", err)
+	}
+	if len(results) != 1 || results[0].Err != nil {
+		t.Fatalf("RunEvalSet() results = %#v, want one successful Attempt", results)
+	}
+	attempt, err := ReadAttempt(filepath.Join(artifactRoot, string(results[0].AttemptID)))
+	if err != nil {
+		t.Fatalf("ReadAttempt: %v", err)
+	}
+	if attempt.SubjectDigest != frozenDigest {
+		t.Fatalf("Attempt.SubjectDigest = %q, want frozen digest %q", attempt.SubjectDigest, frozenDigest)
+	}
+	if got := inputs.Subjects[subjectID].Provider.NormalizedEndpoint; got != "fixture://echo" {
+		t.Fatalf("frozen Subject endpoint mutated to %q", got)
+	}
+}
+
+func TestRunEvalSetUsesRuntimeArtifactRootWithoutChangingFrozenEvalSet(t *testing.T) {
+	server := newEchoProvider(t)
+	frozenRoot := filepath.Join(t.TempDir(), "frozen-artifacts")
+	runtimeRoot := filepath.Join(t.TempDir(), "runtime-artifacts")
+	if err := os.Mkdir(runtimeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	inputs := runnerInputs(t, server, frozenRoot)
+	inputs.ArtifactRootOverride = runtimeRoot
+
+	results, err := RunEvalSet(context.Background(), inputs)
+	if err != nil {
+		t.Fatalf("RunEvalSet() error = %v", err)
+	}
+	if len(results) != 1 || results[0].Err != nil {
+		t.Fatalf("RunEvalSet() results = %#v, want one successful Attempt", results)
+	}
+	if inputs.Set.ArtifactRoot != frozenRoot {
+		t.Fatalf("frozen EvalSet artifactRoot mutated to %q", inputs.Set.ArtifactRoot)
+	}
+	if _, err := ReadAttempt(filepath.Join(runtimeRoot, string(results[0].AttemptID))); err != nil {
+		t.Fatalf("runtime artifact root has no Attempt: %v", err)
+	}
+	if _, err := os.Stat(frozenRoot); !os.IsNotExist(err) {
+		t.Fatalf("frozen artifactRoot was used by execution: err=%v", err)
+	}
+}
+
+func TestRunEvalSetRejectsFixtureDigestMismatchBeforeAttempt(t *testing.T) {
+	server := newEchoProvider(t)
+	artifactRoot := filepath.Join(t.TempDir(), "artifacts")
+	if err := os.Mkdir(artifactRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	inputs := runnerInputs(t, server, artifactRoot)
+	scenarioID := inputs.Set.Scenarios[0].ID
+	scenario := inputs.Scenarios[scenarioID]
+	scenario.FixtureDigest = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	digest, err := ScenarioDigest(scenario)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs.Scenarios[scenarioID] = scenario
+	inputs.Set.Scenarios[0].Digest = digest
+
+	_, err = RunEvalSet(context.Background(), inputs)
+	if err == nil || !strings.Contains(err.Error(), "fixtureDigest") {
+		t.Fatalf("RunEvalSet() error = %v, want fixtureDigest mismatch", err)
+	}
+	entries, readErr := os.ReadDir(artifactRoot)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("artifactRoot has %d entries, want zero before validation", len(entries))
+	}
+}
+
+func TestRunEvalSetRejectsUnsafeProviderEndpointOverrideBeforeAttempt(t *testing.T) {
+	server := newEchoProvider(t)
+	artifactRoot := filepath.Join(t.TempDir(), "artifacts")
+	if err := os.Mkdir(artifactRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	inputs := runnerInputs(t, server, artifactRoot)
+	subjectID := inputs.Set.Subjects[0].ID
+	inputs.ProviderEndpointOverrides = map[SubjectID]string{subjectID: "https://api.example.com/v1"}
+
+	_, err := RunEvalSet(context.Background(), inputs)
+	if err == nil || !strings.Contains(err.Error(), "loopback") {
+		t.Fatalf("RunEvalSet() error = %v, want loopback override refusal", err)
+	}
+	entries, readErr := os.ReadDir(artifactRoot)
+	if readErr != nil {
+		t.Fatalf("ReadDir: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("artifactRoot has %d entries, want zero before validation", len(entries))
 	}
 }
 
@@ -193,17 +321,7 @@ func TestRunEvalSetOneFailingCellDoesNotAbortTheRest(t *testing.T) {
 }
 
 func TestClassifyAttemptDirectory(t *testing.T) {
-	directories, execution, scenario := runHappyAttempt(t)
-
-	attempt, err := buildAttemptDocument("set-1",
-		CellAttempt{Cell: Cell{ScenarioID: scenario.ID, SubjectID: "subject-1", ExecutorID: "executor-1"}},
-		testAttemptID(t), directories, scenario, validSubject(), validExecutorInProcess())
-	if err != nil {
-		t.Fatalf("buildAttemptDocument: %v", err)
-	}
-	if err := PublishAttempt(directories.Root, attempt); err != nil {
-		t.Fatalf("PublishAttempt: %v", err)
-	}
+	directories, execution, documents := runHappyAttempt(t)
 
 	state, err := ClassifyAttemptDirectory(directories.Root)
 	if err != nil {
@@ -226,7 +344,7 @@ func TestClassifyAttemptDirectory(t *testing.T) {
 		t.Fatalf("state = %q, want %q", state, RecoveryResumeCollectionOnly)
 	}
 
-	if _, _, err := ResumeCollection(context.Background(), directories, execution, scenario, CollectionLimits{}); err != nil {
+	if _, _, err := ResumeCollection(context.Background(), directories, execution, documents, CollectionLimits{}); err != nil {
 		t.Fatalf("ResumeCollection: %v", err)
 	}
 	state, err = ClassifyAttemptDirectory(directories.Root)
@@ -249,7 +367,7 @@ func TestClassifyAttemptDirectoryUncommittedWhenEmpty(t *testing.T) {
 }
 
 func TestResumeCollectionNeverMutatesTheExistingOutcome(t *testing.T) {
-	directories, execution, scenario := runHappyAttempt(t)
+	directories, execution, documents := runHappyAttempt(t)
 
 	outcome := execution.Outcome
 	outcome.CollectionStatus = CollectionNotStarted
@@ -261,7 +379,7 @@ func TestResumeCollectionNeverMutatesTheExistingOutcome(t *testing.T) {
 		t.Fatalf("OutcomeDigest: %v", err)
 	}
 
-	resumedOutcome, manifest, err := ResumeCollection(context.Background(), directories, execution, scenario, CollectionLimits{})
+	resumedOutcome, manifest, err := ResumeCollection(context.Background(), directories, execution, documents, CollectionLimits{})
 	if err != nil {
 		t.Fatalf("ResumeCollection: %v", err)
 	}

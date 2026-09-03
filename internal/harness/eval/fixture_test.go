@@ -219,3 +219,49 @@ func TestRefuseArtifactRootWithinFixtureRequiresAbsolutePaths(t *testing.T) {
 		t.Fatal("RefuseArtifactRootWithinFixture accepted a relative artifactRoot")
 	}
 }
+
+func TestDigestFixtureTreeBindsContentPathsAndExecutableBit(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "a.txt"), "one", 0o644)
+	first, err := DigestFixtureTree(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := DigestFixtureTree(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second {
+		t.Fatalf("same tree digests differ: %q vs %q", first, second)
+	}
+
+	writeFile(t, filepath.Join(root, "a.txt"), "two", 0o644)
+	contentChanged, err := DigestFixtureTree(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contentChanged == first {
+		t.Fatal("content change did not change fixture digest")
+	}
+
+	if err := os.Chmod(filepath.Join(root, "a.txt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	executableChanged, err := DigestFixtureTree(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executableChanged == contentChanged {
+		t.Fatal("executable-bit change did not change fixture digest")
+	}
+}
+
+func TestDigestFixtureTreeRejectsSymlink(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Symlink("target", filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DigestFixtureTree(root); !errors.Is(err, errFixtureRejected) {
+		t.Fatalf("DigestFixtureTree() error = %v, want fixture rejection", err)
+	}
+}
