@@ -17,6 +17,7 @@ type evaluationReport struct {
 	Schema        string               `json:"schema"`
 	SetID         eval.EvalSetID       `json:"setId"`
 	Attempts      []reportAttemptEntry `json:"attempts"`
+	Parity        []reportParityEntry  `json:"parity,omitempty"`
 }
 
 type reportAttemptEntry struct {
@@ -31,6 +32,17 @@ type reportAttemptEntry struct {
 type reportScoreEntry struct {
 	ScorerID string `json:"scorerId"`
 	Verdict  string `json:"verdict"`
+}
+
+// reportParityEntry is one design §22 baseline/candidate comparison this
+// report performed: an in_process Attempt and an acp_subprocess Attempt
+// whose evidence both loaded successfully and whose ParityPairKey
+// (Scenario digest, repetition index) matched. An empty Mismatches means
+// parity held.
+type reportParityEntry struct {
+	BaselineAttemptID  eval.AttemptID        `json:"baselineAttemptId"`
+	CandidateAttemptID eval.AttemptID        `json:"candidateAttemptId"`
+	Mismatches         []eval.ParityMismatch `json:"mismatches,omitempty"`
 }
 
 // reportCommand aggregates every Attempt already published under an
@@ -88,6 +100,7 @@ func reportCommand(args []string, stdout, stderr io.Writer) int {
 
 	report := evaluationReport{FormatVersion: 1, Schema: reportSchema, SetID: set.ID}
 	exitCode := exitOK
+	var parityCandidates []parityCandidate
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -127,9 +140,32 @@ func reportCommand(args []string, stdout, stderr io.Writer) int {
 						exitCode = maxExitCode(exitCode, exitIndeterminate)
 					}
 				}
+				// Parity is best-effort augmentation, never a hard
+				// requirement of aggregating this Attempt into the
+				// report: an Attempt whose evidence can't support a
+				// ParityArm (e.g. audit wasn't a required role for its
+				// own Scenario) simply never enters a candidate pair,
+				// exactly like design's own "not every Scenario claims
+				// a parity pairing" shape.
+				if result.Outcome.CollectionStatus == eval.CollectionComplete {
+					if attempt, attemptErr := eval.ReadAttempt(attemptRoot); attemptErr == nil {
+						if arm, armErr := eval.LoadParityArm(directories); armErr == nil {
+							parityCandidates = append(parityCandidates, parityCandidate{
+								key: eval.ParityPairKeyForAttempt(attempt), arm: arm,
+							})
+						}
+					}
+				}
 			}
 		}
 		report.Attempts = append(report.Attempts, reportEntry)
+	}
+
+	for _, parityEntry := range pairParityCandidates(parityCandidates) {
+		report.Parity = append(report.Parity, parityEntry)
+		if len(parityEntry.Mismatches) > 0 {
+			exitCode = maxExitCode(exitCode, exitGateFailure)
+		}
 	}
 
 	data, err := jsonEncode(report)
@@ -149,4 +185,55 @@ func reportCommand(args []string, stdout, stderr io.Writer) int {
 		return exitInternal
 	}
 	return exitCode
+}
+
+// parityCandidate is one terminal, fully-collected Attempt's own parity
+// pairing key and loaded arm, gathered while walking the artifact root so
+// pairing itself can happen in one pass afterward.
+type parityCandidate struct {
+	key eval.ParityPairKey
+	arm eval.ParityArm
+}
+
+// pairParityCandidates groups candidates by ParityPairKey and, within
+// each group that actually contains both an in_process and an
+// acp_subprocess arm, compares every in_process arm against every
+// acp_subprocess arm (design §22: baseline/candidate pairing). A group
+// containing only one Executor Kind is not a parity claim at all — most
+// Scenarios in an EvalSet are never meant to run through both executors
+// — so it produces no entry, matching (not missing) pair: design's own
+// "missing pairs are explicit" requirement applies to a Scenario an
+// EvalSet actually declared as paired but whose counterpart Attempt
+// never reached complete, collected evidence at all; detecting that
+// specific case would require this command to also load the EvalSet's
+// own Scenario documents for their pairingTags, which this first
+// implementation does not yet do — a documented, deliberate scope
+// choice, not an oversight.
+func pairParityCandidates(candidates []parityCandidate) []reportParityEntry {
+	groups := make(map[eval.ParityPairKey][]parityCandidate)
+	for _, candidate := range candidates {
+		groups[candidate.key] = append(groups[candidate.key], candidate)
+	}
+
+	var entries []reportParityEntry
+	for _, group := range groups {
+		var baselines, candidatesInGroup []eval.ParityArm
+		for _, member := range group {
+			switch member.arm.ExecutorKind {
+			case eval.ExecutorInProcess:
+				baselines = append(baselines, member.arm)
+			case eval.ExecutorACPSubprocess:
+				candidatesInGroup = append(candidatesInGroup, member.arm)
+			}
+		}
+		for _, baseline := range baselines {
+			for _, candidate := range candidatesInGroup {
+				entries = append(entries, reportParityEntry{
+					BaselineAttemptID: baseline.AttemptID, CandidateAttemptID: candidate.AttemptID,
+					Mismatches: eval.ComparePairedArms(baseline, candidate),
+				})
+			}
+		}
+	}
+	return entries
 }

@@ -239,7 +239,12 @@ func TestRunEvalSetRejectsUnsafeProviderEndpointOverrideBeforeAttempt(t *testing
 	}
 }
 
-func TestRunEvalSetRejectsNonInProcessExecutorBeforeAnyWorkStarts(t *testing.T) {
+// TestRunEvalSetRejectsACPExecutorWithoutAResolvedBinaryBeforeAnyWorkStarts
+// proves RunEvalSet's own whole-set validation refuses an acp_subprocess
+// Cell before creating any Attempt when the caller never resolved a
+// binary for it — RunEvalSetDrivesARealACPCellEndToEnd (runner_acp_test.go)
+// proves the same Cell succeeds once ACPLaunch.Binary is actually set.
+func TestRunEvalSetRejectsACPExecutorWithoutAResolvedBinaryBeforeAnyWorkStarts(t *testing.T) {
 	server := newEchoProvider(t)
 	artifactRoot := filepath.Join(t.TempDir(), "artifacts")
 	if err := os.Mkdir(artifactRoot, 0o700); err != nil {
@@ -254,10 +259,12 @@ func TestRunEvalSetRejectsNonInProcessExecutorBeforeAnyWorkStarts(t *testing.T) 
 	}
 	inputs.Set.Executors = []ExecutorRef{{ID: acpExecutor.ID, Digest: acpDigest}}
 	inputs.Executors = map[ExecutorID]Executor{acpExecutor.ID: acpExecutor}
+	// inputs.ACPLaunch is deliberately left at its zero value (no binary
+	// resolved) -- this is exactly what RunEvalSet must refuse.
 
 	_, err = RunEvalSet(context.Background(), inputs)
 	if err == nil {
-		t.Fatal("RunEvalSet() error = nil, want a refusal for an acp_subprocess executor")
+		t.Fatal("RunEvalSet() error = nil, want a refusal for an acp_subprocess executor with no resolved binary")
 	}
 	entries, readErr := os.ReadDir(artifactRoot)
 	if readErr != nil {

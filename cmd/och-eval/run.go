@@ -38,6 +38,7 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	setPath := flags.String("set", "", "path to the EvalSet document")
 	artifactRootFlag := flags.String("artifacts", "", "absolute path Attempts are published under")
 	live := flags.Bool("live", false, "confirm this EvalSet's lane is live (design's dual-consent gate)")
+	ochBinaryFlag := flags.String("och-binary", "", "path to an already-built och binary; required only when this EvalSet references an acp_subprocess Executor")
 	if err := flags.Parse(args); err != nil {
 		return exitValidation
 	}
@@ -55,7 +56,17 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		fmt.Fprintln(stderr, "och-eval run:", err)
 		return exitValidation
 	}
-	if err := checkOnlyInProcessExecutors(tree.Executors); err != nil {
+
+	var acpLaunch eval.ACPLaunchConfig
+	if *ochBinaryFlag != "" {
+		binary, err := eval.ResolveACPBinary(*ochBinaryFlag)
+		if err != nil {
+			fmt.Fprintln(stderr, "och-eval run:", err)
+			return exitValidation
+		}
+		acpLaunch.Binary = binary
+	}
+	if err := checkACPExecutorsHaveABinary(tree.Executors, acpLaunch); err != nil {
 		fmt.Fprintln(stderr, "och-eval run:", err)
 		return exitValidation
 	}
@@ -93,6 +104,7 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		FixtureSources:            tree.FixtureSources,
 		ProviderEndpointOverrides: providerEndpointOverrides,
 		ArtifactRootOverride:      artifactRoot,
+		ACPLaunch:                 acpLaunch,
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, "och-eval run:", err)
@@ -164,14 +176,18 @@ func checkLaneConsent(set eval.EvalSet, live bool) error {
 	return nil
 }
 
-// checkOnlyInProcessExecutors implements Stage A's own restriction
-// (implementation plan Task 10): an acp_subprocess Cell is refused before
-// any Attempt is created, not silently skipped, until Stage B registers
-// that executor.
-func checkOnlyInProcessExecutors(executors map[eval.ExecutorID]eval.Executor) error {
+// checkACPExecutorsHaveABinary refuses an EvalSet that references an
+// acp_subprocess Executor without -och-binary having resolved one, before
+// any Attempt is created — RunEvalSet's own whole-set validation would
+// catch the same thing, but failing here first gives a clearer message
+// naming the missing flag rather than a generic ACPLaunch error.
+func checkACPExecutorsHaveABinary(executors map[eval.ExecutorID]eval.Executor, acpLaunch eval.ACPLaunchConfig) error {
+	if acpLaunch.Binary.Path != "" {
+		return nil
+	}
 	for _, executor := range executors {
-		if executor.Kind != eval.ExecutorInProcess {
-			return fmt.Errorf("executor %q: Stage A's CLI supports only %q, got %q", executor.ID, eval.ExecutorInProcess, executor.Kind)
+		if executor.Kind == eval.ExecutorACPSubprocess {
+			return fmt.Errorf("executor %q is acp_subprocess but -och-binary was not given", executor.ID)
 		}
 	}
 	return nil
