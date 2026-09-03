@@ -30,6 +30,12 @@ const fixtureScheme = "fixture"
 // document only ever names one, never carries response content itself.
 var fixtureScripts = map[string]http.HandlerFunc{
 	"smart": smartFixtureScript,
+	// context-mechanism is deliberately a separate script rather than more
+	// branches on smart: it classifies by parsing the request and consulting
+	// only the latest user message, which is the opposite of smart's own
+	// whole-body substring convention. Mixing the two would make both
+	// harder to reason about.
+	"context-mechanism": contextMechanismFixtureScript,
 }
 
 // toolApprovalTriggerMarker is the exact substring the checked-in
