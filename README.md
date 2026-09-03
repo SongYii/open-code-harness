@@ -123,11 +123,19 @@ The numbered milestone list lives in
   [Context Engine contract](docs/architecture/context-engine.md) and its
   [evidence ledger](docs/architecture/context-engine-evidence.md).
 
-TUI, MCP, and OpenTelemetry are not yet implemented. Evaluation has an accepted
-[normative design](docs/superpowers/specs/2026-09-02-evaluation-design.md) and
-a staged implementation: deterministic foundations and the real in-process path
-come first, followed by ACP parity and then live quality. The evaluation milestone
-is not complete, and the project remains pre-v0.
+TUI, MCP, and OpenTelemetry are not yet implemented. Evaluation
+(`internal/harness/eval`, `cmd/och-eval`) is implemented but not GA: frozen
+Scenario/Subject/Executor identity, append-only Attempt/Outcome/Evidence
+Manifest/Score documents, both the in-process and real `och -acp` subprocess
+executors (approval, cancellation escalation, all three restart modes,
+lease-safe manual compaction), deterministic verifiers and offline regrade,
+design-verified executor parity, a four-Cell ordinary-PR lane, and a
+consent-gated live quality judge are all real and tested. Real-model live
+sample size, judge meta-evaluation breadth, provider breadth, and an
+accepted variance policy are still outstanding before a GA claim. See the
+[Evaluation contract](docs/architecture/evaluation.md) and its
+[evidence ledger](docs/architecture/evaluation-evidence.md). The project
+remains pre-v0.
 
 ## Development
 
@@ -200,6 +208,14 @@ The ten-task Engine sequence is retained in the
 [implemented plan](docs/superpowers/plans/2026-08-12-engine-vertical-slice.md),
 with auditable results in the bilingual
 [Engine completion evidence ledger](docs/architecture/engine-vertical-slice-evidence.md).
+The evaluation system contract is documented in
+[Evaluation System — Implemented Contract](docs/architecture/evaluation.md)
+and its [Chinese reading copy](docs/architecture/evaluation.zh-CN.md), with
+auditable results in the
+[Evaluation evidence ledger](docs/architecture/evaluation-evidence.md).
+Author and operator guidance live in
+[Authoring Evaluation Scenarios](docs/guides/evaluation-scenarios.md) and
+[Running and Operating Evaluations](docs/guides/evaluation-operations.md).
 
 ```bash
 gofmt -w .

@@ -20,7 +20,7 @@ import (
 // httptest.Server, exactly as internal/harness/composition's own end-to-end
 // tests do), and unsandboxed exec so these tests build a working Assembly
 // on any host regardless of whether a sandbox backend is available.
-func testSubject(t *testing.T, server *httptest.Server) Subject {
+func testSubject(t testing.TB, server *httptest.Server) Subject {
 	t.Helper()
 	subject := validSubject()
 	subject.Provider.NormalizedEndpoint = server.URL
@@ -31,7 +31,7 @@ func testSubject(t *testing.T, server *httptest.Server) Subject {
 	return subject
 }
 
-func testAttemptID(t *testing.T) AttemptID {
+func testAttemptID(t testing.TB) AttemptID {
 	t.Helper()
 	attemptID, err := NewAttemptID()
 	if err != nil {
@@ -40,7 +40,7 @@ func testAttemptID(t *testing.T) AttemptID {
 	return attemptID
 }
 
-func testDirectories(t *testing.T, attemptID AttemptID) AttemptRootDirectories {
+func testDirectories(t testing.TB, attemptID AttemptID) AttemptRootDirectories {
 	t.Helper()
 	directories, err := NewAttemptRoot(t.TempDir(), attemptID)
 	if err != nil {
@@ -61,7 +61,7 @@ type echoProvider struct {
 	calls atomic.Int32
 }
 
-func newEchoProvider(t *testing.T) *echoProvider {
+func newEchoProvider(t testing.TB) *echoProvider {
 	t.Helper()
 	provider := &echoProvider{}
 	provider.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -83,7 +83,7 @@ type approvalProvider struct {
 	calls atomic.Int32
 }
 
-func newApprovalProvider(t *testing.T) *approvalProvider {
+func newApprovalProvider(t testing.TB) *approvalProvider {
 	t.Helper()
 	provider := &approvalProvider{}
 	provider.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
