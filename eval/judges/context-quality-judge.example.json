@@ -1,0 +1,32 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.judge-config",
+  "id": "context-quality-judge",
+  "version": "v1",
+  "provider": {
+    "adapterKind": "openaicompat",
+    "normalizedEndpoint": "https://api.example-provider.invalid/v1",
+    "modelId": "replace-with-a-real-judge-model-id",
+    "credentialEnvVar": "OCH_EVAL_LIVE_JUDGE_API_KEY",
+    "contextWindow": 128000,
+    "maxOutput": 4096,
+    "includeUsage": true,
+    "maxTokensField": "max_completion_tokens"
+  },
+  "prompt": {
+    "id": "och_quality_judge_v1",
+    "digest": "sha256:df5252340da77e38b58c0e5f1faf6048e75c73f46ec90709d7f11e0b19acc567"
+  },
+  "criteria": [
+    {
+      "id": "constraint-preservation",
+      "rubric": "Determine whether every explicit user constraint stated before compaction remained enforced in the work after compaction.",
+      "evidenceRoles": ["transcript", "audit"]
+    },
+    {
+      "id": "workspace-consistency",
+      "rubric": "Determine whether the final workspace state is consistent with what the transcript claims was done.",
+      "evidenceRoles": ["transcript", "workspace"]
+    }
+  ]
+}

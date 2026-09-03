@@ -232,7 +232,7 @@ git commit -m "feat(eval): publish prerequisite-gated live judge scores"
 
 **Interfaces:** Adds `judgeCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int`; adds `newOpenAICompatibleJudgeCaller(config eval.JudgeConfig, client *http.Client, allowInsecureLoopback bool) (eval.JudgeCaller, error)` where production passes `nil,false` and tests use an `httptest` client with `true`.
 
-- [ ] **Step 1: Write failing real-stream and CLI tests**
+- [x] **Step 1: Write failing real-stream and CLI tests**
 
 ```go
 func TestJudgeCallerConsumesFixtureSSE(t *testing.T) {
@@ -248,19 +248,19 @@ func TestJudgeCLIQualityFailIsAdvisory(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `go test ./cmd/och-eval -run 'JudgeCaller|JudgeCLI' -count=1`
 
-- [ ] **Step 3: Implement caller and command**
+- [x] **Step 3: Implement caller and command**
 
 Use `openaicompat.Model` with text-only profile, EnvAPIKey, usage enabled, and frozen token field. Send system/user messages with `quality_judge` purpose, consume and close the stream, copy text/usage/duration, call `EvaluateJudgeAttempt`, print one Score JSON, and map exit classes exactly as the spec. Do not expose endpoint/model override flags.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run: `go test ./cmd/och-eval ./internal/harness/eval ./internal/harness/adapters/openaicompat -run 'Judge|Consent|Live|Exit' -count=1`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add cmd/och-eval

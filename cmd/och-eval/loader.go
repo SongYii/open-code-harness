@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -90,4 +91,54 @@ func loadDocumentTree(setPath string) (documentTree, error) {
 		tree.Executors[executor.ID] = executor
 	}
 	return tree, nil
+}
+
+// loadJudgeConfig reads and strictly decodes one frozen
+// `och.eval.judge-config` document. It never resolves the credential the
+// document names — only its name is ever read from the file, and the
+// value is looked up much later, inside the provider call, after every
+// consent and binding check has already passed.
+func loadJudgeConfig(path string) (eval.JudgeConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return eval.JudgeConfig{}, fmt.Errorf("read judge config: %w", err)
+	}
+	config, err := eval.DecodeJudgeConfig(data)
+	if err != nil {
+		return eval.JudgeConfig{}, fmt.Errorf("decode judge config: %w", err)
+	}
+	return config, nil
+}
+
+// loadJudgePriceTable resolves the optional price table a JudgeConfig may
+// pin. A config that names a priceTableDigest requires the table and
+// requires it to match: a Score that claimed a computed cost against a
+// table nobody can identify would be worse than one that honestly
+// reported the price as unavailable.
+func loadJudgePriceTable(config eval.JudgeConfig, path string) (*eval.PriceTable, error) {
+	if config.PriceTableDigest == "" {
+		if path == "" {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("-price-table was given but this judge config names no priceTableDigest")
+	}
+	if path == "" {
+		return nil, fmt.Errorf("this judge config names priceTableDigest %q, so -price-table is required", config.PriceTableDigest)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read price table: %w", err)
+	}
+	var table eval.PriceTable
+	if err := json.Unmarshal(data, &table); err != nil {
+		return nil, fmt.Errorf("decode price table: %w", err)
+	}
+	digest, err := eval.PriceTableDigest(table)
+	if err != nil {
+		return nil, err
+	}
+	if digest != config.PriceTableDigest {
+		return nil, fmt.Errorf("price table digest %q disagrees with the frozen judge config's %q", digest, config.PriceTableDigest)
+	}
+	return &table, nil
 }
