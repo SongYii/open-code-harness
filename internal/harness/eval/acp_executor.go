@@ -2,7 +2,6 @@ package eval
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -23,13 +22,14 @@ const defaultACPStderrBytes = 8 << 20
 // ACPLaunchConfig is everything RunACPAttempt needs beyond the Scenario/
 // Subject/Attempt facts RunAttempt itself takes (design §16): one
 // resolved, hashed och binary shared across every Attempt in a run
-// (ResolveACPBinary), and the bounded startup/shutdown/stderr limits this
-// launch enforces.
+// (ResolveACPBinary), the bounded startup/shutdown/stderr limits this
+// launch enforces, and the escalation ladder's own grace periods.
 type ACPLaunchConfig struct {
 	Binary          ACPBinaryIdentity
 	StderrLimit     int64
 	StartupTimeout  time.Duration
 	ShutdownTimeout time.Duration
+	ShutdownGrades  ACPShutdownGrades
 }
 
 func (config ACPLaunchConfig) withDefaults() ACPLaunchConfig {
@@ -42,6 +42,7 @@ func (config ACPLaunchConfig) withDefaults() ACPLaunchConfig {
 	if config.ShutdownTimeout <= 0 {
 		config.ShutdownTimeout = DefaultShutdownGrace
 	}
+	config.ShutdownGrades = config.ShutdownGrades.withDefaults()
 	return config
 }
 
@@ -52,18 +53,17 @@ func (config ACPLaunchConfig) withDefaults() ACPLaunchConfig {
 // (CollectEvidence) reads the same canonical SQLite database format
 // either executor produces and needs no changes to drive an ACP Attempt.
 //
-// This task supports exactly the same baseline action set the in-process
-// executor's own first slice did: prompt and collect. compact has no ACP
-// wire method yet (Task 14's own scope); cancel and restart are Task
-// 13's scope (the process-group escalation ladder and the non-interactive
-// approval handler this function's own fail-closed placeholder defers
-// to). Reaching any of those three action types here is recorded as
-// infra_failed/unsupported_action, exactly like the in-process executor's
-// own default branch for a genuinely unimplemented action.
+// matcher is this Attempt's compiled ApprovalScript (design §7), wired
+// into every launched connection's session/request_permission handler
+// via NewACPPermissionHandler and reset per prompt action exactly like
+// the in-process executor. compact has no ACP wire method yet (Task 14's
+// own scope); reaching one here is recorded as infra_failed/
+// unsupported_action, exactly like the in-process executor's own default
+// branch for a genuinely unimplemented action.
 //
 // On Windows, RunACPAttempt refuses immediately (acpProcessSupported is
 // false there) — no process is ever spawned.
-func RunACPAttempt(ctx context.Context, attemptID AttemptID, subject Subject, directories AttemptRootDirectories, scenario Scenario, launch ACPLaunchConfig) (ExecutionOutcome, error) {
+func RunACPAttempt(ctx context.Context, attemptID AttemptID, subject Subject, directories AttemptRootDirectories, scenario Scenario, launch ACPLaunchConfig, matcher *ApprovalMatcher) (ExecutionOutcome, error) {
 	if !acpProcessSupported {
 		return ExecutionOutcome{}, fmt.Errorf("eval: run acp attempt: %w", errACPSubprocessUnsupportedOnWindows)
 	}
@@ -75,7 +75,8 @@ func RunACPAttempt(ctx context.Context, attemptID AttemptID, subject Subject, di
 	}
 	launch = launch.withDefaults()
 	started := time.Now().UTC()
-	runtimeID := launchRuntimeID(attemptID, 0)
+
+	state := &acpExecutionState{pending: make(map[ActionID]*acpPendingPrompt), permissionHandler: NewACPPermissionHandler(matcher)}
 
 	argv, err := NormalizedArgv(subject)
 	if err != nil {
@@ -85,7 +86,7 @@ func RunACPAttempt(ctx context.Context, attemptID AttemptID, subject Subject, di
 		"-acp",
 		"-workspace", directories.Workspace,
 		"-database", AttemptDatabasePath(directories),
-		"-runtime-id", runtimeID,
+		"-runtime-id", launchRuntimeID(attemptID, state.launchOrdinal),
 		"-audit-dir", directories.Audit,
 	}, argv...)
 
@@ -98,41 +99,46 @@ func RunACPAttempt(ctx context.Context, attemptID AttemptID, subject Subject, di
 	if err != nil {
 		return ExecutionOutcome{WriterStopped: true, Outcome: infraFailedOutcome(attemptID, started, "acp_spawn_failed", err)}, err
 	}
-
-	conn := newACPConnection(process.stdout, process.stdin, acpFailClosedPermissionHandler)
+	state.process = process
+	state.conn = newACPConnection(process.stdout, process.stdin, state.permissionHandler)
 
 	initCtx, cancel := context.WithTimeout(ctx, launch.StartupTimeout)
-	_, err = conn.initialize(initCtx)
+	_, err = state.conn.initialize(initCtx)
 	cancel()
 	if err != nil {
-		closeAndReapACP(conn, process, launch.ShutdownTimeout)
+		closeAndReapACP(state.conn, state.process, launch.ShutdownTimeout)
 		return ExecutionOutcome{}, fmt.Errorf("eval: run acp attempt: initialize: %w", err)
 	}
 
 	sessionCtx, cancel := context.WithTimeout(ctx, launch.StartupTimeout)
-	sessionID, err := conn.newSession(sessionCtx, directories.Workspace)
+	sessionID, err := state.conn.newSession(sessionCtx, directories.Workspace)
 	cancel()
 	if err != nil {
-		closeAndReapACP(conn, process, launch.ShutdownTimeout)
+		closeAndReapACP(state.conn, state.process, launch.ShutdownTimeout)
 		return ExecutionOutcome{}, fmt.Errorf("eval: run acp attempt: new session: %w", err)
+	}
+	state.sessionID = sessionID
+
+	hasCanceller := make(map[ActionID]bool)
+	for _, action := range scenario.Actions {
+		if action.Type == ActionCancel {
+			hasCanceller[action.Cancel.TargetActionID] = true
+		}
 	}
 
 	var outcome Outcome
 	terminal := false
-	turnCount := 0
 	for _, action := range scenario.Actions {
-		outcome, terminal = runACPAction(ctx, conn, sessionID, action, attemptID, started)
+		outcome, terminal = runACPAction(ctx, state, action, hasCanceller, matcher, attemptID, started, launch, subject, directories)
 		if terminal {
 			break
 		}
-		if action.Type == ActionPrompt {
-			turnCount++
-		}
 	}
+	drainACPPending(state, launch.ShutdownGrades)
 
-	stopped := closeAndReapACP(conn, process, launch.ShutdownTimeout)
 	if terminal {
-		return ExecutionOutcome{SessionID: sessionID, WriterStopped: stopped, Outcome: outcome}, nil
+		stopped := closeAndReapACP(state.conn, state.process, launch.ShutdownTimeout)
+		return ExecutionOutcome{SessionID: state.sessionID, WriterStopped: stopped, Outcome: outcome}, nil
 	}
 
 	completed := Outcome{
@@ -146,43 +152,37 @@ func RunACPAttempt(ctx context.Context, attemptID AttemptID, subject Subject, di
 		EndedAt:          time.Now().UTC(),
 		CollectionStatus: CollectionNotStarted,
 		TerminalSession: &TerminalSessionFacts{
-			SessionID: sessionID,
-			TurnCount: turnCount,
+			SessionID: state.sessionID,
+			TurnCount: state.turnCount,
 			Open:      true,
 		},
 	}
-	return ExecutionOutcome{SessionID: sessionID, WriterStopped: stopped, Outcome: completed}, nil
+	stopped := closeAndReapACP(state.conn, state.process, launch.ShutdownTimeout)
+	return ExecutionOutcome{SessionID: state.sessionID, WriterStopped: stopped, Outcome: completed}, nil
 }
 
-// runACPAction drives one action over an already-initialized ACP session
-// and reports whether it terminated the Attempt, mirroring
-// inprocess.go's runAction shape for the subset of action types this task
-// supports.
-func runACPAction(ctx context.Context, conn *acpConnection, sessionID string, action ScenarioAction, attemptID AttemptID, started time.Time) (Outcome, bool) {
+// runACPAction drives one action and reports whether it terminated the
+// Attempt, mirroring inprocess.go's runAction shape for the ACP surface.
+// A prompt action with a later canceler launches asynchronously and never
+// terminates on its own; its resolution happens when the loop reaches the
+// matching cancel action.
+func runACPAction(ctx context.Context, state *acpExecutionState, action ScenarioAction, hasCanceller map[ActionID]bool, matcher *ApprovalMatcher, attemptID AttemptID, started time.Time, launch ACPLaunchConfig, subject Subject, directories AttemptRootDirectories) (Outcome, bool) {
 	switch action.Type {
 	case ActionPrompt:
-		stopReason, err := conn.prompt(ctx, sessionID, action.Prompt.Text)
-		if err != nil {
-			// This connection has no public way yet to distinguish a
-			// well-formed session/prompt error response (a genuine Turn
-			// failure) from a connection/process-level failure. Until
-			// that distinction exists (Task 13's own scope, which also
-			// grows the escalation/evidence surface this connection
-			// would need it for), any error here is classified
-			// conservatively as infra_failed rather than guessing which
-			// it was.
-			return infraFailedOutcome(attemptID, started, "acp_prompt_failed", err), true
+		matcher.BeginPrompt(action.ID)
+		if hasCanceller[action.ID] {
+			pending, err := state.conn.promptAsync(ctx, state.sessionID, action.Prompt.Text)
+			if err != nil {
+				return infraFailedOutcome(attemptID, started, "acp_prompt_failed", err), true
+			}
+			state.pending[action.ID] = pending
+			return Outcome{}, false
 		}
-		if stopReason != acpStopReasonEndTurn {
-			return Outcome{
-				FormatVersion: FormatVersion, Schema: SchemaOutcome, AttemptID: attemptID,
-				Status: OutcomeSubjectFailed, Code: "acp_turn_not_completed",
-				Message:   boundedRedactedMessage(fmt.Sprintf("turn ended with stop reason %q", stopReason)),
-				StartedAt: started, EndedAt: time.Now().UTC(), CollectionStatus: CollectionNotStarted,
-				TerminalSession: &TerminalSessionFacts{SessionID: sessionID, Open: true},
-			}, true
-		}
-		return Outcome{}, false
+		return runACPSyncPrompt(ctx, state, action, attemptID, started)
+	case ActionCancel:
+		return runACPCancel(state, action, attemptID, started, launch.ShutdownGrades)
+	case ActionRestart:
+		return runACPActionRestart(ctx, state, action, attemptID, started, launch, subject, directories)
 	case ActionCollect:
 		// Declared workspace path or verifier fact is validated and
 		// captured by evidence collection after shutdown (design §14),
@@ -199,6 +199,81 @@ func runACPAction(ctx context.Context, conn *acpConnection, sessionID string, ac
 	}
 }
 
+func runACPSyncPrompt(ctx context.Context, state *acpExecutionState, action ScenarioAction, attemptID AttemptID, started time.Time) (Outcome, bool) {
+	stopReason, err := state.conn.prompt(ctx, state.sessionID, action.Prompt.Text)
+	if err != nil {
+		// This connection has no public way yet to distinguish a
+		// well-formed session/prompt error response (a genuine Turn
+		// failure) from a connection/process-level failure. Any error
+		// here is classified conservatively as infra_failed rather than
+		// guessing which it was.
+		return infraFailedOutcome(attemptID, started, "acp_prompt_failed", err), true
+	}
+	if stopReason != acpStopReasonEndTurn {
+		return Outcome{
+			FormatVersion: FormatVersion, Schema: SchemaOutcome, AttemptID: attemptID,
+			Status: OutcomeSubjectFailed, Code: "acp_turn_not_completed",
+			Message:   boundedRedactedMessage(fmt.Sprintf("turn ended with stop reason %q", stopReason)),
+			StartedAt: started, EndedAt: time.Now().UTC(), CollectionStatus: CollectionNotStarted,
+			TerminalSession: &TerminalSessionFacts{SessionID: state.sessionID, Open: true},
+		}, true
+	}
+	state.turnCount++
+	return Outcome{}, false
+}
+
+// runACPCancel resolves a cancel action against its already-async-launched
+// target prompt via escalateCancel. A cancellation resolved by
+// session/cancel alone is the Scenario's own declared behavior — like the
+// in-process executor, it never terminates the Attempt on its own. Any
+// stage that had to tear down the writer to resolve it does terminate the
+// Attempt: there is no live writer left for any action after this one to
+// run against.
+func runACPCancel(state *acpExecutionState, action ScenarioAction, attemptID AttemptID, started time.Time, grades ACPShutdownGrades) (Outcome, bool) {
+	target := action.Cancel.TargetActionID
+	pending, ok := state.pending[target]
+	if !ok {
+		return infraFailedOutcome(attemptID, started, "cancel_target_not_pending",
+			fmt.Errorf("no in-flight prompt %q to cancel", target)), true
+	}
+	result := escalateCancel(state.process, state.conn, state.sessionID, pending, grades)
+	delete(state.pending, target)
+	state.turnCount++
+
+	if result.processAlive {
+		return Outcome{}, false
+	}
+	if result.stage == acpCancelStageUnreaped {
+		return Outcome{
+			FormatVersion: FormatVersion, Schema: SchemaOutcome, AttemptID: attemptID,
+			Status: OutcomeIndeterminate, Code: "acp_cancel_reap_unproven",
+			Message:   "the writer's reap could not be proven after the full cancellation escalation ladder",
+			StartedAt: started, EndedAt: time.Now().UTC(), CollectionStatus: CollectionNotStarted,
+		}, true
+	}
+	return Outcome{
+		FormatVersion: FormatVersion, Schema: SchemaOutcome, AttemptID: attemptID,
+		Status: OutcomeIndeterminate, Code: "acp_cancel_escalated",
+		Message: boundedRedactedMessage(fmt.Sprintf(
+			"cancellation required escalating to %q; the writer was torn down and no further action in this Scenario could run", result.stage)),
+		StartedAt: started, EndedAt: time.Now().UTC(), CollectionStatus: CollectionNotStarted,
+		TerminalSession: &TerminalSessionFacts{SessionID: state.sessionID, Open: false},
+	}, true
+}
+
+func runACPActionRestart(ctx context.Context, state *acpExecutionState, action ScenarioAction, attemptID AttemptID, started time.Time, launch ACPLaunchConfig, subject Subject, directories AttemptRootDirectories) (Outcome, bool) {
+	// A restart while some other prompt is still pending asynchronously
+	// (a later cancel action never reached) is not a shape a validated
+	// Scenario produces — Scenario.Validate requires a cancel to name an
+	// earlier prompt, and restart carries no such reference — so this
+	// task does not special-case it beyond drainACPPending's own safety
+	// net on every exit path.
+	if err := runACPRestart(ctx, state, action.Restart.Mode, launch, launch.ShutdownGrades, subject, directories, attemptID); err != nil {
+		return infraFailedOutcome(attemptID, started, "acp_restart_failed", err), true
+	}
+	return Outcome{}, false
+}
+
 const acpStopReasonEndTurn = "end_turn"
 
 // closeAndReapACP implements design §16's normal shutdown: close stdin
@@ -213,40 +288,4 @@ func closeAndReapACP(conn *acpConnection, process *acpProcess, timeout time.Dura
 	_ = conn.close()
 	exited, _ := process.waitTimeout(timeout)
 	return exited
-}
-
-// acpFailClosedPermissionHandler is RunACPAttempt's own placeholder
-// session/request_permission handler: it denies every request by picking
-// a reject-flavored option when the offered set has one, else the last-
-// listed option (composition.Config's own "Approver unset becomes a deny
-// slot" convention, applied identically here). Task 13 replaces this with
-// the real ApprovalMatcher-driven handler that binds the current prompt
-// action/ordinal and records sessionId/toolCallId/tool name/offered
-// options/decision as bounded evidence.
-func acpFailClosedPermissionHandler(_ context.Context, params json.RawMessage) (json.RawMessage, error) {
-	var request struct {
-		Options []struct {
-			OptionID string `json:"optionId"`
-			Kind     string `json:"kind"`
-		} `json:"options"`
-	}
-	if err := json.Unmarshal(params, &request); err != nil || len(request.Options) == 0 {
-		return nil, fmt.Errorf("eval: acp fail-closed handler: malformed or empty session/request_permission params")
-	}
-	optionID := request.Options[len(request.Options)-1].OptionID
-	for _, option := range request.Options {
-		if option.Kind == "reject_once" || option.Kind == "reject" {
-			optionID = option.OptionID
-			break
-		}
-	}
-	return json.Marshal(struct {
-		Outcome struct {
-			Outcome  string `json:"outcome"`
-			OptionID string `json:"optionId"`
-		} `json:"outcome"`
-	}{Outcome: struct {
-		Outcome  string `json:"outcome"`
-		OptionID string `json:"optionId"`
-	}{Outcome: "selected", OptionID: optionID}})
 }

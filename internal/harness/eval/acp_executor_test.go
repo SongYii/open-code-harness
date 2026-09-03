@@ -81,7 +81,7 @@ func TestRunACPAttemptHappyPathAgainstRealOchBinary(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	execution, err := RunACPAttempt(ctx, attemptID, subject, directories, scenario, ACPLaunchConfig{Binary: binary})
+	execution, err := RunACPAttempt(ctx, attemptID, subject, directories, scenario, ACPLaunchConfig{Binary: binary}, NewApprovalMatcher(scenario.ApprovalScript))
 	if err != nil {
 		t.Fatalf("RunACPAttempt() error = %v", err)
 	}
@@ -176,7 +176,7 @@ func TestRunACPAttemptRejectsUnsupportedActionType(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	execution, err := RunACPAttempt(ctx, attemptID, subject, directories, scenario, ACPLaunchConfig{Binary: binary})
+	execution, err := RunACPAttempt(ctx, attemptID, subject, directories, scenario, ACPLaunchConfig{Binary: binary}, NewApprovalMatcher(scenario.ApprovalScript))
 	if err != nil {
 		t.Fatalf("RunACPAttempt() error = %v", err)
 	}

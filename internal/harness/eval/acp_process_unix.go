@@ -120,11 +120,27 @@ func (p *acpProcess) isReaped() bool {
 	}
 }
 
-// This task (design §16's normal-shutdown path only) does not implement
-// the SIGTERM/SIGKILL process-group escalation ladder — that is Task
-// 13's own explicit scope ("Implement cancellation escalation exactly").
-// Escalating beyond a graceful stdin-close exit is deliberately left
-// unimplemented here rather than approximated with exec.CommandContext's
-// parent-only termination, which design explicitly forbids as the
-// primary kill path since it never reaches a process the child itself
-// spawned.
+// acpSignalTerm and acpSignalKill are the two signals the escalation
+// ladder (acp_actions.go) ever sends, resolved to real platform signal
+// numbers here so the ladder itself — not platform-gated — never needs
+// to import syscall directly. acp_process_windows.go defines the same two
+// names as inert placeholders: killProcessGroup there always refuses
+// before either could matter.
+const (
+	acpSignalTerm      = int(syscall.SIGTERM)
+	acpSignalKill      = int(syscall.SIGKILL)
+	acpSignalInterrupt = int(syscall.SIGINT)
+)
+
+// killProcessGroup sends signal to every process in this launch's own
+// process group — startACPProcess's own Setpgid convention means -pid()
+// addresses the whole group, never just the leader, and never a
+// process this launch did not itself spawn. This is the primary kill
+// path design requires in place of exec.CommandContext's own parent-only
+// termination, which never reaches a process the child itself spawned.
+// It is idempotent in practice: signaling an already-exited group
+// returns ESRCH, which callers treat as "nothing left to signal", not a
+// failure worth surfacing.
+func (p *acpProcess) killProcessGroup(signal int) error {
+	return syscall.Kill(-p.pid(), syscall.Signal(signal))
+}

@@ -160,14 +160,40 @@ func (conn *acpConnection) answerPermissionRequest(m acpMessage) {
 // call sends one request and blocks for its response, or until ctx is
 // done.
 func (conn *acpConnection) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	ch, forget, err := conn.callAsync(method, params)
+	if err != nil {
+		return nil, err
+	}
+	select {
+	case resp := <-ch:
+		if resp.Error != nil {
+			return nil, resp.Error
+		}
+		return resp.Result, nil
+	case <-ctx.Done():
+		forget()
+		return nil, ctx.Err()
+	}
+}
+
+// callAsync reserves a request ID and writes the request frame
+// synchronously, before returning — the caller observes the write
+// complete (or fail) before doing anything else, so a second call issued
+// immediately afterward (a cancel notification racing a just-started
+// prompt, for instance) has a deterministic wire order relative to this
+// one. It returns a channel that receives the eventual response exactly
+// once, and a forget function the caller must invoke if it stops waiting
+// without draining that channel (a context timeout, e.g.), so the waiter
+// entry does not leak.
+func (conn *acpConnection) callAsync(method string, params any) (<-chan acpMessage, func(), error) {
 	payload, err := json.Marshal(params)
 	if err != nil {
-		return nil, fmt.Errorf("eval: acp: encode %s params: %w", method, err)
+		return nil, nil, fmt.Errorf("eval: acp: encode %s params: %w", method, err)
 	}
 	conn.mu.Lock()
 	if conn.waiters == nil {
 		conn.mu.Unlock()
-		return nil, errACPConnectionClosed
+		return nil, nil, errACPConnectionClosed
 	}
 	conn.nextID++
 	id := json.RawMessage(strconv.Itoa(conn.nextID))
@@ -177,19 +203,19 @@ func (conn *acpConnection) call(ctx context.Context, method string, params any) 
 
 	if err := conn.writeMessage(acpMessage{JSONRPC: "2.0", ID: id, Method: method, Params: payload}); err != nil {
 		conn.forgetWaiter(string(id))
-		return nil, err
+		return nil, nil, err
 	}
+	return ch, func() { conn.forgetWaiter(string(id)) }, nil
+}
 
-	select {
-	case resp := <-ch:
-		if resp.Error != nil {
-			return nil, resp.Error
-		}
-		return resp.Result, nil
-	case <-ctx.Done():
-		conn.forgetWaiter(string(id))
-		return nil, ctx.Err()
+// notify sends an outbound JSON-RPC notification (no id, no response to
+// wait for) — session/cancel's own wire shape (design §7/§16).
+func (conn *acpConnection) notify(method string, params any) error {
+	payload, err := json.Marshal(params)
+	if err != nil {
+		return fmt.Errorf("eval: acp: encode %s params: %w", method, err)
 	}
+	return conn.writeMessage(acpMessage{JSONRPC: "2.0", Method: method, Params: payload})
 }
 
 func (conn *acpConnection) forgetWaiter(id string) {
@@ -292,6 +318,33 @@ func (conn *acpConnection) newSession(ctx context.Context, cwd string) (string, 
 	return result.SessionID, nil
 }
 
+type acpSessionLoadParams struct {
+	SessionID string `json:"sessionId"`
+	Cwd       string `json:"cwd"`
+}
+
+// loadSession resumes an existing session at cwd — design §16's restart
+// modes load the same session on a successor Assembly only after the
+// prior writer's reap is proven.
+func (conn *acpConnection) loadSession(ctx context.Context, sessionID, cwd string) error {
+	if _, err := conn.call(ctx, "session/load", acpSessionLoadParams{SessionID: sessionID, Cwd: cwd}); err != nil {
+		return fmt.Errorf("eval: acp: session/load: %w", err)
+	}
+	return nil
+}
+
+type acpSessionCancelParams struct {
+	SessionID string `json:"sessionId"`
+}
+
+// cancel sends session/cancel as a fire-and-forget notification, matching
+// this project's own agent-side cancellation semantics: the in-flight
+// prompt call observes the resulting "cancelled" stop reason on its own
+// pending response, not a separate signal from cancel.
+func (conn *acpConnection) cancel(sessionID string) error {
+	return conn.notify("session/cancel", acpSessionCancelParams{SessionID: sessionID})
+}
+
 type acpPromptParams struct {
 	SessionID string           `json:"sessionId"`
 	Prompt    []acpPromptBlock `json:"prompt"`
@@ -321,4 +374,95 @@ func (conn *acpConnection) prompt(ctx context.Context, sessionID, text string) (
 		return "", fmt.Errorf("eval: acp: session/prompt: decode result: %w", err)
 	}
 	return result.StopReason, nil
+}
+
+// acpPromptOutcome is one prompt call's resolved (stopReason, err) pair,
+// delivered over acpPendingPrompt.done — the ACP analogue of inprocess.go's
+// promptResult, used the same way: a prompt action a later cancel action
+// targets runs in its own goroutine so the main action loop can reach that
+// cancel action without waiting for this call to return first.
+type acpPromptOutcome struct {
+	stopReason string
+	err        error
+}
+
+type acpPendingPrompt struct {
+	done chan acpPromptOutcome
+}
+
+// promptAsync sends one session/prompt request — synchronously, so it has
+// completed the actual write to the child before this function returns —
+// and hands back a handle to its eventual result, waited for in a separate
+// goroutine. Writing synchronously matters: a cancel action immediately
+// following the prompt action that started this call (escalateCancel's own
+// first rung) must never race this request's own frame onto the wire.
+// Never call prompt and promptAsync concurrently against the same
+// sessionID; ACP (like the in-process executor) allows only one Turn in
+// flight per session.
+func (conn *acpConnection) promptAsync(ctx context.Context, sessionID, text string) (*acpPendingPrompt, error) {
+	ch, forget, err := conn.callAsync("session/prompt", acpPromptParams{
+		SessionID: sessionID,
+		Prompt:    []acpPromptBlock{{Type: "text", Text: text}},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("eval: acp: session/prompt: %w", err)
+	}
+	pending := &acpPendingPrompt{done: make(chan acpPromptOutcome, 1)}
+	go func() {
+		select {
+		case resp := <-ch:
+			if resp.Error != nil {
+				pending.done <- acpPromptOutcome{err: fmt.Errorf("eval: acp: session/prompt: %w", resp.Error)}
+				return
+			}
+			var result acpPromptResult
+			if err := json.Unmarshal(resp.Result, &result); err != nil {
+				pending.done <- acpPromptOutcome{err: fmt.Errorf("eval: acp: session/prompt: decode result: %w", err)}
+				return
+			}
+			pending.done <- acpPromptOutcome{stopReason: result.StopReason}
+		case <-ctx.Done():
+			forget()
+			pending.done <- acpPromptOutcome{err: ctx.Err()}
+		}
+	}()
+	return pending, nil
+}
+
+// acpPermissionRequestParams is this project's own agent's real
+// session/request_permission wire shape
+// (internal/harness/adapters/acp/protocol.go's permissionParams, read
+// directly), not the full ACP specification's shape in the abstract —
+// the exact same convention internal/client/acp/permission.go documents
+// for its own independent copy of this shape.
+type acpPermissionRequestParams struct {
+	SessionID string                `json:"sessionId"`
+	ToolCall  acpPermissionToolCall `json:"toolCall"`
+	Options   []acpPermissionOption `json:"options"`
+}
+
+// acpPermissionToolCall's Title field carries the tool name itself (e.g.
+// "write_file"), not a human-readable title — internal/harness/adapters/acp/
+// server.go's own fitPermission call sets Title: req.Name directly, verified
+// by reading that source rather than assumed.
+type acpPermissionToolCall struct {
+	ToolCallID string `json:"toolCallId"`
+	Title      string `json:"title"`
+	Kind       string `json:"kind"`
+	Status     string `json:"status"`
+}
+
+type acpPermissionOption struct {
+	OptionID string `json:"optionId"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind"`
+}
+
+type acpPermissionResult struct {
+	Outcome acpPermissionOutcome `json:"outcome"`
+}
+
+type acpPermissionOutcome struct {
+	Outcome  string `json:"outcome"`
+	OptionID string `json:"optionId,omitempty"`
 }

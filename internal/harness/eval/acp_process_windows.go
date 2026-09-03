@@ -36,3 +36,14 @@ func (p *acpProcess) waitTimeout(time.Duration) (bool, error) {
 	return false, errACPSubprocessUnsupportedOnWindows
 }
 func (p *acpProcess) isReaped() bool { return true }
+
+// acpSignalTerm/acpSignalKill mirror acp_process_unix.go's own two names
+// as inert placeholders — killProcessGroup here always refuses before
+// either value could matter.
+const (
+	acpSignalTerm      = 15
+	acpSignalKill      = 9
+	acpSignalInterrupt = 2
+)
+
+func (p *acpProcess) killProcessGroup(signal int) error { return errACPSubprocessUnsupportedOnWindows }

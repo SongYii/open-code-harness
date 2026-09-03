@@ -2,6 +2,7 @@ package eval
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -157,4 +158,64 @@ func NewApprover(matcher *ApprovalMatcher) tools.Approver {
 func (adapter approverAdapter) Decide(_ context.Context, request tools.ApprovalRequest) (tools.ApprovalAnswer, error) {
 	decision := adapter.matcher.Decide(request.Name, request.CallID)
 	return tools.ApprovalAnswer{Granted: decision.Answer == ApprovalAllow}, nil
+}
+
+// NewACPPermissionHandler adapts matcher into a session/request_permission
+// handler for the ACP subprocess executor (design §7/§16, implementation
+// plan Task 13): the same coordinate-based, fail-closed matching the
+// in-process executor's NewApprover compiles from, applied to the ACP
+// wire's own shape (acpPermissionRequestParams — this project's own real
+// agent's wire shape, verified directly against
+// internal/harness/adapters/acp/protocol.go, not the ACP specification in
+// the abstract). permissionToolCall.Title carries the tool name itself,
+// not a human-readable title (verified against
+// internal/harness/adapters/acp/server.go's own fitPermission call), so
+// it is what gets passed as Decide's toolName argument; ToolCallID is
+// retained as evidence only, exactly like the in-process path's CallID.
+//
+// A malformed request, or one whose offered options are not this
+// project's own known {allow-once, reject-once} two-option shape, is
+// refused outright (an error, not a best-effort guess) — this handler
+// only ever talks to this repository's own og och -acp agent, never an
+// arbitrary ACP peer.
+func NewACPPermissionHandler(matcher *ApprovalMatcher) func(context.Context, json.RawMessage) (json.RawMessage, error) {
+	return func(_ context.Context, params json.RawMessage) (json.RawMessage, error) {
+		var request acpPermissionRequestParams
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, fmt.Errorf("eval: acp permission handler: malformed session/request_permission params: %w", err)
+		}
+		allowID, rejectID, ok := acpKnownTwoOptionShape(request.Options)
+		if !ok {
+			return nil, fmt.Errorf("eval: acp permission handler: unrecognized options shape")
+		}
+		decision := matcher.Decide(request.ToolCall.Title, request.ToolCall.ToolCallID)
+		optionID := rejectID
+		if decision.Answer == ApprovalAllow {
+			optionID = allowID
+		}
+		return json.Marshal(acpPermissionResult{Outcome: acpPermissionOutcome{Outcome: "selected", OptionID: optionID}})
+	}
+}
+
+// acpKnownTwoOptionShape mirrors internal/client/acp/permission.go's own
+// knownTwoOptionShape helper — this project's own agent's real, verified
+// shape (design's independent-copy convention applied identically here):
+// exactly two options, "allow-once" and "reject-once", in either order.
+func acpKnownTwoOptionShape(options []acpPermissionOption) (allowID, rejectID string, ok bool) {
+	if len(options) != 2 {
+		return "", "", false
+	}
+	var allow, reject string
+	for _, option := range options {
+		switch option.OptionID {
+		case "allow-once":
+			allow = option.OptionID
+		case "reject-once":
+			reject = option.OptionID
+		}
+	}
+	if allow == "" || reject == "" {
+		return "", "", false
+	}
+	return allow, reject, true
 }
