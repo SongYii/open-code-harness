@@ -153,27 +153,17 @@ func maxExitCode(a, b int) int {
 	return a
 }
 
-// checkLaneConsent implements design's live dual-consent gate: -live must
-// be passed if and only if the EvalSet's own declared lane is live, and a
-// live lane additionally requires an explicit environment confirmation
-// before any credential is ever read.
+// checkLaneConsent implements design's live dual-consent gate by
+// delegating to eval.RequireLiveConsent, this repository's own single
+// source of truth for it (Task 17): -live must be passed if and only if
+// the EvalSet's own declared lane is live, and a live lane additionally
+// requires OCH_EVAL_LIVE_CONFIRM=I_UNDERSTAND in the environment before
+// any credential is ever read. This function's own job is only to read
+// that one environment variable — RequireLiveConsent itself never reads
+// the environment, so it never has the opportunity to read a credential
+// either.
 func checkLaneConsent(set eval.EvalSet, live bool) error {
-	switch set.Lane {
-	case eval.LaneFixture:
-		if live {
-			return fmt.Errorf("-live was passed but this EvalSet's lane is %q", set.Lane)
-		}
-	case eval.LaneLive:
-		if !live {
-			return fmt.Errorf("this EvalSet's lane is %q: pass -live to confirm", set.Lane)
-		}
-		if os.Getenv("OCH_EVAL_LIVE_CONFIRM") != "I_UNDERSTAND" {
-			return fmt.Errorf("live lane requires OCH_EVAL_LIVE_CONFIRM=I_UNDERSTAND before any credential is read")
-		}
-	default:
-		return fmt.Errorf("unknown lane %q", set.Lane)
-	}
-	return nil
+	return eval.RequireLiveConsent(set.Lane, live, os.Getenv("OCH_EVAL_LIVE_CONFIRM"))
 }
 
 // checkACPExecutorsHaveABinary refuses an EvalSet that references an

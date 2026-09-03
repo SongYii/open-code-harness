@@ -1,0 +1,31 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.subject",
+  "id": "context-quality-live-example",
+  "repositoryRevision": "dev",
+  "repositoryDirty": false,
+  "provider": {
+    "adapterKind": "openaicompat",
+    "normalizedEndpoint": "https://api.example-provider.invalid/v1",
+    "modelId": "replace-with-a-real-model-id",
+    "contextWindow": 128000,
+    "maxOutput": 4096,
+    "credentialEnvVar": "OCH_EVAL_LIVE_PROVIDER_API_KEY",
+    "lane": "live"
+  },
+  "context": {
+    "triggerPercent": 90,
+    "targetPercent": 50,
+    "tailPercent": 10,
+    "maxSummaryChunks": 8,
+    "maxOverflowCompactionsPerTurn": 2,
+    "maxPrunedToolResultsPerRequest": 64,
+    "compactionTimeout": 120000000000
+  },
+  "policy": {
+    "mode": "default",
+    "toolCatalogIdentity": "catalog-v1",
+    "limits": {},
+    "sandboxPolicy": "unsandboxed_allowed"
+  }
+}
