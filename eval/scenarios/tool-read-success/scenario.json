@@ -1,0 +1,29 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.scenario",
+  "id": "tool-read-success",
+  "description": "A read_file call against a file the fixture actually provides, auto-allowed under the default policy's own read rule (no approval prompt at all). Passing requires canonical audit evidence that the read_file call both started and completed.",
+  "fixtureDigest": "sha256:23f72567f268863e21e0582fbae06f2f6bffbaa7756b78e4e41fa0666c1e7112",
+  "fixtureCopyPolicy": {
+    "maxFiles": 10,
+    "maxFileBytes": 1048576,
+    "maxTotalBytes": 1048576
+  },
+  "actions": [
+    {
+      "id": "prompt-1",
+      "type": "prompt",
+      "prompt": {
+        "text": "please read the workspace file TRIGGER_READ_FILE"
+      }
+    }
+  ],
+  "requiredCapabilities": ["prompt"],
+  "requiredEvidenceRoles": ["transcript", "audit"],
+  "deterministicVerifierIds": [
+    "read-file-completed-v1",
+    "outcome-not-infra-failed-v1"
+  ],
+  "limits": {},
+  "pairingTags": ["tool-workspace"]
+}

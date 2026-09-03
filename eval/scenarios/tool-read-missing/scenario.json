@@ -1,0 +1,29 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.scenario",
+  "id": "tool-read-missing",
+  "description": "A read_file call for a workspace-relative path the fixture never provides -- auto-allowed by policy (read is never approval-gated), but the read itself fails at execution. Passing requires canonical audit evidence of the specific, expected tool failure this produces, not merely any failure.",
+  "fixtureDigest": "sha256:f5043b2c09fb8ecfc394548860794027a0f22602668cee36597f41b9f349cefd",
+  "fixtureCopyPolicy": {
+    "maxFiles": 10,
+    "maxFileBytes": 1048576,
+    "maxTotalBytes": 1048576
+  },
+  "actions": [
+    {
+      "id": "prompt-1",
+      "type": "prompt",
+      "prompt": {
+        "text": "please read the workspace file TRIGGER_READ_MISSING"
+      }
+    }
+  ],
+  "requiredCapabilities": ["prompt"],
+  "requiredEvidenceRoles": ["transcript", "audit"],
+  "deterministicVerifierIds": [
+    "expected-tool-failure-observed-v1",
+    "outcome-not-infra-failed-v1"
+  ],
+  "limits": {},
+  "pairingTags": ["tool-workspace"]
+}

@@ -1,0 +1,42 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.set",
+  "id": "deterministic-full",
+  "scenarios": [
+    {
+      "id": "tool-read-success",
+      "digest": "sha256:38de2e93af4be3a6db85a6d93364d7a317bbc1d7d86c6e0ae4b1f34e487af7a4"
+    },
+    {
+      "id": "tool-exec-redaction",
+      "digest": "sha256:fc3719630bf18ffbe5a7d2146d57cde93fa943595f9af4aa9ae3605f52b43bf9"
+    },
+    {
+      "id": "tool-read-missing",
+      "digest": "sha256:97acd13b28919f49924a3bc1950cc9ee94e0acfbe68fe7770b06e505dad7fcb3"
+    },
+    {
+      "id": "tool-containment",
+      "digest": "sha256:be9eefacfd8ea92921b05004229b65ecd0e6d3981b11575376b2f29a7723baa9"
+    }
+  ],
+  "subjects": [
+    {
+      "id": "smoke-subject",
+      "digest": "sha256:fbe35a86020828006e75f8f688286080fc1aeb6731ce42820b817ec2cb3dd1fb"
+    }
+  ],
+  "executors": [
+    {
+      "id": "smoke-executor",
+      "digest": "sha256:3c34297540f47a11ae091da1f5b229391db0daeabc1dc0f797bfd0db9046e5aa"
+    }
+  ],
+  "repetitionCount": 1,
+  "pairingSeed": "deterministic-full-v1",
+  "limits": {
+    "tokenCap": 100000
+  },
+  "artifactRoot": ".eval-artifacts-deterministic-full",
+  "lane": "fixture"
+}

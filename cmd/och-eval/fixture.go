@@ -40,15 +40,31 @@ var fixtureScripts = map[string]http.HandlerFunc{
 // to a plain assistant answer.
 const toolApprovalTriggerMarker = "TRIGGER_WRITE_FILE_APPROVAL"
 
+// Task 16's own tool/workspace suite markers. Each names exactly one
+// checked-in Scenario's own prompt text and selects exactly one further
+// real behavior below -- never chained with another marker in the same
+// conversation: a later request in a multi-turn Scenario still carries
+// every earlier message (and so every earlier marker) in its own body,
+// so any Scenario using more than one of these would need ordering logic
+// this dispatcher does not have. Every Scenario that uses one of these
+// markers uses exactly one, matching toolApprovalTriggerMarker's own
+// established convention.
+const (
+	readFileTriggerMarker    = "TRIGGER_READ_FILE"
+	execRedactionMarker      = "TRIGGER_EXEC_REDACTION"
+	readMissingTriggerMarker = "TRIGGER_READ_MISSING"
+	readOutsideTriggerMarker = "TRIGGER_READ_OUTSIDE"
+)
+
 // smartFixtureScript answers every checked-in smoke Scenario's request
 // from one real, deterministic loopback server: a plain-text answer by
 // default (smoke-prompt, and the plain prompt action every context-
 // compaction Scenario also issues before its own compact action, which
-// never reaches the network at all), a write_file tool call the first
-// time a request's latest user message carries
-// toolApprovalTriggerMarker, and a plain acknowledgement once the
-// request's own message history already carries that tool's result (the
-// follow-up call after approval was decided, whichever way).
+// never reaches the network at all), one specific tool call the first
+// time a request's latest user message carries that tool's own trigger
+// marker, and a plain acknowledgement once the request's own message
+// history already carries that tool's result (the follow-up call after
+// the tool resolved, whichever way).
 func smartFixtureScript(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	_ = r.Body.Close()
@@ -61,11 +77,15 @@ func smartFixtureScript(w http.ResponseWriter, r *http.Request) {
 		writeSSELine(w, `{"choices":[{"delta":{},"finish_reason":"stop"}]}`)
 		writeSSELine(w, "[DONE]")
 	case bytes.Contains(body, []byte(toolApprovalTriggerMarker)):
-		writeSSELine(w, fmt.Sprintf(
-			`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_write","function":{"name":"write_file","arguments":%s}}]},"finish_reason":null}]}`,
-			jsonQuote(`{"path":"denied.txt","content":"should not be written"}`)))
-		writeSSELine(w, `{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`)
-		writeSSELine(w, "[DONE]")
+		writeToolCallSSE(w, "call_write", "write_file", `{"path":"denied.txt","content":"should not be written"}`)
+	case bytes.Contains(body, []byte(readFileTriggerMarker)):
+		writeToolCallSSE(w, "call_read", "read_file", `{"path":"input.txt"}`)
+	case bytes.Contains(body, []byte(execRedactionMarker)):
+		writeToolCallSSE(w, "call_exec", "exec", `{"argv":["echo","API_KEY=sk-test-should-not-appear-in-evidence"]}`)
+	case bytes.Contains(body, []byte(readMissingTriggerMarker)):
+		writeToolCallSSE(w, "call_missing", "read_file", `{"path":"does-not-exist.txt"}`)
+	case bytes.Contains(body, []byte(readOutsideTriggerMarker)):
+		writeToolCallSSE(w, "call_outside", "read_file", `{"path":"../outside.txt"}`)
 	default:
 		writeSSELine(w, `{"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}`)
 		writeSSELine(w, `{"choices":[{"delta":{},"finish_reason":"stop"}]}`)
@@ -74,6 +94,17 @@ func smartFixtureScript(w http.ResponseWriter, r *http.Request) {
 	if flusher != nil {
 		flusher.Flush()
 	}
+}
+
+// writeToolCallSSE writes the two-frame tool_calls response shape every
+// triggered branch above shares: one delta naming the tool call, one
+// delta carrying finish_reason "tool_calls".
+func writeToolCallSSE(w http.ResponseWriter, callID, toolName, argumentsJSON string) {
+	writeSSELine(w, fmt.Sprintf(
+		`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":%s,"function":{"name":%s,"arguments":%s}}]},"finish_reason":null}]}`,
+		jsonQuote(callID), jsonQuote(toolName), jsonQuote(argumentsJSON)))
+	writeSSELine(w, `{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`)
+	writeSSELine(w, "[DONE]")
 }
 
 func requestCarriesToolResult(body []byte) bool {
