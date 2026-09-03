@@ -184,7 +184,7 @@ git commit -m "fix(eval): make judge evidence selection deterministic"
 
 **Interfaces:** Adds `ModelRequestPurposeQualityJudge`; produces `EvaluateJudgeAttempt(ctx context.Context, directories AttemptRootDirectories, suppliedConfig JudgeConfig, consent LiveConsent, caller JudgeCaller, priceTable *PriceTable) (JudgeAttemptResult, error)`.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```go
 func TestEvaluateJudgeAttemptStopsBeforeCallerOnPrerequisiteFailure(t *testing.T) {
@@ -200,11 +200,11 @@ func TestEvaluateJudgeAttemptChecksConsentBeforeCaller(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `go test ./internal/harness/eval ./internal/harness/adapters/openaicompat -run 'EvaluateJudgeAttempt|QualityJudgePurpose' -count=1`
 
-- [ ] **Step 3: Implement orchestration**
+- [x] **Step 3: Implement orchestration**
 
 ```go
 type LiveConsent struct { Flag bool; Environment string }
@@ -213,11 +213,11 @@ type JudgeAttemptResult struct { Score Score; PrerequisiteVerdict ScoreVerdict }
 
 Validate frozen documents/config/consent, run every Scenario verifier, skip caller on non-Pass, otherwise invoke RunJudge. Build a LaneLive Score with config/manifest/outcome digests and explicit cost status, then append through PublishScore.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run: `go test ./internal/harness/eval/... ./internal/harness/adapters/openaicompat/... -run 'JudgeAttempt|Judge|QualityJudgePurpose' -count=1`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/harness/eval/judge_attempt.go internal/harness/eval/judge_attempt_test.go internal/harness/engine/model.go internal/harness/adapters/openaicompat/purpose_test.go

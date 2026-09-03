@@ -118,3 +118,41 @@ func TestStreamRejectsMaxOutputTokensExceedingRouteMaximum(t *testing.T) {
 	_, err := model.Stream(context.Background(), request)
 	requireProviderFailure(t, err, engine.CodeModelStartup, "provider_permanent")
 }
+
+// TestStreamQualityJudgePurposeIsAttributionOnly holds the evaluation
+// quality judge to the same rule as every other purpose: it changes the
+// attribution header and nothing a model reads. A judge request must not
+// be able to acquire request-shape capabilities a conversation request
+// does not have.
+func TestStreamQualityJudgePurposeIsAttributionOnly(t *testing.T) {
+	capture := func(purpose engine.ModelRequestPurpose) (*http.Request, map[string]any) {
+		var seen *http.Request
+		transport := &scriptedTransport{roundTrip: func(req *http.Request) (*http.Response, error) {
+			seen = req
+			return sseResponse(http.StatusOK, loadSSE(t, "success.sse"), nil), nil
+		}}
+		model := newTestModel(t, validConfig(transport))
+		request := modelRequest()
+		request.Purpose = purpose
+		stream, err := model.Stream(context.Background(), request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = stream.Close() })
+		return seen, decodeRequestBody(t, seen)
+	}
+
+	conversationReq, conversationBody := capture(engine.ModelRequestPurposeConversation)
+	judgeReq, judgeBody := capture(engine.ModelRequestPurposeQualityJudge)
+
+	if got := judgeReq.Header.Get("X-Och-Request-Purpose"); got != string(engine.ModelRequestPurposeQualityJudge) {
+		t.Fatalf("quality judge header = %q, want %q", got, engine.ModelRequestPurposeQualityJudge)
+	}
+	if conversationReq.Header.Get("X-Och-Request-Purpose") != string(engine.ModelRequestPurposeConversation) {
+		t.Fatalf("conversation header = %q, want %q",
+			conversationReq.Header.Get("X-Och-Request-Purpose"), engine.ModelRequestPurposeConversation)
+	}
+	if !reflect.DeepEqual(conversationBody, judgeBody) {
+		t.Fatalf("bodies differ: conversation=%#v quality_judge=%#v", conversationBody, judgeBody)
+	}
+}

@@ -69,20 +69,41 @@ func testEvalSetFor(t testing.TB, lane EvalLane, scenario Scenario, subject Subj
 func collectedLiveJudgeAttempt(t *testing.T) (AttemptRootDirectories, EvidenceDocuments) {
 	t.Helper()
 	config := validJudgeConfig()
-	return collectedIdentityAttempt(t, LaneLive, liveTestSubject(), &config)
+	return collectedIdentityAttempt(t, LaneLive, liveTestSubject(), &config, identityAttemptOptions{})
 }
 
 func collectedFixtureJudgeAttempt(t *testing.T) (AttemptRootDirectories, EvidenceDocuments) {
 	t.Helper()
-	return collectedIdentityAttempt(t, LaneFixture, validSubject(), nil)
+	return collectedIdentityAttempt(t, LaneFixture, validSubject(), nil, identityAttemptOptions{})
 }
 
-func collectedIdentityAttempt(t *testing.T, lane EvalLane, subject Subject, config *JudgeConfig) (AttemptRootDirectories, EvidenceDocuments) {
+// identityAttemptOptions lets a caller steer what the deterministic
+// verifiers will conclude about the resulting Attempt, without any of
+// these tests having to execute a Subject.
+type identityAttemptOptions struct {
+	// VerifierIDs the Scenario declares. Empty means validScenario's own.
+	VerifierIDs []string
+	// RequiredEvidenceRoles the Scenario declares. Empty means "scenario",
+	// which staging always collects, so manifest-complete-v1 passes.
+	RequiredEvidenceRoles []string
+	// OutcomeStatus overrides the published Outcome's status, which is how
+	// outcome-not-infra-failed-v1 is driven to Fail.
+	OutcomeStatus OutcomeStatus
+}
+
+func collectedIdentityAttempt(t *testing.T, lane EvalLane, subject Subject, config *JudgeConfig, options identityAttemptOptions) (AttemptRootDirectories, EvidenceDocuments) {
 	t.Helper()
 	attemptID := testAttemptID(t)
 	directories := testDirectories(t, attemptID)
 
 	scenario := validScenario()
+	if len(options.VerifierIDs) > 0 {
+		scenario.DeterministicVerifierIDs = options.VerifierIDs
+	}
+	if len(options.RequiredEvidenceRoles) > 0 {
+		scenario.RequiredEvidenceRoles = options.RequiredEvidenceRoles
+		scenario.OptionalEvidenceRoles = nil
+	}
 	executor := validExecutorInProcess()
 	set := testEvalSetFor(t, lane, scenario, subject, executor, config)
 
@@ -103,6 +124,9 @@ func collectedIdentityAttempt(t *testing.T, lane EvalLane, subject Subject, conf
 		Attempt: attempt, EvalSet: set, JudgeConfig: config,
 	}
 	outcome := validOutcome(t, attemptID)
+	if options.OutcomeStatus != "" {
+		outcome.Status = options.OutcomeStatus
+	}
 	if _, _, err := CollectEvidence(context.Background(), directories,
 		ExecutionOutcome{WriterStopped: true, Outcome: outcome}, outcome, documents, CollectionLimits{}); err != nil {
 		t.Fatalf("CollectEvidence: %v", err)
