@@ -10,7 +10,7 @@
 
 **Chinese reading copy:** [已实现评估系统合同](evaluation.zh-CN.md)
 
-**Packages:** `internal/harness/eval` (pure evaluation domain — models, digests, runners, verifiers, judge, parity), `cmd/och-eval` (CLI: `run`, `regrade`, `report`), `internal/harness/composition`/`internal/harness/adapters/sqlite` (the canonical audit snapshot/verify operation eval reads evidence from)
+**Packages:** `internal/harness/eval` (pure evaluation domain — models, digests, runners, verifiers, judge, parity), `cmd/och-eval` (CLI: `run`, `regrade`, `report`, `judge`), `internal/harness/composition`/`internal/harness/adapters/sqlite` (the canonical audit snapshot/verify operation eval reads evidence from)
 
 This document records behavior enforced by the current code and tests. It is
 an internal Go contract, not a stable public protocol, and not yet a GA
@@ -295,10 +295,46 @@ redacted evidence bundle from only the manifest roles a `JudgeConfig`'s own
 `Criteria` declare, sends it to an injectable `JudgeCaller` (so a live model
 call and a test double implement the exact same function type — `RunJudge`
 itself never opens a network connection), and strictly decodes the response.
-The frozen judge configuration is validated before any caller runs: the model
-identity and exact embedded prompt digest are mandatory, criterion IDs and
-evidence roles are non-empty and unique, and the trusted criterion contract is
-included alongside the evidence bundle. Every one of design §21's own
+
+`JudgeConfig` is a document, not an in-memory value: schema
+`och.eval.judge-config`, validated and digested exactly like
+Scenario/Subject/Executor. That is what makes a live Score's judge identity
+provable offline. A live `EvalSet` must name a `judgeConfigDigest` and a
+fixture set must not; every new Attempt stages its frozen `EvalSet` as
+`eval-set.json` (role `eval_set`) and a live Attempt additionally stages
+`judge-config.json` (role `judge_config`), so the manifest hashes both and
+any later reader can reconstruct which configuration a verdict came from
+without trusting the caller that produced it. `readJudgeEvidenceDocuments`
+re-verifies that binding on read rather than only on write — a reader
+opening an Attempt months later has no expansion step to rely on. An
+Attempt collected before those roles existed still regrades
+deterministically and can never be live-judged, which is the honest
+outcome: nothing in its evidence could prove its entitlement.
+
+Evidence selection is a pure function of the manifest and the config. The
+declared roles live in a set, and Go randomizes map iteration, so the
+candidate list is sorted in full *before* any byte budget applies —
+otherwise judging one Attempt twice could show the judge different evidence
+and accept different `evidenceReferences` each time. Omission is
+fail-closed, not a smaller question: a declared role the manifest never
+collected, or an entry the total budget cannot carry, stops the run before
+the caller and is reported in `missingEvidence`, because a model asked
+about material it was never shown can answer "pass" indistinguishably from
+one that really read it. Per-entry truncation stays permitted — the
+contract supplies bounded excerpts — and each entry label records original
+bytes, excerpt bytes, and whether it was truncated.
+
+The frozen judge configuration is validated before any caller runs: the
+adapter kind, endpoint shape, credential *variable name*, context/output
+limits, usage reporting, model identity, and the exact embedded prompt
+digest are all mandatory; criterion IDs and evidence roles are non-empty
+and unique; each criterion carries a bounded rubric; and the trusted
+criterion contract is rendered from the config outside the untrusted
+evidence block. The document admits both `http` and `https` endpoints;
+requiring HTTPS is the production CLI's own stricter rule, applied where
+the real network caller is constructed, which is what lets a test drive the
+same frozen document against a loopback server with no production path ever
+accepting a plaintext endpoint. Every one of design §21's own
 fail-closed cases — unknown fields, malformed or trailing output, a nonexistent
 evidence reference, missing evidence, an unresolved contradiction, an
 undeclared/omitted/duplicate criterion, an aggregate verdict inconsistent with
@@ -312,12 +348,27 @@ prompt-injection attempt in an automated test, so what is tested is the
 mechanism: that labeling is genuinely present around real transcript
 content, not merely aspirational prompt text.
 
+`EvaluateJudgeAttempt` (`internal/harness/eval/judge_attempt.go`) is the
+orchestration `och-eval judge` drives, and the order of its gates is the
+contract: frozen evidence and the supplied config's digest first, then
+design §24's dual consent, then every deterministic verifier the Scenario
+declares. Because the `JudgeCaller` is what holds any credential, a run
+that is not entitled to happen can reach neither a provider nor a
+credential. A non-Pass deterministic prerequisite publishes an
+Indeterminate Score without calling the model; `JudgeAttemptResult`
+reports that prerequisite verdict separately so an operator can tell "the
+invariants did not hold" apart from "the judge could not answer", which
+read identically on the Score itself.
+
 A judge Score publishes through the exact same `PublishScore` path a
 deterministic regrade uses, with `Lane: LaneLive` — there is no separate
-document type. `internal/harness/eval/price.go`'s `PriceTable` computes cost
-in integer microunits, independent of `Score.ScorerUsage`'s own cost field
-(the judge's own usage, never folded into a Subject's); an unpriced model
-returns `ok=false`, never a zero cost.
+document type — and takes its scorer identity from the frozen JudgeConfig
+rather than from anything chosen at invocation time.
+`internal/harness/eval/price.go`'s `PriceTable` computes cost in integer
+microunits, and `ScorerUsage.costStatus` makes availability explicit:
+`computed` carries a currency (a free model is a genuine computed zero),
+`unavailable` carries neither a currency nor a cost. Scores published
+before that field existed remain readable.
 
 ## Parity
 
@@ -388,10 +439,12 @@ and this repository never uploads evidence anywhere automatically.
 ## Maturity and GA blockers
 
 Evaluation is **implemented, not GA**. Explicitly outstanding before a GA
-claim: real-model sample size for live judging, judge meta-evaluation
-against a broader fixture set than this milestone's own five-case suite
-(injection, missing-evidence, contradiction, unsupported-claim,
-known-pass/fail), provider breadth beyond the one OpenAI-compatible adapter
-this repository ships, and an accepted variance policy for live/quality
-signals. MCP is a future suite this runner can host, never a runner
+claim: real-model sample size for live judging — `och-eval judge` is wired
+end to end and proven against a fixture SSE stream through the real
+adapter, but no run against an actual live model has ever happened in this
+repository — judge meta-evaluation against a broader fixture set than this
+milestone's own five-case suite (injection, missing-evidence,
+contradiction, unsupported-claim, known-pass/fail), provider breadth beyond
+the one OpenAI-compatible adapter this repository ships, and an accepted
+variance policy for live/quality signals. MCP is a future suite this runner can host, never a runner
 prerequisite — its absence does not block anything documented here.

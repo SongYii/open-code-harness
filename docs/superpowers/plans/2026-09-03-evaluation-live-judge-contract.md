@@ -278,7 +278,7 @@ git commit -m "feat(eval): wire consent-gated live judge CLI"
 
 **Interfaces:** Pins the canonical JudgeConfig and Scenario digests; removes only the Task 17 CLI deferral while retaining real-model/provider/variance blockers.
 
-- [ ] **Step 1: Add examples and a failing docs/digest guard**
+- [x] **Step 1: Add examples and a failing docs/digest guard**
 
 ```go
 func TestLiveJudgeExampleDigestsAndGuide(t *testing.T) {
@@ -294,15 +294,15 @@ func TestLiveJudgeExampleDigestsAndGuide(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `go test ./internal/docsguard ./cmd/och-eval -run 'LiveJudgeExample|Documentation|Digest' -count=1`
 
-- [ ] **Step 3: Compute canonical digests and update all docs**
+- [x] **Step 3: Compute canonical digests and update all docs**
 
 Use temporary Go tests calling `JudgeConfigDigest` and `ScenarioDigest`, copy their output into references, then delete the temporary tests. Document command, consent, retention, advisory semantics, price availability, legacy refusal, commits, and remaining blockers in English and Chinese.
 
-- [ ] **Step 4: Run completion verification**
+- [x] **Step 4: Run completion verification**
 
 ```bash
 go test ./... -count=1
@@ -314,7 +314,7 @@ git diff --check origin/main...HEAD
 git status --short
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add eval docs README.md
@@ -323,10 +323,10 @@ git commit -m "docs(eval): publish live judge completion evidence"
 
 ## Completion gate
 
-- [ ] All six task commits are present in the evidence ledger.
-- [ ] Consent/binding failure occurs before credential access.
-- [ ] A fixture SSE stream reaches an appended Score through the real adapter.
-- [ ] Deterministic non-Pass prevents provider invocation.
-- [ ] Quality Fail returns exit 0; insufficient evidence cannot pass.
-- [ ] Bundle selection is deterministic and legacy deterministic regrade remains green.
-- [ ] Task 17's CLI deferral is removed without changing Context, MCP, or GA blockers.
+- [x] All six task commits are present in the evidence ledger.
+- [x] Consent/binding failure occurs before credential access.
+- [x] A fixture SSE stream reaches an appended Score through the real adapter.
+- [x] Deterministic non-Pass prevents provider invocation.
+- [x] Quality Fail returns exit 0; insufficient evidence cannot pass.
+- [x] Bundle selection is deterministic and legacy deterministic regrade remains green.
+- [x] Task 17's CLI deferral is removed without changing Context, MCP, or GA blockers.

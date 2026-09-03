@@ -19,6 +19,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/SongYii/open-code-harness/internal/harness/eval"
 )
 
 // repoRoot resolves the module root from this test's own location so the
@@ -269,5 +271,64 @@ func init() {
 	// Fail loudly rather than silently passing if the layout assumption breaks.
 	if _, err := os.Stat("docs_test.go"); err != nil {
 		panic(fmt.Sprintf("docsguard gates must run from their own directory: %v", err))
+	}
+}
+
+// TestLiveJudgeExampleDigestsAndGuide keeps the checked-in live judge
+// example honest. A digest pinned in prose or in a sibling document
+// drifts silently the moment someone edits the file it names; recomputing
+// it here means the examples an operator is told to copy are the examples
+// this repository actually validates.
+func TestLiveJudgeExampleDigestsAndGuide(t *testing.T) {
+	root := repoRoot(t)
+
+	set, err := eval.DecodeEvalSet([]byte(read(t, filepath.Join(root, "eval/sets/context-quality-live.example.json"))))
+	if err != nil {
+		t.Fatalf("decode live example EvalSet: %v", err)
+	}
+	config, err := eval.DecodeJudgeConfig([]byte(read(t, filepath.Join(root, "eval/judges/context-quality-judge.example.json"))))
+	if err != nil {
+		t.Fatalf("decode example JudgeConfig: %v", err)
+	}
+	configDigest, err := eval.JudgeConfigDigest(config)
+	if err != nil {
+		t.Fatalf("JudgeConfigDigest: %v", err)
+	}
+	if set.JudgeConfigDigest != configDigest {
+		t.Fatalf("live example set pins judgeConfigDigest %q, but the checked-in JudgeConfig digests to %q",
+			set.JudgeConfigDigest, configDigest)
+	}
+
+	scenario, err := eval.DecodeScenario([]byte(read(t, filepath.Join(root, "eval/scenarios/context-quality/scenario.json"))))
+	if err != nil {
+		t.Fatalf("decode context-quality Scenario: %v", err)
+	}
+	scenarioDigest, err := eval.ScenarioDigest(scenario)
+	if err != nil {
+		t.Fatalf("ScenarioDigest: %v", err)
+	}
+	var pinned eval.Digest
+	for _, ref := range set.Scenarios {
+		if ref.ID == scenario.ID {
+			pinned = ref.Digest
+		}
+	}
+	if pinned != scenarioDigest {
+		t.Fatalf("live example set pins scenario %q at %q, but it digests to %q", scenario.ID, pinned, scenarioDigest)
+	}
+	if len(scenario.DeterministicVerifierIDs) == 0 {
+		t.Fatal("the live judge Scenario declares no deterministic verifiers, so nothing would gate a judge run")
+	}
+
+	guide := read(t, filepath.Join(root, "docs/guides/evaluation-operations.md"))
+	for _, value := range []string{
+		"och-eval judge",
+		"OCH_EVAL_LIVE_CONFIRM",
+		"OCH_EVAL_LIVE_JUDGE_API_KEY",
+		"eval/judges/context-quality-judge.example.json",
+	} {
+		if !strings.Contains(guide, value) {
+			t.Fatalf("the operations guide never mentions %q", value)
+		}
 	}
 }

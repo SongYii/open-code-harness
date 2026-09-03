@@ -130,9 +130,12 @@ Manifest/Score documents, both the in-process and real `och -acp` subprocess
 executors (approval, cancellation escalation, all three restart modes,
 lease-safe manual compaction), deterministic verifiers and offline regrade,
 design-verified executor parity, a four-Cell ordinary-PR lane, and a
-consent-gated live quality judge are all real and tested. Real-model live
-sample size, judge meta-evaluation breadth, provider breadth, and an
-accepted variance policy are still outstanding before a GA claim. See the
+consent-gated live quality judge (`och-eval judge`, with its frozen
+JudgeConfig bound into an Attempt's own evidence so a Score's judge
+identity is provable offline) are all real and tested. Real-model live
+sample size — no run against an actual live model has happened here — judge
+meta-evaluation breadth, provider breadth, and an accepted variance policy
+are still outstanding before a GA claim. See the
 [Evaluation contract](docs/architecture/evaluation.md) and its
 [evidence ledger](docs/architecture/evaluation-evidence.md). The project
 remains pre-v0.
