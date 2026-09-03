@@ -8,7 +8,7 @@ This guide is about authoring `eval/scenarios/**`, `eval/subjects/*.json`,
 `eval/executors/*.json`, and `eval/sets/*.json` — not about the Go code that
 executes them. It assumes you have read the contract document above.
 
-## The four document kinds you author
+## The document kinds you author
 
 | You write | Where | What it means |
 | --- | --- | --- |
@@ -16,6 +16,7 @@ executes them. It assumes you have read the contract document above.
 | Subject | `eval/subjects/<id>.json` | A Provider/Policy/Context configuration |
 | Executor | `eval/executors/<id>.json` | `in_process` or `acp_subprocess` identity |
 | EvalSet | `eval/sets/<id>.json` | A named Scenario × Subject × Executor product, plus limits/lane |
+| JudgeConfig | `eval/judges/<id>.json` | A live quality judge's model/prompt/criteria identity — **live-lane sets only** |
 
 A Scenario, Subject, or Executor's own `.json` file is never hand-edited
 after computing its digest without also recomputing that digest — every
@@ -162,6 +163,22 @@ explicitly raising this field is refused before any Attempt is created.
 Subject's own `provider.lane` — mixing lanes in one EvalSet is refused by
 `ExpandAttempts` (a live EvalSet must never silently reach a fixture-lane
 double, and a fixture EvalSet must never silently reach a live credential).
+
+`lane` also decides `judgeConfigDigest`: a **live** set must declare it and
+a **fixture** set must not. A fixture set naming a judge configuration
+would be claiming an identity the deterministic lane can never exercise; a
+live set without one could publish a quality Score whose configuration no
+reader could reconstruct from the Attempt's own evidence. Write the
+JudgeConfig under `eval/judges/<id>.json`, compute its digest the same way
+you compute any other (`eval.JudgeConfigDigest`), and pin it in the set —
+`internal/docsguard`'s own `TestLiveJudgeExampleDigestsAndGuide` recomputes
+the checked-in pair on every run, so a drifted digest fails the build
+rather than surfacing at judge time. `eval/judges/context-quality-judge.example.json`
+is the worked example. The runner verifies the digest during whole-set
+validation, before any Attempt directory exists, and stages the exact
+document into every live Attempt's evidence — pass it with
+`och-eval run -judge-config eval/judges/<id>.json`, which is required for a
+live set and refused for a fixture one.
 
 Adding a new Scenario/Subject/Executor/EvalSet to the **ordinary PR lane**
 specifically (as opposed to the explicit/scheduled deterministic-full or

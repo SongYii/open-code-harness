@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -90,4 +91,89 @@ func loadDocumentTree(setPath string) (documentTree, error) {
 		tree.Executors[executor.ID] = executor
 	}
 	return tree, nil
+}
+
+// loadJudgeConfig reads and strictly decodes one frozen
+// `och.eval.judge-config` document. It never resolves the credential the
+// document names — only its name is ever read from the file, and the
+// value is looked up much later, inside the provider call, after every
+// consent and binding check has already passed.
+func loadJudgeConfig(path string) (eval.JudgeConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return eval.JudgeConfig{}, fmt.Errorf("read judge config: %w", err)
+	}
+	config, err := eval.DecodeJudgeConfig(data)
+	if err != nil {
+		return eval.JudgeConfig{}, fmt.Errorf("decode judge config: %w", err)
+	}
+	return config, nil
+}
+
+// loadJudgePriceTable resolves the optional price table a JudgeConfig may
+// pin. A config that names a priceTableDigest requires the table and
+// requires it to match: a Score that claimed a computed cost against a
+// table nobody can identify would be worse than one that honestly
+// reported the price as unavailable.
+func loadJudgePriceTable(config eval.JudgeConfig, path string) (*eval.PriceTable, error) {
+	if config.PriceTableDigest == "" {
+		if path == "" {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("-price-table was given but this judge config names no priceTableDigest")
+	}
+	if path == "" {
+		return nil, fmt.Errorf("this judge config names priceTableDigest %q, so -price-table is required", config.PriceTableDigest)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read price table: %w", err)
+	}
+	var table eval.PriceTable
+	if err := json.Unmarshal(data, &table); err != nil {
+		return nil, fmt.Errorf("decode price table: %w", err)
+	}
+	digest, err := eval.PriceTableDigest(table)
+	if err != nil {
+		return nil, err
+	}
+	if digest != config.PriceTableDigest {
+		return nil, fmt.Errorf("price table digest %q disagrees with the frozen judge config's %q", digest, config.PriceTableDigest)
+	}
+	return &table, nil
+}
+
+// resolveRunJudgeConfig turns `och-eval run`'s own -judge-config flag into
+// the value RunnerInputs needs, applying the same lane rule the EvalSet
+// document itself carries: a live set requires the judge configuration its
+// judgeConfigDigest names, and a fixture set must not be given one.
+//
+// The runner enforces this too, but doing it here first names the flag an
+// operator actually has to pass instead of reporting a generic whole-set
+// validation failure. The digest is verified before the run starts, which
+// is what keeps a mismatched configuration from costing anything.
+func resolveRunJudgeConfig(set eval.EvalSet, path string) (*eval.JudgeConfig, error) {
+	if set.Lane != eval.LaneLive {
+		if path != "" {
+			return nil, fmt.Errorf("-judge-config was given but this EvalSet's own lane is %q", set.Lane)
+		}
+		return nil, nil
+	}
+	if path == "" {
+		return nil, fmt.Errorf("this EvalSet's own lane is %q and it names judgeConfigDigest %q: -judge-config is required",
+			set.Lane, set.JudgeConfigDigest)
+	}
+	config, err := loadJudgeConfig(path)
+	if err != nil {
+		return nil, err
+	}
+	digest, err := eval.JudgeConfigDigest(config)
+	if err != nil {
+		return nil, err
+	}
+	if digest != set.JudgeConfigDigest {
+		return nil, fmt.Errorf("judge config digest %q disagrees with this EvalSet's own judgeConfigDigest %q",
+			digest, set.JudgeConfigDigest)
+	}
+	return &config, nil
 }

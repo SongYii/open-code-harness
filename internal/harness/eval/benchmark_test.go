@@ -229,14 +229,16 @@ func benchmarkHappyAttempt(b *testing.B) (directories AttemptRootDirectories, ex
 	scenario.RequiredEvidenceRoles = []string{"transcript", "audit", "workspace"}
 	scenario.OptionalEvidenceRoles = nil
 	executor := validExecutorInProcess()
-	attempt, err := buildAttemptDocument("bench-set", CellAttempt{Cell: Cell{ScenarioID: scenario.ID, SubjectID: subject.ID, ExecutorID: executor.ID}}, attemptID, directories, scenario, subject, executor)
+	set := testEvalSetFor(b, LaneFixture, scenario, subject, executor, nil)
+	set.ID = "bench-set"
+	attempt, err := buildAttemptDocument(set.ID, CellAttempt{Cell: Cell{ScenarioID: scenario.ID, SubjectID: subject.ID, ExecutorID: executor.ID}}, attemptID, directories, scenario, subject, executor)
 	if err != nil {
 		b.Fatalf("buildAttemptDocument: %v", err)
 	}
 	if err := PublishAttempt(directories.Root, attempt); err != nil {
 		b.Fatalf("PublishAttempt: %v", err)
 	}
-	documents = EvidenceDocuments{Scenario: scenario, Subject: subject, Executor: executor, Attempt: attempt}
+	documents = EvidenceDocuments{Scenario: scenario, Subject: subject, Executor: executor, Attempt: attempt, EvalSet: set}
 
 	matcher := NewApprovalMatcher(scenario.ApprovalScript)
 	execution, err = RunAttempt(context.Background(), attemptID, subject, directories, scenario, matcher)

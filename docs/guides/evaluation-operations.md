@@ -4,24 +4,32 @@
 
 **See also:** [Evaluation System — Implemented Contract](../architecture/evaluation.md) for the underlying mechanism; [Authoring Evaluation Scenarios](evaluation-scenarios.md) if you also need to change what runs.
 
-## The three commands
+## The four commands
 
 ```text
-och-eval run     -set PATH -artifacts PATH [-och-binary PATH] [-live]
+och-eval run     -set PATH -artifacts PATH [-och-binary PATH] [-live] [-judge-config PATH]
 och-eval regrade -attempt PATH -scorer ID
 och-eval report  -set PATH [-artifacts PATH] [-output PATH]
+och-eval judge   -attempt PATH -judge-config PATH [-price-table PATH] [-live]
 ```
 
 `run` expands and executes an EvalSet's every Cell, publishing Attempt
 evidence under `-artifacts`. `-och-binary` is required only when the EvalSet
 references an `acp_subprocess` Executor — build one first
 (`go build -o /tmp/och ./cmd/och`) and pass its path; `run` never builds it
-for you. `regrade` scores one already-published Attempt directory against a
+for you. `-judge-config` is required only for a **live-lane** EvalSet, and
+refused for a fixture one: a live set names a `judgeConfigDigest`, and `run`
+verifies the document you pass against it and stages the exact bytes into
+every Attempt's evidence, which is what later lets `och-eval judge` prove
+which configuration an Attempt was entitled to use. `regrade` scores one already-published Attempt directory against a
 named scorer from `cmd/och-eval/scorer_catalog.go`'s own compiled table,
 appending a new Score without touching any earlier one. `report` aggregates
 every Attempt directory under an artifact root (classification state,
 Outcome, every Score, and — new in Task 15 — any executor-parity pair it can
-find) into one JSON document on stdout.
+find) into one JSON document on stdout. `judge` runs one live quality
+judgement against an already-published live Attempt and appends the Score it
+produces; it is documented in full under
+[Live quality judging](#live-quality-judging) below.
 
 Every command's machine output is one versioned JSON document on stdout;
 human-readable diagnostics go to stderr. Exit codes distinguish validation
@@ -82,13 +90,85 @@ documents, never from a caller-supplied path). A regrade is safe to run
 repeatedly and offline; each call appends a new, independent Score.
 
 A deterministic verifier never costs anything beyond CPU/disk. A live
-model-judge Score does — its own `ScorerUsage.CostMicrounits` (when a price
-table made computing it possible; `EstimateCostMicrounits`' own `ok=false`
-means the cost genuinely could not be computed, never that it was zero) is
-kept independent of the Subject's own usage/cost recorded on Outcome. Model
-judge quality signals are advisory and never gate an ordinary PR (design
-§22) — only deterministic verifier failures and configured deterministic
-floors may.
+model-judge Score does, and its cost availability is explicit rather than
+inferred: `ScorerUsage.costStatus` is either `computed` (with a
+`costCurrency`, including a genuine zero for a free model) or `unavailable`
+(no currency, zero microunits, and no claim that the run was free). A judge
+Score's usage is kept independent of the Subject's own usage/cost recorded
+on Outcome. Model judge quality signals are advisory and never gate an
+ordinary PR (design §22) — only deterministic verifier failures and
+configured deterministic floors may.
+
+## Live quality judging
+
+`och-eval judge` scores one already-published **live-lane** Attempt's
+committed evidence with a real model, and appends the resulting Score
+beside whatever deterministic Scores that Attempt already carries. It never
+invokes the Subject, reopens its session, or touches Outcome.
+
+```bash
+export OCH_EVAL_LIVE_JUDGE_API_KEY=...        # the variable the JudgeConfig names
+export OCH_EVAL_LIVE_CONFIRM=I_UNDERSTAND
+
+go run ./cmd/och-eval judge \
+  -attempt .eval-artifacts-context-quality-live/<attempt-id> \
+  -judge-config eval/judges/context-quality-judge.example.json \
+  -live
+```
+
+There is deliberately **no** endpoint, model, prompt, or credential-value
+flag. Every one of those comes from the frozen JudgeConfig, and the command
+refuses unless that document is byte-identical to the one the Attempt's own
+evidence proves it was entitled to use — the runner staged `judge-config.json`
+into the Attempt's evidence at collection time and the EvalSet named its
+digest, so a Score's claimed configuration is verifiable offline, from the
+Attempt alone, by anyone. A flag capable of overriding any of it would make
+that guarantee meaningless.
+
+The order of the gates is the point:
+
+1. **Frozen evidence.** The Attempt must carry `eval-set.json` and
+   `judge-config.json`, and the supplied config's canonical digest must match
+   both the staged copy and the EvalSet's `judgeConfigDigest`.
+2. **Dual consent.** `-live` **and** `OCH_EVAL_LIVE_CONFIRM=I_UNDERSTAND`,
+   exactly as `run` requires them.
+3. **Deterministic prerequisites.** Every verifier the Scenario declares
+   runs. A non-Pass result publishes an Indeterminate Score *without calling
+   the model at all* — quality judging asks "was this good", which is not
+   worth paying for when the run did not meet its own invariants.
+
+Only after all three does the provider call happen, and the credential the
+JudgeConfig names is read only inside that call. Anything refused above
+happens before a credential is ever looked up.
+
+Two more refusals are worth knowing about:
+
+- **Insufficient evidence never passes.** If a criterion declares an
+  evidence role the manifest never collected, or the bundle's byte budget
+  would drop an entire selected file, the run returns Indeterminate without
+  calling the model and lists what was omitted in `missingEvidence`. Entries
+  the budget dropped appear as their manifest paths; a declared role the
+  manifest collected nothing under appears as `role:<name>`, because in that
+  case there is genuinely no path to name.
+  Per-entry truncation is permitted — the contract supplies bounded excerpts
+  — and every entry label records its original byte length, its excerpt byte
+  length, and whether it was truncated.
+- **An Attempt collected before this contract existed cannot be judged.**
+  It has no staged EvalSet or JudgeConfig, so nothing in its evidence could
+  prove which configuration it was entitled to use. Such an Attempt still
+  regrades deterministically, forever; only live judging is closed to it.
+
+**Exit codes are not the quality signal.** A published Score always exits
+`0`, including a quality `fail`: live quality reports on work that already
+cleared its deterministic gates, so it is a finding to read on stdout, not a
+build to break. Exit `2` means the run was refused before any Score existed
+(flags, JudgeConfig, price table, lane, frozen binding, or a legacy
+Attempt); exit `1` means this command itself failed to encode or publish.
+
+Pass `-price-table PATH` to get a computed cost. A JudgeConfig that pins a
+`priceTableDigest` *requires* the flag and requires the table to match it —
+a Score claiming a computed cost against a table nobody can identify would
+be worse than one honestly reporting the price as unavailable.
 
 ## Credentials and privacy
 

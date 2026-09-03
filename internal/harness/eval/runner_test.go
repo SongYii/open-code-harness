@@ -413,3 +413,94 @@ func TestResumeCollectionNeverMutatesTheExistingOutcome(t *testing.T) {
 		t.Fatal("the on-disk Outcome changed after ResumeCollection")
 	}
 }
+
+// liveRunnerInputs promotes runnerInputs' frozen documents to the live
+// lane. Nothing here ever executes: every test below asserts RunEvalSet
+// refuses before any Attempt is created, which is the whole point — a
+// live judge configuration that cannot be proven against the frozen
+// EvalSet must stop the run before it costs anything.
+func liveRunnerInputs(t *testing.T, server *echoProvider, artifactRoot string) RunnerInputs {
+	t.Helper()
+	inputs := runnerInputs(t, server, artifactRoot)
+	for id, subject := range inputs.Subjects {
+		subject.Provider.Lane = ProviderLaneLive
+		subject.Provider.NormalizedEndpoint = "https://api.example.com/v1"
+		digest, err := SubjectDigest(subject)
+		if err != nil {
+			t.Fatalf("SubjectDigest: %v", err)
+		}
+		inputs.Subjects[id] = subject
+		inputs.Set.Subjects = []SubjectRef{{ID: id, Digest: digest}}
+	}
+	inputs.ProviderEndpointOverrides = nil
+	inputs.Set.Lane = LaneLive
+
+	config := validJudgeConfig()
+	digest, err := JudgeConfigDigest(config)
+	if err != nil {
+		t.Fatalf("JudgeConfigDigest: %v", err)
+	}
+	inputs.Set.JudgeConfigDigest = digest
+	inputs.JudgeConfig = &config
+	return inputs
+}
+
+func assertArtifactRootEmpty(t *testing.T, artifactRoot string) {
+	t.Helper()
+	entries, err := os.ReadDir(artifactRoot)
+	if err != nil {
+		t.Fatalf("ReadDir(%s): %v", artifactRoot, err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("artifact root is not empty: %d entries", len(entries))
+	}
+}
+
+func TestRunEvalSetRejectsJudgeDigestBeforeAttemptCreation(t *testing.T) {
+	server := newEchoProvider(t)
+	artifactRoot := filepath.Join(t.TempDir(), "artifacts")
+	if err := os.Mkdir(artifactRoot, 0o700); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	inputs := liveRunnerInputs(t, server, artifactRoot)
+	inputs.ArtifactRootOverride = artifactRoot
+	inputs.Set.JudgeConfigDigest = mustDigest(t, 42)
+
+	if _, err := RunEvalSet(context.Background(), inputs); err == nil {
+		t.Fatal("RunEvalSet accepted a JudgeConfig whose digest disagrees with the frozen EvalSet")
+	}
+	assertArtifactRootEmpty(t, artifactRoot)
+}
+
+func TestRunEvalSetRejectsMissingJudgeConfigForALiveSet(t *testing.T) {
+	server := newEchoProvider(t)
+	artifactRoot := filepath.Join(t.TempDir(), "artifacts")
+	if err := os.Mkdir(artifactRoot, 0o700); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	inputs := liveRunnerInputs(t, server, artifactRoot)
+	inputs.ArtifactRootOverride = artifactRoot
+	inputs.JudgeConfig = nil
+
+	if _, err := RunEvalSet(context.Background(), inputs); err == nil {
+		t.Fatal("RunEvalSet accepted a live EvalSet with no resolved JudgeConfig")
+	}
+	assertArtifactRootEmpty(t, artifactRoot)
+}
+
+func TestRunEvalSetRejectsJudgeConfigForAFixtureSet(t *testing.T) {
+	server := newEchoProvider(t)
+	artifactRoot := filepath.Join(t.TempDir(), "artifacts")
+	if err := os.Mkdir(artifactRoot, 0o700); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	inputs := runnerInputs(t, server, artifactRoot)
+	inputs.ArtifactRootOverride = artifactRoot
+	config := validJudgeConfig()
+	inputs.JudgeConfig = &config
+
+	if _, err := RunEvalSet(context.Background(), inputs); err == nil {
+		t.Fatal("RunEvalSet accepted a JudgeConfig for a fixture EvalSet")
+	}
+	assertArtifactRootEmpty(t, artifactRoot)
+}

@@ -272,6 +272,26 @@ func TestCLIValidationExitCodes(t *testing.T) {
 	}
 }
 
+func TestMaxExitCodeUsesSemanticSeverity(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		a    int
+		b    int
+		want int
+	}{
+		{name: "infra beats indeterminate", a: exitInfraFailure, b: exitIndeterminate, want: exitInfraFailure},
+		{name: "gate beats indeterminate", a: exitIndeterminate, b: exitGateFailure, want: exitGateFailure},
+		{name: "internal beats infra", a: exitInfraFailure, b: exitInternal, want: exitInternal},
+		{name: "order independent", a: exitInternal, b: exitIndeterminate, want: exitInternal},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := maxExitCode(test.a, test.b); got != test.want {
+				t.Fatalf("maxExitCode(%d, %d) = %d, want %d", test.a, test.b, got, test.want)
+			}
+		})
+	}
+}
+
 func TestCheckedInSmokeSetProvesToolFailureAndCompaction(t *testing.T) {
 	artifactRoot := t.TempDir()
 	var stdout, stderr bytes.Buffer

@@ -33,12 +33,24 @@
       }
     }
   ],
-  "requiredCapabilities": ["prompt", "compact"],
-  "requiredEvidenceRoles": ["transcript", "audit", "workspace"],
+  "requiredCapabilities": [
+    "prompt",
+    "compact"
+  ],
+  "requiredEvidenceRoles": [
+    "transcript",
+    "audit",
+    "workspace"
+  ],
   "optionalEvidenceRoles": [],
   "deterministicVerifierIds": [
-    "outcome-not-infra-failed-v1"
+    "manifest-complete-v1",
+    "outcome-not-infra-failed-v1",
+    "transcript-present-v1",
+    "audit-included-v1"
   ],
   "limits": {},
-  "pairingTags": ["context-quality-live"]
+  "pairingTags": [
+    "context-quality-live"
+  ]
 }

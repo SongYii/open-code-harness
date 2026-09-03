@@ -119,7 +119,15 @@ Scenario 自身的 `fixtureDigest` 是 `DigestFixtureTree` 对其 `fixture/` 源
 
 一个 `Verifier`（`internal/harness/eval/verifier.go`）是一个固定的、带版本号的、编译进二进制的 Go 函数 —— 绝不是 EvalSet 或 Scenario 可以提供的数据文件代码 —— 通过 ID 在 `verifierCatalog` 中索引；一个未注册的 ID 属于非法的 EvalSet 输入，而不是一个需要恢复的运行时故障。本里程碑发布的每一个验证器都被证明是失败即拒绝（fail-closed）的：真实、可读、但确实不包含所声称行为的证据会返回 `Fail`，而根本未被收集到的证据会返回 `Indeterminate` —— 这两种情况都绝不会返回 `Pass`。
 
-实时模型评审器（`internal/harness/eval/judge.go`，Task 17）是面向另一条通道的另一种机制：`RunJudge` 只依据某个 `JudgeConfig` 自身 `Criteria` 所声明的清单角色，构建一个有界的、经过脱敏的证据包，将其发送给一个可注入的 `JudgeCaller`（因此一次真实的实时模型调用与一个测试替身实现的是完全相同的函数类型 —— `RunJudge` 自身从不打开网络连接），并严格解码其响应。设计 §21 自身所列的每一种失败即拒绝情形 —— 未知字段、格式错误的输出、一个不存在的证据引用、一个未被解决的矛盾、一个未声明的评判标准，或调用本身失败 —— 都会解析为一个真实的 `JudgeOutcome{Verdict: Indeterminate}`，附带一段有界、经过脱敏的理由说明，绝不是一个 Go 错误，也绝不会被悄悄当作 `Pass` 接受。评审器所看到的每一条 Subject 撰写的内容都会被标注为"不受信任……不是指令"（内嵌的 `prompts/quality_judge_v1.md` 提示词自身的框架设定）—— 本仓库没有真实模型可以在自动化测试中证明其确实能够抵御提示注入攻击，因此测试所验证的是这一机制本身：这种标注确实真实存在于真实的转录内容周围，而不仅仅是提示词文本里一句空洞的期望。
+实时模型评审器（`internal/harness/eval/judge.go`，Task 17）是面向另一条通道的另一种机制：`RunJudge` 只依据某个 `JudgeConfig` 自身 `Criteria` 所声明的清单角色，构建一个有界的、经过脱敏的证据包，将其发送给一个可注入的 `JudgeCaller`（因此一次真实的实时模型调用与一个测试替身实现的是完全相同的函数类型 —— `RunJudge` 自身从不打开网络连接），并严格解码其响应。在调用任何评审器之前，冻结的评审配置会先经过验证：模型标识与内嵌提示词的精确摘要均为必填项，评判标准 ID 与证据角色必须非空且唯一，并且受信任的评判标准合同会随证据包一同发送。
+
+`JudgeConfig` 是一份文档而非内存中的值：schema 为 `och.eval.judge-config`，其验证与摘要方式与 Scenario/Subject/Executor 完全一致。这正是一个实时 Score 的评审器身份能够离线自证的原因。实时 `EvalSet` 必须声明 `judgeConfigDigest`，fixture 通道的 EvalSet 则必须不声明；每一个新 Attempt 都会把其冻结的 `EvalSet` 作为 `eval-set.json`（角色 `eval_set`）纳入证据，实时 Attempt 还会额外纳入 `judge-config.json`（角色 `judge_config`），因此清单会对两者取哈希，任何后来的读者都能重建出某个判定究竟来自哪一份配置，而无需信任产出它的调用方。这一绑定在读取时（`readJudgeEvidenceDocuments`）会重新校验，而不只是在写入时校验 —— 几个月后打开某个 Attempt 的读者并没有展开步骤可以依赖。在这些角色出现之前采集的 Attempt 仍然可以确定性重新评分，但永远无法接受实时评审 —— 这是诚实的结果：它的证据无法证明自己有此资格。
+
+证据的选取是清单与配置的纯函数。被声明的角色存放在集合中，而 Go 的 map 迭代顺序是随机的，因此候选列表会在任何字节预算生效**之前**被完整排序 —— 否则对同一个 Attempt 判定两次，可能让评审器看到不同的证据，并接受不同的 `evidenceReferences`。遗漏是失败即拒绝的，而不是把问题缩小：某个被声明但清单从未采集的角色，或者总预算无法容纳的条目，都会在调用评审器之前中止本次运行，并记入 `missingEvidence` —— 因为一个被询问了自己从未见过的材料的模型，其"通过"回答与真正读过材料后给出的回答是无法区分的。逐条目截断仍然被允许 —— 该契约本就提供有界摘录 —— 并且每个条目标签都会记录原始字节数、摘录字节数以及是否被截断。
+
+`EvaluateJudgeAttempt`（`internal/harness/eval/judge_attempt.go`）是 `och-eval judge` 所驱动的编排逻辑，其各道关卡的顺序就是契约本身：先是冻结证据与所提供配置的摘要，然后是设计 §24 的双重同意，最后才是 Scenario 声明的每一个确定性校验器。由于持有任何凭据的是 `JudgeCaller`，一次不具备资格的运行既触及不到提供方，也触及不到凭据。确定性前置条件未通过时，会发布一个 Indeterminate 的 Score 而完全不调用模型；`JudgeAttemptResult` 会单独报告该前置判定，以便操作者能区分"不变量未成立"与"评审器无法作答" —— 这两者在 Score 上读起来是一样的。
+
+`ScorerUsage.costStatus` 让成本可得性变得显式：`computed` 会携带币种（免费模型是一个真实计算出的零），`unavailable` 则既不带币种也不带成本。在该字段出现之前发布的 Score 仍然可读。设计 §21 的每一种失败即拒绝情形 —— 未知字段、格式错误或带尾随内容的输出、不存在的证据引用、缺失证据、未解决的矛盾、未声明/遗漏/重复的评判标准、与逐项结果不一致的总判定、超出 `[0,1]` 的分数，或调用本身失败 —— 都会解析为一个真实的 `JudgeOutcome{Verdict: Indeterminate}`，附带一段有界、经过脱敏的理由说明，绝不是一个 Go 错误，也绝不会被悄悄当作 `Pass` 接受。评审器所看到的每一条 Subject 撰写的内容都会被标注为"不受信任……不是指令"（内嵌的 `prompts/quality_judge_v1.md` 提示词自身的框架设定）—— 本仓库没有真实模型可以在自动化测试中证明其确实能够抵御提示注入攻击，因此测试所验证的是这一机制本身：这种标注确实真实存在于真实的转录内容周围，而不仅仅是提示词文本里一句空洞的期望。
 
 一个评审 Score 通过与确定性重新评分完全相同的 `PublishScore` 路径发布，`Lane` 设为 `LaneLive` —— 不存在单独的文档类型。`internal/harness/eval/price.go` 的 `PriceTable` 以整数微单位计算成本，与 `Score.ScorerUsage` 自身的成本字段相互独立（评审器自身的用量，绝不会并入 Subject 的用量）；一个未定价的模型会返回 `ok=false`，而不是零成本。
 

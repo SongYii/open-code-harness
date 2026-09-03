@@ -297,6 +297,21 @@ func (set EvalSet) Validate() error {
 	if set.JudgeConfigDigest != "" && !digestStringPattern.MatchString(string(set.JudgeConfigDigest)) {
 		return fmt.Errorf("%w: judgeConfigDigest must be sha256:<64 lowercase hex>", errInvalidDocument)
 	}
+	// Lane decides whether a judge configuration is required or forbidden.
+	// A fixture set naming one would be claiming a judge identity nothing
+	// in the deterministic lane can ever exercise; a live set without one
+	// could publish a quality Score whose configuration no reader could
+	// reconstruct from the Attempt's own evidence.
+	switch set.Lane {
+	case LaneFixture:
+		if set.JudgeConfigDigest != "" {
+			return fmt.Errorf("%w: a %q lane set must not declare judgeConfigDigest", errInvalidDocument, LaneFixture)
+		}
+	case LaneLive:
+		if set.JudgeConfigDigest == "" {
+			return fmt.Errorf("%w: a %q lane set must declare judgeConfigDigest", errInvalidDocument, LaneLive)
+		}
+	}
 	if err := set.Limits.validate(); err != nil {
 		return err
 	}

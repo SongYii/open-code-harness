@@ -15,8 +15,10 @@ import (
 // in-process executor cannot produce.
 func publishParityTestEvidenceDocuments(t *testing.T, directories AttemptRootDirectories, attemptID AttemptID, scenario Scenario, subject Subject, executor Executor) EvidenceDocuments {
 	t.Helper()
+	set := testEvalSetFor(t, LaneFixture, scenario, subject, executor, nil)
+	set.ID = "parity-test-set"
 	attempt, err := buildAttemptDocument(
-		"parity-test-set",
+		set.ID,
 		CellAttempt{Cell: Cell{ScenarioID: scenario.ID, SubjectID: subject.ID, ExecutorID: executor.ID}},
 		attemptID, directories, scenario, subject, executor,
 	)
@@ -26,7 +28,7 @@ func publishParityTestEvidenceDocuments(t *testing.T, directories AttemptRootDir
 	if err := PublishAttempt(directories.Root, attempt); err != nil {
 		t.Fatalf("PublishAttempt: %v", err)
 	}
-	return EvidenceDocuments{Scenario: scenario, Subject: subject, Executor: executor, Attempt: attempt}
+	return EvidenceDocuments{Scenario: scenario, Subject: subject, Executor: executor, Attempt: attempt, EvalSet: set}
 }
 
 func parityApprovalScenario() Scenario {

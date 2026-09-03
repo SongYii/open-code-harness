@@ -5,7 +5,7 @@
   "scenarios": [
     {
       "id": "context-quality",
-      "digest": "sha256:0042a31da12824394c91fa9f73a27e5d7f40bbd97293c276317bce28a61ef036"
+      "digest": "sha256:b8cbc16ba03cc21c86992a66459e70c62593f5cf89d287555a6570428672a7ea"
     }
   ],
   "subjects": [
@@ -25,6 +25,7 @@
   "limits": {
     "tokenCap": 200000
   },
+  "judgeConfigDigest": "sha256:1ba962551a5ea3181de9a371c0e9329bb4b9566df1e0202e686ac2b74abe1bf3",
   "artifactRoot": ".eval-artifacts-context-quality-live",
   "lane": "live"
 }

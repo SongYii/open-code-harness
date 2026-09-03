@@ -41,8 +41,29 @@ repository uses throughout.
 | `1cb82a1` | Task 14 | ACP manual compaction as a three-phase lease-safe transaction (PR #142) |
 | `67cd2a4` | Task 15 | Executor parity comparison, ACP dispatch in the runner/CLI (a missing prerequisite this task discovered), four-Cell PR lane (PR #143) |
 | `4904bf4` | Task 16 (partial) | Tool/workspace deterministic suite: read/exec-redaction/read-missing/containment (PR #144) |
-| `45964ff` | Task 17 (partial) | Live dual-consent gate consolidation, strict evidence-only judge, price table (PR #145) |
-| (this commit) | Task 18 | Benchmarks, evidence ledger, and documentation (this PR) |
+| `45964ff` | Task 17 (partial) | Live dual-consent gate consolidation, evidence-only judge, price table (PR #145) |
+| `4151968` | Post-merge review | Fail-closed judge contract enforcement and semantic CLI exit-code precedence |
+| `fb28132` | Task 18 | Benchmarks, evidence ledger, and documentation (PR #146) |
+| `fe07f5d` | Task 17 completion 1/6 | Frozen `och.eval.judge-config` document, canonical digest, explicit `costStatus` |
+| `1fe0a3c` | Task 17 completion 2/6 | EvalSet lane rules and EvalSet/JudgeConfig evidence binding |
+| `d3010d6` | Task 17 completion 3/6 | Deterministic, fail-closed judge evidence selection (two real defects fixed) |
+| `304f37f` | Task 17 completion 4/6 | `EvaluateJudgeAttempt`: prerequisite-gated, append-only live Scores |
+| `b5244e4` | Task 17 completion 5/6 | `och-eval judge`, real OpenAI-compatible caller, checked-in JudgeConfig example |
+
+## Post-merge review findings closed
+
+A fresh review after PR #146 found that the Task 17 mechanism was less strict
+than its documentation claimed even though the existing suite was green. Commit
+`4151968` closes the executable contract gaps: it sends the frozen criteria to
+the caller, validates model/prompt/criterion identity before calling, rejects
+omitted or duplicate criterion results and inconsistent aggregates, forces
+missing evidence to `indeterminate`, enforces the documented `[0,1]` score
+range, and uses a second decode requiring `io.EOF` for trailing-data rejection.
+The same review replaced numeric `max(exitCode)` aggregation with explicit
+semantic severity so `indeterminate` can no longer mask gate, infrastructure,
+or internal failures. The new tests were observed failing against `8116113`
+before the fixes and passing afterward; the full repository suite, eval race
+suite, vet, CGO-disabled build, and Windows eval build were rerun.
 
 ## Deliberately scoped/deferred items
 
@@ -57,12 +78,17 @@ description at the time:
   needs empirically-tuned token budgets against the real Context Engine
   trigger math, deliberately not guessed at under this milestone's own time
   budget.
-- **Task 17** shipped the live dual-consent gate and the judge's own strict,
-  fail-closed decoding/injection-labeling mechanism, both real and tested
-  against fixture callers, but not CLI wiring to invoke a judge against a
-  real live model (no live credentials exist in this environment to verify
-  that wiring against), and not the `context-quality` Scenario's own live
-  meta-evaluation run (it is an example, deliberately never executed by CI).
+- **Task 17** is now complete through `och-eval judge`: the frozen
+  `och.eval.judge-config` document, its EvalSet/manifest binding,
+  consent-before-credential ordering, deterministic prerequisites, the real
+  OpenAI-compatible caller, explicit cost availability, and append-only live
+  Scores are all shipped and tested. What remains outstanding is genuinely
+  outstanding, not deferred wiring: no run against a real live model has ever
+  happened here (no live credentials exist in this environment — a fixture
+  SSE stream reaching an appended Score through the real adapter is what is
+  actually proven), and the `context-quality` Scenario's own live
+  meta-evaluation run has never been executed (it is an example, deliberately
+  never run by CI).
 - Design §25.2's `list_dir` tool and MCP suites are out of scope for this
   milestone entirely (design §3's own stated non-goals / §25.4's own "MCP
   absence does not block the eval system").
@@ -82,6 +108,10 @@ that a test exists.
 | Compact transaction's Phase 1 reap proof (`runACPActionCompact`) | `TestRunACPActionCompactReportsUnprovenShutdownForAnUnresponsiveWriter` | Forcing the writer-reap check to always report success makes the test fail differently than expected (proceeds into Phase 2 instead of stopping) — caught, restored (Task 14). |
 | Live dual-consent, `liveFlag` half (`RequireLiveConsent`) | `TestRequireLiveConsentRejectsLiveLaneWithoutLiveFlag` | Bypassing the `liveFlag` check for a live lane makes the test fail — caught, restored (Task 17). |
 | Live dual-consent, environment-confirmation half (`RequireLiveConsent`) | `TestRequireLiveConsentRejectsLiveLaneWithoutEnvironmentConfirmation` | Bypassing the `OCH_EVAL_LIVE_CONFIRM` check makes the test fail — caught, restored (Task 17). |
+| Deterministic judge evidence selection (`buildJudgeEvidenceBundle`) | `TestJudgeBundleIsStableBeforeLimits` | Not a mutation but a real defect found and fixed: the pre-fix builder applied its byte budget while iterating the declared-role *map*, so 40 identical calls over one Attempt produced two different selections. The test was observed failing against `1fe0a3c` and passing after `d3010d6`. |
+| Fail-closed omission (`judgeEvidenceBundle.MissingPaths`) | `TestRunJudgeSkipsModelWhenSelectedEvidenceIsOmitted` | Also a real defect, not a mutation: entries dropped by the budget were silently skipped, so a judge could return `pass` over 16 of 40 declared entries with an empty `missingEvidence`. Observed failing against `1fe0a3c`, passing after `d3010d6`. |
+| Consent-before-credential ordering (`EvaluateJudgeAttempt`) | `TestEvaluateJudgeAttemptChecksConsentBeforeCaller` | The test asserts the `JudgeCaller` — the only holder of a credential — is never invoked; moving the `RequireLiveConsent` call after the caller makes it fail (Task 17 completion). |
+| Production HTTPS-only judge endpoint (`newOpenAICompatibleJudgeCaller`) | `TestJudgeCallerRefusesPlaintextEndpointInProduction` | The same constructor that a sibling test drives against an `httptest` loopback server refuses that exact endpoint under production's own `(nil, false)` arguments; passing `true` in the production path makes the test fail (Task 17 completion). |
 | `internal/client/acp` isolation from `internal/harness/eval` (`TestClientPackagesAreIsolatedFromInternalHarness`) | Architecture guard suite | The ACP subprocess executor was built against an independently owned `acp_wire.go` specifically because importing `internal/client/acp` fails this guard — verified by attempting the import and observing the guard fail before building the independent copy instead (Task 12). |
 
 ## Real findings this milestone's own work surfaced (not assumed from reading source alone)

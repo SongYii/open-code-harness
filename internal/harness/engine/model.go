@@ -16,6 +16,11 @@ type ModelRequestPurpose string
 const (
 	ModelRequestPurposeConversation ModelRequestPurpose = "conversation"
 	ModelRequestPurposeCompaction   ModelRequestPurpose = "compaction"
+	// ModelRequestPurposeQualityJudge attributes an evaluation quality
+	// judge call. Like the others it is attribution only: a judge request
+	// carries the same body shape as any other, so it can never be given
+	// capabilities a conversation request lacks.
+	ModelRequestPurposeQualityJudge ModelRequestPurpose = "quality_judge"
 )
 
 // ModelRequest is one provider-neutral request for a single assistant item.

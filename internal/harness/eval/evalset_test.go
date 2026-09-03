@@ -101,3 +101,26 @@ func TestEvalSetLimitsWithDefaultsFillsZeroFields(t *testing.T) {
 		t.Fatalf("MaxExpandedAttempts = %d, want default %d", limits.MaxExpandedAttempts, DefaultMaxExpandedAttempts)
 	}
 }
+
+// TestEvalSetJudgeDigestMatchesLane pins the lane rule that makes a live
+// Score's judge identity provable: a fixture set must not name a judge
+// configuration it will never use, and a live set must name the one it
+// will.
+func TestEvalSetJudgeDigestMatchesLane(t *testing.T) {
+	fixture := validEvalSet(t)
+	fixture.JudgeConfigDigest = mustDigest(t, 41)
+	if err := fixture.Validate(); err == nil {
+		t.Fatal("a fixture EvalSet accepted a judgeConfigDigest")
+	}
+
+	live := validEvalSet(t)
+	live.Lane = LaneLive
+	if err := live.Validate(); err == nil {
+		t.Fatal("a live EvalSet accepted no judgeConfigDigest")
+	}
+
+	live.JudgeConfigDigest = mustDigest(t, 42)
+	if err := live.Validate(); err != nil {
+		t.Fatalf("a live EvalSet with a judgeConfigDigest was rejected: %v", err)
+	}
+}

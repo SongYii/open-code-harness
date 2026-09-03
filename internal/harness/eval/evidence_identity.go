@@ -11,16 +11,37 @@ import (
 )
 
 // EvidenceDocuments are the frozen identity documents that must accompany
-// every scoreable Attempt (design §14). Attempt identity binds the other
-// three documents by digest; collection stages all four into the manifest.
+// every scoreable Attempt (design §14). Attempt identity binds the
+// Scenario/Subject/Executor documents by digest; collection stages them,
+// the Attempt, and the frozen EvalSet into the manifest, plus the
+// JudgeConfig on a live Attempt.
+//
+// EvalSet and JudgeConfig are what make a live quality Score provable
+// offline: without the set staged beside the Attempt there is nothing to
+// prove which judge configuration the run was entitled to use, and
+// without the configuration staged there is nothing to prove which one it
+// actually used.
 type EvidenceDocuments struct {
 	Scenario Scenario
 	Subject  Subject
 	Executor Executor
 	Attempt  Attempt
+
+	// EvalSet is the frozen set this Attempt was expanded from. Every new
+	// Attempt stages it, in both lanes.
+	EvalSet EvalSet
+
+	// JudgeConfig is the frozen judge configuration EvalSet.JudgeConfigDigest
+	// names. It is required on a live Attempt and forbidden on a fixture
+	// one, exactly mirroring the EvalSet's own lane rule.
+	JudgeConfig *JudgeConfig
 }
 
-func (documents EvidenceDocuments) validate() error {
+// validateIdentity checks the four-document identity chain every Attempt
+// has always carried. It is deliberately separate from validateBinding so
+// an Attempt collected before EvalSet/JudgeConfig evidence existed still
+// regrades deterministically.
+func (documents EvidenceDocuments) validateIdentity() error {
 	if err := documents.Scenario.Validate(); err != nil {
 		return fmt.Errorf("scenario: %w", err)
 	}
@@ -66,9 +87,100 @@ func (documents EvidenceDocuments) validate() error {
 	return nil
 }
 
+// validateBinding checks that the frozen EvalSet really is the set this
+// Attempt came from, and that the JudgeConfig really is the one that set
+// authorized. Every check here is what a later reader needs in order to
+// reconstruct a live Score's judge identity from evidence alone, so each
+// one is enforced both when staging and when reading back.
+func (documents EvidenceDocuments) validateBinding() error {
+	if err := documents.EvalSet.Validate(); err != nil {
+		return fmt.Errorf("eval set: %w", err)
+	}
+	if documents.Attempt.EvalSetID != documents.EvalSet.ID {
+		return fmt.Errorf("attempt evalSetId %q disagrees with frozen eval set %q", documents.Attempt.EvalSetID, documents.EvalSet.ID)
+	}
+
+	// The Attempt's own cell must appear in the set at exactly the digests
+	// the Attempt froze, so a set cannot be swapped for an unrelated one
+	// that happens to share an ID.
+	scenarioFound := false
+	for _, ref := range documents.EvalSet.Scenarios {
+		if ref.ID == documents.Attempt.ScenarioID {
+			if ref.Digest != documents.Attempt.ScenarioDigest {
+				return fmt.Errorf("eval set references scenario %q at digest %q, but the attempt froze %q",
+					ref.ID, ref.Digest, documents.Attempt.ScenarioDigest)
+			}
+			scenarioFound = true
+		}
+	}
+	if !scenarioFound {
+		return fmt.Errorf("frozen eval set %q does not reference scenario %q", documents.EvalSet.ID, documents.Attempt.ScenarioID)
+	}
+	subjectFound := false
+	for _, ref := range documents.EvalSet.Subjects {
+		if ref.ID == documents.Attempt.SubjectID {
+			if ref.Digest != documents.Attempt.SubjectDigest {
+				return fmt.Errorf("eval set references subject %q at digest %q, but the attempt froze %q",
+					ref.ID, ref.Digest, documents.Attempt.SubjectDigest)
+			}
+			subjectFound = true
+		}
+	}
+	if !subjectFound {
+		return fmt.Errorf("frozen eval set %q does not reference subject %q", documents.EvalSet.ID, documents.Attempt.SubjectID)
+	}
+	executorFound := false
+	for _, ref := range documents.EvalSet.Executors {
+		if ref.ID == documents.Attempt.ExecutorID {
+			if ref.Digest != documents.Attempt.ExecutorDigest {
+				return fmt.Errorf("eval set references executor %q at digest %q, but the attempt froze %q",
+					ref.ID, ref.Digest, documents.Attempt.ExecutorDigest)
+			}
+			executorFound = true
+		}
+	}
+	if !executorFound {
+		return fmt.Errorf("frozen eval set %q does not reference executor %q", documents.EvalSet.ID, documents.Attempt.ExecutorID)
+	}
+
+	// Lane parity: ExpandAttempts enforces this before a run starts, but a
+	// reader that opens an Attempt months later has no expansion to rely
+	// on, so the evidence must carry the proof itself.
+	switch documents.EvalSet.Lane {
+	case LaneFixture:
+		if documents.Subject.Provider.Lane != ProviderLaneFixture {
+			return fmt.Errorf("%q lane eval set froze a %q lane subject", LaneFixture, documents.Subject.Provider.Lane)
+		}
+		if documents.JudgeConfig != nil {
+			return fmt.Errorf("a %q lane attempt must not carry a judge configuration", LaneFixture)
+		}
+	case LaneLive:
+		if documents.Subject.Provider.Lane != ProviderLaneLive {
+			return fmt.Errorf("%q lane eval set froze a %q lane subject", LaneLive, documents.Subject.Provider.Lane)
+		}
+		if documents.JudgeConfig == nil {
+			return fmt.Errorf("a %q lane attempt requires the judge configuration its eval set names", LaneLive)
+		}
+		digest, err := JudgeConfigDigest(*documents.JudgeConfig)
+		if err != nil {
+			return err
+		}
+		if digest != documents.EvalSet.JudgeConfigDigest {
+			return fmt.Errorf("judge config digest %q disagrees with the frozen eval set's judgeConfigDigest %q",
+				digest, documents.EvalSet.JudgeConfigDigest)
+		}
+	default:
+		return fmt.Errorf("unsupported frozen eval set lane %q", documents.EvalSet.Lane)
+	}
+	return nil
+}
+
 func stageEvidenceDocuments(directories AttemptRootDirectories, documents EvidenceDocuments, budget *collectionBudget) error {
-	if err := documents.validate(); err != nil {
+	if err := documents.validateIdentity(); err != nil {
 		return fmt.Errorf("validate frozen evidence documents: %w", err)
+	}
+	if err := documents.validateBinding(); err != nil {
+		return fmt.Errorf("validate frozen evidence binding: %w", err)
 	}
 
 	publishedAttempt, err := os.ReadFile(filepath.Join(directories.Root, attemptFilename))
@@ -92,6 +204,7 @@ func stageEvidenceDocuments(directories AttemptRootDirectories, documents Eviden
 		{path: "subject.json", role: "subject"},
 		{path: "executor.json", role: "executor"},
 		{path: "attempt.json", role: "attempt", data: publishedAttempt},
+		{path: "eval-set.json", role: "eval_set"},
 	}
 	values[0].data, err = json.Marshal(documents.Scenario)
 	if err != nil {
@@ -104,6 +217,24 @@ func stageEvidenceDocuments(directories AttemptRootDirectories, documents Eviden
 	values[2].data, err = json.Marshal(documents.Executor)
 	if err != nil {
 		return fmt.Errorf("encode frozen executor: %w", err)
+	}
+	values[4].data, err = json.Marshal(documents.EvalSet)
+	if err != nil {
+		return fmt.Errorf("encode frozen eval set: %w", err)
+	}
+	// validateBinding above already refused a JudgeConfig on a fixture
+	// Attempt and a missing one on a live Attempt, so presence here is
+	// exactly the lane rule.
+	if documents.JudgeConfig != nil {
+		configBytes, err := json.Marshal(*documents.JudgeConfig)
+		if err != nil {
+			return fmt.Errorf("encode frozen judge config: %w", err)
+		}
+		values = append(values, struct {
+			path string
+			role string
+			data []byte
+		}{path: "judge-config.json", role: "judge_config", data: configBytes})
 	}
 
 	for _, value := range values {
@@ -211,7 +342,7 @@ func readEvidenceDocuments(reader *ArtifactReader, publishedAttempt Attempt) (Ev
 		return EvidenceDocuments{}, "", fmt.Errorf("manifest Attempt evidence disagrees with published attempt.json")
 	}
 	documents := EvidenceDocuments{Scenario: scenario, Subject: subject, Executor: executor, Attempt: attempt}
-	if err := documents.validate(); err != nil {
+	if err := documents.validateIdentity(); err != nil {
 		return EvidenceDocuments{}, "", err
 	}
 	if reader.Outcome().AttemptID != attempt.ID {
@@ -226,4 +357,62 @@ func readEvidenceDocuments(reader *ArtifactReader, publishedAttempt Attempt) (Ev
 	default:
 		return EvidenceDocuments{}, "", fmt.Errorf("unsupported frozen Subject lane %q", subject.Provider.Lane)
 	}
+}
+
+// readJudgeEvidenceDocuments is the live judge path's own reader: it
+// requires everything readEvidenceDocuments requires, plus the frozen
+// EvalSet and JudgeConfig evidence a live Attempt stages, and it refuses
+// anything that is not a live Attempt.
+//
+// It is deliberately a separate entry point rather than a stricter mode of
+// readEvidenceDocuments: an Attempt collected before those roles existed
+// must keep regrading deterministically, so the legacy reader must never
+// learn to demand them. What such an Attempt loses is only the ability to
+// be live-judged, which is the honest outcome — nothing in its evidence
+// could prove which judge configuration it was entitled to use.
+func readJudgeEvidenceDocuments(reader *ArtifactReader, publishedAttempt Attempt) (EvidenceDocuments, EvalLane, error) {
+	documents, lane, err := readEvidenceDocuments(reader, publishedAttempt)
+	if err != nil {
+		return EvidenceDocuments{}, "", err
+	}
+	if lane != LaneLive {
+		return EvidenceDocuments{}, "", fmt.Errorf("judge evidence requires a %q lane Attempt, not %q", LaneLive, lane)
+	}
+
+	setBytes, err := readSingleCollectedEntry(reader, "eval_set")
+	if err != nil {
+		return EvidenceDocuments{}, "", err
+	}
+	set, err := DecodeEvalSet(setBytes)
+	if err != nil {
+		return EvidenceDocuments{}, "", err
+	}
+	configBytes, err := readSingleCollectedEntry(reader, "judge_config")
+	if err != nil {
+		return EvidenceDocuments{}, "", err
+	}
+	config, err := DecodeJudgeConfig(configBytes)
+	if err != nil {
+		return EvidenceDocuments{}, "", err
+	}
+
+	documents.EvalSet = set
+	documents.JudgeConfig = &config
+	if err := documents.validateBinding(); err != nil {
+		return EvidenceDocuments{}, "", err
+	}
+	return documents, LaneLive, nil
+}
+
+// readSingleCollectedEntry returns the exact bytes of the one collected
+// manifest entry carrying role. More than one, or any state other than
+// collected, is a refusal rather than a choice: frozen identity evidence
+// that appears twice has no single answer to "which one did this Attempt
+// actually use".
+func readSingleCollectedEntry(reader *ArtifactReader, role string) ([]byte, error) {
+	entries := reader.Entries(role)
+	if len(entries) != 1 || entries[0].State != EntryCollected {
+		return nil, fmt.Errorf("frozen %s evidence must contain exactly one collected entry", role)
+	}
+	return reader.ReadEntry(entries[0].Path)
 }
