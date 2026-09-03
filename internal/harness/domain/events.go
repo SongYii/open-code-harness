@@ -419,6 +419,13 @@ type ContextPreparedRecorded struct {
 	// Provider Adapter produced for this request — not
 	// contextengine.PreparedContext's own JSON-encoded approximation.
 	SerializedEnvelopeBytes uint64 `json:"serializedEnvelopeBytes"`
+	// PrunedToolResultCount is how many retained Tool Result messages this
+	// request actually projected, as observed by Materialize. Zero means no
+	// Tool Result was projected for this request; it never means pruning was
+	// disabled, and it must never be derived from configuration such as
+	// MaxPrunedToolResultsPerRequest. It is optional and additive: an event
+	// written before this field existed decodes as zero.
+	PrunedToolResultCount uint32 `json:"prunedToolResultCount,omitempty"`
 }
 
 func (ContextPreparedRecorded) EventType() string { return EventContextPreparedRecorded }

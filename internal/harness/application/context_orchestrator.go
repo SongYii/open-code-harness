@@ -1338,6 +1338,7 @@ func ContextPreparedRecordedFromResult(result PrepareContextResult, trigger stri
 		EstimatedTotalTokens: prepared.EstimatedTotalTokens, MeterID: prepared.MeterID,
 		UsageAnchorApplied: result.UsageAnchorApplied, UsageAnchorTokens: result.UsageAnchorTokens,
 		SerializedEnvelopeBytes: uint64(prepared.ApproximateSerializedBytes),
+		PrunedToolResultCount:   prepared.PrunedToolResultCount,
 	}
 }
 

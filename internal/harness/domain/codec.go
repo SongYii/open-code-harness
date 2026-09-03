@@ -344,7 +344,7 @@ func unmarshalEvent(eventType string, data json.RawMessage) (Event, error) {
 		}
 		optional = []string{
 			"checkpointID", "checkpointKind", "rawTailFromSequence", "rawTailThroughSequence",
-			"usageAnchorApplied", "usageAnchorTokens",
+			"usageAnchorApplied", "usageAnchorTokens", "prunedToolResultCount",
 		}
 	default:
 		return nil, invalidEventError("unsupported event type")

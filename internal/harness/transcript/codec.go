@@ -281,6 +281,7 @@ type contextPreparedPayload struct {
 	UsageAnchorApplied        bool   `json:"usageAnchorApplied,omitempty"`
 	UsageAnchorTokens         uint64 `json:"usageAnchorTokens,omitempty"`
 	SerializedEnvelopeBytes   uint64 `json:"serializedEnvelopeBytes"`
+	PrunedToolResultCount     uint32 `json:"prunedToolResultCount,omitempty"`
 }
 
 func MarshalLine(line Line) ([]byte, error) {
@@ -515,6 +516,7 @@ func ProjectRecord(record domain.RecordedEvent, steps map[domain.TurnID]uint32) 
 			EstimatedTotalTokens: event.EstimatedTotalTokens, MeterID: event.MeterID,
 			UsageAnchorApplied: event.UsageAnchorApplied, UsageAnchorTokens: event.UsageAnchorTokens,
 			SerializedEnvelopeBytes: event.SerializedEnvelopeBytes,
+			PrunedToolResultCount:   event.PrunedToolResultCount,
 		})
 	default:
 		return Line{}, false, &Error{Code: CodeUnsupportedEventType, Message: "unsupported event type"}
@@ -809,7 +811,7 @@ func factPayloadKeys(typ string) (required, optional []string, ok bool) {
 				"budgetHardInput", "budgetTrigger", "budgetTarget", "estimatedMessageTokens",
 				"estimatedToolSchemaTokens", "estimatedTotalTokens", "meterID", "serializedEnvelopeBytes",
 			},
-			[]string{"checkpointID", "checkpointKind", "rawTailFromSequence", "rawTailThroughSequence", "usageAnchorApplied", "usageAnchorTokens"},
+			[]string{"checkpointID", "checkpointKind", "rawTailFromSequence", "rawTailThroughSequence", "usageAnchorApplied", "usageAnchorTokens", "prunedToolResultCount"},
 			true
 	default:
 		return nil, nil, false
