@@ -21,14 +21,63 @@ type CriterionResult struct {
 	Score  *float64     `json:"score,omitempty"`
 }
 
+// CostStatus makes a Score's own cost availability explicit, so an
+// unavailable price can never be read as a computed zero. price.go
+// already refuses to substitute zero for a missing price; this is that
+// same rule carried onto the published document.
+type CostStatus string
+
+const (
+	// CostStatusUnavailable means no price was resolvable for this
+	// scorer's model. CostMicrounits is zero and CostCurrency is empty,
+	// and neither may be interpreted as a real cost.
+	CostStatusUnavailable CostStatus = "unavailable"
+	// CostStatusComputed means a price table produced a real figure,
+	// including a genuine zero for a free model. CostCurrency names the
+	// currency CostMicrounits is denominated in, in millionths.
+	CostStatusComputed CostStatus = "computed"
+)
+
 // ScorerUsage is the usage/timing/cost of the scorer itself, when
 // applicable (design §20) — distinct from the Subject's own usage, which
 // Outcome/EvidenceManifest evidence carries.
+//
+// CostStatus is empty only on a legacy Score published before cost
+// availability was explicit; such a Score remains readable, but a newly
+// published live judge Score must set it.
 type ScorerUsage struct {
-	InputTokens    int64 `json:"inputTokens,omitempty"`
-	OutputTokens   int64 `json:"outputTokens,omitempty"`
-	DurationMillis int64 `json:"durationMillis,omitempty"`
-	CostMicrounits int64 `json:"costMicrounits,omitempty"`
+	InputTokens    int64      `json:"inputTokens,omitempty"`
+	OutputTokens   int64      `json:"outputTokens,omitempty"`
+	DurationMillis int64      `json:"durationMillis,omitempty"`
+	CostStatus     CostStatus `json:"costStatus,omitempty"`
+	CostMicrounits int64      `json:"costMicrounits,omitempty"`
+	CostCurrency   string     `json:"costCurrency,omitempty"`
+}
+
+func (usage ScorerUsage) validate() error {
+	switch usage.CostStatus {
+	case "":
+		// Legacy: no status was recorded, so no currency may be claimed
+		// either. CostMicrounits keeps whatever the old writer meant by it.
+		if usage.CostCurrency != "" {
+			return fmt.Errorf("%w: scorerUsage.costCurrency requires an explicit costStatus", errInvalidDocument)
+		}
+	case CostStatusUnavailable:
+		if usage.CostCurrency != "" || usage.CostMicrounits != 0 {
+			return fmt.Errorf("%w: scorerUsage costStatus %q requires an empty currency and a zero cost",
+				errInvalidDocument, CostStatusUnavailable)
+		}
+	case CostStatusComputed:
+		if usage.CostCurrency == "" {
+			return fmt.Errorf("%w: scorerUsage costStatus %q requires a currency", errInvalidDocument, CostStatusComputed)
+		}
+		if usage.CostMicrounits < 0 {
+			return fmt.Errorf("%w: scorerUsage.costMicrounits must not be negative", errInvalidDocument)
+		}
+	default:
+		return fmt.Errorf("%w: unknown scorerUsage costStatus %q", errInvalidDocument, usage.CostStatus)
+	}
+	return nil
 }
 
 // Score is one `och.eval.score` document: one immutable scorer result over
@@ -129,6 +178,11 @@ func (score Score) Validate() error {
 	}
 	if err := requireNonEmptyEntries("contradictoryEvidence", score.ContradictoryEvidence); err != nil {
 		return err
+	}
+	if score.ScorerUsage != nil {
+		if err := score.ScorerUsage.validate(); err != nil {
+			return err
+		}
 	}
 	return nil
 }

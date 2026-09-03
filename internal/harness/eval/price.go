@@ -67,3 +67,23 @@ func EstimateCostMicrounits(table PriceTable, modelID string, inputTokens, outpu
 		int64(cachedInputTokens)*entry.CachedInputMicrounitsPerToken
 	return total, true
 }
+
+// ResolveScorerCost turns a token count and an optional price table into
+// the explicit cost triple a published ScorerUsage carries. It is the
+// only place a caller should derive those three fields together, because
+// keeping them in one function is what guarantees an unavailable price
+// can never be published as a computed zero: a nil table, a model with no
+// entry, or a table with no declared currency all return
+// CostStatusUnavailable with a zero cost and no currency, while a free
+// model that really does cost nothing returns CostStatusComputed with a
+// genuine zero.
+func ResolveScorerCost(table *PriceTable, modelID string, inputTokens, outputTokens, cachedInputTokens uint64) (CostStatus, int64, string) {
+	if table == nil || !hasText(table.Currency) {
+		return CostStatusUnavailable, 0, ""
+	}
+	microunits, ok := EstimateCostMicrounits(*table, modelID, inputTokens, outputTokens, cachedInputTokens)
+	if !ok {
+		return CostStatusUnavailable, 0, ""
+	}
+	return CostStatusComputed, microunits, table.Currency
+}

@@ -32,7 +32,7 @@
 
 **Interfaces:** Produces `DecodeJudgeConfig([]byte)`, `JudgeConfigDigest(JudgeConfig)`, `JudgeProvider`, `JudgePrompt`, rubric-bearing `JudgeCriterion`, and `CostStatusUnavailable`/`CostStatusComputed`.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```go
 func TestDecodeJudgeConfigRoundTripAndDigest(t *testing.T) {
@@ -55,13 +55,13 @@ func TestScorerUsageDistinguishesUnavailableFromComputedZero(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `go test ./internal/harness/eval -run 'JudgeConfig|ScorerUsage|Price' -count=1`
 
 Expected: FAIL because the document API and cost-status fields do not exist.
 
-- [ ] **Step 3: Implement the exact spec schema and validation**
+- [x] **Step 3: Implement the exact spec schema and validation**
 
 ```go
 const SchemaJudgeConfig = "och.eval.judge-config"
@@ -78,11 +78,11 @@ const ( CostStatusUnavailable CostStatus = "unavailable"; CostStatusComputed Cos
 
 Validate all spec fields, a 4096-byte rubric cap, unique IDs/roles, exact embedded prompt digest, and cost-field combinations. Legacy empty cost status remains readable; Task 4 requires a status for newly published judge Scores.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run: `go test ./internal/harness/eval -run 'JudgeConfig|Judge|ScorerUsage|Score|Price' -count=1`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/harness/eval

@@ -32,15 +32,17 @@ func judgeTestFixture(t *testing.T) (reader *ArtifactReader, transcriptPath, aud
 	return reader, transcriptEntries[0].Path, auditEntries[0].Path
 }
 
+// testJudgeConfig is the canonical frozen document with the two criteria
+// every judge test below scores against, so a judge test always exercises
+// the same validation a real `och.eval.judge-config` file passes.
 func testJudgeConfig() JudgeConfig {
-	return JudgeConfig{
-		ModelID:      "judge-model-fixture",
-		PromptDigest: QualityJudgePromptV1Digest(),
-		Criteria: []JudgeCriterion{
-			{ID: "quality", EvidenceRoles: []string{"transcript"}},
-			{ID: "continuity", EvidenceRoles: []string{"audit"}},
-		},
+	config := validJudgeConfig()
+	config.Provider.ModelID = "judge-model-fixture"
+	config.Criteria = []JudgeCriterion{
+		{ID: "quality", Rubric: "Judge the transcript's own quality.", EvidenceRoles: []string{"transcript"}},
+		{ID: "continuity", Rubric: "Judge the audit record's own continuity.", EvidenceRoles: []string{"audit"}},
 	}
+	return config
 }
 
 func fixedJudgeCaller(t *testing.T, output judgeRawOutput) JudgeCaller {
@@ -315,8 +317,10 @@ func TestRunJudgeValidatesFrozenConfigBeforeCallingModel(t *testing.T) {
 		name   string
 		mutate func(*JudgeConfig)
 	}{
-		{name: "missing model", mutate: func(config *JudgeConfig) { config.ModelID = "" }},
-		{name: "wrong prompt digest", mutate: func(config *JudgeConfig) { config.PromptDigest = Digest("sha256:" + strings.Repeat("0", 64)) }},
+		{name: "missing model", mutate: func(config *JudgeConfig) { config.Provider.ModelID = "" }},
+		{name: "wrong prompt digest", mutate: func(config *JudgeConfig) {
+			config.Prompt.Digest = Digest("sha256:" + strings.Repeat("0", 64))
+		}},
 		{name: "duplicate criterion", mutate: func(config *JudgeConfig) { config.Criteria[1].ID = config.Criteria[0].ID }},
 		{name: "empty role", mutate: func(config *JudgeConfig) { config.Criteria[0].EvidenceRoles = []string{""} }},
 	} {
@@ -412,10 +416,9 @@ func TestBuildJudgeEvidenceBundleWrapsContentAsUntrustedData(t *testing.T) {
 
 func TestBuildJudgeEvidenceBundleOnlyReadsDeclaredRoles(t *testing.T) {
 	reader, _, _ := judgeTestFixture(t)
-	config := JudgeConfig{
-		ModelID:      "judge-model-fixture",
-		PromptDigest: QualityJudgePromptV1Digest(),
-		Criteria:     []JudgeCriterion{{ID: "quality", EvidenceRoles: []string{"transcript"}}},
+	config := testJudgeConfig()
+	config.Criteria = []JudgeCriterion{
+		{ID: "quality", Rubric: "Judge the transcript's own quality.", EvidenceRoles: []string{"transcript"}},
 	}
 	_, paths, err := buildJudgeEvidenceBundle(reader, config)
 	if err != nil {
@@ -454,7 +457,9 @@ func TestQualityJudgePromptV1DigestIsDeterministic(t *testing.T) {
 
 func TestRunJudgeRefusesEmptyCriteria(t *testing.T) {
 	reader, _, _ := judgeTestFixture(t)
-	_, err := RunJudge(context.Background(), reader, JudgeConfig{ModelID: "m", PromptDigest: QualityJudgePromptV1Digest()}, fixedJudgeCaller(t, judgeRawOutput{Verdict: "pass"}))
+	config := testJudgeConfig()
+	config.Criteria = nil
+	_, err := RunJudge(context.Background(), reader, config, fixedJudgeCaller(t, judgeRawOutput{Verdict: "pass"}))
 	if err == nil {
 		t.Fatal("RunJudge() error = nil, want a refusal for a config with no criteria")
 	}

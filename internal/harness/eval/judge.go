@@ -38,27 +38,6 @@ const (
 	maxJudgeRationaleBytes      = 4096
 )
 
-// JudgeCriterion names one quality dimension a judge run evaluates and
-// which manifest evidence roles it may see to evaluate it (design's own
-// "given only bounded, redacted, manifest-declared evidence selected by
-// criteria" -- a criterion never sees a role it did not itself declare).
-type JudgeCriterion struct {
-	ID            string   `json:"id"`
-	EvidenceRoles []string `json:"evidenceRoles"`
-}
-
-// JudgeConfig freezes one judge run's own model/config/prompt identity
-// (design: "Freeze judge model/config/prompt... digests"), independent
-// of the Subject's own identity — judge usage/cost is kept separate from
-// Subject usage/cost by construction: RunJudge never touches Outcome or
-// the Subject's own evidence beyond reading it, and its own ScorerUsage
-// is carried on the Score it produces, never folded into Outcome.
-type JudgeConfig struct {
-	ModelID      string
-	PromptDigest Digest
-	Criteria     []JudgeCriterion
-}
-
 // JudgeCaller sends a fully-built judge request (the frozen system
 // prompt plus a bounded, redacted evidence bundle) to a real or fixture
 // judge model and returns its raw text response. RunJudge itself never
@@ -126,7 +105,7 @@ func indeterminateJudgeOutcome(reason string, usage ScorerUsage) JudgeOutcome {
 // attempt judging at all (invalid frozen configuration, missing dependencies,
 // or an evidence bundle that could not be built).
 func RunJudge(ctx context.Context, reader *ArtifactReader, config JudgeConfig, caller JudgeCaller) (JudgeOutcome, error) {
-	if err := validateJudgeConfig(config); err != nil {
+	if err := config.Validate(); err != nil {
 		return JudgeOutcome{}, fmt.Errorf("eval: run judge: %w", err)
 	}
 	if reader == nil {
@@ -229,42 +208,6 @@ func RunJudge(ctx context.Context, reader *ArtifactReader, config JudgeConfig, c
 		EvidenceReferences: output.EvidenceReferences, MissingEvidence: output.MissingEvidence,
 		ContradictoryEvidence: output.ContradictoryEvidence, Rationale: rationale, Usage: usage,
 	}, nil
-}
-
-func validateJudgeConfig(config JudgeConfig) error {
-	if !hasText(config.ModelID) {
-		return fmt.Errorf("config modelId is required")
-	}
-	if config.PromptDigest != QualityJudgePromptV1Digest() {
-		return fmt.Errorf("config promptDigest %q does not identify och_quality_judge_v1", config.PromptDigest)
-	}
-	if len(config.Criteria) == 0 {
-		return fmt.Errorf("config has no criteria")
-	}
-	seenCriteria := make(map[string]bool, len(config.Criteria))
-	for index, criterion := range config.Criteria {
-		if !hasText(criterion.ID) {
-			return fmt.Errorf("config criterion %d has no id", index)
-		}
-		if seenCriteria[criterion.ID] {
-			return fmt.Errorf("config repeats criterion %q", criterion.ID)
-		}
-		seenCriteria[criterion.ID] = true
-		if len(criterion.EvidenceRoles) == 0 {
-			return fmt.Errorf("config criterion %q has no evidence roles", criterion.ID)
-		}
-		seenRoles := make(map[string]bool, len(criterion.EvidenceRoles))
-		for _, role := range criterion.EvidenceRoles {
-			if !hasText(role) {
-				return fmt.Errorf("config criterion %q has an empty evidence role", criterion.ID)
-			}
-			if seenRoles[role] {
-				return fmt.Errorf("config criterion %q repeats evidence role %q", criterion.ID, role)
-			}
-			seenRoles[role] = true
-		}
-	}
-	return nil
 }
 
 // judgeEvidenceEntry is one bounded, redacted, path-labeled excerpt
