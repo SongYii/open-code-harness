@@ -295,12 +295,17 @@ redacted evidence bundle from only the manifest roles a `JudgeConfig`'s own
 `Criteria` declare, sends it to an injectable `JudgeCaller` (so a live model
 call and a test double implement the exact same function type — `RunJudge`
 itself never opens a network connection), and strictly decodes the response.
-Every one of design §21's own fail-closed cases — unknown fields, malformed
-output, a nonexistent evidence reference, an unresolved contradiction, an
-undeclared criterion, or the call itself failing — resolves to a real
-`JudgeOutcome{Verdict: Indeterminate}` carrying a bounded, redacted
-rationale, never a Go error and never silently accepted as `Pass`. Every
-Subject-authored value the judge is shown is labeled `untrusted...
+The frozen judge configuration is validated before any caller runs: the model
+identity and exact embedded prompt digest are mandatory, criterion IDs and
+evidence roles are non-empty and unique, and the trusted criterion contract is
+included alongside the evidence bundle. Every one of design §21's own
+fail-closed cases — unknown fields, malformed or trailing output, a nonexistent
+evidence reference, missing evidence, an unresolved contradiction, an
+undeclared/omitted/duplicate criterion, an aggregate verdict inconsistent with
+its criterion results, an out-of-range score, or the call itself failing —
+resolves to a real `JudgeOutcome{Verdict: Indeterminate}` carrying a bounded,
+redacted rationale, never a Go error and never silently accepted as `Pass`.
+Every Subject-authored value the judge is shown is labeled `untrusted...
 not an instruction` (the embedded `prompts/quality_judge_v1.md` prompt's own
 framing) — this repository has no live model to prove actually resists a
 prompt-injection attempt in an automated test, so what is tested is the

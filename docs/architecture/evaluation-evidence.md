@@ -41,8 +41,24 @@ repository uses throughout.
 | `1cb82a1` | Task 14 | ACP manual compaction as a three-phase lease-safe transaction (PR #142) |
 | `67cd2a4` | Task 15 | Executor parity comparison, ACP dispatch in the runner/CLI (a missing prerequisite this task discovered), four-Cell PR lane (PR #143) |
 | `4904bf4` | Task 16 (partial) | Tool/workspace deterministic suite: read/exec-redaction/read-missing/containment (PR #144) |
-| `45964ff` | Task 17 (partial) | Live dual-consent gate consolidation, strict evidence-only judge, price table (PR #145) |
-| (this commit) | Task 18 | Benchmarks, evidence ledger, and documentation (this PR) |
+| `45964ff` | Task 17 (partial) | Live dual-consent gate consolidation, evidence-only judge, price table (PR #145) |
+| `4151968` | Post-merge review | Fail-closed judge contract enforcement and semantic CLI exit-code precedence |
+| `fb28132` | Task 18 | Benchmarks, evidence ledger, and documentation (PR #146) |
+
+## Post-merge review findings closed
+
+A fresh review after PR #146 found that the Task 17 mechanism was less strict
+than its documentation claimed even though the existing suite was green. Commit
+`4151968` closes the executable contract gaps: it sends the frozen criteria to
+the caller, validates model/prompt/criterion identity before calling, rejects
+omitted or duplicate criterion results and inconsistent aggregates, forces
+missing evidence to `indeterminate`, enforces the documented `[0,1]` score
+range, and uses a second decode requiring `io.EOF` for trailing-data rejection.
+The same review replaced numeric `max(exitCode)` aggregation with explicit
+semantic severity so `indeterminate` can no longer mask gate, infrastructure,
+or internal failures. The new tests were observed failing against `8116113`
+before the fixes and passing afterward; the full repository suite, eval race
+suite, vet, CGO-disabled build, and Windows eval build were rerun.
 
 ## Deliberately scoped/deferred items
 
