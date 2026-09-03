@@ -36,3 +36,20 @@ func NewEvaluationResult(outcome Outcome, scores []Score) (EvaluationResult, err
 	}
 	return EvaluationResult{AttemptID: outcome.AttemptID, Outcome: outcome, Scores: scores}, nil
 }
+
+// AssembleEvaluationResult reads directories' already-published Outcome
+// and every Score published under it (ReadScores' own deterministic
+// filename order) and assembles them into one EvaluationResult. It is a
+// pure, local read: no Score is published, mutated, or reordered by
+// calling this.
+func AssembleEvaluationResult(directories AttemptRootDirectories) (EvaluationResult, error) {
+	outcome, err := ReadOutcome(directories.Root)
+	if err != nil {
+		return EvaluationResult{}, fmt.Errorf("eval: assemble evaluation result: %w", err)
+	}
+	scores, err := ReadScores(directories.Root)
+	if err != nil {
+		return EvaluationResult{}, fmt.Errorf("eval: assemble evaluation result: %w", err)
+	}
+	return NewEvaluationResult(outcome, scores)
+}
