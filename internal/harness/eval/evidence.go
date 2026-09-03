@@ -124,35 +124,77 @@ func CollectEvidence(ctx context.Context, directories AttemptRootDirectories, ex
 	collectTranscriptAndAudit(collectCtx, directories, execution, budget)
 	collectWorkspaceArtifacts(directories, scenario, budget)
 
-	requiredMissing := false
-	for _, entry := range budget.entries {
-		if entry.Required && entry.State != EntryCollected {
-			requiredMissing = true
-			break
-		}
-	}
-	collectionStatus := CollectionComplete
-	if requiredMissing {
-		collectionStatus = CollectionPartial
-	}
-
 	finalOutcome := tentativeOutcome
-	finalOutcome.CollectionStatus = collectionStatus
+	finalOutcome.CollectionStatus = resolveCollectionStatus(budget.entries)
 
-	outcomeDirectory := directories.Root
-	if err := PublishOutcome(outcomeDirectory, finalOutcome); err != nil {
+	if err := PublishOutcome(directories.Root, finalOutcome); err != nil {
 		return Outcome{}, EvidenceManifest{}, fmt.Errorf("eval: collect evidence: %w", err)
 	}
 
-	outcomeDigest, err := OutcomeDigest(finalOutcome)
+	manifest, err := stageOutcomeCopyAndPublishManifest(directories, finalOutcome, budget, startedAt)
 	if err != nil {
-		return finalOutcome, EvidenceManifest{}, fmt.Errorf("eval: collect evidence: digest published outcome: %w", err)
+		return finalOutcome, manifest, fmt.Errorf("eval: collect evidence: %w", err)
+	}
+	return finalOutcome, manifest, nil
+}
+
+// resolveCollectionStatus determines CollectionComplete vs
+// CollectionPartial from what entries actually resolved to: any Required
+// entry that is not EntryCollected makes the whole collection Partial
+// (design §14: "required truncation or rejection prevents a scoreable
+// pass").
+func resolveCollectionStatus(entries []ManifestEntry) CollectionStatus {
+	for _, entry := range entries {
+		if entry.Required && entry.State != EntryCollected {
+			return CollectionPartial
+		}
+	}
+	return CollectionComplete
+}
+
+// stageAndPublishManifestForExistingOutcome is ResumeCollection's own
+// entry point: it re-runs the same staging collectTranscriptAndAudit/
+// collectWorkspaceArtifacts perform, against an Outcome that is already
+// published and must not be mutated, then publishes the manifest.
+func stageAndPublishManifestForExistingOutcome(ctx context.Context, directories AttemptRootDirectories, execution ExecutionOutcome, outcome Outcome, scenario Scenario, limits CollectionLimits) (Outcome, EvidenceManifest, error) {
+	if !execution.WriterStopped {
+		return Outcome{}, EvidenceManifest{}, fmt.Errorf("eval: resume collection: refusing to collect: writer was not provably stopped")
+	}
+	limits = limits.withDefaults()
+	if limits.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, limits.Timeout)
+		defer cancel()
+	}
+
+	startedAt := time.Now().UTC()
+	budget := &collectionBudget{limits: limits}
+	collectTranscriptAndAudit(ctx, directories, execution, budget)
+	collectWorkspaceArtifacts(directories, scenario, budget)
+
+	manifest, err := stageOutcomeCopyAndPublishManifest(directories, outcome, budget, startedAt)
+	if err != nil {
+		return outcome, manifest, fmt.Errorf("eval: resume collection: %w", err)
+	}
+	return outcome, manifest, nil
+}
+
+// stageOutcomeCopyAndPublishManifest is the publication tail both
+// CollectEvidence and ResumeCollection share: stage the already-published
+// Outcome's exact bytes as the manifest's own "outcome" entry, then
+// publish the manifest — the commit marker that makes an Attempt
+// scoreable (design §12/§20). outcome must already be durably published
+// in directories.Root before this is called.
+func stageOutcomeCopyAndPublishManifest(directories AttemptRootDirectories, outcome Outcome, budget *collectionBudget, startedAt time.Time) (EvidenceManifest, error) {
+	outcomeDigest, err := OutcomeDigest(outcome)
+	if err != nil {
+		return EvidenceManifest{}, fmt.Errorf("digest published outcome: %w", err)
 	}
 
 	outcomeCopyPath := filepath.Join(directories.Evidence, "outcome.json")
-	outcomeCopyStaged, err := stageOutcomeCopy(outcomeDirectory, outcomeCopyPath)
+	outcomeCopyStaged, err := stageOutcomeCopy(directories.Root, outcomeCopyPath)
 	if err != nil {
-		return finalOutcome, EvidenceManifest{}, fmt.Errorf("eval: collect evidence: stage outcome evidence copy: %w", err)
+		return EvidenceManifest{}, fmt.Errorf("stage outcome evidence copy: %w", err)
 	}
 	budget.track(ManifestEntry{
 		Path: "outcome.json", Role: "outcome", MediaType: "application/json",
@@ -160,22 +202,21 @@ func CollectEvidence(ctx context.Context, directories AttemptRootDirectories, ex
 		SHA256: outcomeCopyStaged.sha256, ByteLength: outcomeCopyStaged.byteLength,
 	})
 
-	endedAt := time.Now().UTC()
 	manifest := EvidenceManifest{
 		FormatVersion:       FormatVersion,
 		Schema:              SchemaEvidenceManifest,
-		AttemptID:           finalOutcome.AttemptID,
+		AttemptID:           outcome.AttemptID,
 		OutcomeDigest:       outcomeDigest,
 		Entries:             budget.entries,
 		TotalBytes:          budget.totalBytes,
 		FileCount:           budget.fileCount,
 		CollectionStartedAt: startedAt,
-		CollectionEndedAt:   endedAt,
+		CollectionEndedAt:   time.Now().UTC(),
 	}
 	if err := PublishEvidenceManifest(directories.Root, manifest); err != nil {
-		return finalOutcome, manifest, fmt.Errorf("eval: collect evidence: %w", err)
+		return manifest, err
 	}
-	return finalOutcome, manifest, nil
+	return manifest, nil
 }
 
 // collectTranscriptAndAudit attempts design §14's baseline infrastructure
