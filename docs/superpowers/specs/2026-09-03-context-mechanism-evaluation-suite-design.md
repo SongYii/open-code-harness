@@ -106,6 +106,17 @@ live audit replica are forbidden substitutes. Existing runtime/store tests
 remain authoritative for unmatched-bracket reconciliation. This suite proves
 process restart and checkpoint recovery after a completed checkpoint.
 
+There is also a known prerequisite for the idle ACP `interrupt` Scenario.
+The current `och -acp` process catches SIGINT through `signal.NotifyContext`,
+but ACP's synchronous `Scanner.Scan` remains blocked on stdin and does not
+observe the cancelled context until another frame arrives. The existing real-
+binary regression test correctly expects `infra_failed/acp_restart_failed`.
+The passing Context suite must not include or advertise interrupt recovery
+until section 12.1's ACP input-cancellation fix has landed. `kill` remains the
+suite's actual abrupt/crash restart mode; after that fix, `interrupt` is a
+signal-driven restart that may release the writer lease through normal
+`Assembly.Close`.
+
 ## 5. Architecture and ownership
 
 ```text
@@ -351,7 +362,7 @@ Every Scenario starts from a fresh Session and fixture copy.
 | `context-multi-chunk-summary` | large history, summary-triggering prompt | chunk | multi-chunk, pre-turn summary, bounds | in-process + ACP |
 | `context-usage-anchor` | first response reports high fixed input usage, then a small appended prompt | anchor | usage anchor, pre-turn summary, bounds | in-process + ACP |
 | `context-checkpoint-clean-restart` | history, summary, clean restart, prompt | core | checkpoint reused, bounds, projection | in-process + ACP |
-| `context-checkpoint-interrupt-restart` | history, summary, interrupt, prompt | recovery | checkpoint reused, bounds | ACP only |
+| `context-checkpoint-interrupt-restart` | history, summary, interrupt, prompt | recovery | checkpoint reused, bounds | ACP only, blocked until section 12.1 |
 | `context-checkpoint-kill-restart` | history, summary, kill, prompt | recovery | checkpoint reused, bounds | ACP only |
 
 `context-mid-turn-pruning` combines two mechanisms because the production
@@ -412,7 +423,37 @@ Paired sets use identical Scenario order, repetition count, pairing seed, and
 pairing tags. They differ only where the accepted executor contract requires
 it. `interrupt` and `kill` never appear in an in-process set.
 
+Until section 12.1 lands, `context-recovery-acp.json` contains only the `kill`
+Scenario. Adding the interrupt Scenario earlier would create a knowingly red
+matrix and is forbidden.
+
 ## 12. CI and execution lanes
+
+### 12.1 ACP interrupt prerequisite
+
+Land a separate ACP-owner fix before enabling the interrupt Scenario. The fix
+must make the ACP input read cancellation-aware without changing
+`runACPRestart` to fall back from SIGINT to SIGKILL:
+
+1. make ownership of the ACP input's close operation explicit (the current real
+   and test callers use `*os.File` or `*io.PipeReader`, both `io.ReadCloser`);
+2. when the Serve context is cancelled, close that owned input so a blocked
+   `Scanner.Scan` returns;
+3. return the context cancellation deterministically rather than exposing an
+   incidental closed-file error;
+4. add an adapter test proving an initialized, idle Serve call returns within a
+   bounded channel-driven deadline after cancellation;
+5. change the real-binary eval regression from expected
+   `infra_failed/acp_restart_failed` to a completed SIGINT restart followed by
+   a successful prompt on the same Session;
+6. update shutdown and lease comments: SIGINT is signal-driven but can run
+   normal `Assembly.Close`; SIGKILL is the abrupt mode that waits for lease
+   expiry.
+
+Closing stdin in `runACPRestart` is not an acceptable fix because that silently
+turns `interrupt` into `clean_shutdown`. Adding a timeout followed by SIGKILL is
+also not acceptable because it silently turns it into `kill`. Reap must still
+be proven before relaunch.
 
 ### Ordinary PR CI
 
@@ -524,13 +565,15 @@ Each slice follows red-green-refactor and lands independently green.
    from passing.
 4. Freeze profile values and document their measured margin.
 
-### Slice 6: ACP abrupt restart and suite publication
+### Slice 6: ACP restart and suite publication
 
-1. Add completed-checkpoint interrupt/kill Scenarios only to the ACP set.
-2. Prove owned process group termination/reap and same-Session `session/load`
+1. Land and verify section 12.1's ACP interrupt prerequisite in its own PR.
+2. Add the completed-checkpoint kill Scenario to the ACP set; add interrupt
+   only after its prerequisite is present.
+3. Prove owned process group termination/reap and same-Session `session/load`
    through existing executor evidence and a successful post-restart prompt.
-3. Update architecture docs and evidence ledger.
-4. Record the still-deferred active-compaction crash barrier explicitly.
+4. Update architecture docs and evidence ledger.
+5. Record the still-deferred active-compaction crash barrier explicitly.
 
 ## 15. Test and acceptance contract
 
@@ -583,6 +626,8 @@ Acceptance requires:
 - the ordinary PR matrix remains within its documented Cell count and lane;
 - live evaluation remains impossible without explicit consent;
 - docs and evidence ledger do not claim active-compaction crash coverage.
+- the recovery set never advertises interrupt support while the real idle-agent
+  regression still expects `acp_restart_failed`.
 
 ## 16. Review checklist
 
