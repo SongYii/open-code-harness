@@ -155,5 +155,8 @@ func validateOptionalFiniteScore(value *float64) error {
 	if math.IsNaN(*value) || math.IsInf(*value, 0) {
 		return fmt.Errorf("%w: score must be a finite number", errInvalidDocument)
 	}
+	if *value < 0 || *value > 1 {
+		return fmt.Errorf("%w: score must be between 0 and 1", errInvalidDocument)
+	}
 	return nil
 }

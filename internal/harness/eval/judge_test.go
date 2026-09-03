@@ -84,8 +84,11 @@ func TestRunJudgeKnownPassFixture(t *testing.T) {
 func TestRunJudgeKnownFailFixture(t *testing.T) {
 	reader, transcriptPath, _ := judgeTestFixture(t)
 	caller := fixedJudgeCaller(t, judgeRawOutput{
-		Verdict:            "fail",
-		Criteria:           []judgeRawCriterion{{ID: "quality", Status: "fail"}},
+		Verdict: "fail",
+		Criteria: []judgeRawCriterion{
+			{ID: "quality", Status: "fail"},
+			{ID: "continuity", Status: "pass"},
+		},
 		EvidenceReferences: []string{transcriptPath},
 		Rationale:          "the transcript shows the constraint was dropped",
 	})
@@ -209,6 +212,144 @@ func TestRunJudgeRejectsMalformedOutput(t *testing.T) {
 		}
 	})
 }
+
+func TestRunJudgeRejectsTrailingJSONValue(t *testing.T) {
+	reader, _, _ := judgeTestFixture(t)
+	caller := func(context.Context, string, string) (string, ScorerUsage, error) {
+		return `{"verdict":"pass","score":1,"criteria":[{"id":"quality","status":"pass"},{"id":"continuity","status":"pass"}],"evidenceReferences":[],"rationale":"ok"} {}`, ScorerUsage{}, nil
+	}
+	outcome, err := RunJudge(context.Background(), reader, testJudgeConfig(), caller)
+	if err != nil {
+		t.Fatalf("RunJudge: %v", err)
+	}
+	if outcome.Verdict != ScoreIndeterminate {
+		t.Fatalf("Verdict = %q, want %q for trailing JSON", outcome.Verdict, ScoreIndeterminate)
+	}
+}
+
+func TestRunJudgeRequiresEveryCriterionExactlyOnce(t *testing.T) {
+	reader, _, _ := judgeTestFixture(t)
+	for _, test := range []struct {
+		name     string
+		criteria []judgeRawCriterion
+	}{
+		{name: "omitted", criteria: []judgeRawCriterion{{ID: "quality", Status: "pass"}}},
+		{name: "duplicate", criteria: []judgeRawCriterion{{ID: "quality", Status: "pass"}, {ID: "quality", Status: "pass"}, {ID: "continuity", Status: "pass"}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			caller := fixedJudgeCaller(t, judgeRawOutput{Verdict: "pass", Score: float64Pointer(1), Criteria: test.criteria, Rationale: "ok"})
+			outcome, err := RunJudge(context.Background(), reader, testJudgeConfig(), caller)
+			if err != nil {
+				t.Fatalf("RunJudge: %v", err)
+			}
+			if outcome.Verdict != ScoreIndeterminate {
+				t.Fatalf("Verdict = %q, want %q", outcome.Verdict, ScoreIndeterminate)
+			}
+		})
+	}
+}
+
+func TestRunJudgeCannotPassWithMissingEvidence(t *testing.T) {
+	reader, _, _ := judgeTestFixture(t)
+	caller := fixedJudgeCaller(t, judgeRawOutput{
+		Verdict: "pass",
+		Score:   float64Pointer(1),
+		Criteria: []judgeRawCriterion{
+			{ID: "quality", Status: "pass"},
+			{ID: "continuity", Status: "pass"},
+		},
+		MissingEvidence: []string{"the final workspace state"},
+		Rationale:       "probably fine",
+	})
+	outcome, err := RunJudge(context.Background(), reader, testJudgeConfig(), caller)
+	if err != nil {
+		t.Fatalf("RunJudge: %v", err)
+	}
+	if outcome.Verdict != ScoreIndeterminate {
+		t.Fatalf("Verdict = %q, want %q when evidence is missing", outcome.Verdict, ScoreIndeterminate)
+	}
+}
+
+func TestRunJudgeRejectsAggregateVerdictInconsistentWithCriteria(t *testing.T) {
+	reader, _, _ := judgeTestFixture(t)
+	caller := fixedJudgeCaller(t, judgeRawOutput{
+		Verdict: "pass",
+		Criteria: []judgeRawCriterion{
+			{ID: "quality", Status: "fail"},
+			{ID: "continuity", Status: "pass"},
+		},
+		Rationale: "internally inconsistent",
+	})
+	outcome, err := RunJudge(context.Background(), reader, testJudgeConfig(), caller)
+	if err != nil {
+		t.Fatalf("RunJudge: %v", err)
+	}
+	if outcome.Verdict != ScoreIndeterminate {
+		t.Fatalf("Verdict = %q, want %q", outcome.Verdict, ScoreIndeterminate)
+	}
+}
+
+func TestRunJudgeRejectsOutOfRangeScores(t *testing.T) {
+	reader, _, _ := judgeTestFixture(t)
+	caller := fixedJudgeCaller(t, judgeRawOutput{
+		Verdict: "pass",
+		Score:   float64Pointer(1.1),
+		Criteria: []judgeRawCriterion{
+			{ID: "quality", Status: "pass"},
+			{ID: "continuity", Status: "pass"},
+		},
+		Rationale: "out of range",
+	})
+	outcome, err := RunJudge(context.Background(), reader, testJudgeConfig(), caller)
+	if err != nil {
+		t.Fatalf("RunJudge: %v", err)
+	}
+	if outcome.Verdict != ScoreIndeterminate {
+		t.Fatalf("Verdict = %q, want %q", outcome.Verdict, ScoreIndeterminate)
+	}
+}
+
+func TestRunJudgeValidatesFrozenConfigBeforeCallingModel(t *testing.T) {
+	reader, _, _ := judgeTestFixture(t)
+	for _, test := range []struct {
+		name   string
+		mutate func(*JudgeConfig)
+	}{
+		{name: "missing model", mutate: func(config *JudgeConfig) { config.ModelID = "" }},
+		{name: "wrong prompt digest", mutate: func(config *JudgeConfig) { config.PromptDigest = Digest("sha256:" + strings.Repeat("0", 64)) }},
+		{name: "duplicate criterion", mutate: func(config *JudgeConfig) { config.Criteria[1].ID = config.Criteria[0].ID }},
+		{name: "empty role", mutate: func(config *JudgeConfig) { config.Criteria[0].EvidenceRoles = []string{""} }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := testJudgeConfig()
+			test.mutate(&config)
+			called := false
+			caller := func(context.Context, string, string) (string, ScorerUsage, error) {
+				called = true
+				return "", ScorerUsage{}, nil
+			}
+			if _, err := RunJudge(context.Background(), reader, config, caller); err == nil {
+				t.Fatal("RunJudge() error = nil, want invalid configuration error")
+			}
+			if called {
+				t.Fatal("RunJudge called the model before rejecting invalid frozen config")
+			}
+		})
+	}
+}
+
+func TestBuildJudgeEvidenceBundleIncludesTrustedCriteriaContract(t *testing.T) {
+	reader, _, _ := judgeTestFixture(t)
+	bundle, _, err := buildJudgeEvidenceBundle(reader, testJudgeConfig())
+	if err != nil {
+		t.Fatalf("buildJudgeEvidenceBundle: %v", err)
+	}
+	if !strings.Contains(bundle, `<criteria>`) || !strings.Contains(bundle, `"id":"quality"`) || !strings.Contains(bundle, `"id":"continuity"`) {
+		t.Fatalf("bundle does not carry the frozen criteria contract: %s", bundle)
+	}
+}
+
+func float64Pointer(value float64) *float64 { return &value }
 
 // TestRunJudgeCallerFailureBecomesIndeterminate proves a live-model call
 // failure (network error, timeout, whatever a real JudgeCaller might

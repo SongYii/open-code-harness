@@ -147,10 +147,29 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 }
 
 func maxExitCode(a, b int) int {
-	if b > a {
+	if exitCodeSeverity(b) > exitCodeSeverity(a) {
 		return b
 	}
 	return a
+}
+
+func exitCodeSeverity(code int) int {
+	switch code {
+	case exitInternal:
+		return 5
+	case exitValidation:
+		return 4
+	case exitInfraFailure:
+		return 3
+	case exitGateFailure:
+		return 2
+	case exitIndeterminate:
+		return 1
+	case exitOK:
+		return 0
+	default:
+		return 5
+	}
 }
 
 // checkLaneConsent implements design's live dual-consent gate by

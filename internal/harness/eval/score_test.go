@@ -67,6 +67,15 @@ func TestScoreValidateRejectsBadManifestDigest(t *testing.T) {
 	}
 }
 
+func TestScoreValidateRejectsOutOfRangeNumericScore(t *testing.T) {
+	score := validScore(t, mustAttemptID(t))
+	outside := 1.01
+	score.NumericScore = &outside
+	if err := score.Validate(); err == nil {
+		t.Fatal("Validate() accepted a numericScore outside [0,1]")
+	}
+}
+
 func TestScoreValidateRejectsCriterionWithoutID(t *testing.T) {
 	score := validScore(t, mustAttemptID(t))
 	score.Criteria = []CriterionResult{{Status: ScorePass}}
