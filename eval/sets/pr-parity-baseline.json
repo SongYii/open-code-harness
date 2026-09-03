@@ -1,0 +1,30 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.set",
+  "id": "pr-parity-baseline",
+  "scenarios": [
+    {
+      "id": "executor-parity",
+      "digest": "sha256:0144d6fdb9494084e307076c4d8f856d2f281ab71e9d51b96329b8dc4009b6d3"
+    }
+  ],
+  "subjects": [
+    {
+      "id": "smoke-subject",
+      "digest": "sha256:fbe35a86020828006e75f8f688286080fc1aeb6731ce42820b817ec2cb3dd1fb"
+    }
+  ],
+  "executors": [
+    {
+      "id": "smoke-executor",
+      "digest": "sha256:3c34297540f47a11ae091da1f5b229391db0daeabc1dc0f797bfd0db9046e5aa"
+    }
+  ],
+  "repetitionCount": 1,
+  "pairingSeed": "pr-v1",
+  "limits": {
+    "tokenCap": 100000
+  },
+  "artifactRoot": ".eval-artifacts-pr",
+  "lane": "fixture"
+}

@@ -1,0 +1,17 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.executor",
+  "id": "smoke-executor-acp",
+  "kind": "acp_subprocess",
+  "ochRevision": "dev",
+  "evalBuildRevision": "dev",
+  "compositionContractVersion": "v1",
+  "acpSubprocess": {
+    "binarySha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "normalizedArgv": ["och", "-acp"],
+    "protocolVersion": "1",
+    "agentName": "och",
+    "agentVersion": "dev"
+  },
+  "capabilities": ["prompt", "compact", "collect"]
+}

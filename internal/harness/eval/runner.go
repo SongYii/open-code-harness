@@ -28,6 +28,16 @@ type RunnerInputs struct {
 	// frozen EvalSet retains its declared artifactRoot for identity; absolute
 	// Attempt paths record where this invocation actually wrote artifacts.
 	ArtifactRootOverride string
+
+	// ACPLaunch configures every acp_subprocess Cell this invocation runs
+	// (design §16): the resolved och binary this run launches, shared
+	// across every such Attempt (design §12: resolve the exact binary
+	// once per run, not once per launch). Its zero value (an empty
+	// Binary.Path) is only valid when inputs.Set references no
+	// acp_subprocess Executor — RunEvalSet refuses otherwise, before any
+	// Attempt is created, rather than failing individual Attempts one at
+	// a time.
+	ACPLaunch ACPLaunchConfig
 }
 
 // AttemptRunResult is one Cell repetition's outcome (design §9). Err is
@@ -81,9 +91,14 @@ func RunEvalSet(ctx context.Context, inputs RunnerInputs) ([]AttemptRunResult, e
 	}
 	for _, ref := range inputs.Set.Executors {
 		executor := inputs.Executors[ref.ID]
-		if executor.Kind != ExecutorInProcess {
-			return nil, fmt.Errorf("eval: run eval set: executor %q: only %q is supported by this Runner, got %q",
-				executor.ID, ExecutorInProcess, executor.Kind)
+		switch executor.Kind {
+		case ExecutorInProcess:
+		case ExecutorACPSubprocess:
+			if inputs.ACPLaunch.Binary.Path == "" {
+				return nil, fmt.Errorf("eval: run eval set: executor %q: acp_subprocess requires a resolved ACPLaunch.Binary", executor.ID)
+			}
+		default:
+			return nil, fmt.Errorf("eval: run eval set: executor %q: unsupported kind %q", executor.ID, executor.Kind)
 		}
 	}
 	for _, ref := range inputs.Set.Scenarios {
@@ -171,11 +186,22 @@ func runOneAttempt(ctx context.Context, inputs RunnerInputs, executionSubjects m
 	}
 
 	matcher := NewApprovalMatcher(scenario.ApprovalScript)
-	execution, err := RunAttempt(attemptCtx, attemptID, executionSubject, directories, scenario, matcher)
+	var execution ExecutionOutcome
+	switch executor.Kind {
+	case ExecutorInProcess:
+		execution, err = RunAttempt(attemptCtx, attemptID, executionSubject, directories, scenario, matcher)
+	case ExecutorACPSubprocess:
+		execution, err = RunACPAttempt(attemptCtx, attemptID, executionSubject, directories, scenario, inputs.ACPLaunch, matcher)
+	default:
+		// RunEvalSet's own whole-set validation refuses any other kind
+		// before ever reaching here.
+		err = fmt.Errorf("unsupported executor kind %q", executor.Kind)
+	}
 	if err != nil {
-		// RunAttempt returns a non-nil error only when nothing durable
-		// happened yet (its own doc comment): no Outcome exists to collect
-		// evidence for, so there is nothing more this Attempt can publish.
+		// Both RunAttempt and RunACPAttempt return a non-nil error only
+		// when nothing durable happened yet (their own doc comments): no
+		// Outcome exists to collect evidence for, so there is nothing
+		// more this Attempt can publish.
 		result.Err = fmt.Errorf("eval: run attempt: %w", err)
 		return result
 	}
