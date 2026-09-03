@@ -7,6 +7,20 @@ import "github.com/SongYii/open-code-harness/internal/harness/eval"
 // a data file" discipline internal/harness/eval's own verifier catalog
 // follows (implementation plan Task 9).
 var scorerCatalog = map[string]eval.Scorer{
+	// context-core-v1 scores the Context mechanism Scenarios that run on the
+	// core budget profile. Each Scenario declares exactly the verifiers it
+	// exercises; RunScorer refuses any this Scenario did not declare, so one
+	// scorer can serve the whole profile without silently over-claiming.
+	"context-core-v1": {
+		ID:      "context-core-v1",
+		Version: "v1",
+		VerifierIDs: []string{
+			eval.VerifierContextPreTurnSummary,
+			eval.VerifierContextBudgetBounds,
+			eval.VerifierContextProjection,
+			"outcome-not-infra-failed-v1",
+		},
+	},
 	"baseline-v1": {
 		ID:      "baseline-v1",
 		Version: "v1",
