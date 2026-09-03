@@ -97,7 +97,7 @@ git commit -m "feat(eval): freeze live judge configuration"
 
 **Interfaces:** Adds `RunnerInputs.JudgeConfig *JudgeConfig`, `EvidenceDocuments.EvalSet EvalSet`, `EvidenceDocuments.JudgeConfig *JudgeConfig`, and `readJudgeEvidenceDocuments` while retaining the legacy reader.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```go
 func TestEvalSetJudgeDigestMatchesLane(t *testing.T) {
@@ -116,19 +116,19 @@ func TestRunEvalSetRejectsJudgeDigestBeforeAttemptCreation(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `go test ./internal/harness/eval -run 'EvalSetJudge|JudgeDigest|LiveEvidence|Legacy.*Regrade' -count=1`
 
-- [ ] **Step 3: Implement binding**
+- [x] **Step 3: Implement binding**
 
 Stage required `eval-set.json`/role `eval_set` on every new Attempt and `judge-config.json`/role `judge_config` only on live Attempts. Verify set ID, reference IDs/digests, lane parity, and JudgeConfig digest before Attempt creation and before staging. Keep deterministic regrade compatible with old four-document evidence; require new roles only in `readJudgeEvidenceDocuments`.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run: `go test ./internal/harness/eval -run 'EvalSet|Runner|Evidence|Regrade' -count=1`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/harness/eval

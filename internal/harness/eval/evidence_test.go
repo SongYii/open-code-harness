@@ -46,8 +46,9 @@ func runHappyAttempt(t *testing.T) (directories AttemptRootDirectories, executio
 func publishTestEvidenceDocuments(t *testing.T, directories AttemptRootDirectories, attemptID AttemptID, scenario Scenario, subject Subject) EvidenceDocuments {
 	t.Helper()
 	executor := validExecutorInProcess()
+	set := testEvalSetFor(t, LaneFixture, scenario, subject, executor, nil)
 	attempt, err := buildAttemptDocument(
-		"test-set",
+		set.ID,
 		CellAttempt{Cell: Cell{ScenarioID: scenario.ID, SubjectID: subject.ID, ExecutorID: executor.ID}},
 		attemptID, directories, scenario, subject, executor,
 	)
@@ -57,7 +58,7 @@ func publishTestEvidenceDocuments(t *testing.T, directories AttemptRootDirectori
 	if err := PublishAttempt(directories.Root, attempt); err != nil {
 		t.Fatalf("PublishAttempt: %v", err)
 	}
-	return EvidenceDocuments{Scenario: scenario, Subject: subject, Executor: executor, Attempt: attempt}
+	return EvidenceDocuments{Scenario: scenario, Subject: subject, Executor: executor, Attempt: attempt, EvalSet: set}
 }
 
 func TestCollectEvidenceHappyPath(t *testing.T) {

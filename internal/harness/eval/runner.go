@@ -24,6 +24,13 @@ type RunnerInputs struct {
 	// fact: ExpandAttempts and Attempt digests always use Subjects above.
 	ProviderEndpointOverrides map[SubjectID]string
 
+	// JudgeConfig is the resolved document EvalSet.JudgeConfigDigest names.
+	// It is required for a live set and forbidden for a fixture one, and
+	// RunEvalSet verifies its digest against the frozen EvalSet during
+	// whole-set validation — before any Attempt is created, and long
+	// before any judge credential is read.
+	JudgeConfig *JudgeConfig
+
 	// ArtifactRootOverride is this invocation's publication directory. The
 	// frozen EvalSet retains its declared artifactRoot for identity; absolute
 	// Attempt paths record where this invocation actually wrote artifacts.
@@ -76,6 +83,9 @@ func RunEvalSet(ctx context.Context, inputs RunnerInputs) ([]AttemptRunResult, e
 	}
 	cellAttempts, err := ExpandAttempts(inputs.Set, inputs.Scenarios, inputs.Subjects, inputs.Executors)
 	if err != nil {
+		return nil, fmt.Errorf("eval: run eval set: %w", err)
+	}
+	if err := validateResolvedJudgeConfig(inputs.Set, inputs.JudgeConfig); err != nil {
 		return nil, fmt.Errorf("eval: run eval set: %w", err)
 	}
 	executionSubjects, err := resolveExecutionSubjects(inputs.Subjects, inputs.ProviderEndpointOverrides)
@@ -208,6 +218,7 @@ func runOneAttempt(ctx context.Context, inputs RunnerInputs, executionSubjects m
 
 	documents := EvidenceDocuments{
 		Scenario: scenario, Subject: subject, Executor: executor, Attempt: attempt,
+		EvalSet: inputs.Set, JudgeConfig: inputs.JudgeConfig,
 	}
 	outcome, manifest, err := CollectEvidence(attemptCtx, directories, execution, execution.Outcome, documents, executionLimits.CollectionLimits)
 	if err != nil {
@@ -255,4 +266,34 @@ func buildAttemptDocument(evalSetID EvalSetID, cellAttempt CellAttempt, attemptI
 		RuntimeID:   launchRuntimeID(attemptID, 0),
 		PublishedAt: time.Now().UTC(),
 	}, nil
+}
+
+// validateResolvedJudgeConfig checks the operator-supplied JudgeConfig
+// against the frozen EvalSet before any Attempt exists. Doing it here,
+// during whole-set validation, is what guarantees a mismatched or missing
+// judge configuration costs nothing: no Attempt directory is created, no
+// fixture is copied, and no credential is ever looked up.
+func validateResolvedJudgeConfig(set EvalSet, config *JudgeConfig) error {
+	switch set.Lane {
+	case LaneFixture:
+		if config != nil {
+			return fmt.Errorf("a %q lane eval set must not be given a judge configuration", LaneFixture)
+		}
+		return nil
+	case LaneLive:
+		if config == nil {
+			return fmt.Errorf("a %q lane eval set requires the judge configuration its judgeConfigDigest names", LaneLive)
+		}
+		digest, err := JudgeConfigDigest(*config)
+		if err != nil {
+			return err
+		}
+		if digest != set.JudgeConfigDigest {
+			return fmt.Errorf("judge config digest %q disagrees with the frozen eval set's judgeConfigDigest %q",
+				digest, set.JudgeConfigDigest)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported eval set lane %q", set.Lane)
+	}
 }
