@@ -176,7 +176,9 @@ the checked-in pair on every run, so a drifted digest fails the build
 rather than surfacing at judge time. `eval/judges/context-quality-judge.example.json`
 is the worked example. The runner verifies the digest during whole-set
 validation, before any Attempt directory exists, and stages the exact
-document into every live Attempt's evidence.
+document into every live Attempt's evidence — pass it with
+`och-eval run -judge-config eval/judges/<id>.json`, which is required for a
+live set and refused for a fixture one.
 
 Adding a new Scenario/Subject/Executor/EvalSet to the **ordinary PR lane**
 specifically (as opposed to the explicit/scheduled deterministic-full or

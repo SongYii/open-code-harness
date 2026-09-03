@@ -465,3 +465,79 @@ func TestJudgeCLIValidationExitCodes(t *testing.T) {
 		})
 	}
 }
+
+// TestResolveRunJudgeConfigMatchesLane covers the wiring `och-eval run`
+// needs for a live EvalSet. The runner requires a resolved JudgeConfig for
+// a live set and forbids one for a fixture set; this is where the CLI
+// turns a flag into that value, and where it refuses early with a message
+// naming the flag rather than a generic runner error.
+func TestResolveRunJudgeConfigMatchesLane(t *testing.T) {
+	configPath := checkedInJudgeConfigPath(t)
+	config, err := loadJudgeConfig(configPath)
+	if err != nil {
+		t.Fatalf("loadJudgeConfig: %v", err)
+	}
+	digest, err := eval.JudgeConfigDigest(config)
+	if err != nil {
+		t.Fatalf("JudgeConfigDigest: %v", err)
+	}
+	fixtureSet := eval.EvalSet{Lane: eval.LaneFixture}
+	liveSet := eval.EvalSet{Lane: eval.LaneLive, JudgeConfigDigest: digest}
+
+	t.Run("fixture set without the flag resolves to nothing", func(t *testing.T) {
+		got, err := resolveRunJudgeConfig(fixtureSet, "")
+		if err != nil || got != nil {
+			t.Fatalf("got=%v err=%v, want nil/nil", got, err)
+		}
+	})
+	t.Run("fixture set with the flag is refused", func(t *testing.T) {
+		if _, err := resolveRunJudgeConfig(fixtureSet, configPath); err == nil {
+			t.Fatal("a fixture set accepted -judge-config")
+		}
+	})
+	t.Run("live set without the flag names the flag", func(t *testing.T) {
+		_, err := resolveRunJudgeConfig(liveSet, "")
+		if err == nil {
+			t.Fatal("a live set was accepted with no -judge-config")
+		}
+		if !strings.Contains(err.Error(), "-judge-config") {
+			t.Fatalf("error does not name the missing flag: %v", err)
+		}
+	})
+	t.Run("live set with a mismatched digest is refused", func(t *testing.T) {
+		mismatched := liveSet
+		mismatched.JudgeConfigDigest = eval.Digest("sha256:" + strings.Repeat("a", 64))
+		if _, err := resolveRunJudgeConfig(mismatched, configPath); err == nil {
+			t.Fatal("a live set accepted a JudgeConfig whose digest disagrees with it")
+		}
+	})
+	t.Run("live set with the matching config resolves it", func(t *testing.T) {
+		got, err := resolveRunJudgeConfig(liveSet, configPath)
+		if err != nil {
+			t.Fatalf("resolveRunJudgeConfig: %v", err)
+		}
+		if got == nil || got.ID != config.ID {
+			t.Fatalf("got=%v, want the checked-in config", got)
+		}
+	})
+}
+
+// TestRunCLIAcceptsTheLiveExampleSetsJudgeConfig proves the checked-in
+// live example is actually runnable: with both consent halves and the
+// checked-in -judge-config, whole-set validation no longer stops on the
+// judge configuration. It must fail later, on the live provider it was
+// never given credentials for, not earlier on wiring.
+func TestRunCLIAcceptsTheLiveExampleSetsJudgeConfig(t *testing.T) {
+	t.Setenv("OCH_EVAL_LIVE_CONFIRM", eval.LiveConfirmValue)
+	tree, err := loadDocumentTree(contextQualityLiveExampleSetPath(t))
+	if err != nil {
+		t.Fatalf("loadDocumentTree: %v", err)
+	}
+	config, err := resolveRunJudgeConfig(tree.Set, checkedInJudgeConfigPath(t))
+	if err != nil {
+		t.Fatalf("the checked-in live example set rejects its own checked-in judge config: %v", err)
+	}
+	if config == nil {
+		t.Fatal("the checked-in live example set resolved no judge config")
+	}
+}

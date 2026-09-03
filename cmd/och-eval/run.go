@@ -39,6 +39,7 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	artifactRootFlag := flags.String("artifacts", "", "absolute path Attempts are published under")
 	live := flags.Bool("live", false, "confirm this EvalSet's lane is live (design's dual-consent gate)")
 	ochBinaryFlag := flags.String("och-binary", "", "path to an already-built och binary; required only when this EvalSet references an acp_subprocess Executor")
+	judgeConfigFlag := flags.String("judge-config", "", "path to the frozen och.eval.judge-config document; required only for a live-lane EvalSet")
 	if err := flags.Parse(args); err != nil {
 		return exitValidation
 	}
@@ -53,6 +54,11 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return exitValidation
 	}
 	if err := checkLaneConsent(tree.Set, *live); err != nil {
+		fmt.Fprintln(stderr, "och-eval run:", err)
+		return exitValidation
+	}
+	judgeConfig, err := resolveRunJudgeConfig(tree.Set, *judgeConfigFlag)
+	if err != nil {
 		fmt.Fprintln(stderr, "och-eval run:", err)
 		return exitValidation
 	}
@@ -103,6 +109,7 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		Executors:                 tree.Executors,
 		FixtureSources:            tree.FixtureSources,
 		ProviderEndpointOverrides: providerEndpointOverrides,
+		JudgeConfig:               judgeConfig,
 		ArtifactRootOverride:      artifactRoot,
 		ACPLaunch:                 acpLaunch,
 	})

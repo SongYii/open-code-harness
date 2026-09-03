@@ -7,7 +7,7 @@
 ## The four commands
 
 ```text
-och-eval run     -set PATH -artifacts PATH [-och-binary PATH] [-live]
+och-eval run     -set PATH -artifacts PATH [-och-binary PATH] [-live] [-judge-config PATH]
 och-eval regrade -attempt PATH -scorer ID
 och-eval report  -set PATH [-artifacts PATH] [-output PATH]
 och-eval judge   -attempt PATH -judge-config PATH [-price-table PATH] [-live]
@@ -17,7 +17,11 @@ och-eval judge   -attempt PATH -judge-config PATH [-price-table PATH] [-live]
 evidence under `-artifacts`. `-och-binary` is required only when the EvalSet
 references an `acp_subprocess` Executor — build one first
 (`go build -o /tmp/och ./cmd/och`) and pass its path; `run` never builds it
-for you. `regrade` scores one already-published Attempt directory against a
+for you. `-judge-config` is required only for a **live-lane** EvalSet, and
+refused for a fixture one: a live set names a `judgeConfigDigest`, and `run`
+verifies the document you pass against it and stages the exact bytes into
+every Attempt's evidence, which is what later lets `och-eval judge` prove
+which configuration an Attempt was entitled to use. `regrade` scores one already-published Attempt directory against a
 named scorer from `cmd/och-eval/scorer_catalog.go`'s own compiled table,
 appending a new Score without touching any earlier one. `report` aggregates
 every Attempt directory under an artifact root (classification state,
@@ -142,7 +146,10 @@ Two more refusals are worth knowing about:
 - **Insufficient evidence never passes.** If a criterion declares an
   evidence role the manifest never collected, or the bundle's byte budget
   would drop an entire selected file, the run returns Indeterminate without
-  calling the model and lists what was omitted in `missingEvidence`.
+  calling the model and lists what was omitted in `missingEvidence`. Entries
+  the budget dropped appear as their manifest paths; a declared role the
+  manifest collected nothing under appears as `role:<name>`, because in that
+  case there is genuinely no path to name.
   Per-entry truncation is permitted — the contract supplies bounded excerpts
   — and every entry label records its original byte length, its excerpt byte
   length, and whether it was truncated.

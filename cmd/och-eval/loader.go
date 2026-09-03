@@ -142,3 +142,38 @@ func loadJudgePriceTable(config eval.JudgeConfig, path string) (*eval.PriceTable
 	}
 	return &table, nil
 }
+
+// resolveRunJudgeConfig turns `och-eval run`'s own -judge-config flag into
+// the value RunnerInputs needs, applying the same lane rule the EvalSet
+// document itself carries: a live set requires the judge configuration its
+// judgeConfigDigest names, and a fixture set must not be given one.
+//
+// The runner enforces this too, but doing it here first names the flag an
+// operator actually has to pass instead of reporting a generic whole-set
+// validation failure. The digest is verified before the run starts, which
+// is what keeps a mismatched configuration from costing anything.
+func resolveRunJudgeConfig(set eval.EvalSet, path string) (*eval.JudgeConfig, error) {
+	if set.Lane != eval.LaneLive {
+		if path != "" {
+			return nil, fmt.Errorf("-judge-config was given but this EvalSet's own lane is %q", set.Lane)
+		}
+		return nil, nil
+	}
+	if path == "" {
+		return nil, fmt.Errorf("this EvalSet's own lane is %q and it names judgeConfigDigest %q: -judge-config is required",
+			set.Lane, set.JudgeConfigDigest)
+	}
+	config, err := loadJudgeConfig(path)
+	if err != nil {
+		return nil, err
+	}
+	digest, err := eval.JudgeConfigDigest(config)
+	if err != nil {
+		return nil, err
+	}
+	if digest != set.JudgeConfigDigest {
+		return nil, fmt.Errorf("judge config digest %q disagrees with this EvalSet's own judgeConfigDigest %q",
+			digest, set.JudgeConfigDigest)
+	}
+	return &config, nil
+}
