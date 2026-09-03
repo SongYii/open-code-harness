@@ -141,7 +141,7 @@ git commit -m "feat(eval): bind judge config into attempt evidence"
 
 **Interfaces:** Introduces internal `judgeEvidenceBundle{Text, AvailablePaths, MissingPaths}`; `RunJudge` skips `JudgeCaller` when MissingPaths is non-empty.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```go
 func TestJudgeBundleIsStableBeforeLimits(t *testing.T) {
@@ -157,19 +157,19 @@ func TestRunJudgeSkipsModelWhenSelectedEvidenceIsOmitted(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `go test ./internal/harness/eval -run 'JudgeBundleIsStable|SelectedEvidenceIsOmitted' -count=1`
 
-- [ ] **Step 3: Implement sorted selection**
+- [x] **Step 3: Implement sorted selection**
 
 Gather matching manifest entries, normalize/deduplicate, sort by path, then read/redact/bound. Record non-collected and total-limit-omitted paths as missing. Labels include original bytes, excerpt bytes, and truncation. Reject empty/duplicate response references.
 
-- [ ] **Step 4: Verify GREEN twice**
+- [x] **Step 4: Verify GREEN twice**
 
 Run: `go test ./internal/harness/eval -run 'Judge|EvidenceBundle' -count=2`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/harness/eval/judge.go internal/harness/eval/judge_test.go
