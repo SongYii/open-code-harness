@@ -37,6 +37,13 @@ type contextTrace struct {
 	// the usage-anchor criterion needs to establish the preceding eligible
 	// anchor for a later preparation.
 	Usages []domain.ModelUsageRecorded
+
+	// Assistants and CompletedTurns are the terminal outcomes a criterion
+	// needs to correlate against: whether the answer the fixture produced
+	// actually reached the Session, and whether the Turn that carried it
+	// finished.
+	Assistants     []domain.AssistantMessageCompleted
+	CompletedTurns []domain.TurnCompleted
 }
 
 // contextCompaction is one compaction bracket. Exactly one of Completed or
@@ -220,6 +227,20 @@ func buildContextTrace(reader *ArtifactReader) (*contextTrace, error) {
 				return nil, fmt.Errorf("context trace: context decision %q produced more than one request", id)
 			}
 			decision.Request = &request
+
+		case domain.EventAssistantMessageCompleted:
+			var completed domain.AssistantMessageCompleted
+			if err := decodeAuditPayload(event.Data, &completed); err != nil {
+				return nil, fmt.Errorf("context trace: %s: %w", event.Type, err)
+			}
+			trace.Assistants = append(trace.Assistants, completed)
+
+		case domain.EventTurnCompleted:
+			var completed domain.TurnCompleted
+			if err := decodeAuditPayload(event.Data, &completed); err != nil {
+				return nil, fmt.Errorf("context trace: %s: %w", event.Type, err)
+			}
+			trace.CompletedTurns = append(trace.CompletedTurns, completed)
 
 		case domain.EventModelUsageRecorded:
 			var usage domain.ModelUsageRecorded

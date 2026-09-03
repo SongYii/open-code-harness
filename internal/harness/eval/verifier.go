@@ -33,6 +33,12 @@ var verifierCatalog = map[string]Verifier{
 	VerifierContextCheckpointReuse: verifyContextCheckpointReuse,
 	VerifierContextBudgetBounds:    verifyContextBudgetBounds,
 	VerifierContextProjection:      verifyContextProjection,
+
+	VerifierContextMidTurn:          verifyContextMidTurn,
+	VerifierContextToolResultPruned: verifyContextToolResultPruned,
+	VerifierContextOverflowRecover:  verifyContextOverflowRecovered,
+	VerifierContextMultiChunk:       verifyContextMultiChunk,
+	VerifierContextUsageAnchor:      verifyContextUsageAnchor,
 }
 
 // LookupVerifier returns the compiled Verifier for id, and whether one is
