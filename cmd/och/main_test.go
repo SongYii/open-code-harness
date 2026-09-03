@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"flag"
 	"go/parser"
 	"go/token"
 	"io/fs"
@@ -16,7 +17,10 @@ import (
 
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/sqlite"
 	"github.com/SongYii/open-code-harness/internal/harness/application"
+	"github.com/SongYii/open-code-harness/internal/harness/composition"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
+	"github.com/SongYii/open-code-harness/internal/harness/eval"
+	"github.com/SongYii/open-code-harness/internal/harness/policy"
 )
 
 func TestExportSessionMissingDatabase(t *testing.T) {
@@ -275,4 +279,190 @@ func tempExportFiles(t *testing.T, dir string) []string {
 		t.Fatal(err)
 	}
 	return matches
+}
+
+// sentinelParitySubject sets every Provider/Policy/Limits/Context field a
+// non-default, non-zero value so TestBindAssemblyFlagsMatchesBuildConfig
+// cannot pass by both routes silently agreeing on a shared zero value.
+func sentinelParitySubject() eval.Subject {
+	return eval.Subject{
+		FormatVersion:      eval.FormatVersion,
+		Schema:             eval.SchemaSubject,
+		ID:                 "parity-subject",
+		RepositoryRevision: "sentinel-revision",
+		Provider: eval.SubjectProvider{
+			AdapterKind:        "openaicompat",
+			NormalizedEndpoint: "https://provider.invalid/v1",
+			ModelID:            "sentinel-model",
+			ContextWindow:      111111,
+			MaxOutput:          22222,
+			CredentialEnvVar:   "OCH_TEST_SENTINEL_KEY",
+			Lane:               eval.ProviderLaneFixture,
+		},
+		Context: eval.SubjectContext{
+			TriggerPercent:                 91,
+			TargetPercent:                  61,
+			TailPercent:                    31,
+			MaxSummaryChunks:               12,
+			MaxOverflowCompactionsPerTurn:  3,
+			MaxPrunedToolResultsPerRequest: 40,
+			CompactionTimeout:              3*time.Minute + 7*time.Second,
+		},
+		Policy: eval.SubjectPolicy{
+			Mode:                string(policy.ModeAllowWrites),
+			ToolCatalogIdentity: "catalog-v2",
+			Limits: eval.SubjectLimits{
+				MaxSteps:            17,
+				MaxToolCallsPerStep: 5,
+				MaxAssistantBytes:   90000,
+				ApprovalTimeout:     45 * time.Second,
+			},
+			SandboxPolicy: eval.SandboxPolicySandboxed,
+		},
+	}
+}
+
+// TestBindAssemblyFlagsMatchesBuildConfig proves the CLI and in-process
+// executor routes agree field-for-field on every Provider/Policy/Limits/
+// Context value a Subject can carry (implementation plan Task 11):
+// eval.NormalizedArgv derives och's own flags from a sentinel Subject with
+// every field at a non-default value, bindAssemblyFlags parses that exact
+// argv, and the resulting composition.Config must equal what
+// eval.BuildConfig produces from the same Subject directly. A future
+// Subject semantic field with no argv mapping shows up here as a silent
+// zero-value mismatch, not a passing test — the table below enumerates
+// every field this comparison covers so a missing one is visible in the
+// diff, not just in coverage.
+func TestBindAssemblyFlagsMatchesBuildConfig(t *testing.T) {
+	subject := sentinelParitySubject()
+
+	directories := eval.AttemptRootDirectories{Workspace: "/attempt/workspace", Database: "/attempt/database"}
+	inProcess, err := eval.BuildConfig(subject, directories, "runtime-parity-test", nil)
+	if err != nil {
+		t.Fatalf("BuildConfig() error = %v", err)
+	}
+
+	argv, err := eval.NormalizedArgv(subject)
+	if err != nil {
+		t.Fatalf("NormalizedArgv() error = %v", err)
+	}
+	// A launcher appends "-acp" plus this Attempt's own path flags; argv
+	// itself must carry none of those (design's own "no Attempt-specific
+	// path in Executor identity" rule), so this test adds them here,
+	// exactly as Task 12's real launcher will.
+	fullArgv := append([]string{
+		"-acp",
+		"-workspace", directories.Workspace,
+		"-database", directories.Database,
+		"-runtime-id", "runtime-parity-test",
+	}, argv...)
+
+	flags := flag.NewFlagSet("och", flag.ContinueOnError)
+	parsedConfig := composition.Config{}
+	var parsedPolicyMode string
+	var uintFlags assemblyUintFlags
+	bindAssemblyFlags(flags, &parsedConfig, &parsedPolicyMode, &uintFlags)
+	serveACP := flags.Bool("acp", false, "")
+	if err := flags.Parse(fullArgv); err != nil {
+		t.Fatalf("flags.Parse(%v) error = %v", fullArgv, err)
+	}
+	if !*serveACP {
+		t.Fatal("-acp did not parse as set")
+	}
+	uintFlags.apply(&parsedConfig)
+	parsedConfig.Policy = policy.Mode(parsedPolicyMode)
+
+	for _, field := range []struct {
+		name          string
+		fromArgv      any
+		fromInProcess any
+	}{
+		{"Provider.BaseURL", parsedConfig.Provider.BaseURL, inProcess.Provider.BaseURL},
+		{"Provider.ModelID", parsedConfig.Provider.ModelID, inProcess.Provider.ModelID},
+		{"Provider.APIKeyEnv", parsedConfig.Provider.APIKeyEnv, inProcess.Provider.APIKeyEnv},
+		{"Provider.ContextWindow", parsedConfig.Provider.ContextWindow, inProcess.Provider.ContextWindow},
+		{"Provider.MaxOutput", parsedConfig.Provider.MaxOutput, inProcess.Provider.MaxOutput},
+		{"Provider.AllowInsecureLoopback", parsedConfig.Provider.AllowInsecureLoopback, inProcess.Provider.AllowInsecureLoopback},
+		{"Policy", parsedConfig.Policy, inProcess.Policy},
+		{"Limits.MaxSteps", parsedConfig.Limits.MaxSteps, inProcess.Limits.MaxSteps},
+		{"Limits.MaxToolCallsPerStep", parsedConfig.Limits.MaxToolCallsPerStep, inProcess.Limits.MaxToolCallsPerStep},
+		{"Limits.MaxAssistantBytes", parsedConfig.Limits.MaxAssistantBytes, inProcess.Limits.MaxAssistantBytes},
+		{"Limits.ApprovalTimeout", parsedConfig.Limits.ApprovalTimeout, inProcess.Limits.ApprovalTimeout},
+		{"Context.TriggerPercent", parsedConfig.Context.TriggerPercent, inProcess.Context.TriggerPercent},
+		{"Context.TargetPercent", parsedConfig.Context.TargetPercent, inProcess.Context.TargetPercent},
+		{"Context.TailPercent", parsedConfig.Context.TailPercent, inProcess.Context.TailPercent},
+		{"Context.MaxSummaryChunks", parsedConfig.Context.MaxSummaryChunks, inProcess.Context.MaxSummaryChunks},
+		{"Context.MaxOverflowCompactionsPerTurn", parsedConfig.Context.MaxOverflowCompactionsPerTurn, inProcess.Context.MaxOverflowCompactionsPerTurn},
+		{"Context.MaxPrunedToolResultsPerRequest", parsedConfig.Context.MaxPrunedToolResultsPerRequest, inProcess.Context.MaxPrunedToolResultsPerRequest},
+		{"Context.CompactionTimeout", parsedConfig.Context.CompactionTimeout, inProcess.Context.CompactionTimeout},
+		{"AllowUnsandboxedExec", parsedConfig.AllowUnsandboxedExec, inProcess.AllowUnsandboxedExec},
+	} {
+		if field.fromArgv != field.fromInProcess {
+			t.Errorf("%s: CLI route = %v, in-process route = %v", field.name, field.fromArgv, field.fromInProcess)
+		}
+	}
+}
+
+// TestNormalizedArgvCarriesNoCredentialValue proves NormalizedArgv never
+// emits the credential's own value -- only its environment variable name
+// -- even when that value happens to be set in this test process's own
+// environment under the same name.
+func TestNormalizedArgvCarriesNoCredentialValue(t *testing.T) {
+	subject := sentinelParitySubject()
+	t.Setenv(subject.Provider.CredentialEnvVar, "super-secret-value-must-not-leak")
+
+	argv, err := eval.NormalizedArgv(subject)
+	if err != nil {
+		t.Fatalf("NormalizedArgv() error = %v", err)
+	}
+	for _, arg := range argv {
+		if strings.Contains(arg, "super-secret-value-must-not-leak") {
+			t.Fatalf("argv leaked the credential value: %v", argv)
+		}
+	}
+}
+
+// TestNormalizedArgvOmitsZeroLimitsButAlwaysEmitsContext confirms the CLI
+// route's own zero-means-default convention is preserved for the one
+// place Subject legitimately allows a zero field: a Subject that leaves
+// every optional Policy.Limits field at zero produces argv naming none of
+// their flags, so bindAssemblyFlags leaves them at zero too and Open
+// applies its own Application default, exactly like an in-process
+// BuildConfig call over the same zero Subject fields would.
+// Subject.Context has no such zero state at all — SubjectContext.validate
+// requires every field positive — so every Context flag is always
+// present, proven here rather than assumed.
+func TestNormalizedArgvOmitsZeroLimitsButAlwaysEmitsContext(t *testing.T) {
+	subject := sentinelParitySubject()
+	subject.Policy.Limits = eval.SubjectLimits{}
+
+	argv, err := eval.NormalizedArgv(subject)
+	if err != nil {
+		t.Fatalf("NormalizedArgv() error = %v", err)
+	}
+	for _, flagName := range []string{
+		"-max-steps", "-max-tool-calls-per-step", "-max-assistant-bytes", "-approval-timeout",
+	} {
+		if containsString(argv, flagName) {
+			t.Fatalf("argv %v unexpectedly names zero-valued Limits flag %q", argv, flagName)
+		}
+	}
+	for _, flagName := range []string{
+		"-context-trigger-percent", "-context-target-percent", "-context-tail-percent",
+		"-context-max-summary-chunks", "-context-max-overflow-compactions-per-turn",
+		"-context-max-pruned-tool-results-per-request", "-context-compaction-timeout",
+	} {
+		if !containsString(argv, flagName) {
+			t.Fatalf("argv %v is missing always-required Context flag %q", argv, flagName)
+		}
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

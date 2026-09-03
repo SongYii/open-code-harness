@@ -48,15 +48,14 @@ func run(arguments []string) error {
 	flags := flag.NewFlagSet("och", flag.ContinueOnError)
 	config := composition.Config{}
 	var policyMode string
-	var contextWindow, maxOutput uint
-	bindAssemblyFlags(flags, &config, &policyMode, &contextWindow, &maxOutput)
+	var uintFlags assemblyUintFlags
+	bindAssemblyFlags(flags, &config, &policyMode, &uintFlags)
 	serveACP := flags.Bool("acp", false, "serve ACP v1 JSON-RPC on stdin/stdout (stderr for diagnostics)")
 
 	if err := flags.Parse(arguments); err != nil {
 		return err
 	}
-	config.Provider.ContextWindow = uint32(contextWindow)
-	config.Provider.MaxOutput = uint32(maxOutput)
+	uintFlags.apply(&config)
 	config.Policy = policy.Mode(policyMode)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -88,14 +87,46 @@ func run(arguments []string) error {
 	return nil
 }
 
+// assemblyUintFlags holds every composition.Config field the flag package
+// cannot bind directly: each is uint32 on Config, but the standard flag
+// package only has UintVar (platform uint, so at least 64 bits) — bind to
+// these instead, then call apply once flags.Parse has returned. Every
+// field here corresponds 1:1 to one of design §16's Context Engine
+// percentages/caps (composition/config.go's own Context type), the same
+// fields eval.BuildConfig maps from a Subject for the in-process executor
+// — acp_argv.go's NormalizedArgv emits exactly the flags that fill these
+// in, so a table test can assert parity between the two routes.
+type assemblyUintFlags struct {
+	ContextWindow, MaxOutput                                                        uint
+	TriggerPercent, TargetPercent, TailPercent                                      uint
+	MaxSummaryChunks, MaxOverflowCompactionsPerTurn, MaxPrunedToolResultsPerRequest uint
+}
+
+func (flags assemblyUintFlags) apply(config *composition.Config) {
+	config.Provider.ContextWindow = uint32(flags.ContextWindow)
+	config.Provider.MaxOutput = uint32(flags.MaxOutput)
+	config.Context.TriggerPercent = uint32(flags.TriggerPercent)
+	config.Context.TargetPercent = uint32(flags.TargetPercent)
+	config.Context.TailPercent = uint32(flags.TailPercent)
+	config.Context.MaxSummaryChunks = uint32(flags.MaxSummaryChunks)
+	config.Context.MaxOverflowCompactionsPerTurn = uint32(flags.MaxOverflowCompactionsPerTurn)
+	config.Context.MaxPrunedToolResultsPerRequest = uint32(flags.MaxPrunedToolResultsPerRequest)
+}
+
 // bindAssemblyFlags registers every flag composition.Config needs to open a
 // full assembly, shared between the serve path (run) and compact-session:
 // both open the same normal composition root and so need the same
-// workspace/database/provider/policy surface. export-session is
-// deliberately not built on this — it never opens a full assembly, only a
-// read-only sqlite reader (composition.ExportSession), so it keeps its own
-// small, independent flag set.
-func bindAssemblyFlags(flags *flag.FlagSet, config *composition.Config, policyMode *string, contextWindow, maxOutput *uint) {
+// workspace/database/provider/policy/limits/context surface. export-session
+// is deliberately not built on this — it never opens a full assembly, only
+// a read-only sqlite reader (composition.ExportSession), so it keeps its
+// own small, independent flag set.
+//
+// Every Limits/Context flag preserves composition.Config's own zero-means-
+// default convention (Config.withDefaults/Context.withDefaults): omitting
+// a flag leaves its field at zero, so Open applies the exact same default
+// as an in-process eval.BuildConfig call whose Subject also left that
+// field zero.
+func bindAssemblyFlags(flags *flag.FlagSet, config *composition.Config, policyMode *string, uintFlags *assemblyUintFlags) {
 	flags.StringVar(&config.WorkspaceRoot, "workspace", "", "absolute path to the workspace root (required)")
 	flags.StringVar(&config.DatabasePath, "database", "", "absolute path to the SQLite database (required)")
 	flags.StringVar(&config.RuntimeID, "runtime-id", "", "writer identity for the fencing lease (required)")
@@ -104,11 +135,21 @@ func bindAssemblyFlags(flags *flag.FlagSet, config *composition.Config, policyMo
 	flags.BoolVar(&config.Provider.AllowInsecureLoopback, "provider-allow-insecure-loopback", false, "permit a plain-HTTP provider-url when it resolves to loopback; for a local fixture server only, never a real endpoint")
 	flags.StringVar(&config.Provider.ModelID, "model", "", "provider model identifier (required)")
 	flags.StringVar(&config.Provider.APIKeyEnv, "api-key-env", "OCH_API_KEY", "environment variable holding the provider API key")
-	*contextWindow = 0
-	*maxOutput = 0
-	flags.UintVar(contextWindow, "context-window", 0, "provider context window in tokens (required)")
-	flags.UintVar(maxOutput, "max-output", 0, "provider maximum output in tokens (required)")
+	*uintFlags = assemblyUintFlags{}
+	flags.UintVar(&uintFlags.ContextWindow, "context-window", 0, "provider context window in tokens (required)")
+	flags.UintVar(&uintFlags.MaxOutput, "max-output", 0, "provider maximum output in tokens (required)")
 	flags.StringVar(policyMode, "policy", string(policy.ModeDefault), "policy mode: default, read_only, allow_writes, deny_all")
+	flags.IntVar(&config.Limits.MaxSteps, "max-steps", 0, "maximum Application step-loop iterations per Turn; 0 uses the Application default")
+	flags.IntVar(&config.Limits.MaxToolCallsPerStep, "max-tool-calls-per-step", 0, "maximum tool calls the model may offer in one step; 0 uses the Application default")
+	flags.IntVar(&config.Limits.MaxAssistantBytes, "max-assistant-bytes", 0, "maximum assistant text bytes per Turn; 0 uses the Application default")
+	flags.DurationVar(&config.Limits.ApprovalTimeout, "approval-timeout", 0, "how long a tool call waits for approval before timing out; 0 uses the Application default")
+	flags.UintVar(&uintFlags.TriggerPercent, "context-trigger-percent", 0, "percent of the context window that triggers compaction; 0 uses the Context Engine default")
+	flags.UintVar(&uintFlags.TargetPercent, "context-target-percent", 0, "percent of the context window compaction targets; 0 uses the Context Engine default")
+	flags.UintVar(&uintFlags.TailPercent, "context-tail-percent", 0, "percent of the context window protected as an uncompacted tail; 0 uses the Context Engine default")
+	flags.UintVar(&uintFlags.MaxSummaryChunks, "context-max-summary-chunks", 0, "maximum chunked summarizer calls one compaction may use; 0 uses the Context Engine default")
+	flags.UintVar(&uintFlags.MaxOverflowCompactionsPerTurn, "context-max-overflow-compactions-per-turn", 0, "maximum per-Turn Provider overflow recoveries; 0 uses the Context Engine default")
+	flags.UintVar(&uintFlags.MaxPrunedToolResultsPerRequest, "context-max-pruned-tool-results-per-request", 0, "maximum Tool Results one request may prune; 0 uses the Context Engine default")
+	flags.DurationVar(&config.Context.CompactionTimeout, "context-compaction-timeout", 0, "bound on one summarizer call within a compaction bracket; 0 uses the Context Engine default")
 	flags.DurationVar(&config.ShutdownTimeout, "shutdown-timeout", composition.DefaultShutdownTimeout, "how long shutdown may wait for the host's loops")
 	flags.BoolVar(&config.AllowUnsandboxedExec, "allow-unsandboxed-exec", false, "proceed even if no OS-level exec sandbox (bwrap, sandbox-exec) is available on this host; logs which guarantee is absent")
 }
@@ -142,8 +183,8 @@ func compactSession(ctx context.Context, arguments []string, stdout, stderr io.W
 	flags.SetOutput(stderr)
 	config := composition.Config{}
 	var policyMode string
-	var contextWindow, maxOutput uint
-	bindAssemblyFlags(flags, &config, &policyMode, &contextWindow, &maxOutput)
+	var uintFlags assemblyUintFlags
+	bindAssemblyFlags(flags, &config, &policyMode, &uintFlags)
 	session := flags.String("session", "", "session id to compact (required)")
 	strategy := flags.String("strategy", "", "compaction strategy: summary (default) or reset")
 	focus := flags.String("focus", "", "optional operator focus string for a summary strategy, bounded to 4 KiB UTF-8")
@@ -153,8 +194,7 @@ func compactSession(ctx context.Context, arguments []string, stdout, stderr io.W
 	if *session == "" {
 		return fmt.Errorf("session is required")
 	}
-	config.Provider.ContextWindow = uint32(contextWindow)
-	config.Provider.MaxOutput = uint32(maxOutput)
+	uintFlags.apply(&config)
 	config.Policy = policy.Mode(policyMode)
 
 	assembly, err := composition.Open(ctx, config)
