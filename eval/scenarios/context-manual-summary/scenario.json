@@ -1,0 +1,75 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.scenario",
+  "id": "context-manual-summary",
+  "description": "Padded turns build real history, then an explicit manual summary compaction runs and a later prompt continues from the resulting checkpoint. Passing requires a completed manual/summary compaction whose rolling_summary_v1 checkpoint carries a non-empty summary and valid version fields, and a later preparation that actually dispatched a request from that checkpoint.",
+  "fixtureDigest": "sha256:f5043b2c09fb8ecfc394548860794027a0f22602668cee36597f41b9f349cefd",
+  "fixtureCopyPolicy": {
+    "maxFiles": 10,
+    "maxFileBytes": 1048576,
+    "maxTotalBytes": 1048576
+  },
+  "actions": [
+    {
+      "id": "prompt-1",
+      "type": "prompt",
+      "prompt": {
+        "text": "This padded turn exists to accumulate real conversation history so the Context Engine's own manual compaction has genuine source material to cover, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own manual compaction has genuine source material to cover, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own manual compaction has genuine source material to cover, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own manual compaction has genuine source material to cover, rather than a synthetic estimate. "
+      }
+    },
+    {
+      "id": "prompt-2",
+      "type": "prompt",
+      "prompt": {
+        "text": "This padded turn exists to accumulate real conversation history so the Context Engine's own manual compaction has genuine source material to cover, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own manual compaction has genuine source material to cover, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own manual compaction has genuine source material to cover, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own manual compaction has genuine source material to cover, rather than a synthetic estimate. "
+      }
+    },
+    {
+      "id": "prompt-3",
+      "type": "prompt",
+      "prompt": {
+        "text": "This padded turn exists to accumulate real conversation history so the Context Engine's own manual compaction has genuine source material to cover, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own manual compaction has genuine source material to cover, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own manual compaction has genuine source material to cover, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own manual compaction has genuine source material to cover, rather than a synthetic estimate. "
+      }
+    },
+    {
+      "id": "prompt-4",
+      "type": "prompt",
+      "prompt": {
+        "text": "This padded turn exists to accumulate real conversation history so the Context Engine's own manual compaction has genuine source material to cover, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own manual compaction has genuine source material to cover, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own manual compaction has genuine source material to cover, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own manual compaction has genuine source material to cover, rather than a synthetic estimate. "
+      }
+    },
+    {
+      "id": "compact-1",
+      "type": "compact",
+      "compact": {
+        "strategy": "summary"
+      }
+    },
+    {
+      "id": "prompt-after",
+      "type": "prompt",
+      "prompt": {
+        "text": "Continue from the checkpoint."
+      }
+    }
+  ],
+  "requiredCapabilities": [
+    "prompt",
+    "compact"
+  ],
+  "requiredEvidenceRoles": [
+    "transcript",
+    "audit"
+  ],
+  "deterministicVerifierIds": [
+    "context-manual-summary-v1",
+    "context-checkpoint-reused-v1",
+    "context-budget-bounds-v1",
+    "context-projection-present-v1",
+    "outcome-not-infra-failed-v1"
+  ],
+  "limits": {},
+  "pairingTags": [
+    "context-core"
+  ]
+}

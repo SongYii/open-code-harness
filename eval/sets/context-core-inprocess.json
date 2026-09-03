@@ -4,6 +4,14 @@
   "id": "context-core-inprocess",
   "scenarios": [
     {
+      "id": "context-manual-reset",
+      "digest": "sha256:3b7f0805712c6a7192a9ebecdaadcae941fab60a3ce7a9e3d7b00ec4b69b8883"
+    },
+    {
+      "id": "context-manual-summary",
+      "digest": "sha256:36db5a52b1965309059a772ffe2574175a54c9d9026448c569a077d670d0d500"
+    },
+    {
       "id": "context-pre-turn-summary",
       "digest": "sha256:d4619351737205274bec6ffddabf2a2b8d50b144d17742a3eca18dd7519c73c6"
     }

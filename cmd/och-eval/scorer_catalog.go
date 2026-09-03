@@ -7,12 +7,35 @@ import "github.com/SongYii/open-code-harness/internal/harness/eval"
 // a data file" discipline internal/harness/eval's own verifier catalog
 // follows (implementation plan Task 9).
 var scorerCatalog = map[string]eval.Scorer{
-	// context-core-v1 scores the Context mechanism Scenarios that run on the
-	// core budget profile. Each Scenario declares exactly the verifiers it
-	// exercises; RunScorer refuses any this Scenario did not declare, so one
-	// scorer can serve the whole profile without silently over-claiming.
-	"context-core-v1": {
-		ID:      "context-core-v1",
+	// One scorer per Context Scenario, because RunScorer requires every
+	// verifier a scorer names to be declared by the Scenario it runs
+	// against. A single broad Context scorer would therefore refuse every
+	// Scenario that exercises only part of the catalog — which is the right
+	// rule (a scorer must not claim a mechanism the Scenario never ran) and
+	// the reason these are split rather than merged.
+	"context-manual-reset-scorer-v1": {
+		ID:      "context-manual-reset-scorer-v1",
+		Version: "v1",
+		VerifierIDs: []string{
+			eval.VerifierContextManualReset,
+			eval.VerifierContextBudgetBounds,
+			eval.VerifierContextProjection,
+			"outcome-not-infra-failed-v1",
+		},
+	},
+	"context-manual-summary-scorer-v1": {
+		ID:      "context-manual-summary-scorer-v1",
+		Version: "v1",
+		VerifierIDs: []string{
+			eval.VerifierContextManualSummary,
+			eval.VerifierContextCheckpointReuse,
+			eval.VerifierContextBudgetBounds,
+			eval.VerifierContextProjection,
+			"outcome-not-infra-failed-v1",
+		},
+	},
+	"context-pre-turn-scorer-v1": {
+		ID:      "context-pre-turn-scorer-v1",
 		Version: "v1",
 		VerifierIDs: []string{
 			eval.VerifierContextPreTurnSummary,
