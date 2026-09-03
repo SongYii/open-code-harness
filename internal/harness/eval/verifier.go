@@ -19,6 +19,10 @@ var verifierCatalog = map[string]Verifier{
 	"transcript-present-v1":             verifyTranscriptPresent,
 	"audit-included-v1":                 verifyAuditIncluded,
 	"outcome-not-infra-failed-v1":       verifyOutcomeNotInfraFailed,
+	"read-file-completed-v1":            verifyReadFileCompleted,
+	"redaction-observed-v1":             verifyRedactionObserved,
+	"expected-tool-failure-observed-v1": verifyExpectedToolFailureObserved,
+	"containment-refused-v1":            verifyContainmentRefused,
 }
 
 // LookupVerifier returns the compiled Verifier for id, and whether one is

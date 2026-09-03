@@ -1,0 +1,37 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.scenario",
+  "id": "tool-exec-redaction",
+  "description": "An exec call (always approval-gated under the default policy, granted by this Scenario's own script) whose stdout carries a secret-shaped string. Passing requires canonical audit evidence that the tool result's own committed content was actually redacted -- the raw secret value must never appear anywhere in evidence, and a '[redacted]' marker must appear in its place.",
+  "fixtureDigest": "sha256:f5043b2c09fb8ecfc394548860794027a0f22602668cee36597f41b9f349cefd",
+  "fixtureCopyPolicy": {
+    "maxFiles": 10,
+    "maxFileBytes": 1048576,
+    "maxTotalBytes": 1048576
+  },
+  "actions": [
+    {
+      "id": "prompt-1",
+      "type": "prompt",
+      "prompt": {
+        "text": "please run the command TRIGGER_EXEC_REDACTION"
+      }
+    }
+  ],
+  "approvalScript": [
+    {
+      "promptActionId": "prompt-1",
+      "ordinal": 0,
+      "toolName": "exec",
+      "answer": "allow"
+    }
+  ],
+  "requiredCapabilities": ["prompt"],
+  "requiredEvidenceRoles": ["transcript", "audit"],
+  "deterministicVerifierIds": [
+    "redaction-observed-v1",
+    "outcome-not-infra-failed-v1"
+  ],
+  "limits": {},
+  "pairingTags": ["tool-workspace"]
+}
