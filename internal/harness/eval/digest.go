@@ -44,6 +44,27 @@ func ExecutorDigest(executor Executor) (Digest, error) {
 	return canonicalDigest(executor)
 }
 
+// OutcomeDigest is the SHA-256 canonical digest of a validated Outcome
+// (design §14: EvidenceManifest.OutcomeDigest; design §20: Score
+// records "manifest digest and Outcome digest").
+func OutcomeDigest(outcome Outcome) (Digest, error) {
+	if err := outcome.Validate(); err != nil {
+		return "", fmt.Errorf("eval: outcome digest: %w", err)
+	}
+	return canonicalDigest(outcome)
+}
+
+// EvidenceManifestDigest is the SHA-256 digest of a validated
+// EvidenceManifest's exact published JSON bytes (design §14: "the manifest
+// does not hash itself; a Score references SHA-256 of the exact published
+// manifest bytes"). Score.ManifestDigest records this value.
+func EvidenceManifestDigest(manifest EvidenceManifest) (Digest, error) {
+	if err := manifest.Validate(); err != nil {
+		return "", fmt.Errorf("eval: evidence manifest digest: %w", err)
+	}
+	return canonicalDigest(manifest)
+}
+
 // canonicalDigest marshals value with encoding/json (which emits struct
 // fields in a fixed declaration order and sorts map keys, so the output is
 // already deterministic without a separate canonicalization pass — the same
