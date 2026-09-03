@@ -476,7 +476,18 @@ func TestRunTurnTerminalCleanupTimeoutIsPersistenceNotCallerCancellation(t *test
 	base := newTurnMemoryStore(t)
 	store := &blockingTerminalCleanupStore{EventStore: base}
 	config := application.DefaultConfig()
-	config.TerminalCommitTimeout = time.Millisecond
+	// This deadline has to clear two opposing requirements. It must be long
+	// enough that the cleanup path reliably reaches the Store at all:
+	// CommitAppendIntent refuses an already-expired context before it ever
+	// calls Append (append.go), and the work in between — two intent clones
+	// and a request digest — is not free on a loaded machine, so too short a
+	// deadline means the Store is simply never entered and this test proves
+	// nothing about what it received. It must also be short enough that the
+	// blocking Store below is released promptly, since this deadline is the
+	// only thing that can release it. A tenth of a second clears the first
+	// requirement by a wide margin under full CPU load while keeping the
+	// test comfortably sub-second.
+	config.TerminalCommitTimeout = 100 * time.Millisecond
 	service := newTurnServiceWithConfig(t, store, testkit.NewSequenceIDs(), model, config)
 	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
 	if err != nil {
@@ -495,13 +506,36 @@ func TestRunTurnTerminalCleanupTimeoutIsPersistenceNotCallerCancellation(t *test
 	<-entered
 	cancel()
 	close(release)
-	got := <-done
+	// Waiting on the run itself needs no coordination with the Store: the
+	// blocking Append below only returns once the cleanup deadline fires, so
+	// a healthy run cannot finish before the Store has been entered. The
+	// guard is here for the opposite defect — an unbounded cleanup context
+	// would never release that Append, and this turns the resulting hang
+	// into a named failure instead of a package-wide test timeout.
+	var got outcome
+	select {
+	case got = <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("RunTurn never returned: the terminal cleanup context was never released by a deadline of its own")
+	}
 	assertRunTurnError(t, got.err, application.CategoryPersistence, "append_failed", false)
 	if !errors.Is(got.err, context.Canceled) || !errors.Is(got.err, context.DeadlineExceeded) {
 		t.Fatalf("error = %v, want caller cancellation and cleanup deadline causes", got.err)
 	}
-	if !store.SawLiveBoundedContext() {
-		t.Fatal("terminal cleanup Store did not receive a live bounded context detached from the caller")
+	observed, bounded, errAtEntry := store.TerminalCleanupContext()
+	if !observed {
+		t.Fatal("terminal cleanup Append never ran, so nothing was proven about the context it receives")
+	}
+	if !bounded {
+		t.Fatal("terminal cleanup Store received a context carrying no deadline of its own")
+	}
+	// Detachment is asserted as "the caller's cancellation did not reach
+	// here", not as "the context was still live". Liveness at entry races
+	// the deadline above and says nothing extra: a leaked caller
+	// cancellation shows up as context.Canceled either way, because cancel()
+	// is called before the Store is ever released.
+	if errors.Is(errAtEntry, context.Canceled) {
+		t.Fatalf("terminal cleanup Store received the caller's own cancellation: %v", errAtEntry)
 	}
 	assertRunningBoundary(t, base, got.result)
 }
@@ -1054,10 +1088,22 @@ func (store *invalidTerminalReturnStore) Append(ctx context.Context, request app
 	return receipt, nil
 }
 
+// blockingTerminalCleanupStore records what the terminal cleanup Append
+// actually received and then blocks until that context is done, so the
+// cleanup path resolves through its own deadline rather than through the
+// caller's cancellation.
+//
+// It records the context's error at entry rather than a single
+// already-collapsed boolean. A deadline that expired before entry and a
+// caller cancellation that leaked through are different failures, and only
+// the second one is a defect this test should report.
 type blockingTerminalCleanupStore struct {
 	application.EventStore
-	mu             sync.Mutex
-	sawLiveBounded bool
+
+	mu         sync.Mutex
+	observed   bool
+	bounded    bool
+	errAtEntry error
 }
 
 func (store *blockingTerminalCleanupStore) Append(ctx context.Context, request application.AppendRequest) (application.CommitReceipt, error) {
@@ -1066,16 +1112,21 @@ func (store *blockingTerminalCleanupStore) Append(ctx context.Context, request a
 	}
 	_, bounded := ctx.Deadline()
 	store.mu.Lock()
-	store.sawLiveBounded = ctx.Err() == nil && bounded
+	store.observed = true
+	store.bounded = bounded
+	store.errAtEntry = ctx.Err()
 	store.mu.Unlock()
 	<-ctx.Done()
 	return application.CommitReceipt{}, ctx.Err()
 }
 
-func (store *blockingTerminalCleanupStore) SawLiveBoundedContext() bool {
+// TerminalCleanupContext reports whether the terminal cleanup Append ran at
+// all, whether the context it received carried a deadline of its own, and
+// what that context's error was on entry.
+func (store *blockingTerminalCleanupStore) TerminalCleanupContext() (observed, bounded bool, errAtEntry error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	return store.sawLiveBounded
+	return store.observed, store.bounded, store.errAtEntry
 }
 
 type durableObservingSink struct {
