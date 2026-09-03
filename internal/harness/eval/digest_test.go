@@ -189,3 +189,57 @@ func TestExecutorDigestRejectsInvalidExecutor(t *testing.T) {
 		t.Fatal("ExecutorDigest accepted an invalid Executor")
 	}
 }
+
+func TestEvalSetDigestDeterministic(t *testing.T) {
+	first, err := EvalSetDigest(validEvalSet(t))
+	if err != nil {
+		t.Fatalf("EvalSetDigest: %v", err)
+	}
+	second, err := EvalSetDigest(validEvalSet(t))
+	if err != nil {
+		t.Fatalf("EvalSetDigest: %v", err)
+	}
+	if first != second {
+		t.Fatalf("EvalSetDigest is not deterministic: %q != %q", first, second)
+	}
+}
+
+func TestEvalSetDigestSensitiveToPairingSeed(t *testing.T) {
+	base, err := EvalSetDigest(validEvalSet(t))
+	if err != nil {
+		t.Fatalf("EvalSetDigest: %v", err)
+	}
+	changed := validEvalSet(t)
+	changed.PairingSeed = "a-different-seed"
+	other, err := EvalSetDigest(changed)
+	if err != nil {
+		t.Fatalf("EvalSetDigest: %v", err)
+	}
+	if base == other {
+		t.Fatal("EvalSetDigest did not change when PairingSeed changed")
+	}
+}
+
+func TestEvalSetDigestSensitiveToArtifactRoot(t *testing.T) {
+	base, err := EvalSetDigest(validEvalSet(t))
+	if err != nil {
+		t.Fatalf("EvalSetDigest: %v", err)
+	}
+	changed := validEvalSet(t)
+	changed.ArtifactRoot = ".eval-other"
+	other, err := EvalSetDigest(changed)
+	if err != nil {
+		t.Fatalf("EvalSetDigest: %v", err)
+	}
+	if base == other {
+		t.Fatal("EvalSetDigest did not change when ArtifactRoot changed")
+	}
+}
+
+func TestEvalSetDigestRejectsInvalidEvalSet(t *testing.T) {
+	invalid := validEvalSet(t)
+	invalid.ID = ""
+	if _, err := EvalSetDigest(invalid); err == nil {
+		t.Fatal("EvalSetDigest accepted an invalid EvalSet")
+	}
+}
