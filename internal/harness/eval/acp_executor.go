@@ -183,6 +183,8 @@ func runACPAction(ctx context.Context, state *acpExecutionState, action Scenario
 		return runACPCancel(state, action, attemptID, started, launch.ShutdownGrades)
 	case ActionRestart:
 		return runACPActionRestart(ctx, state, action, attemptID, started, launch, subject, directories)
+	case ActionCompact:
+		return runACPActionCompact(ctx, state, action, attemptID, started, launch, subject, directories)
 	case ActionCollect:
 		// Declared workspace path or verifier fact is validated and
 		// captured by evidence collection after shutdown (design §14),

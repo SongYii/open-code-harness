@@ -24,6 +24,7 @@ const acpProcessSupported = false
 type acpProcess struct {
 	stdin  io.WriteCloser
 	stdout io.ReadCloser
+	stderr *boundedWriter
 }
 
 func startACPProcess(binaryPath string, argv []string, env []string, workingDir string, stderrLimit int64) (*acpProcess, error) {

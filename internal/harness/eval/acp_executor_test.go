@@ -158,35 +158,16 @@ func TestRunACPAttemptStartupTimeoutAgainstHangingChild(t *testing.T) {
 	}
 }
 
-func TestRunACPAttemptRejectsUnsupportedActionType(t *testing.T) {
-	ochBin := buildOchBinary(t)
-	binary, err := ResolveACPBinary(ochBin)
-	if err != nil {
-		t.Fatalf("ResolveACPBinary: %v", err)
-	}
-	server := newEchoProvider(t)
-	subject := testSubject(t, server.Server)
-	attemptID, directories := acpTestDirectories(t)
-
-	scenario := runnerScenario("acp-unsupported-action")
-	scenario.Actions = []ScenarioAction{
-		{ID: "compact-1", Type: ActionCompact, Compact: &CompactAction{Strategy: "reset"}},
-	}
-	scenario.RequiredCapabilities = []string{"compact"}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	execution, err := RunACPAttempt(ctx, attemptID, subject, directories, scenario, ACPLaunchConfig{Binary: binary}, NewApprovalMatcher(scenario.ApprovalScript))
-	if err != nil {
-		t.Fatalf("RunACPAttempt() error = %v", err)
-	}
-	if execution.Outcome.Status != OutcomeInfraFailed || execution.Outcome.Code != "unsupported_action" {
-		t.Fatalf("Outcome = %+v, want infra_failed/unsupported_action", execution.Outcome)
-	}
-	if !execution.WriterStopped {
-		t.Fatal("WriterStopped = false, want true: the subprocess must still be shut down cleanly")
-	}
-}
+// runACPAction's own "default" branch (unsupported_action) is defensive,
+// pre-existing dead code identical in spirit to inprocess.go's own
+// equivalent default branch: every v1 ScenarioActionType (prompt,
+// compact, cancel, restart, collect) is implemented by both executors,
+// and Scenario.Validate itself refuses any other action type before
+// RunACPAttempt ever dispatches one, so there is no longer a validly
+// constructed Scenario this package's own public entry point can drive
+// into that branch — compact (Task 14) was the last one. There is
+// deliberately no test for it here, matching inprocess_test.go's own
+// choice not to test its analogous branch either.
 
 // killHungTestProcess is test-only cleanup for a child this task's own
 // production code has no way to terminate (no SIGTERM/SIGKILL escalation
