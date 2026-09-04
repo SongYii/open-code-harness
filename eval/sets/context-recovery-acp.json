@@ -6,6 +6,10 @@
     {
       "id": "context-checkpoint-kill-restart",
       "digest": "sha256:5cf1fdeccae28facdf39d479d0c6b1b435e78c1269c391e63429d6e3f2bdc8ff"
+    },
+    {
+      "id": "context-checkpoint-interrupt-restart",
+      "digest": "sha256:819f78fd04f0df160c1bf8dda680c58bec28f318b2db9dc6f3e0323b46de4fd6"
     }
   ],
   "subjects": [
@@ -17,7 +21,7 @@
   "executors": [
     {
       "id": "context-executor-acp",
-      "digest": "sha256:a40d87f111c8dfe9bdaeec327efce1a3c428c15f8f06ffcfe38ed3c79293cee0"
+      "digest": "sha256:fe012727639cbf40eaecf0af09c5600c1aab01458da3f0276ac399b39e3f5010"
     }
   ],
   "repetitionCount": 1,

@@ -20,6 +20,7 @@
     "prompt",
     "compact",
     "collect",
-    "restart_kill"
+    "restart_kill",
+    "restart_interrupt"
   ]
 }
