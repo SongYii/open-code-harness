@@ -189,6 +189,24 @@ Design §3 as amended: the adapter never imports `localexec`. It declares what i
 
 **Interfaces:** Produces `(*Server).Discover(ctx) ([]domain.ToolSpec, error)` and the exported bounds `MaxToolsPerServer = 256`, `MaxToolDefinitionBytes = 65536`.
 
+> **BLOCKED — do not start this task until the schema question is decided.**
+> Task 1 measured `tools.compileSchema` against realistic MCP tool schemas
+> and found it rejects a per-property `description`, `$schema`, `title`,
+> `"type":"number"`, `"type":"boolean"`, `anyOf`, `default`, and any object
+> schema that omits `additionalProperties: false`. Its keyword allowlist is
+> twelve entries applied recursively, and it admits only four type values.
+>
+> Under design §5 as written — "a schema this project's own compiler rejects
+> drops that one tool, logged, not fatal" — a healthy, correctly configured
+> MCP server would be discovered successfully, have **every** tool dropped,
+> and leave the harness running with an empty MCP contribution. Silent, and
+> shaped exactly like success.
+>
+> The four options and their real costs are set out in the re-verification
+> document's §7.4. Each is a design decision with a different blast radius;
+> one of them edits an implemented contract. Building Task 4 before that
+> choice is made would encode whichever answer happened to be convenient.
+
 Design §5. Uses the SDK's own `cs.Tools(ctx, nil)` iterator, which owns cursor pagination, and `cs.InitializeResult().Capabilities.Tools` to decide whether the server offers tools at all.
 
 - [ ] **Step 1: Write failing tests**
