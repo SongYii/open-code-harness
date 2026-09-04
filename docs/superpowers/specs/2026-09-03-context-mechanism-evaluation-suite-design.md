@@ -318,7 +318,7 @@ Add focused IDs rather than one Scenario-ID-aware mega-verifier:
 | `context-manual-reset-v1` | manual/reset start and matching completed `source_tail_reset_v1` checkpoint with advancing coverage |
 | `context-manual-summary-v1` | manual/summary start and matching completed `rolling_summary_v1` checkpoint with valid version fields and non-empty summary |
 | `context-pre-turn-summary-v1` | pre-turn/summary completes before the paired request, and that request's prepared evidence names the new checkpoint |
-| `context-mid-turn-v1` | a second preparation occurs after a Tool Result on the same Turn, uses trigger `mid_turn`, and pairs with attempt index 2 |
+| `context-mid-turn-v1` | a second preparation occurs after a Tool Result on the same Turn, uses trigger `mid_turn`, and follows an earlier preparation on that Turn (see 9.2 on attempt index) |
 | `context-tool-result-pruned-v1` | all six evidence checks from section 6 plus the fixture success sentinel |
 | `context-overflow-recovered-v1` | initial attempt 1, overflow-retry attempt 2 on the same turn/item, one `overflow_retry` compaction, smaller retry estimate, and completed Turn |
 | `context-multi-chunk-summary-v1` | completed rolling checkpoint has `summaryChunks >= 2`, fixture depth equals chunk count, and no partial-summary checkpoint was accepted |
@@ -330,6 +330,27 @@ Add focused IDs rather than one Scenario-ID-aware mega-verifier:
 The existing `context-compaction-observed-v1` may remain as a compatibility
 alias for the old smoke Scenario, but new Scenarios use the focused IDs. Do not
 silently broaden its semantics.
+
+### 9.2 Attempt index is scoped to one assistant item
+
+An earlier draft of the mid-turn row above required attempt index 2. Real
+evidence invalidates that. Production emits the mid-turn continuation as a
+**new assistant item on the same Turn**, so its attempt index is 1:
+
+```text
+turn=4756ba item=03c3b2 attempt=1 trigger=pre_turn
+turn=4756ba item=6080b6 attempt=1 trigger=mid_turn
+```
+
+`AttemptIndex` counts attempts at one item, not preparations within a Turn.
+Index 2 identifies a *second attempt at the same item*, which is the
+overflow-retry shape — a different mechanism with its own criterion, and
+what `context-overflow-retry` really records. A mid-turn criterion keyed on
+index 2 is unsatisfiable against production evidence.
+
+The correct requirement is structural: a `mid_turn`-triggered preparation
+that genuinely follows an earlier preparation on the same Turn and whose
+request carries a Tool Result.
 
 ### 9.1 Verdict rules
 
@@ -364,6 +385,12 @@ Every Scenario starts from a fresh Session and fixture copy.
 | `context-checkpoint-clean-restart` | history, summary, clean restart, prompt | core | checkpoint reused, bounds, projection | in-process + ACP |
 | `context-checkpoint-interrupt-restart` | history, summary, interrupt, prompt | recovery | checkpoint reused, bounds | ACP only, blocked until section 12.1 |
 | `context-checkpoint-kill-restart` | history, summary, kill, prompt | recovery | checkpoint reused, bounds | ACP only |
+
+A Scenario that declares the `workspace` evidence role must also carry a
+`collect` action for the file it needs. Declaring the role alone collects
+nothing, and the pruning criterion then correctly refuses: it has no file to
+resolve the projected frame's `original_bytes` and `sha256` against. That
+refusal is the criterion working, not a defect to route around.
 
 `context-mid-turn-pruning` combines two mechanisms because the production
 projection occurs while materializing the second request after a real Tool
@@ -402,6 +429,31 @@ Each Subject remains secret-free and names `fixture://context-mechanism`.
 Profile numbers must be derived in tests from the actual wire meter and fixture
 content, then frozen; do not guess percentages until a real end-to-end test
 demonstrates the intended branch with margin.
+
+Forcing at least two summarizer chunks is bounded on three sides at once,
+and the **chunk** profile above cannot simply be tuned into it by guessing.
+`summarizeChunks` splits when the covered source exceeds
+`fitBudget = hardInput - focusTokens`, so two chunks require:
+
+```text
+hardInput - focusTokens  <  coveredSource  <  0.95 x hardInput
+```
+
+The upper bound is the trigger: history that crossed it would already have
+been compacted automatically, and `Context.TriggerPercent` is itself
+constrained to 60-95 by composition config validation. The lower bound is the
+focus, and `maxCompactSessionFocusBytes` caps a manual focus at 4KiB —
+roughly 1000 tokens. On a 4096-token window (`hardInput` about 3584) that
+leaves a band roughly 800 tokens wide, and the resulting summary must still
+satisfy validation inside it: smaller than the source it replaces, and at
+least 10% smaller than the pre-pass request.
+
+An implementation that cannot land inside that band must not ship a failing
+Scenario. It should keep the criterion and its mutation tests, record the
+arithmetic, and raise the constraint as a contract question — the honest
+options are widening the focus cap (a design 15.4 change), enlarging a single
+covered unit, or accepting that this mechanism is proven by the criterion and
+its mutations rather than end to end.
 
 Suggested sets:
 
