@@ -34,6 +34,16 @@ var scorerCatalog = map[string]eval.Scorer{
 			"outcome-not-infra-failed-v1",
 		},
 	},
+	"context-anchor-scorer-v1": {
+		ID:      "context-anchor-scorer-v1",
+		Version: "v1",
+		VerifierIDs: []string{
+			eval.VerifierContextUsageAnchor,
+			eval.VerifierContextBudgetBounds,
+			eval.VerifierContextProjection,
+			"outcome-not-infra-failed-v1",
+		},
+	},
 	"context-prune-scorer-v1": {
 		ID:      "context-prune-scorer-v1",
 		Version: "v1",

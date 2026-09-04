@@ -353,9 +353,15 @@ func verifyContextUsageAnchor(reader *ArtifactReader, _ Scenario) CriterionResul
 					"decision %q applied an anchor with no earlier provider usage record to establish it",
 					prepared.ContextDecisionID))
 			}
-			if anchor < prepared.UsageAnchorTokens {
+			// The applied anchor must be at least the earlier provider usage it
+			// derives from. It may legitimately exceed it: the anchor is
+			// non-lowering, and this request adds its own new content on top of
+			// what the provider last measured. An anchor *below* that usage
+			// would be the real defect, because it would mean the engine
+			// lowered an observed cost.
+			if prepared.UsageAnchorTokens < anchor {
 				return failed(VerifierContextUsageAnchor, fmt.Sprintf(
-					"decision %q anchored at %d tokens above the highest earlier provider usage of %d",
+					"decision %q anchored at %d tokens, below the earlier provider usage of %d it must not lower",
 					prepared.ContextDecisionID, prepared.UsageAnchorTokens, anchor))
 			}
 			if len(completedCompactionsByTrigger(trace, domain.ContextTriggerPreTurn)) == 0 {
