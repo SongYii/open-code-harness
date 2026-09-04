@@ -1,0 +1,38 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.set",
+  "id": "context-core-acp",
+  "scenarios": [
+    {
+      "id": "context-manual-reset",
+      "digest": "sha256:3b7f0805712c6a7192a9ebecdaadcae941fab60a3ce7a9e3d7b00ec4b69b8883"
+    },
+    {
+      "id": "context-manual-summary",
+      "digest": "sha256:36db5a52b1965309059a772ffe2574175a54c9d9026448c569a077d670d0d500"
+    },
+    {
+      "id": "context-pre-turn-summary",
+      "digest": "sha256:d4619351737205274bec6ffddabf2a2b8d50b144d17742a3eca18dd7519c73c6"
+    }
+  ],
+  "subjects": [
+    {
+      "id": "context-core-acp",
+      "digest": "sha256:0d7635984b343af436285974bb0ce013c6dee77ea97a81ec6db7d6cf9e9823ee"
+    }
+  ],
+  "executors": [
+    {
+      "id": "smoke-executor-acp",
+      "digest": "sha256:91fdb83cbb37e77378c6d486a17793e683cf6a64f9d613fe111fd276cfe67164"
+    }
+  ],
+  "repetitionCount": 1,
+  "pairingSeed": "context-core-v1",
+  "limits": {
+    "tokenCap": 200000
+  },
+  "artifactRoot": ".eval-artifacts-context-core-acp",
+  "lane": "fixture"
+}

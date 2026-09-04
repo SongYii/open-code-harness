@@ -1,0 +1,30 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.set",
+  "id": "context-prune-acp",
+  "scenarios": [
+    {
+      "id": "context-mid-turn-pruning",
+      "digest": "sha256:f55ea948731a73428008e7a5cb7b744adfe94443f5da329dc92589649ec9f5b1"
+    }
+  ],
+  "subjects": [
+    {
+      "id": "context-prune-acp",
+      "digest": "sha256:1484540eee6a4b7ba474538b99d60a0784f707a7ef1783938d9666b6afa3ab85"
+    }
+  ],
+  "executors": [
+    {
+      "id": "smoke-executor-acp",
+      "digest": "sha256:91fdb83cbb37e77378c6d486a17793e683cf6a64f9d613fe111fd276cfe67164"
+    }
+  ],
+  "repetitionCount": 1,
+  "pairingSeed": "context-prune-v1",
+  "limits": {
+    "tokenCap": 200000
+  },
+  "artifactRoot": ".eval-artifacts-context-prune-acp",
+  "lane": "fixture"
+}

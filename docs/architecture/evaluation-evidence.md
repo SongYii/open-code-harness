@@ -143,7 +143,8 @@ Two Scenario-shaped facts were also found only by running:
   `triggerPercent` floor and the 4KiB `maxCompactSessionFocusBytes` cap leave
   roughly an 800-token band on a 4096-token window, and the summary must be a
   net reduction within it.
-- **ACP paired sets** are not landed; every Context Scenario runs in-process.
+- **Multi-chunk** is the only Context mechanism without an end-to-end
+  Scenario; every other one runs on both executor surfaces.
 - No claim is made about a crash during an open compaction bracket.
 
 ## Mechanism → test → mutation result

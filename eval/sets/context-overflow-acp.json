@@ -1,0 +1,30 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.set",
+  "id": "context-overflow-acp",
+  "scenarios": [
+    {
+      "id": "context-overflow-retry",
+      "digest": "sha256:80cbe3896485dedbb95cbc0a318846f6296bab9767654b252f4cb38bf42bb0f7"
+    }
+  ],
+  "subjects": [
+    {
+      "id": "context-overflow-acp",
+      "digest": "sha256:cccc552091ad1ef27573f5bd67282220ce23c85aeb23514e07e0d25466345e8e"
+    }
+  ],
+  "executors": [
+    {
+      "id": "smoke-executor-acp",
+      "digest": "sha256:91fdb83cbb37e77378c6d486a17793e683cf6a64f9d613fe111fd276cfe67164"
+    }
+  ],
+  "repetitionCount": 1,
+  "pairingSeed": "context-overflow-v1",
+  "limits": {
+    "tokenCap": 200000
+  },
+  "artifactRoot": ".eval-artifacts-context-overflow-acp",
+  "lane": "fixture"
+}

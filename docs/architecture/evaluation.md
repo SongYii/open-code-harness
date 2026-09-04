@@ -404,10 +404,18 @@ evidence-oriented explanation of every verdict.
 
 ### What the suite proves today
 
-Five Scenarios run end to end through the production in-process path and
-regrade offline: `context-manual-reset`, `context-manual-summary`,
-`context-pre-turn-summary`, `context-mid-turn-pruning`,
-`context-overflow-retry`, and `context-usage-anchor`.
+Six Scenarios run end to end and regrade offline: `context-manual-reset`,
+`context-manual-summary`, `context-pre-turn-summary`,
+`context-mid-turn-pruning`, `context-overflow-retry`, and
+`context-usage-anchor`.
+
+Each runs on **both** execution surfaces. Four paired EvalSets
+(`context-{core,prune,overflow,anchor}-{inprocess,acp}.json`) share Scenario
+order, repetition count, pairing seed, and pairing tags, differing only in
+the mirrored Subject the accepted ACP executor contract requires — the same
+baseline/candidate pattern the existing parity Cells use. Every Scenario
+reaches the same criterion verdicts through the real `och -acp` subprocess as
+it does in-process.
 
 ### What it does not prove yet
 
@@ -419,8 +427,6 @@ regrade offline: `context-manual-reset`, `context-manual-summary`,
   on a 4096-token window — and the summary must still be a net reduction
   inside it. The criterion and its mutation tests are landed and green; the
   end-to-end Scenario is not.
-- **ACP paired sets are not landed.** Every Scenario above runs in-process
-  only.
 - Interrupt-restart recovery remains blocked on the ACP input-cancellation
   prerequisite; `kill` is the suite's abrupt restart mode.
 

@@ -1,0 +1,33 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.subject",
+  "id": "context-prune-acp",
+  "repositoryRevision": "dev",
+  "repositoryDirty": false,
+  "provider": {
+    "adapterKind": "openaicompat",
+    "normalizedEndpoint": "fixture://context-mechanism",
+    "modelId": "context-prune-model",
+    "contextWindow": 8192,
+    "maxOutput": 512,
+    "credentialEnvVar": "OCH_EVAL_CONTEXT_API_KEY",
+    "lane": "fixture"
+  },
+  "context": {
+    "triggerPercent": 95,
+    "targetPercent": 40,
+    "tailPercent": 10,
+    "maxSummaryChunks": 8,
+    "maxOverflowCompactionsPerTurn": 2,
+    "maxPrunedToolResultsPerRequest": 8,
+    "compactionTimeout": 120000000000
+  },
+  "policy": {
+    "mode": "default",
+    "toolCatalogIdentity": "catalog-v1",
+    "limits": {
+      "approvalTimeout": 30000000000
+    },
+    "sandboxPolicy": "unsandboxed_allowed"
+  }
+}
