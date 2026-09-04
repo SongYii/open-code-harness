@@ -1,3 +1,10 @@
+//go:build unix
+
+// This lane starts real och -acp subprocesses. The design keeps Windows on
+// cross-build only — it does not run ACP subprocess recovery until the parent
+// design's Job Object contract exists — so this file carries the same unix
+// constraint prset_test.go does.
+
 package main
 
 import (
