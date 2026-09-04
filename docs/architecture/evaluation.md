@@ -370,6 +370,95 @@ microunits, and `ScorerUsage.costStatus` makes availability explicit:
 `unavailable` carries neither a currency nor a cost. Scores published
 before that field existed remain readable.
 
+## Context mechanism suite
+
+`internal/harness/eval/context_trace.go` parses one Attempt's canonical
+audit once and indexes compaction brackets, Context preparations paired with
+their conversation requests, checkpoints, provider usage, and terminal
+outcomes. Building it is fail-closed: an orphan terminal compaction, a
+bracket that closes twice, a duplicate decision ID, a request paired with a
+preparation from a different turn/item/attempt or one that came later, an
+attempt index that is zero or out of order, a zero or unordered budget, or a
+forked or cyclic checkpoint chain are all errors. A caller turns a build
+failure into an `indeterminate` criterion, never a behavioural `fail` — "the
+evidence does not hold together" and "the evidence is intact and shows this
+did not happen" are different claims, and conflating them is how a suite
+starts passing on broken input.
+
+`context_verifier.go` and `context_verifier_mechanisms.go` register eleven
+focused criteria rather than one Scenario-aware mega-verifier. Each demands
+an observed fact, never a capability: pre-turn summary requires a later
+preparation to actually name the new checkpoint, checkpoint reuse refuses a
+preparation naming a checkpoint the Attempt never established, pruning
+resolves the projected frame's declared `original_bytes` and `sha256` back
+to a collected workspace file, overflow requires a strictly smaller retry
+estimate, and the usage anchor must be recorded as applied, be supported by
+an earlier provider usage record, and lead to a completed compaction.
+
+`cmd/och-eval`'s `context-mechanism` fixture classifies by parsing the
+request — summarizer by the versioned prompt marker, then tool continuation,
+then the marker on the *latest* user message — and holds no cross-request
+state. Rolling depth is carried inside the summary itself, so a chunk count
+nothing produced cannot pass. `CriterionResult.Detail` carries a bounded,
+evidence-oriented explanation of every verdict.
+
+### What the suite proves today
+
+Eight Scenarios run end to end and regrade offline: `context-manual-reset`,
+`context-manual-summary`, `context-pre-turn-summary`,
+`context-mid-turn-pruning`, `context-overflow-retry`,
+`context-usage-anchor`, `context-checkpoint-clean-restart`, and
+`context-checkpoint-kill-restart`.
+
+Checkpoint-chain continuity is proven across a restart on both surfaces:
+`clean_shutdown` in-process and through ACP, and `kill` through
+`context-recovery-acp.json`. `kill` is the suite's abrupt restart mode —
+`interrupt` stays out until the ACP input-cancellation prerequisite lands,
+and `interrupt`/`kill` never appear in an in-process set.
+
+Each runs on **both** execution surfaces. Four paired EvalSets
+(`context-{core,prune,overflow,anchor}-{inprocess,acp}.json`) share Scenario
+order, repetition count, pairing seed, and pairing tags, differing only in
+the mirrored Subject the accepted ACP executor contract requires — the same
+baseline/candidate pattern the existing parity Cells use. Every Scenario
+reaches the same criterion verdicts through the real `och -acp` subprocess as
+it does in-process.
+
+### CI lanes
+
+Ordinary PR CI carries exactly one representative Context Cell,
+`eval/sets/pr-context.json` running `context-mid-turn-pruning` — one Cell
+covering two mechanisms, since mid-turn preparation is where Tool Result
+projection actually happens. It is a separate minimal-cardinality EvalSet
+rather than another Scenario inside `pr-tool-and-compaction.json`, because a
+Context Scenario needs a `fixture://context-mechanism` Subject and adding one
+there would cross-multiply into meaningless Cells. The lane still expands to
+exactly four Cells, which `TestPRLaneExpandsToExactlyFourFixtureCells`
+enforces.
+
+The explicit/scheduled lane runs every paired set plus the ACP-only recovery
+set (`TestContextScheduledLaneRunsEveryPairedSet`), and
+`TestContextScheduledLaneKeepsTheScanRegressionGated` fails if
+`TestPrepareContextResumesScanFromCheckpointRatherThanStreamStart` or the
+`BenchmarkScan`/`BenchmarkScanFromCheckpoint` pair is removed. That indirection
+is deliberate: whether the steady-state scan resumes from the checkpoint
+rather than the stream start is not observable from an artifact-only verifier
+without store instrumentation eval is forbidden to have, so the guarantee
+lives in a package test and the scheduled lane guards its existence.
+
+### What it does not prove yet
+
+- **Multi-chunk summarization has a verifier but no landed Scenario.**
+  Forcing at least two summarizer chunks deterministically requires the
+  covered source to sit inside `(hardInput - focusTokens, 0.95 x hardInput)`.
+  `triggerPercent` has a 60% floor and `maxCompactSessionFocusBytes` caps the
+  focus at 4KiB (roughly 1000 tokens), so that band is about 800 tokens wide
+  on a 4096-token window — and the summary must still be a net reduction
+  inside it. The criterion and its mutation tests are landed and green; the
+  end-to-end Scenario is not.
+- Interrupt-restart recovery remains blocked on the ACP input-cancellation
+  prerequisite; `kill` is the suite's abrupt restart mode.
+
 ## Parity
 
 `internal/harness/eval/parity.go` implements design §11/§22: `LoadParityArm`

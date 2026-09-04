@@ -1,17 +1,17 @@
 {
   "formatVersion": 1,
   "schema": "och.eval.set",
-  "id": "pr-tool-and-compaction",
+  "id": "pr-context",
   "scenarios": [
     {
-      "id": "tool-approval-failure",
-      "digest": "sha256:6fe6357cb1de631c4b35ad000f4e8e39990b2d4053a9eff40296290000dc5896"
+      "id": "context-mid-turn-pruning",
+      "digest": "sha256:f55ea948731a73428008e7a5cb7b744adfe94443f5da329dc92589649ec9f5b1"
     }
   ],
   "subjects": [
     {
-      "id": "smoke-subject",
-      "digest": "sha256:fbe35a86020828006e75f8f688286080fc1aeb6731ce42820b817ec2cb3dd1fb"
+      "id": "context-prune",
+      "digest": "sha256:c15a58d2aba5884fed0c58de5fab6f7f3670dc9b6c996ddb92f15183b4b873c0"
     }
   ],
   "executors": [
@@ -21,9 +21,9 @@
     }
   ],
   "repetitionCount": 1,
-  "pairingSeed": "pr-v1",
+  "pairingSeed": "pr-context-v1",
   "limits": {
-    "tokenCap": 100000
+    "tokenCap": 200000
   },
   "artifactRoot": ".eval-artifacts-pr",
   "lane": "fixture"

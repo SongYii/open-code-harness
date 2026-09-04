@@ -1,0 +1,80 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.scenario",
+  "id": "context-pre-turn-summary",
+  "description": "Padded prompt turns accumulate real conversation history until the Context Engine's own pre-turn admission check triggers an automatic summary compaction before a later request is dispatched. Passing requires canonical audit evidence that a pre_turn/summary compaction completed AND that a later preparation named the resulting checkpoint: a completed compaction nothing subsequently used would prove admission ran, not that it took effect. A compact action never appears in this Scenario -- the compaction under test is automatic.",
+  "fixtureDigest": "sha256:f5043b2c09fb8ecfc394548860794027a0f22602668cee36597f41b9f349cefd",
+  "fixtureCopyPolicy": {
+    "maxFiles": 10,
+    "maxFileBytes": 1048576,
+    "maxTotalBytes": 1048576
+  },
+  "actions": [
+    {
+      "id": "prompt-1",
+      "type": "prompt",
+      "prompt": {
+        "text": "This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. "
+      }
+    },
+    {
+      "id": "prompt-2",
+      "type": "prompt",
+      "prompt": {
+        "text": "This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. "
+      }
+    },
+    {
+      "id": "prompt-3",
+      "type": "prompt",
+      "prompt": {
+        "text": "This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. "
+      }
+    },
+    {
+      "id": "prompt-4",
+      "type": "prompt",
+      "prompt": {
+        "text": "This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. "
+      }
+    },
+    {
+      "id": "prompt-5",
+      "type": "prompt",
+      "prompt": {
+        "text": "This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. "
+      }
+    },
+    {
+      "id": "prompt-6",
+      "type": "prompt",
+      "prompt": {
+        "text": "This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. "
+      }
+    },
+    {
+      "id": "prompt-pressure",
+      "type": "prompt",
+      "prompt": {
+        "text": "Summarize what we established so far. This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. This padded turn exists to accumulate real conversation history so the Context Engine's own pre-turn admission check has genuine source material to compact, rather than a synthetic estimate. "
+      }
+    }
+  ],
+  "requiredCapabilities": [
+    "prompt"
+  ],
+  "requiredEvidenceRoles": [
+    "transcript",
+    "audit"
+  ],
+  "deterministicVerifierIds": [
+    "context-pre-turn-summary-v1",
+    "context-budget-bounds-v1",
+    "context-projection-present-v1",
+    "outcome-not-infra-failed-v1"
+  ],
+  "limits": {},
+  "pairingTags": [
+    "context-core"
+  ]
+}

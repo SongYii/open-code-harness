@@ -1,0 +1,80 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.scenario",
+  "id": "context-overflow-retry",
+  "description": "Ordinary history stays inside the local admission budget, then the fixture rejects a request with a real OpenAI-compatible context_length_exceeded response. Passing requires evidence that recovery was driven by that provider rejection rather than by admission planning: exactly one overflow_retry compaction, a second attempt on the same item whose estimate is strictly smaller than the first, a completed Turn, and the fixture's own post-compaction sentinel proving the retried request actually reached it.",
+  "fixtureDigest": "sha256:f5043b2c09fb8ecfc394548860794027a0f22602668cee36597f41b9f349cefd",
+  "fixtureCopyPolicy": {
+    "maxFiles": 10,
+    "maxFileBytes": 1048576,
+    "maxTotalBytes": 1048576
+  },
+  "actions": [
+    {
+      "id": "prompt-1",
+      "type": "prompt",
+      "prompt": {
+        "text": "Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. "
+      }
+    },
+    {
+      "id": "prompt-2",
+      "type": "prompt",
+      "prompt": {
+        "text": "Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. "
+      }
+    },
+    {
+      "id": "prompt-3",
+      "type": "prompt",
+      "prompt": {
+        "text": "Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. "
+      }
+    },
+    {
+      "id": "prompt-4",
+      "type": "prompt",
+      "prompt": {
+        "text": "Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. "
+      }
+    },
+    {
+      "id": "prompt-5",
+      "type": "prompt",
+      "prompt": {
+        "text": "Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. "
+      }
+    },
+    {
+      "id": "prompt-6",
+      "type": "prompt",
+      "prompt": {
+        "text": "Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. Ordinary padded history that stays comfortably inside the local admission budget so the recovery under test is driven by the provider's own rejection rather than by admission planning, while still being large enough that summarizing it is a real net reduction. "
+      }
+    },
+    {
+      "id": "prompt-overflow",
+      "type": "prompt",
+      "prompt": {
+        "text": "Continue the work. OCH_EVAL_CONTEXT_OVERFLOW"
+      }
+    }
+  ],
+  "requiredCapabilities": [
+    "prompt"
+  ],
+  "requiredEvidenceRoles": [
+    "transcript",
+    "audit"
+  ],
+  "deterministicVerifierIds": [
+    "context-overflow-recovered-v1",
+    "context-budget-bounds-v1",
+    "context-projection-present-v1",
+    "outcome-not-infra-failed-v1"
+  ],
+  "limits": {},
+  "pairingTags": [
+    "context-overflow"
+  ]
+}

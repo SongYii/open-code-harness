@@ -19,6 +19,12 @@ type CriterionResult struct {
 	ID     string       `json:"id"`
 	Status ScoreVerdict `json:"status"`
 	Score  *float64     `json:"score,omitempty"`
+	// Detail is a stable, bounded, evidence-oriented explanation of how
+	// this criterion reached its status. It may name event kinds, action
+	// coordinates, and counts; it must never carry a prompt, a Tool
+	// Result, or a model response. It is optional and additive: a Score
+	// published before it existed decodes with an empty Detail.
+	Detail string `json:"detail,omitempty"`
 }
 
 // CostStatus makes a Score's own cost availability explicit, so an
@@ -199,8 +205,17 @@ func (criterion CriterionResult) validate(index int) error {
 	if err := validateOptionalFiniteScore(criterion.Score); err != nil {
 		return fmt.Errorf("criteria %d: %w", index, err)
 	}
+	if len(criterion.Detail) > maxCriterionDetailBytes {
+		return fmt.Errorf("%w: criteria %d: detail is %d bytes, over the %d-byte cap",
+			errInvalidDocument, index, len(criterion.Detail), maxCriterionDetailBytes)
+	}
 	return nil
 }
+
+// maxCriterionDetailBytes bounds one criterion's own explanation. A
+// verifier that needed more than this would be dumping evidence rather
+// than explaining a verdict.
+const maxCriterionDetailBytes = 1024
 
 func validateOptionalFiniteScore(value *float64) error {
 	if value == nil {

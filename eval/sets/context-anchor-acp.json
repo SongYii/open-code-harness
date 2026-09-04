@@ -1,0 +1,30 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.set",
+  "id": "context-anchor-acp",
+  "scenarios": [
+    {
+      "id": "context-usage-anchor",
+      "digest": "sha256:bb3b567bf9aa31cd595fe2d81ec6cf2c1749a983b9c3e831f2a11780eea1509c"
+    }
+  ],
+  "subjects": [
+    {
+      "id": "context-anchor-acp",
+      "digest": "sha256:a3b684f6bc57f1cb70c2dc98766eefd7c9b6bc51af630e413a96457b02eeea0f"
+    }
+  ],
+  "executors": [
+    {
+      "id": "smoke-executor-acp",
+      "digest": "sha256:91fdb83cbb37e77378c6d486a17793e683cf6a64f9d613fe111fd276cfe67164"
+    }
+  ],
+  "repetitionCount": 1,
+  "pairingSeed": "context-anchor-v1",
+  "limits": {
+    "tokenCap": 400000
+  },
+  "artifactRoot": ".eval-artifacts-context-anchor-acp",
+  "lane": "fixture"
+}

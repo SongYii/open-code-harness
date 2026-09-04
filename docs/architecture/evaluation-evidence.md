@@ -49,6 +49,16 @@ repository uses throughout.
 | `d3010d6` | Task 17 completion 3/6 | Deterministic, fail-closed judge evidence selection (two real defects fixed) |
 | `304f37f` | Task 17 completion 4/6 | `EvaluateJudgeAttempt`: prerequisite-gated, append-only live Scores |
 | `b5244e4` | Task 17 completion 5/6 | `och-eval judge`, real OpenAI-compatible caller, checked-in JudgeConfig example |
+| `517e22c` | Context suite 1 | Per-request Tool Result pruning count on `context.prepared` |
+| `4e460f4` | Context suite 2 | Typed, fail-closed Context trace over canonical audit |
+| `a707517` | Context suite 3 | Stateless `context-mechanism` fixture protocol |
+| `f4b8d0a` | Context suite 4 | Six core Context verifiers; `CriterionResult.Detail` |
+| `86239a0` | Context suite 5 | Five mechanism verifiers and the required mutation set |
+| `0d441bb` | Context suite 6 | Core profile, pre-turn Scenario, checked-in digest guard |
+| `37be2fe` | Context suite 7 | Manual reset and summary Scenarios |
+| `efd8ce1` | Context suite 8 | Overflow recovery Scenario |
+| `263f5ae` | Context suite 9 | Mid-turn criterion correction; pruning Scenario |
+| `dbb385f` | Context suite 10 | Usage-anchor Scenario and criterion correction |
 
 ## Post-merge review findings closed
 
@@ -92,6 +102,56 @@ description at the time:
 - Design §25.2's `list_dir` tool and MCP suites are out of scope for this
   milestone entirely (design §3's own stated non-goals / §25.4's own "MCP
   absence does not block the eval system").
+
+## Context suite: contracts the implementation corrected
+
+Three clauses of the accepted Context suite design did not survive contact
+with real evidence. Each was amended rather than silently worked around.
+
+- **Mid-turn attempt index.** The design's section 9 requires the mid-turn
+  criterion to pair with attempt index 2. Production emits the mid-turn
+  continuation as a *new assistant item on the same Turn*, so its index is 1
+  (`turn=4756ba item=03c3b2 attempt=1 trigger=pre_turn` followed by
+  `turn=4756ba item=6080b6 attempt=1 trigger=mid_turn`). Index 2 identifies a
+  second attempt at the same item — the overflow-retry shape, which the
+  overflow Scenario really does record as `overflow_retry#2`. The criterion
+  now requires a mid_turn preparation that follows an earlier preparation on
+  the same Turn and carries a Tool Result.
+- **Usage-anchor comparison direction.** The first implementation refused an
+  applied anchor larger than the earlier provider usage record. An anchor of
+  60025 against a recorded 60000 is correct: the anchor is non-lowering and
+  the request adds its own new content. An anchor *below* the observed usage
+  is the defect.
+- **Idle ACP interrupt.** Recorded separately in the design's section 12.1;
+  the suite ships `kill` as its abrupt restart mode.
+
+Two Scenario-shaped facts were also found only by running:
+
+- A Scenario that declares the `workspace` evidence role without a `collect`
+  action collects nothing, and the pruning criterion correctly refuses — it
+  has no file to resolve the projected frame's digest against.
+- The overflow Scenario sits between two walls: too little history and the
+  compaction fails `context_summary_invalid` because the summary is not
+  smaller than the source it replaces; too much and the local pre-turn
+  trigger fires first, so no overflow ever happens.
+
+## Context suite: what is not yet proven
+
+- **Multi-chunk summarization** has a landed, mutation-tested criterion but
+  no end-to-end Scenario. Forcing two summarizer chunks needs the covered
+  source inside `(hardInput - focusTokens, 0.95 x hardInput)`; the 60%
+  `triggerPercent` floor and the 4KiB `maxCompactSessionFocusBytes` cap leave
+  roughly an 800-token band on a 4096-token window, and the summary must be a
+  net reduction within it.
+- **Multi-chunk** is the only Context mechanism without an end-to-end
+  Scenario. Every other one runs on both executor surfaces, including
+  checkpoint reuse across a `clean_shutdown` restart on each and a `kill`
+  restart through the ACP recovery set.
+- Both CI lanes are wired: one representative Context Cell in ordinary PR CI
+  (`pr-context.json`, still exactly four Cells total) and every paired set
+  plus ACP recovery in the scheduled lane, with the scan regression and its
+  benchmarks guarded against removal.
+- No claim is made about a crash during an open compaction bracket.
 
 ## Mechanism → test → mutation result
 
