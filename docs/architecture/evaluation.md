@@ -449,18 +449,33 @@ rather than the stream start is not observable from an artifact-only verifier
 without store instrumentation eval is forbidden to have, so the guarantee
 lives in a package test and the scheduled lane guards its existence.
 
-### What it does not prove yet
+### Multi-chunk: proven by criterion, not by Scenario
 
-- **Multi-chunk summarization has a verifier but no landed Scenario.**
-  Forcing at least two summarizer chunks deterministically requires the
-  covered source to sit inside `(hardInput - focusTokens, 0.95 x hardInput)`.
-  `triggerPercent` has a 60% floor and `maxCompactSessionFocusBytes` caps the
-  focus at 4KiB (roughly 1000 tokens), so that band is about 800 tokens wide
-  on a 4096-token window — and the summary must still be a net reduction
-  inside it. The criterion and its mutation tests are landed and green; the
-  end-to-end Scenario is not.
-- Interrupt-restart recovery remains blocked on the ACP input-cancellation
-  prerequisite; `kill` is the suite's abrupt restart mode.
+`context-multi-chunk-summary-v1` and its mutation tests are landed and green.
+There is deliberately no end-to-end Scenario behind them.
+
+Forcing at least two summarizer chunks requires the covered source to sit
+inside `(hardInput - focusTokens, 0.95 x hardInput)`. `triggerPercent` has a
+60% floor and `maxCompactSessionFocusBytes` caps a manual focus at 4KiB
+(roughly 1000 tokens), leaving a band about 800 tokens wide on a 4096-token
+window — inside which the summary must still be a net reduction. Five
+measured attempts each landed outside it.
+
+Widening that cap would open the band and was rejected: 4KiB bounds how much
+operator-supplied text reaches a summarization prompt, and relaxing a safety
+boundary to make a test Scenario reachable trades the wrong thing.
+
+So the mutation tests carry this mechanism: a checkpoint recording fewer than
+two chunks fails, and a chunk count the fixture never independently observed
+fails. What is **not** covered is that a real run produces such a checkpoint
+at all.
+
+### What it does not prove
+
+- No claim is made about a crash during an open compaction bracket. The
+  Scenario language can restart between actions but cannot wait on a live
+  `context.compaction.started` barrier, and sleeps, PID polling, and copying a
+  live audit replica are forbidden substitutes.
 
 ## Parity
 
