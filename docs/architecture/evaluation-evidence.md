@@ -202,6 +202,8 @@ comment was already correct and the wiring was not.
 | `TestCIEnablesTheFullContextMatrixOnlyInAScheduledJob` | Parses `.github/workflows/ci.yml`: exactly one job may set the variable, it must carry `if: github.event_name == 'schedule'`, and its single `go test` invocation must be focused on `./cmd/och-eval`, name `^TestContextScheduledLane`, and use `-count=1`. |
 | `TestBroadSuiteJobsNeverEnableTheFullContextMatrix` | The same file's whole-suite jobs — `go`, `determinism`, `soak` — must all still exist and none may set the variable. |
 | `TestScheduledContextMatrixOptInFailsClosed` | `""`, `"0"`, `"true"`, `"yes"`, `"2"`, `" 1"` all leave the matrix off; only `"1"` enables it. |
+| `TestScheduledLaneCoversEveryCheckedInContextSet` | `contextScheduledSets` is maintained by hand, so a tenth set added later would simply never run while the lane still passed. Membership is decided by two independent facts — the set's own declared `fixture` lane and the `context-` id prefix that separates it from the PR lane's `pr-context` — not by a filename convention alone. |
+| `TestEveryInProcessContextSetHasAnIdenticalACPArm` | The suite design's pairing claim as a structural fact: every `context-X-inprocess` set has a `context-X-acp` twin carrying the identical Scenario list, the first declaring an `in_process` executor and the second an `acp_subprocess` one. `context-recovery-acp` has no in-process arm by design, since restart recovery is only meaningful against a real subprocess. |
 
 The workflow file is parsed line-wise into job blocks rather than with a YAML
 library, because the repository pins its dependency graph (`go mod tidy -diff`,
@@ -217,6 +219,8 @@ Five mutations were performed and observed, then restored:
 | Change the scheduled job to `-count=3` | `TestCIEnablesTheFullContextMatrixOnlyInAScheduledJob` fails. Caught, restored. |
 | Delete `if: github.event_name == 'schedule'` from the scheduled job | Same guard fails. Caught, restored. |
 | Widen the scheduled job's command to `go test -race ./... -count=1` | Both CI guards fail. Caught, restored. |
+| Drop `context-anchor-acp.json` from `contextScheduledSets` | `TestScheduledLaneCoversEveryCheckedInContextSet` fails, naming the set that would have stopped running. Caught, restored. |
+| Delete one of `context-core-acp.json`'s four Scenarios, leaving its in-process twin intact | `TestEveryInProcessContextSetHasAnIdenticalACPArm` fails with both Scenario lists. Caught, restored. The first attempt at this mutation used `context-anchor-acp.json`, which declares a single Scenario, so removing it produced an empty set that an unrelated pre-existing validation rejected first (`at least one scenario is required`) — a red test proving nothing about this guard. Redone against a four-Scenario set. |
 
 One process note, since this ledger records how evidence was obtained and not
 only its result: the first attempt at the last three mutations restored the

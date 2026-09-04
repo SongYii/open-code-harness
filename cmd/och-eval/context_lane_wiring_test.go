@@ -20,9 +20,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/SongYii/open-code-harness/internal/harness/eval"
 )
 
 // scheduledContextMatrixEnv opts a run in to the full Context mechanism
@@ -237,6 +241,124 @@ func TestBroadSuiteJobsNeverEnableTheFullContextMatrix(t *testing.T) {
 			t.Errorf("expected job %q to still run the whole suite; found %v", required, broad)
 		}
 	}
+}
+
+// checkedInContextSets returns every checked-in EvalSet file, decoded.
+func checkedInContextSets(t *testing.T) map[string]documentTree {
+	t.Helper()
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	setsDir := filepath.Join(root, "eval", "sets")
+	entries, err := os.ReadDir(setsDir)
+	if err != nil {
+		t.Fatalf("read eval/sets: %v", err)
+	}
+	trees := map[string]documentTree{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		tree, err := loadDocumentTree(filepath.Join(setsDir, entry.Name()))
+		if err != nil {
+			t.Fatalf("loadDocumentTree(%s): %v", entry.Name(), err)
+		}
+		trees[entry.Name()] = tree
+	}
+	if len(trees) == 0 {
+		t.Fatal("found no checked-in EvalSets")
+	}
+	return trees
+}
+
+// TestScheduledLaneCoversEveryCheckedInContextSet keeps contextScheduledSets
+// from silently falling behind the sets on disk.
+//
+// The list is maintained by hand, so a tenth Context set added later would
+// simply never run: the lane would still pass, having quietly stopped being
+// the full matrix. Membership is decided by two independent facts rather than
+// by a filename convention alone — the set's own declared `fixture` lane, and
+// the `context-` id prefix that separates the scheduled sets from the PR
+// lane's own `pr-context`.
+func TestScheduledLaneCoversEveryCheckedInContextSet(t *testing.T) {
+	var expected []string
+	for name, tree := range checkedInContextSets(t) {
+		if tree.Set.Lane != eval.LaneFixture {
+			continue
+		}
+		if !strings.HasPrefix(string(tree.Set.ID), "context-") {
+			continue
+		}
+		expected = append(expected, name)
+	}
+	sort.Strings(expected)
+
+	scheduled := append([]string(nil), contextScheduledSets...)
+	sort.Strings(scheduled)
+
+	if !slices.Equal(expected, scheduled) {
+		t.Errorf("the scheduled lane runs %v but the repository holds %v;\n"+
+			"a fixture-lane context-* EvalSet that is not in contextScheduledSets never runs anywhere",
+			scheduled, expected)
+	}
+}
+
+// TestEveryInProcessContextSetHasAnIdenticalACPArm holds the suite design's
+// pairing claim — every Context Scenario is exercised through both execution
+// surfaces — as a structural fact rather than as a property of how the sets
+// happened to be written.
+//
+// context-recovery-acp has no in-process arm by design: restart recovery is
+// only meaningful against a real subprocess.
+func TestEveryInProcessContextSetHasAnIdenticalACPArm(t *testing.T) {
+	trees := checkedInContextSets(t)
+	paired := 0
+	for name, inProcess := range trees {
+		arm, found := strings.CutSuffix(name, "-inprocess.json")
+		if !found || !strings.HasPrefix(arm, "context-") {
+			continue
+		}
+		acpName := arm + "-acp.json"
+		acp, ok := trees[acpName]
+		if !ok {
+			t.Errorf("%s has no %s; the suite design pairs every Context Scenario with the ACP executor", name, acpName)
+			continue
+		}
+		paired++
+
+		if !slices.Equal(scenarioIDs(inProcess), scenarioIDs(acp)) {
+			t.Errorf("%s runs %v but %s runs %v; a paired arm must carry the identical Scenario list",
+				name, scenarioIDs(inProcess), acpName, scenarioIDs(acp))
+		}
+		if kind := soleExecutorKind(t, inProcess); kind != eval.ExecutorInProcess {
+			t.Errorf("%s runs a %q executor, want %q", name, kind, eval.ExecutorInProcess)
+		}
+		if kind := soleExecutorKind(t, acp); kind != eval.ExecutorACPSubprocess {
+			t.Errorf("%s runs a %q executor, want %q", acpName, kind, eval.ExecutorACPSubprocess)
+		}
+	}
+	if paired == 0 {
+		t.Fatal("found no paired in-process Context EvalSets; this guard is no longer reading the sets")
+	}
+}
+
+func scenarioIDs(tree documentTree) []string {
+	ids := make([]string, 0, len(tree.Set.Scenarios))
+	for _, ref := range tree.Set.Scenarios {
+		ids = append(ids, string(ref.ID))
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func soleExecutorKind(t *testing.T, tree documentTree) eval.ExecutorKind {
+	t.Helper()
+	if len(tree.Set.Executors) != 1 {
+		t.Fatalf("EvalSet %s declares %d executors; a Context arm declares exactly one",
+			tree.Set.ID, len(tree.Set.Executors))
+	}
+	return tree.Executors[tree.Set.Executors[0].ID].Kind
 }
 
 func contains(values []string, want string) bool {
