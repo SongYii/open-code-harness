@@ -180,8 +180,16 @@ func writeContextMarkerResponse(w http.ResponseWriter, request contextFixtureReq
 		}
 		writeContextOverflowRejection(w)
 	case contextPruneMarker:
+		// The tool-call frames go out over the same SSE transport as every
+		// other response here, so the content type has to be set before the
+		// first frame — writeToolCallSSE is shared with the smart fixture and
+		// deliberately does not set it itself.
+		w.Header().Set("Content-Type", "text/event-stream")
 		writeToolCallSSE(w, contextPruneToolCallID, "read_file",
 			fmt.Sprintf(`{"path":%s}`, jsonQuote(contextPruneFixturePath)))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
 	case contextUsageAnchorMarker:
 		// A deliberately high fixed provider input count, reported as real
 		// usage on an otherwise short answer. The Subject profile makes the

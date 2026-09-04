@@ -28,10 +28,13 @@ func projectedFrame(callID string) string {
 // tool call, attempt 2 is prepared mid-turn carrying the projected frame, and
 // the fixture confirms it received the complete projection.
 func pruningEvents() []traceEvent {
-	second := tracePrepared("decision-2", "turn-1", "item-1", 2, domain.ContextTriggerMidTurn)
+	// Production emits the mid-turn continuation as a new assistant item on
+	// the same Turn, so its attempt index is 1, not 2. This fixture mirrors
+	// what a real run actually writes.
+	second := tracePrepared("decision-2", "turn-1", "item-2", 1, domain.ContextTriggerMidTurn)
 	second.PrunedToolResultCount = 1
 
-	request := traceRequest("decision-2", "turn-1", "item-1", 2)
+	request := traceRequest("decision-2", "turn-1", "item-2", 1)
 	request.Messages = []domain.ModelPromptMessage{
 		{Role: "user", Text: "read it OCH_EVAL_CONTEXT_PRUNE"},
 		{Role: "tool", ToolCallID: "call_context_prune", Text: projectedFrame("call_context_prune")},
@@ -43,7 +46,7 @@ func pruningEvents() []traceEvent {
 		{domain.EventContextPreparedRecorded, second},
 		{domain.EventModelRequestRecorded, request},
 		{domain.EventAssistantMessageCompleted, domain.AssistantMessageCompleted{
-			TurnID: "turn-1", ItemID: "item-1", Text: contextPruneSuccessSentinel,
+			TurnID: "turn-1", ItemID: "item-2", Text: contextPruneSuccessSentinel,
 		}},
 		{domain.EventTurnCompleted, domain.TurnCompleted{TurnID: "turn-1"}},
 	}
@@ -277,7 +280,7 @@ func TestContextMechanismVerifiersAreIndeterminateOnBrokenEvidence(t *testing.T)
 func TestContextPruningRefusesAFixtureContractFailure(t *testing.T) {
 	events := pruningEvents()
 	events[4].Data = domain.AssistantMessageCompleted{
-		TurnID: "turn-1", ItemID: "item-1",
+		TurnID: "turn-1", ItemID: "item-2",
 		Text: contextFixtureFailureMarker + ": tool result was not the projected frame",
 	}
 	got := runContextVerifier(t, VerifierContextToolResultPruned, pruningReader(t, events))

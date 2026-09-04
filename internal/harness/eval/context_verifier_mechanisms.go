@@ -52,19 +52,29 @@ func assistantTextCarries(trace *contextTrace, marker string) bool {
 }
 
 // verifyContextMidTurn requires a second preparation on the same Turn, after
-// a Tool Result, using the mid_turn trigger at attempt index 2. Preparation
-// happening again is not enough: it must be the mid-turn one.
+// a Tool Result, using the mid_turn trigger. Preparation happening again is
+// not enough: it must be the mid-turn one, and it must genuinely follow an
+// earlier preparation on that same Turn.
+//
+// It deliberately does not require attempt index 2. AttemptIndex is scoped to
+// one assistant item, and production emits the mid-turn continuation as a new
+// item on the same Turn, so its index is 1. Index 2 identifies a second
+// attempt at the same item, which is the overflow-retry shape — a different
+// mechanism with its own criterion. Requiring index 2 here would have made
+// this criterion unsatisfiable against real evidence.
 func verifyContextMidTurn(reader *ArtifactReader, _ Scenario) CriterionResult {
 	return contextCriterion(VerifierContextMidTurn, reader, func(trace *contextTrace) CriterionResult {
+		seenOnTurn := map[domain.TurnID]int{}
 		for _, decision := range trace.DecisionsInOrder() {
 			prepared := decision.Prepared
 			if prepared.Trigger != domain.ContextTriggerMidTurn {
+				seenOnTurn[prepared.TurnID]++
 				continue
 			}
-			if prepared.AttemptIndex < 2 {
+			if seenOnTurn[prepared.TurnID] == 0 {
 				return failed(VerifierContextMidTurn, fmt.Sprintf(
-					"mid_turn preparation %q carries attempt index %d, want at least 2",
-					prepared.ContextDecisionID, prepared.AttemptIndex))
+					"mid_turn preparation %q is the first preparation on turn %s, so nothing preceded it",
+					prepared.ContextDecisionID, prepared.TurnID))
 			}
 			if decision.Request == nil {
 				return failed(VerifierContextMidTurn, fmt.Sprintf(
@@ -75,8 +85,8 @@ func verifyContextMidTurn(reader *ArtifactReader, _ Scenario) CriterionResult {
 					"mid_turn request for %q carries no Tool Result", prepared.ContextDecisionID))
 			}
 			return passed(VerifierContextMidTurn, fmt.Sprintf(
-				"mid_turn preparation %q on turn %s dispatched attempt %d after a Tool Result",
-				prepared.ContextDecisionID, prepared.TurnID, prepared.AttemptIndex))
+				"mid_turn preparation %q followed %d earlier preparation(s) on turn %s and carried a Tool Result",
+				prepared.ContextDecisionID, seenOnTurn[prepared.TurnID], prepared.TurnID))
 		}
 		return failed(VerifierContextMidTurn, fmt.Sprintf(
 			"no %s preparation among %d decisions", domain.ContextTriggerMidTurn, len(trace.DecisionsInOrder())))

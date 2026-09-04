@@ -1,0 +1,47 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.scenario",
+  "id": "context-mid-turn-pruning",
+  "description": "One prompt causes a real read_file of a large checked-in workspace file. Materializing the continuation request projects that Tool Result, and the fixture accepts the continuation only when it receives the complete projected frame carrying the original Tool Call ID. Passing requires all six pruning evidence checks -- a non-zero observed prunedToolResultCount, the projected framing in the paired request, the preserved call ID, original_bytes and sha256 resolving to the collected workspace file, a frame smaller than the original that closes, and a request inside its recorded hard-input budget -- plus mid-turn preparation at attempt 2. Configuration such as a positive maxPrunedToolResultsPerRequest is never proof.",
+  "fixtureDigest": "sha256:53cb34df5bc737c1a998424b136b7584f060c68b0d27056a22c3795418d0f6d0",
+  "fixtureCopyPolicy": {
+    "maxFiles": 10,
+    "maxFileBytes": 1048576,
+    "maxTotalBytes": 1048576
+  },
+  "actions": [
+    {
+      "id": "prompt-1",
+      "type": "prompt",
+      "prompt": {
+        "text": "Read the large workspace file and continue. OCH_EVAL_CONTEXT_PRUNE"
+      }
+    },
+    {
+      "id": "collect-1",
+      "type": "collect",
+      "collect": {
+        "workspacePath": "large-tool-result.txt"
+      }
+    }
+  ],
+  "requiredCapabilities": [
+    "prompt",
+    "collect"
+  ],
+  "requiredEvidenceRoles": [
+    "transcript",
+    "audit",
+    "workspace"
+  ],
+  "deterministicVerifierIds": [
+    "context-mid-turn-v1",
+    "context-tool-result-pruned-v1",
+    "context-budget-bounds-v1",
+    "outcome-not-infra-failed-v1"
+  ],
+  "limits": {},
+  "pairingTags": [
+    "context-prune"
+  ]
+}
