@@ -380,7 +380,7 @@ Every Scenario starts from a fresh Session and fixture copy.
 | `context-pre-turn-summary` | build history, pressure prompt | core | pre-turn summary, bounds, projection | in-process + ACP |
 | `context-mid-turn-pruning` | prompt causes large `read_file`, continuation | prune | mid-turn, pruning, bounds | in-process + ACP |
 | `context-overflow-retry` | build compactable history, overflow marker prompt | overflow | overflow recovered, bounds, projection | in-process + ACP |
-| `context-multi-chunk-summary` | large history, summary-triggering prompt | chunk | multi-chunk, pre-turn summary, bounds | in-process + ACP |
+| `context-multi-chunk-summary` | *(not implemented — see 11.1)* | chunk | multi-chunk (criterion and mutations only) | none |
 | `context-usage-anchor` | first response reports high fixed input usage, then a small appended prompt | anchor | usage anchor, pre-turn summary, bounds | in-process + ACP |
 | `context-checkpoint-clean-restart` | history, summary, clean restart, prompt | core | checkpoint reused, bounds, projection | in-process + ACP |
 | `context-checkpoint-interrupt-restart` | history, summary, interrupt, prompt | recovery | checkpoint reused, bounds | ACP only, blocked until section 12.1 |
@@ -448,12 +448,29 @@ leaves a band roughly 800 tokens wide, and the resulting summary must still
 satisfy validation inside it: smaller than the source it replaces, and at
 least 10% smaller than the pre-pass request.
 
-An implementation that cannot land inside that band must not ship a failing
-Scenario. It should keep the criterion and its mutation tests, record the
-arithmetic, and raise the constraint as a contract question — the honest
-options are widening the focus cap (a design 15.4 change), enlarging a single
-covered unit, or accepting that this mechanism is proven by the criterion and
-its mutations rather than end to end.
+### 11.1 Multi-chunk is proven by criterion, not by Scenario
+
+That band was not reachable in practice. Five measured attempts at the chunk
+profile each landed outside it: too little covered source and the compaction
+fails validation because the summary is not a net reduction; too much and the
+pre-turn trigger fires first, so the manual compaction has nothing left to
+chunk.
+
+Widening `maxCompactSessionFocusBytes` would open the band, and that is
+rejected. The 4KiB cap bounds how much operator-supplied text can be injected
+into a summarization prompt; relaxing a safety boundary to make a test
+Scenario reachable trades the wrong thing.
+
+The decision is therefore that this mechanism is proven by
+`context-multi-chunk-summary-v1` and its mutation tests rather than end to
+end. Those tests are landed and green, and they cover the facts that matter:
+a checkpoint recording fewer than two chunks fails, and a chunk count the
+fixture never independently observed fails. What is not covered is that a
+real run produces such a checkpoint at all.
+
+Revisit this only if the focus cap changes for its own reasons, or if a
+production path appears that makes a single covered unit exceed one chunk
+budget on its own.
 
 Suggested sets:
 

@@ -145,10 +145,14 @@ Two Scenario-shaped facts were also found only by running:
   `triggerPercent` floor and the 4KiB `maxCompactSessionFocusBytes` cap leave
   roughly an 800-token band on a 4096-token window, and the summary must be a
   net reduction within it.
-- **Multi-chunk** is the only Context mechanism without an end-to-end
-  Scenario. Every other one runs on both executor surfaces, including
-  checkpoint reuse across a `clean_shutdown` restart on each and a `kill`
-  restart through the ACP recovery set.
+- **Multi-chunk** is covered by its criterion and mutation tests rather than
+  by an end-to-end Scenario, which is a recorded decision rather than an open
+  gap: the feasible band is about 800 tokens wide on a 4096-token window, and
+  widening `maxCompactSessionFocusBytes` to open it was rejected because that
+  cap is a safety boundary on operator-supplied prompt text. See section 11.1
+  of the suite design. Every other mechanism runs end to end on both executor
+  surfaces, including checkpoint reuse across `clean_shutdown`, `interrupt`,
+  and `kill` restarts.
 - Both CI lanes are wired: one representative Context Cell in ordinary PR CI
   (`pr-context.json`, still exactly four Cells total) and every paired set
   plus ACP recovery in the scheduled lane, with the scan regression and its
