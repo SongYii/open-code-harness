@@ -122,8 +122,10 @@ with real evidence. Each was amended rather than silently worked around.
   60025 against a recorded 60000 is correct: the anchor is non-lowering and
   the request adds its own new content. An anchor *below* the observed usage
   is the defect.
-- **Idle ACP interrupt.** Recorded separately in the design's section 12.1;
-  the suite ships `kill` as its abrupt restart mode.
+- **Idle ACP interrupt.** Recorded in the design's section 12.1 and since
+  fixed: ACP's frame read is now released when its Serve context is
+  cancelled, so SIGINT reaps an idle agent (25s without reaping, then 1.4s
+  complete). `context-checkpoint-interrupt-restart` is part of the suite.
 
 Two Scenario-shaped facts were also found only by running:
 
