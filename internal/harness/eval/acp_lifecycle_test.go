@@ -178,25 +178,21 @@ func TestRunACPAttemptRestartModesReopenAndLoadSameSession(t *testing.T) {
 // rather than a bug in this task's own escalation logic: runACPRestart's
 // RestartModeInterrupt sends SIGINT to the owned process group without
 // closing stdin (design's own distinction between "abrupt signal" and
-// "graceful protocol shutdown" restart shapes). But
-// internal/harness/adapters/acp's own Serve/decodeFrames loop only checks
-// ctx.Err() between already-decoded frames (server.go's own
-// `if err := ctx.Err(); err != nil { return err }` inside its decodeFrames
-// callback) — while genuinely blocked inside the underlying stdin Read
-// waiting for the *next* frame, with no more frames ever coming and stdin
-// still open, that check is never reached, so signal.NotifyContext's own
-// ctx cancellation on SIGINT never unblocks it. This was verified directly
-// (a standalone repro sending SIGINT to a real, freshly-initialized,
-// otherwise-idle och -acp process left it running past a 5s wait, where
-// the exact same process reaped in well under 5s to SIGKILL), not assumed.
+// "graceful protocol shutdown" restart shapes).
 //
-// Fixing that belongs to internal/harness/adapters/acp's own owner, not
-// this task's eval package. Task 13's own responsibility is that
-// runACPRestart never silently treats an unproven reap as success — this
-// test proves exactly that: the Attempt correctly reports infra_failed
-// rather than a false completion, matching design's own "loss of
-// ownership/reap proof is indeterminate, not success" principle.
-func TestRunACPAttemptInterruptRestartReportsUnprovenReapAgainstAnIdleAgent(t *testing.T) {
+// This test used to assert the opposite outcome. internal/harness/adapters/
+// acp's Serve decoded frames through a blocking read and only checked
+// ctx.Err() between already-decoded frames, so an initialized but idle agent
+// never observed signal.NotifyContext's cancellation: SIGINT left a real
+// process running past any bound, while SIGKILL reaped it in well under a
+// second. The correct behaviour then was to report infra_failed rather than a
+// false completion, and this test pinned that.
+//
+// Serve now owns its input and closes it when its context is cancelled, which
+// releases the blocked read, so SIGINT resolves through a normal shutdown. The
+// prompt after the restart is what proves the successor Assembly loaded the
+// same Session rather than merely starting a fresh process.
+func TestRunACPAttemptInterruptRestartReapsAndRelaunchesAnIdleAgent(t *testing.T) {
 	ochBin := buildOchBinary(t)
 	binary, err := ResolveACPBinary(ochBin)
 	if err != nil {
@@ -210,31 +206,29 @@ func TestRunACPAttemptInterruptRestartReportsUnprovenReapAgainstAnIdleAgent(t *t
 	scenario.Actions = []ScenarioAction{
 		newEchoScenarioAction("prompt-1", "before restart"),
 		{ID: "restart-1", Type: ActionRestart, Restart: &RestartAction{Mode: RestartModeInterrupt}},
+		newEchoScenarioAction("prompt-2", "after restart"),
 	}
 	scenario.ApprovalScript = nil
 	scenario.RequiredCapabilities = []string{"prompt", "restart_interrupt"}
 
-	// A short FinalGrace: this test is proving SIGINT alone never resolves
-	// against a real idle agent, not measuring exactly how long that takes
-	// (it does not, on any bound) -- keeping this short keeps the suite
-	// fast without changing what the test proves.
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	matcher := NewApprovalMatcher(scenario.ApprovalScript)
 	execution, err := RunACPAttempt(ctx, attemptID, subject, directories, scenario,
-		ACPLaunchConfig{Binary: binary, ShutdownGrades: ACPShutdownGrades{FinalGrace: 2 * time.Second}}, matcher)
+		ACPLaunchConfig{Binary: binary, ShutdownGrades: ACPShutdownGrades{FinalGrace: 5 * time.Second}}, matcher)
 	if err != nil {
 		t.Fatalf("RunACPAttempt() error = %v", err)
 	}
-	if execution.Outcome.Status != OutcomeInfraFailed || execution.Outcome.Code != "acp_restart_failed" {
-		t.Fatalf("Outcome = %+v, want infra_failed/acp_restart_failed", execution.Outcome)
+	if execution.Outcome.Status != OutcomeCompleted {
+		t.Fatalf("Outcome = %+v, want completed: SIGINT must now reap an idle agent and relaunch", execution.Outcome)
 	}
-	// RunACPAttempt's own terminal-path cleanup (closeAndReapACP) closes
-	// stdin on the way out, which is exactly what finally lets this
-	// specific stuck process observe EOF and exit -- proving this test
-	// itself leaves no process behind despite SIGINT alone never resolving
-	// it.
 	if !execution.WriterStopped {
-		t.Fatal("WriterStopped = false, want true: the terminal path's own stdin-close cleanup must still reap the stuck process")
+		t.Fatal("WriterStopped = false, want true")
+	}
+	// The prompt after the restart is what proves the successor Assembly
+	// loaded the same Session rather than merely starting a fresh process.
+	if execution.Outcome.TerminalSession == nil || execution.Outcome.TerminalSession.TurnCount < 2 {
+		t.Fatalf("TerminalSession = %+v, want at least two turns across the restart",
+			execution.Outcome.TerminalSession)
 	}
 }
