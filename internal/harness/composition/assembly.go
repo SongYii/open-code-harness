@@ -216,7 +216,11 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 
 // ServeACP speaks ACP v1 JSON-RPC on in/out until in closes or ctx is done.
 // The writer receives only ACP frames.
-func (assembly *Assembly) ServeACP(ctx context.Context, in io.Reader, out io.Writer) error {
+//
+// in is owned for the duration of the call and closed when ctx is cancelled,
+// which is what lets a cancelled context unblock a read that is waiting for a
+// frame that will never arrive.
+func (assembly *Assembly) ServeACP(ctx context.Context, in io.ReadCloser, out io.Writer) error {
 	if assembly == nil {
 		return fmt.Errorf("composition: serve acp: assembly is nil")
 	}

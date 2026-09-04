@@ -44,7 +44,16 @@ type Config struct {
 
 // Serve reads newline-delimited JSON-RPC from in and writes only ACP frames
 // to out until in closes or ctx is cancelled.
-func Serve(ctx context.Context, config Config, in io.Reader, out io.Writer) error {
+//
+// Serve owns in for the duration of the call and closes it when ctx is
+// cancelled. That ownership is the whole point of taking an io.ReadCloser
+// rather than an io.Reader: frame decoding blocks inside a read, and an
+// initialized agent that has gone idle has no further frames coming, so
+// nothing else can unblock it. Without closing the input, cancelling this
+// context left a real `och -acp` process running indefinitely — it ignored
+// SIGINT while idle, because signal.NotifyContext's cancellation was never
+// observed between frames.
+func Serve(ctx context.Context, config Config, in io.ReadCloser, out io.Writer) error {
 	workspace, workspaceErr := application.CanonicalWorkspaceRoot(config.Workspace)
 	if ctx == nil || config.Sessions == nil || out == nil || workspaceErr != nil {
 		return fmt.Errorf("acp: invalid configuration")
@@ -61,12 +70,31 @@ func Serve(ctx context.Context, config Config, in io.Reader, out io.Writer) erro
 		config.Approver.Set(server)
 		defer config.Approver.Set(tools.DenyApprover{})
 	}
-	return decodeFrames(in, func(message rpcRequest) error {
+	// Frame decoding blocks inside a read, and an initialized agent that has
+	// gone idle has no further frames coming, so nothing else can release it.
+	// cancelableInput waits for readiness rather than reading blindly, which
+	// is what lets cancellation win. AfterFunc runs immediately if ctx is
+	// already done, so a caller that cancels before Serve starts takes the
+	// same path.
+	input := newCancelableInput(in)
+	defer func() { _ = input.Close() }()
+	stopCancel := context.AfterFunc(ctx, input.Cancel)
+	defer stopCancel()
+
+	err := decodeFrames(input, func(message rpcRequest) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		return server.dispatch(message)
 	})
+	// A cancelled caller asked for cancellation and must observe exactly
+	// that. Releasing the read surfaces as an incidental EOF or
+	// io.ErrClosedPipe from the scanner, which is this function's own
+	// mechanism leaking into its contract.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	return err
 }
 
 type server struct {
