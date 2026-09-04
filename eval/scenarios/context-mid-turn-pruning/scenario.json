@@ -3,7 +3,7 @@
   "schema": "och.eval.scenario",
   "id": "context-mid-turn-pruning",
   "description": "One prompt causes a real read_file of a large checked-in workspace file. Materializing the continuation request projects that Tool Result, and the fixture accepts the continuation only when it receives the complete projected frame carrying the original Tool Call ID. Passing requires all six pruning evidence checks -- a non-zero observed prunedToolResultCount, the projected framing in the paired request, the preserved call ID, original_bytes and sha256 resolving to the collected workspace file, a frame smaller than the original that closes, and a request inside its recorded hard-input budget -- plus mid-turn preparation at attempt 2. Configuration such as a positive maxPrunedToolResultsPerRequest is never proof.",
-  "fixtureDigest": "sha256:53cb34df5bc737c1a998424b136b7584f060c68b0d27056a22c3795418d0f6d0",
+  "fixtureDigest": "sha256:2bea0a17d34db4b5a2c832252a1e00650b289bfeb61d5a96c8adfd5d2cea07e7",
   "fixtureCopyPolicy": {
     "maxFiles": 10,
     "maxFileBytes": 1048576,

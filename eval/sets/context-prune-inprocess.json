@@ -5,7 +5,7 @@
   "scenarios": [
     {
       "id": "context-mid-turn-pruning",
-      "digest": "sha256:84213d95cfec038d0e84d6ad633a09f85bd7cce03d03236b5a3ddd1137cdbcbe"
+      "digest": "sha256:f55ea948731a73428008e7a5cb7b744adfe94443f5da329dc92589649ec9f5b1"
     }
   ],
   "subjects": [
