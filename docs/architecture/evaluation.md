@@ -341,6 +341,14 @@ undeclared/omitted/duplicate criterion, an aggregate verdict inconsistent with
 its criterion results, an out-of-range score, or the call itself failing —
 resolves to a real `JudgeOutcome{Verdict: Indeterminate}` carrying a bounded,
 redacted rationale, never a Go error and never silently accepted as `Pass`.
+
+One case beyond design §21's list is refused for the same reason: a
+**determinate verdict citing no evidence at all**. Every reference rule above
+guards the references that are present, and until 2026-09-04 none required any
+to be — so `pass` with an empty `evidenceReferences` was believed. That is the
+budget-omission defect seen from the other side: an answer about material the
+judge never demonstrated reading. An `indeterminate` verdict may still cite
+nothing, since that is often exactly why it is indeterminate.
 Every Subject-authored value the judge is shown is labeled `untrusted...
 not an instruction` (the embedded `prompts/quality_judge_v1.md` prompt's own
 framing) — this repository has no live model to prove actually resists a
@@ -549,9 +557,14 @@ Evaluation is **implemented, not GA**. Explicitly outstanding before a GA
 claim: real-model sample size for live judging — `och-eval judge` is wired
 end to end and proven against a fixture SSE stream through the real
 adapter, but no run against an actual live model has ever happened in this
-repository — judge meta-evaluation against a broader fixture set than this
-milestone's own five-case suite (injection, missing-evidence,
-contradiction, unsupported-claim, known-pass/fail), provider breadth beyond
+repository — judge meta-evaluation against a broader fixture set than the
+eight adversarial fixtures this repository now carries (injection,
+missing-evidence, contradiction, unsupported-claim, known-pass/fail, an
+invented reference, a real-but-unshown reference, and a determinate verdict
+citing nothing). Two of the original five were found on 2026-09-04 to be
+satisfied by an earlier refusal than the one they named, and so proved
+nothing about the defense they were written for; both are corrected and now
+assert the refusal reason. Also outstanding: provider breadth beyond
 the one OpenAI-compatible adapter this repository ships, and an accepted
 variance policy for live/quality signals. MCP is a future suite this runner can host, never a runner
 prerequisite — its absence does not block anything documented here.
