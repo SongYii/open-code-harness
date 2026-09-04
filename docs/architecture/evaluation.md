@@ -424,6 +424,28 @@ baseline/candidate pattern the existing parity Cells use. Every Scenario
 reaches the same criterion verdicts through the real `och -acp` subprocess as
 it does in-process.
 
+### CI lanes
+
+Ordinary PR CI carries exactly one representative Context Cell,
+`eval/sets/pr-context.json` running `context-mid-turn-pruning` — one Cell
+covering two mechanisms, since mid-turn preparation is where Tool Result
+projection actually happens. It is a separate minimal-cardinality EvalSet
+rather than another Scenario inside `pr-tool-and-compaction.json`, because a
+Context Scenario needs a `fixture://context-mechanism` Subject and adding one
+there would cross-multiply into meaningless Cells. The lane still expands to
+exactly four Cells, which `TestPRLaneExpandsToExactlyFourFixtureCells`
+enforces.
+
+The explicit/scheduled lane runs every paired set plus the ACP-only recovery
+set (`TestContextScheduledLaneRunsEveryPairedSet`), and
+`TestContextScheduledLaneKeepsTheScanRegressionGated` fails if
+`TestPrepareContextResumesScanFromCheckpointRatherThanStreamStart` or the
+`BenchmarkScan`/`BenchmarkScanFromCheckpoint` pair is removed. That indirection
+is deliberate: whether the steady-state scan resumes from the checkpoint
+rather than the stream start is not observable from an artifact-only verifier
+without store instrumentation eval is forbidden to have, so the guarantee
+lives in a package test and the scheduled lane guards its existence.
+
 ### What it does not prove yet
 
 - **Multi-chunk summarization has a verifier but no landed Scenario.**

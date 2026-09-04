@@ -147,6 +147,10 @@ Two Scenario-shaped facts were also found only by running:
   Scenario. Every other one runs on both executor surfaces, including
   checkpoint reuse across a `clean_shutdown` restart on each and a `kill`
   restart through the ACP recovery set.
+- Both CI lanes are wired: one representative Context Cell in ordinary PR CI
+  (`pr-context.json`, still exactly four Cells total) and every paired set
+  plus ACP recovery in the scheduled lane, with the scan regression and its
+  benchmarks guarded against removal.
 - No claim is made about a crash during an open compaction bracket.
 
 ## Mechanism → test → mutation result

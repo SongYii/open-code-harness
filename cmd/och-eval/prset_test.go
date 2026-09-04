@@ -33,6 +33,7 @@ import (
 // invoked against.
 var prLaneSetPaths = []string{
 	"pr-tool-and-compaction.json",
+	"pr-context.json",
 	"pr-parity-baseline.json",
 	"pr-parity-candidate.json",
 }
@@ -122,6 +123,7 @@ func TestPRLaneRunAndReportEndToEnd(t *testing.T) {
 
 	for _, args := range [][]string{
 		{"run", "-set", prLaneSetPath(t, "pr-tool-and-compaction.json"), "-artifacts", artifactRoot},
+		{"run", "-set", prLaneSetPath(t, "pr-context.json"), "-artifacts", artifactRoot},
 		{"run", "-set", prLaneSetPath(t, "pr-parity-baseline.json"), "-artifacts", artifactRoot},
 		{"run", "-set", prLaneSetPath(t, "pr-parity-candidate.json"), "-artifacts", artifactRoot, "-och-binary", ochBinary},
 	} {
