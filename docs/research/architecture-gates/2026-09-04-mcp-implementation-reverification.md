@@ -225,7 +225,97 @@ rebuilding a defense this repository has already reasoned about once, in a
 second place, against server-controlled input. The deferral is a scope
 decision with a security dividend, not an omission.
 
-## 7. Stale statements this slice must correct
+## 7. Three places where the design meets code that does not match it
+
+None of these are reasons to change the design's decisions. All three are
+things the implementation plan must resolve, found by reading the code the
+design refers to.
+
+### 7.1 §5's collision claim is false, and the gap is attacker-reachable
+
+Design §5 states that a name collision "can only happen via a `server.Name`
+collision, since raw tool names are always prefixed."
+
+`tools.validateSpec` (`catalog.go:133-136`) accepts any name that is
+non-empty, valid UTF-8, and not whitespace-padded. Nothing forbids `__`
+anywhere. So:
+
+| Server `Name` | Raw tool name | Qualified name |
+| --- | --- | --- |
+| `a` | `b__c` | `mcp__a__b__c` |
+| `a__b` | `c` | `mcp__a__b__c` |
+
+Two distinct servers with **distinct** names produce an identical qualified
+name. The prefix is not injective, because the separator can appear inside
+either part.
+
+This matters beyond tidiness. Raw tool names come from the MCP server, which
+this design's own threat model treats as untrusted, while `NewCatalog` fails
+closed on a duplicate — at `composition.Open`, before the harness starts. So
+one misbehaving or hostile server can choose a tool name that collides with a
+*different* configured server's tool and prevent the harness from starting at
+all. A startup denial of service is a low-severity outcome, but it is
+reachable by external input, and the design currently reasons as though it
+were not possible.
+
+The `sanitizeMcpNamePart` + length-cap + stable-suffix approach in §6 closes
+this if — and only if — the separator is removed from both parts before
+joining. That is a rule the plan must state explicitly rather than inherit by
+accident.
+
+Related, and cheap to fix at the same time: `validateSpec` blocks leading and
+trailing whitespace but not an *interior* newline, so a server-supplied name
+can still contain control characters that corrupt a log line or a rendered
+prompt. Sanitizing to `[a-zA-Z0-9_-]` disposes of this too.
+
+### 7.2 §6's confinement reuse has no API to reuse
+
+Design §6 requires each MCP server to be spawned "through the same bwrap +
+cgroup v2 (Linux) or Seatbelt + `RLIMIT_AS` (macOS) confinement `localexec`
+already applies … rather than duplicating it," and correctly notes the
+lifetime differs since an MCP server outlives one call.
+
+`localexec`'s only execution entry point is
+`Runner.Run(ctx, spec) (tools.CommandResult, error)`
+(`runner.go:133`) — run to completion, output captured into a capped buffer
+(`runner.go:177-179`), with the temporary directory (`defer os.RemoveAll`,
+`:158`) and cgroup registration (`defer runner.cgroup.unregister`, `:189`)
+both scoped to the call. **There is no API that yields a long-lived process
+with stdin/stdout pipes**, which is precisely what an MCP stdio transport
+needs.
+
+The reusable machinery is real and well-factored — `bwrapArgv(...)` and
+`seatbeltCommandArgv(...)` are pure argv transformations (`runner.go:165,167`),
+and `cgroup.addProcess`/`register`/`unregister` take a bare pid — so a seam
+is available. But it has to be **built**, as a deliberate task with its own
+tests, not assumed present. The macOS `beginRlimitBracket` (`runner.go:181`)
+also needs thought: it is a mutex-guarded, process-wide limit held only
+around `Start`, which happens to suit a long-lived child, but that is worth
+confirming rather than inheriting silently.
+
+### 7.3 §3 and §6 contradict each other
+
+§3: `internal/harness/adapters/mcp` "may not import any sibling adapter",
+enforced by the existing `TestForbiddenImport` table.
+
+§6: the mcp adapter reuses `localexec`'s confinement, availability check, and
+fail-closed startup gate.
+
+`localexec` is a sibling adapter. As written, satisfying §6 breaks §3, and
+the existing architecture test would catch it mechanically on the first
+build.
+
+The resolution consistent with this project's own ports-and-adapters style is
+for `composition` — the one package permitted to import both — to construct
+the confined command through `localexec` and inject it into the mcp adapter
+behind a small port the mcp adapter owns (a command factory, in the same
+spirit as every other port here). The alternative, extracting confinement
+into a shared non-adapter package, is a larger change to a security-critical
+component that currently has a single caller. The plan should take the first
+and say so; either way, this is a real fork in the road that the design left
+open, not an implementation detail.
+
+## 8. Stale statements this slice must correct
 
 Both were found by checking the repository rather than trusting its prose.
 
@@ -243,7 +333,7 @@ Both were found by checking the repository rather than trusting its prose.
   instructed whichever slice implements it to correct `SECURITY.md`; that
   instruction now covers the design's own sentence too.
 
-## 8. What this re-verification does not change
+## 9. What this re-verification does not change
 
 Every architecture decision in the accepted design stands. Adopt the SDK;
 stdio only; static composition-time configuration; the existing fail-closed
@@ -255,7 +345,7 @@ The prerequisite in the design's §2 — that implementation waits for "a
 concrete external-tool need" — is a project decision, not a technical one,
 and is not resolved by this document.
 
-## 9. Questions for the implementation plan
+## 10. Questions for the implementation plan
 
 1. **Process-group ownership.** Does the adapter set `Setpgid` and own the
    full teardown ladder (§3), or accept `CommandTransport.Close`'s
