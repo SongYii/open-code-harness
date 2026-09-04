@@ -14,6 +14,10 @@
     {
       "id": "context-pre-turn-summary",
       "digest": "sha256:d4619351737205274bec6ffddabf2a2b8d50b144d17742a3eca18dd7519c73c6"
+    },
+    {
+      "id": "context-checkpoint-clean-restart",
+      "digest": "sha256:b0991402cb63d1e723a12f432b2b2cf17d454bf7d5f426ed3d861b12ff5f7dd4"
     }
   ],
   "subjects": [

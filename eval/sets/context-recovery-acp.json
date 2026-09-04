@@ -1,0 +1,30 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.set",
+  "id": "context-recovery-acp",
+  "scenarios": [
+    {
+      "id": "context-checkpoint-kill-restart",
+      "digest": "sha256:5cf1fdeccae28facdf39d479d0c6b1b435e78c1269c391e63429d6e3f2bdc8ff"
+    }
+  ],
+  "subjects": [
+    {
+      "id": "context-core-acp",
+      "digest": "sha256:0d7635984b343af436285974bb0ce013c6dee77ea97a81ec6db7d6cf9e9823ee"
+    }
+  ],
+  "executors": [
+    {
+      "id": "context-executor-acp",
+      "digest": "sha256:a40d87f111c8dfe9bdaeec327efce1a3c428c15f8f06ffcfe38ed3c79293cee0"
+    }
+  ],
+  "repetitionCount": 1,
+  "pairingSeed": "context-recovery-v1",
+  "limits": {
+    "tokenCap": 200000
+  },
+  "artifactRoot": ".eval-artifacts-context-recovery",
+  "lane": "fixture"
+}

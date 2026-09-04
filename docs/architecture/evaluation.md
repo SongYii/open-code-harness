@@ -404,10 +404,17 @@ evidence-oriented explanation of every verdict.
 
 ### What the suite proves today
 
-Six Scenarios run end to end and regrade offline: `context-manual-reset`,
+Eight Scenarios run end to end and regrade offline: `context-manual-reset`,
 `context-manual-summary`, `context-pre-turn-summary`,
-`context-mid-turn-pruning`, `context-overflow-retry`, and
-`context-usage-anchor`.
+`context-mid-turn-pruning`, `context-overflow-retry`,
+`context-usage-anchor`, `context-checkpoint-clean-restart`, and
+`context-checkpoint-kill-restart`.
+
+Checkpoint-chain continuity is proven across a restart on both surfaces:
+`clean_shutdown` in-process and through ACP, and `kill` through
+`context-recovery-acp.json`. `kill` is the suite's abrupt restart mode —
+`interrupt` stays out until the ACP input-cancellation prerequisite lands,
+and `interrupt`/`kill` never appear in an in-process set.
 
 Each runs on **both** execution surfaces. Four paired EvalSets
 (`context-{core,prune,overflow,anchor}-{inprocess,acp}.json`) share Scenario

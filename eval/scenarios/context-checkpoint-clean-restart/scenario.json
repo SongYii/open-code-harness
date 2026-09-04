@@ -1,0 +1,81 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.scenario",
+  "id": "context-checkpoint-clean-restart",
+  "description": "History accumulates, a summary checkpoint is taken, the writer restarts through a graceful protocol shutdown, and a later prompt continues. Passing requires a post-restart preparation to dispatch a request from a checkpoint this Attempt's own evidence established -- proving the successor Assembly loaded the same Session and continued the chain rather than replaying raw history. A restart action in the Scenario is the request, never the proof.",
+  "fixtureDigest": "sha256:f5043b2c09fb8ecfc394548860794027a0f22602668cee36597f41b9f349cefd",
+  "fixtureCopyPolicy": {
+    "maxFiles": 10,
+    "maxFileBytes": 1048576,
+    "maxTotalBytes": 1048576
+  },
+  "actions": [
+    {
+      "id": "prompt-1",
+      "type": "prompt",
+      "prompt": {
+        "text": "Real conversation history so the summary checkpoint taken before the restart covers genuine source material rather than a synthetic estimate. Real conversation history so the summary checkpoint taken before the restart covers genuine source material rather than a synthetic estimate. Real conversation history so the summary checkpoint taken before the restart covers genuine source material rather than a synthetic estimate. Real conversation history so the summary checkpoint taken before the restart covers genuine source material rather than a synthetic estimate. "
+      }
+    },
+    {
+      "id": "prompt-2",
+      "type": "prompt",
+      "prompt": {
+        "text": "Real conversation history so the summary checkpoint taken before the restart covers genuine source material rather than a synthetic estimate. Real conversation history so the summary checkpoint taken before the restart covers genuine source material rather than a synthetic estimate. Real conversation history so the summary checkpoint taken before the restart covers genuine source material rather than a synthetic estimate. Real conversation history so the summary checkpoint taken before the restart covers genuine source material rather than a synthetic estimate. "
+      }
+    },
+    {
+      "id": "prompt-3",
+      "type": "prompt",
+      "prompt": {
+        "text": "Real conversation history so the summary checkpoint taken before the restart covers genuine source material rather than a synthetic estimate. Real conversation history so the summary checkpoint taken before the restart covers genuine source material rather than a synthetic estimate. Real conversation history so the summary checkpoint taken before the restart covers genuine source material rather than a synthetic estimate. Real conversation history so the summary checkpoint taken before the restart covers genuine source material rather than a synthetic estimate. "
+      }
+    },
+    {
+      "id": "prompt-4",
+      "type": "prompt",
+      "prompt": {
+        "text": "Real conversation history so the summary checkpoint taken before the restart covers genuine source material rather than a synthetic estimate. Real conversation history so the summary checkpoint taken before the restart covers genuine source material rather than a synthetic estimate. Real conversation history so the summary checkpoint taken before the restart covers genuine source material rather than a synthetic estimate. Real conversation history so the summary checkpoint taken before the restart covers genuine source material rather than a synthetic estimate. "
+      }
+    },
+    {
+      "id": "compact-1",
+      "type": "compact",
+      "compact": {
+        "strategy": "summary"
+      }
+    },
+    {
+      "id": "restart-1",
+      "type": "restart",
+      "restart": {
+        "mode": "clean_shutdown"
+      }
+    },
+    {
+      "id": "prompt-after",
+      "type": "prompt",
+      "prompt": {
+        "text": "Continue from the checkpoint."
+      }
+    }
+  ],
+  "requiredCapabilities": [
+    "prompt",
+    "compact"
+  ],
+  "requiredEvidenceRoles": [
+    "transcript",
+    "audit"
+  ],
+  "deterministicVerifierIds": [
+    "context-checkpoint-reused-v1",
+    "context-budget-bounds-v1",
+    "context-projection-present-v1",
+    "outcome-not-infra-failed-v1"
+  ],
+  "limits": {},
+  "pairingTags": [
+    "context-core"
+  ]
+}
