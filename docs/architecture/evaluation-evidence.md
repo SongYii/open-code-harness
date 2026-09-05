@@ -397,11 +397,68 @@ Process-leak check: `ps aux | grep -iE "acpchild|/och "` after every full
 test run in this session found nothing — no ACP subprocess or `acpchild`
 test double was ever left running.
 
+## Judge meta-eval: two of the original five fixtures proved nothing
+
+Found on 2026-09-04 while broadening the meta-eval suite, and recorded here
+because the defect is in the *tests*, which is where it is hardest to see: a
+green test that is satisfied by the wrong refusal looks exactly like a green
+test that works.
+
+`testJudgeConfig` declares two criteria, `quality` and `continuity`.
+`TestRunJudgeRejectsNonexistentEvidenceReference` and
+`TestRunJudgeUnresolvedContradictionIsAlwaysIndeterminate` each named only
+`quality` in the judge output they fed in. `RunJudge` checks for an omitted
+required criterion (`judge.go`, the `seenCriteria` loop) *before* it validates
+evidence references or applies the contradiction rule, so both fixtures were
+refused with `judge output omitted required criterion "continuity"` and never
+reached the code they existed to test. Both asserted only
+`Verdict == Indeterminate`, which that earlier refusal satisfies.
+
+Proven by mutation rather than by reading:
+
+| Mutation | Before the fix | After the fix |
+| --- | --- | --- |
+| Delete the `available[ref]` "never shown to it" check entirely | `TestRunJudgeRejectsNonexistentEvidenceReference` **still passed** | Fails, as does the new real-but-unshown fixture |
+| Replace the contradiction/missing branch condition with `if false` | `TestRunJudgeUnresolvedContradictionIsAlwaysIndeterminate` **still passed** | Fails |
+| Delete the new citation-free check | n/a — the check did not exist | `TestRunJudgeRejectsADeterminateVerdictCitingNoEvidence/pass` fails with `Verdict = "pass", want "indeterminate"` |
+
+The contradiction fixture also returned an empty `ContradictoryEvidence`
+list, which is direct evidence the branch never ran; it now asserts the audit
+path survives into the outcome.
+
+Both fixtures now declare every required criterion and assert the refusal
+**reason**, not merely that some refusal happened. That assertion is the
+anti-recurrence measure: a meta-eval fixture that accepts any refusal will
+eventually be satisfied by the wrong one.
+
+## Judge meta-eval: a determinate verdict citing nothing was believed
+
+A real production gap found by the same pass, in the same family as the
+already-fixed budget-omission defect. Every evidence-reference rule guarded
+the references that were present — nonexistent, empty-string, and duplicate
+references are all refused — and none required any reference to exist. A
+judge returning `pass` with `evidenceReferences: []` was accepted at face
+value, so the most economical way for a judge to pass an Attempt was to cite
+nothing at all.
+
+`RunJudge` now refuses a determinate verdict that cites no evidence,
+contradiction, or missing entry. `indeterminate` is deliberately exempt and
+has its own fixture (`TestRunJudgeIndeterminateMayCiteNoEvidence`), so the
+guard cannot later be tightened into refusing every citation-free output —
+citing nothing is often exactly why an attempt is indeterminate.
+
+The adversarial fixture set is now eight: injection, missing-evidence,
+contradiction, unsupported-claim, known-pass/fail, an invented reference, a
+real-but-unshown reference (`workspace/output.txt` — a genuine manifest entry
+that no declared criterion role puts in the bundle, which is the shape a
+reference check written against the manifest instead of the bundle would
+wrongly accept), and a determinate verdict citing nothing.
+
 ## Known limitations and open blockers (not GA)
 
 See the contract document's own [Maturity and GA blockers](evaluation.md#maturity-and-ga-blockers)
 section. Summarized: real-model live-judge sample size, judge
-meta-evaluation breadth beyond this milestone's own five-case fixture suite,
+meta-evaluation breadth beyond the eight adversarial fixtures recorded above,
 provider breadth beyond one OpenAI-compatible adapter, and an accepted
 variance policy for live/quality signals are all explicitly outstanding.
 MCP is a future suite this runner can host, never a runner prerequisite.

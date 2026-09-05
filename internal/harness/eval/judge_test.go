@@ -111,15 +111,26 @@ func TestRunJudgeKnownFailFixture(t *testing.T) {
 	}
 }
 
-// TestRunJudgeRejectsNonexistentEvidenceReference is the "missing
-// evidence"/hallucinated-reference meta-eval fixture: a judge output
-// citing a manifest path it was never actually shown must never be
-// trusted at face value.
+// TestRunJudgeRejectsNonexistentEvidenceReference is the hallucinated-
+// reference meta-eval fixture: a judge output citing a manifest path it was
+// never actually shown must never be trusted at face value.
+//
+// It declares every criterion testJudgeConfig requires, and asserts the
+// refusal *reason*, not merely that some refusal happened. Until 2026-09-04
+// it did neither: it named only `quality` of the two required criteria, so
+// RunJudge refused it at the earlier omitted-criterion check and never
+// reached the reference validation this fixture exists to prove. Deleting
+// the entire reference check left the test green — verified by mutation.
+// A meta-eval fixture that accepts any refusal is satisfied by the wrong
+// one.
 func TestRunJudgeRejectsNonexistentEvidenceReference(t *testing.T) {
 	reader, _, _ := judgeTestFixture(t)
 	caller := fixedJudgeCaller(t, judgeRawOutput{
-		Verdict:            "pass",
-		Criteria:           []judgeRawCriterion{{ID: "quality", Status: "pass"}},
+		Verdict: "pass",
+		Criteria: []judgeRawCriterion{
+			{ID: "quality", Status: "pass"},
+			{ID: "continuity", Status: "pass"},
+		},
 		EvidenceReferences: []string{"evidence/this-path-was-never-shown.jsonl"},
 		Rationale:          "looks fine",
 	})
@@ -131,17 +142,132 @@ func TestRunJudgeRejectsNonexistentEvidenceReference(t *testing.T) {
 	if outcome.Verdict != ScoreIndeterminate {
 		t.Fatalf("Verdict = %q, want %q: a hallucinated evidence reference must never be trusted", outcome.Verdict, ScoreIndeterminate)
 	}
+	if !strings.Contains(outcome.Rationale, "never shown to it") {
+		t.Fatalf("refused for the wrong reason: %q; want the hallucinated-reference refusal", outcome.Rationale)
+	}
+}
+
+// TestRunJudgeRejectsAReferenceItWasNotShown is the realistic shape of the
+// same defect: the cited path is not invented at all, it is a genuine entry
+// in this Attempt's own manifest that no declared criterion role put into
+// the bundle. `workspace/output.txt` really exists here; testJudgeConfig
+// declares only the transcript and audit roles, so the judge never saw it.
+//
+// A reference check that resolved against the manifest rather than against
+// the bundle would accept this and be wrong, which is why the guard is
+// written against the paths actually shown.
+func TestRunJudgeRejectsAReferenceItWasNotShown(t *testing.T) {
+	reader, _, _ := judgeTestFixture(t)
+	unshown := reader.Entries("workspace")
+	if len(unshown) == 0 {
+		t.Fatal("fixture no longer carries a workspace entry; this fixture needs a real manifest path outside the declared roles")
+	}
+	caller := fixedJudgeCaller(t, judgeRawOutput{
+		Verdict: "pass",
+		Criteria: []judgeRawCriterion{
+			{ID: "quality", Status: "pass"},
+			{ID: "continuity", Status: "pass"},
+		},
+		EvidenceReferences: []string{unshown[0].Path},
+		Rationale:          "the workspace output looks correct",
+	})
+
+	outcome, err := RunJudge(context.Background(), reader, testJudgeConfig(), caller)
+	if err != nil {
+		t.Fatalf("RunJudge: %v", err)
+	}
+	if outcome.Verdict != ScoreIndeterminate {
+		t.Fatalf("Verdict = %q, want %q: a real manifest path the judge was never shown is still a claim it cannot support",
+			outcome.Verdict, ScoreIndeterminate)
+	}
+	if !strings.Contains(outcome.Rationale, "never shown to it") {
+		t.Fatalf("refused for the wrong reason: %q", outcome.Rationale)
+	}
+}
+
+// TestRunJudgeRejectsADeterminateVerdictCitingNoEvidence closes the
+// citation-free hole in the same family as the budget-omission defect: until
+// 2026-09-04 a judge could return `pass` with an empty evidenceReferences
+// list and be believed. Every reference rule guarded the references that
+// were present; none required any to be.
+func TestRunJudgeRejectsADeterminateVerdictCitingNoEvidence(t *testing.T) {
+	for _, verdict := range []string{"pass", "fail"} {
+		t.Run(verdict, func(t *testing.T) {
+			reader, _, _ := judgeTestFixture(t)
+			status := verdict
+			caller := fixedJudgeCaller(t, judgeRawOutput{
+				Verdict: verdict,
+				Criteria: []judgeRawCriterion{
+					{ID: "quality", Status: status},
+					{ID: "continuity", Status: status},
+				},
+				EvidenceReferences: nil,
+				Rationale:          "everything looked fine to me",
+			})
+
+			outcome, err := RunJudge(context.Background(), reader, testJudgeConfig(), caller)
+			if err != nil {
+				t.Fatalf("RunJudge: %v", err)
+			}
+			if outcome.Verdict != ScoreIndeterminate {
+				t.Fatalf("Verdict = %q, want %q: a determinate verdict citing nothing is unfalsifiable",
+					outcome.Verdict, ScoreIndeterminate)
+			}
+			if !strings.Contains(outcome.Rationale, "citing no evidence at all") {
+				t.Fatalf("refused for the wrong reason: %q", outcome.Rationale)
+			}
+		})
+	}
+}
+
+// TestRunJudgeIndeterminateMayCiteNoEvidence is the other half of the rule
+// above, kept as its own fixture so the guard cannot be tightened into
+// refusing every citation-free output: an indeterminate verdict citing
+// nothing is exactly what a judge that could not read its material should
+// return.
+func TestRunJudgeIndeterminateMayCiteNoEvidence(t *testing.T) {
+	reader, _, _ := judgeTestFixture(t)
+	caller := fixedJudgeCaller(t, judgeRawOutput{
+		Verdict: "indeterminate",
+		Criteria: []judgeRawCriterion{
+			{ID: "quality", Status: "indeterminate"},
+			{ID: "continuity", Status: "indeterminate"},
+		},
+		EvidenceReferences: nil,
+		Rationale:          "the transcript excerpt was not legible",
+	})
+
+	outcome, err := RunJudge(context.Background(), reader, testJudgeConfig(), caller)
+	if err != nil {
+		t.Fatalf("RunJudge: %v", err)
+	}
+	if outcome.Verdict != ScoreIndeterminate {
+		t.Fatalf("Verdict = %q, want %q", outcome.Verdict, ScoreIndeterminate)
+	}
+	if strings.Contains(outcome.Rationale, "citing no evidence at all") {
+		t.Fatalf("an indeterminate verdict must not be refused for citing nothing: %q", outcome.Rationale)
+	}
 }
 
 // TestRunJudgeUnresolvedContradictionIsAlwaysIndeterminate is the
 // "contradiction" meta-eval fixture: design's own rule is that an
 // unresolved contradiction is indeterminate regardless of whatever
 // verdict the judge itself claimed alongside it.
+//
+// Like the hallucinated-reference fixture, this named only `quality` of the
+// two required criteria until 2026-09-04, so it was refused at the earlier
+// omitted-criterion check and the contradiction branch never ran — its
+// ContradictoryEvidence came back empty, and disabling the contradiction
+// rule outright left the test green. It now declares both criteria and
+// asserts the contradiction actually survived into the outcome.
 func TestRunJudgeUnresolvedContradictionIsAlwaysIndeterminate(t *testing.T) {
 	reader, transcriptPath, auditPath := judgeTestFixture(t)
 	caller := fixedJudgeCaller(t, judgeRawOutput{
-		Verdict:               "pass",
-		Criteria:              []judgeRawCriterion{{ID: "quality", Status: "pass"}},
+		Verdict: "pass",
+		Criteria: []judgeRawCriterion{
+			{ID: "quality", Status: "pass"},
+			{ID: "continuity", Status: "pass"},
+		},
 		EvidenceReferences:    []string{transcriptPath},
 		ContradictoryEvidence: []string{auditPath},
 		Rationale:             "the transcript claims success but the audit log disagrees",
@@ -153,6 +279,10 @@ func TestRunJudgeUnresolvedContradictionIsAlwaysIndeterminate(t *testing.T) {
 	}
 	if outcome.Verdict != ScoreIndeterminate {
 		t.Fatalf("Verdict = %q, want %q: an unresolved contradiction must override the judge's own claimed pass", outcome.Verdict, ScoreIndeterminate)
+	}
+	if len(outcome.ContradictoryEvidence) != 1 || outcome.ContradictoryEvidence[0] != auditPath {
+		t.Fatalf("ContradictoryEvidence = %v, want the audit path carried through: the contradiction branch never ran",
+			outcome.ContradictoryEvidence)
 	}
 }
 
