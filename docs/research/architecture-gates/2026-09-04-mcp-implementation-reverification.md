@@ -385,6 +385,26 @@ decision before Task 4 can be built, and the options are not equivalent:
 Nothing here recommends one. The measurement is the contribution; the choice
 is a design decision, and Task 4 is blocked until it is made.
 
+**Decided 2026-09-05: option 2, in the narrow form DeepSeek Harness uses —
+degrade the check, never discard the tool.** The reference evidence was
+decisive once gathered: *no* reference project applies an in-house allowlist
+to external tool schemas. Codex stores `input_schema` as an untyped
+`serde_json::Value` (`protocol/src/mcp.rs:165`); Kimi Code's entire check is
+`assertMcpInputSchema`, which verifies only that the value is a JSON object
+(`mcpCore/types.ts:44-55`); DeepSeek Harness passes the input schema through
+verbatim and, for the output schema it does check, states the rule as "Keep a
+supported advertised schema; unsupported MCP vocabulary falls back to
+JsonValue" (`mcp-client/src/tools.ts:221`); Maka uses Ajv, a
+standards-complete validator (`tool-output-validation.ts`).
+
+Implementation note that shaped the form of the decision: `InputSchema` is
+read by both `openaicompat/model.go:346`, which sends it to the model, and
+`tools.ValidateArgs`, which validates against it. Storing a permissive
+stand-in would therefore hide the tool's real parameters from the model and
+make it uncallable, so the two uses are separated by behavior rather than by
+content — the field keeps the server's schema verbatim, and only the
+validation branches. See design §5's 2026-09-05 amendment and plan Task 4a.
+
 ## 8. Stale statements this slice must correct
 
 Both were found by checking the repository rather than trusting its prose.

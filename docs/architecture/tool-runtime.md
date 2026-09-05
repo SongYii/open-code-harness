@@ -213,6 +213,36 @@ the closed set in `tools/schema.go`: `type`, `properties`, `required`,
 `additionalProperties`, `enum`, `minLength`, `maxLength`, `minimum`,
 `maximum`, `minItems`, `maxItems`, `items`.
 
+**Source-aware schema validation.** The closed keyword set above applies to
+`SourceBuiltin` specs, whose schemas this project writes itself. A
+`tools.SourceMCP` spec is validated differently, because its schema is
+written by an external server in full JSON Schema: `validateMCPSchema`
+requires a JSON object bounded by `MaxMCPSchemaBytes` (32 KiB) with no
+trailing content, and does **not** require `compileSchema` to succeed.
+`ValidateArgs` then tries `compileSchema` per call: when an MCP server's
+schema does compile, its arguments are checked exactly as strictly as a
+builtin's; when it does not, the check degrades to `validateDegradedArgs`,
+which still requires one well-formed JSON object with nothing trailing it.
+`InputSchema` always holds the server's schema verbatim, because the same
+field is what the Provider adapter sends to the model.
+
+This exists because the closed set was written for the four builtin tools and
+rejects most published MCP schemas — a per-property `description`,
+`"type":"number"`, `"type":"boolean"`, `$schema`, `title`, `anyOf`, `default`,
+and any object schema omitting `additionalProperties: false`. Requiring it of
+external tools discarded every tool of a healthy server while startup reported
+success. The builtin path is unchanged, and
+`TestValidateArgsNeverDegradesForABuiltin` plus
+`TestBuiltinSchemaValidationIsUnchanged` prove it rather than assert it.
+Strictness for a builtin protects this project's own filesystem and exec paths
+from arguments the model invented; an MCP server writes and executes its own
+tool and owns rejecting arguments its schema forbids. What guards the harness
+is independent of schema strictness: every MCP tool is `RiskExec`, therefore
+approval-gated or denied by the existing Policy table, and its server
+subprocess is confined. See the [MCP client adapter
+design](../superpowers/specs/2026-08-30-mcp-client-adapter-design.md) §5's
+2026-09-05 amendment.
+
 Lexical scope (`tools.CheckScopeLexical`) is no-I/O. Leftover `..`, NUL,
 invalid UTF-8, foreign Windows volumes, and absolute prefix mismatch deny
 (`TestCheckScopeLexicalDeniesEscapesWithoutIO`). A lexical deny never

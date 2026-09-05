@@ -46,7 +46,19 @@ func ValidateArgs(spec domain.ToolSpec, raw string) error {
 	}
 	compiled, err := compileSchema(spec.InputSchema)
 	if err != nil {
-		return argsError()
+		// A builtin's schema is written here and must always compile; a
+		// failure is a real defect, not a dialect difference.
+		if spec.Source != SourceMCP {
+			return argsError()
+		}
+		// An MCP server writes its own schema in full JSON Schema, which
+		// this project's builtin-shaped compiler frequently cannot read.
+		// Refusing the call would make the tool permanently uncallable, so
+		// the check degrades to the shape every tool call must have anyway.
+		// The server owns rejecting arguments its own schema forbids; what
+		// protects this harness is unchanged and independent of the schema —
+		// every MCP tool is RiskExec, approval-gated, and confined.
+		return validateDegradedArgs(raw)
 	}
 	decoder := json.NewDecoder(strings.NewReader(raw))
 	decoder.UseNumber()
@@ -493,4 +505,71 @@ func optionalNumber(obj map[string]any, key string) (float64, bool, error) {
 		return 0, false, specError()
 	}
 	return value, true, nil
+}
+
+// validateDegradedArgs is the fallback check for an MCP tool whose declared
+// schema this project's compiler cannot read. It requires exactly what every
+// tool call must be regardless of schema: one well-formed JSON object, with
+// nothing trailing it.
+//
+// Degraded is not absent. A tool call that is an array, a bare string, a
+// number, null, truncated, or followed by trailing content is still refused
+// here, so the argument shape the rest of the pipeline assumes still holds.
+func validateDegradedArgs(raw string) error {
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return argsError()
+	}
+	if decoder.More() {
+		return argsError()
+	}
+	if _, isObject := value.(map[string]any); !isObject {
+		return argsError()
+	}
+	return nil
+}
+
+// MaxMCPSchemaBytes bounds one MCP tool's declared input schema. The schema
+// is written by an external server, so it gets a stated bound like every
+// other externally supplied value here; the number matches
+// MaxWriteContentBytes, this project's existing round bound for a
+// caller-supplied blob.
+const MaxMCPSchemaBytes = 32768
+
+// validateMCPSchema is registration-time validation for a tool discovered
+// from an MCP server.
+//
+// It deliberately does not require compileSchema to succeed. That compiler
+// was written for this project's own four builtin tools: twelve keywords
+// applied recursively, four permitted type values, and a mandatory
+// additionalProperties:false. Published MCP tools use full JSON Schema, so
+// requiring it here refused a per-property description, "type":"number",
+// "type":"boolean", $schema, title, anyOf, and default — in practice every
+// tool of every healthy server, while the harness started and reported
+// success. See the design's 2026-09-05 amendment, and the reference survey
+// that found no comparable project validates external schemas this way.
+//
+// What remains required is that the schema is a bounded JSON object. The
+// per-call check in ValidateArgs is where strictness is recovered whenever
+// the server's schema does happen to compile.
+func validateMCPSchema(raw json.RawMessage) error {
+	if len(raw) > MaxMCPSchemaBytes {
+		return specError()
+	}
+	if !isJSONObject(raw) {
+		return specError()
+	}
+	// isJSONObject only inspects the opening token; a trailing-garbage or
+	// truncated document must not reach the model as a tool definition.
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	var object map[string]any
+	if err := decoder.Decode(&object); err != nil {
+		return specError()
+	}
+	if decoder.More() {
+		return specError()
+	}
+	return nil
 }
