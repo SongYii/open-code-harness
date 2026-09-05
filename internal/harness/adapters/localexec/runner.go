@@ -134,46 +134,17 @@ func (runner *Runner) Run(ctx context.Context, spec tools.CommandSpec) (tools.Co
 	if err := ctx.Err(); err != nil {
 		return tools.CommandResult{}, err
 	}
-	if len(spec.Argv) == 0 || spec.Argv[0] == "" {
-		return tools.CommandResult{}, errInvalidSpec
-	}
-	cwd, err := runner.jailCwd(spec.Cwd)
-	if err != nil {
-		return tools.CommandResult{}, err
-	}
-	argv0, err := runner.resolveArgv0(spec.Argv[0], cwd)
-	if err != nil {
-		return tools.CommandResult{}, err
-	}
-	args := append([]string(nil), spec.Argv[1:]...)
 	maxBytes := spec.MaxBytes
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxBytes
 	}
 
-	tmp, err := os.MkdirTemp(runner.workspace, "exec-")
+	cmd, tmp, err := runner.buildConfinedCommand(spec)
 	if err != nil {
 		return tools.CommandResult{}, err
 	}
 	defer os.RemoveAll(tmp)
 
-	name := argv0
-	runArgs := args
-	switch {
-	case runner.bwrapAvailable:
-		name = "bwrap"
-		runArgs = bwrapArgv(runner.workspace, cwd, append([]string{argv0}, args...))
-	case runner.seatbeltAvailable:
-		name, runArgs = seatbeltCommandArgv(runner.workspace, append([]string{argv0}, args...))
-	}
-	cmd := exec.Command(name, runArgs...)
-	cmd.Dir = cwd
-	cmd.Env = []string{
-		"PATH=" + os.Getenv("PATH"),
-		"HOME=" + runner.workspace,
-		"TMPDIR=" + tmp,
-	}
-	cmd.SysProcAttr = sysProcAttr()
 	out := newCapBuffer(maxBytes)
 	cmd.Stdout = out
 	cmd.Stderr = out
