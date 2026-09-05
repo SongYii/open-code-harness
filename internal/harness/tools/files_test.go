@@ -27,9 +27,9 @@ func TestFilesystemErrorCodes(t *testing.T) {
 	codes := []ErrorCode{
 		CodeFilesystemNotObserved,
 		CodeFilesystemStaleVersion,
-		CodeFilesystemEditNotFound,
-		CodeFilesystemAmbiguousEdit,
-		CodeFilesystemNotRegularFile,
+		CodeEditNoMatch,
+		CodeEditAmbiguous,
+		CodeFilesystemIsDirectory,
 		CodeFilesystemNotText,
 		CodeFilesystemTooLarge,
 	}
