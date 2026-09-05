@@ -211,6 +211,20 @@ func RunJudge(ctx context.Context, reader *ArtifactReader, config JudgeConfig, c
 		}
 	}
 
+	// A determinate verdict resting on no citation at all is the same defect
+	// the budget-omission fix closed from the other side: an answer about
+	// material the judge never demonstrated reading. The judge is
+	// evidence-only, so "pass, and I am not saying what I read" is not a
+	// weaker result — it is an unfalsifiable one. Indeterminate is exempt:
+	// citing nothing is often exactly why an attempt is indeterminate.
+	if ScoreVerdict(output.Verdict) != ScoreIndeterminate &&
+		len(output.EvidenceReferences) == 0 &&
+		len(output.ContradictoryEvidence) == 0 &&
+		len(output.MissingEvidence) == 0 {
+		return indeterminateJudgeOutcome(
+			fmt.Sprintf("judge output claimed verdict %q while citing no evidence at all", output.Verdict), usage), nil
+	}
+
 	rationale := boundedString(redact.Text(output.Rationale), maxJudgeRationaleBytes)
 	if len(output.ContradictoryEvidence) > 0 || len(output.MissingEvidence) > 0 {
 		// Missing required evidence or an unresolved contradiction is itself
