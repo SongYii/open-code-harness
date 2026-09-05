@@ -24,7 +24,11 @@ import (
 // It is deliberately not part of ordinary PR CI. The PR lane carries exactly
 // one representative Context Cell (eval/sets/pr-context.json); running the
 // full matrix on every pull request is what the design's tiny-matrix rule
-// exists to prevent.
+// exists to prevent. That exclusion is enforced by scheduledContextMatrixEnv,
+// not by this comment: until 2026-09-04 the only gate here was testing.Short(),
+// which no CI job passes, so the whole matrix ran on every pull request — once
+// in the `go` job and three more times under `determinism` — while three
+// separate documents said it never did.
 var contextScheduledSets = []string{
 	"context-core-inprocess.json",
 	"context-prune-inprocess.json",
@@ -56,9 +60,7 @@ func contextSetPath(t *testing.T, name string) string {
 // supported Unix environment, which is the thing that silently rots when
 // only unit tests are run.
 func TestContextScheduledLaneRunsEveryPairedSet(t *testing.T) {
-	if testing.Short() {
-		t.Skip("scheduled Context lane runs the full matrix; skipped under -short")
-	}
+	requireScheduledContextMatrix(t)
 	ochBinary := buildOchForPRLane(t)
 	artifactRoot := t.TempDir()
 

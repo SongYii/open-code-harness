@@ -1,6 +1,13 @@
 # Context Mechanism Evaluation Suite Design
 
-**Status:** Implementation-ready handoff; proposed normative supplement
+**Status:** Accepted normative supplement; implemented. Written 2026-09-03 as
+an implementation-ready handoff and promoted once the suite landed. Three
+contracts below did not survive contact with real evidence and were amended
+rather than worked around; §12's scheduled-lane exclusion was stated here and
+in the code's own comments but not actually wired, and is now enforced by
+`OCH_EVAL_SCHEDULED_CONTEXT_MATRIX` and the `cmd/och-eval` wiring guards. Both
+corrections are recorded in the [Evaluation completion
+evidence](../../architecture/evaluation-evidence.md).
 
 **Date:** 2026-09-03
 
@@ -541,6 +548,17 @@ both executors.
 Run all paired core/prune/overflow/chunk/anchor sets and the ACP recovery set
 on the supported Unix environment. Publish manifests, scores, reports, and timing
 artifacts. No credential or `--live` flag is allowed.
+
+**Implementation note (added after landing; the paragraphs above are the
+2026-09-03 contract as written).** "Explicit/scheduled" needed a mechanism,
+and the first implementation did not give it one: the lane's only gate was
+`testing.Short()`, which no CI job passes, so the full matrix ran in the `go`
+job on every pull request and three more times under `determinism` — the
+opposite of what this section and the section above require. The lane is now
+opted in to by `OCH_EVAL_SCHEDULED_CONTEXT_MATRIX=1`, set by exactly one
+schedule-gated CI job running one focused `-count=1` command, and three tests
+in `cmd/och-eval` enforce that against `.github/workflows/ci.yml` and against
+the test binary's own default-off behavior rather than against any comment.
 
 The steady-state scan-cost fix is not observable from an artifact-only verifier
 without adding forbidden store instrumentation to eval. The scheduled lane must
