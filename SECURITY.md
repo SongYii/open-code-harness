@@ -143,6 +143,43 @@ not vulnerabilities, unless they show a bypass of something in "Enforced".
 
 ## Dependencies
 
-The only non-test module dependency is `modernc.org/sqlite`, a pure-Go driver
-chosen so the durable adapter needs no cgo. Dependency advisories are surfaced
-by `govulncheck` in CI.
+This project keeps a small, deliberately chosen dependency set and states it
+honestly rather than advertising a number that has stopped being true. Five
+modules are required by non-test code:
+
+| Module | Why | Reached from |
+| --- | --- | --- |
+| `modernc.org/sqlite` | Pure-Go driver, so the durable adapter needs no cgo | `adapters/sqlite` |
+| `golang.org/x/sys` | Platform syscalls for process groups and resource limits | `adapters/localexec`, runtime |
+| `golang.org/x/term` | Terminal handling for the interactive client | `internal/client/acp` |
+| `github.com/coder/websocket` | The web trajectory bridge's relay transport | `internal/client/acpweb` |
+| `github.com/modelcontextprotocol/go-sdk` | The official MCP client/server SDK | `adapters/mcp` |
+
+`github.com/chromedp/chromedp` is required by tests only — it drives the real
+browser in the web bridge's interoperability test — and no non-test file
+imports it.
+
+Every module is pinned to an exact version, never a range. `go mod tidy -diff`
+and `govulncheck` both run in CI, so the graph cannot drift silently and
+advisories surface against the whole of it, not just the direct entries.
+
+**The MCP SDK is the largest single addition, and it brings seven transitive
+modules with it**: `github.com/google/jsonschema-go`,
+`github.com/yosida95/uritemplate/v3`, `github.com/segmentio/encoding` (plus
+`github.com/segmentio/asm`), `golang.org/x/sync`, `golang.org/x/time`, and
+**`golang.org/x/oauth2`**. The last deserves naming explicitly: this project
+uses MCP over stdio only and reaches no OAuth code path, but package `mcp`
+imports the SDK's `auth` package, which imports `oauthex`, which imports
+`oauth2`. There is no stdio-only slice of the SDK that avoids it. It is in
+the build graph, it is covered by `govulncheck` like everything else, and no
+code here calls it. (`github.com/golang-jwt/jwt/v5` appears in the SDK's own
+`go.mod` but is test-only within it and does not enter this build — verified
+with `go list -deps`, not assumed.)
+
+Adopting an SDK here reverses this project's usual preference for owning a
+small wire protocol itself, which it does for ACP. The reasoning is recorded
+in the [MCP client adapter
+design](docs/superpowers/specs/2026-08-30-mcp-client-adapter-design.md) §1.1:
+the MCP specification has shipped five schema revisions with a live
+backward-incompatible split, and an official, maintained SDK is built to
+absorb exactly that.

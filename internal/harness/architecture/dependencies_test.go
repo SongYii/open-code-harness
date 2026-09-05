@@ -766,6 +766,15 @@ func TestOsExecOnlyInLocalExec(t *testing.T) {
 	allowedRoots := []string{
 		filepath.Join(harnessRoot, "adapters", "localexec"),
 		filepath.Join(harnessRoot, "eval"),
+		// adapters/mcp names os/exec but never spawns with it: localexec
+		// builds the confined *exec.Cmd, the mcp port declares the type so
+		// composition can hand one across the boundary, and the adopted SDK's
+		// CommandTransport is what finally calls Start. The exception is
+		// listed rather than assumed because the process does start on this
+		// adapter's behalf — see the 2026-09-04 amendment to the MCP design's
+		// §3, which forbids mcp from importing localexec and resolves the
+		// resulting contradiction with this port.
+		filepath.Join(harnessRoot, "adapters", "mcp"),
 	}
 
 	err := filepath.WalkDir(harnessRoot, func(path string, entry fs.DirEntry, walkErr error) error {
