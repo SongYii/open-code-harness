@@ -9,6 +9,14 @@ const (
 	CodeInvalidArgs   ErrorCode = "invalid_args"
 	CodeScopeDenied   ErrorCode = "scope_denied"
 	CodeDuplicateName ErrorCode = "duplicate_name"
+
+	CodeFilesystemNotObserved    ErrorCode = "fs_not_observed"
+	CodeFilesystemStaleVersion   ErrorCode = "fs_stale_version"
+	CodeFilesystemEditNotFound   ErrorCode = "fs_edit_not_found"
+	CodeFilesystemAmbiguousEdit  ErrorCode = "fs_ambiguous_edit"
+	CodeFilesystemNotRegularFile ErrorCode = "fs_not_regular_file"
+	CodeFilesystemNotText        ErrorCode = "fs_not_text"
+	CodeFilesystemTooLarge       ErrorCode = "fs_too_large"
 )
 
 // ErrOutOfScope is returned by FileSystem.Resolve when the real path leaves
@@ -45,7 +53,10 @@ func IsCode(err error, wanted ErrorCode) bool {
 
 func validErrorCode(code ErrorCode) bool {
 	switch code {
-	case CodeInvalidSpec, CodeInvalidArgs, CodeScopeDenied, CodeDuplicateName:
+	case CodeInvalidSpec, CodeInvalidArgs, CodeScopeDenied, CodeDuplicateName,
+		CodeFilesystemNotObserved, CodeFilesystemStaleVersion, CodeFilesystemEditNotFound,
+		CodeFilesystemAmbiguousEdit, CodeFilesystemNotRegularFile, CodeFilesystemNotText,
+		CodeFilesystemTooLarge:
 		return true
 	default:
 		return false
