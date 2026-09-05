@@ -98,6 +98,22 @@ func TestTheTwoReliabilityFieldsAreNeverMergedIntoOne(t *testing.T)
 
 ### Task 3: Indeterminate handling, raw and filtered views
 
+> **Merged into Task 2 during implementation, and the split is recorded as a
+> planning error rather than a scheduling detail.** Indeterminate handling is
+> not a layer on top of the distribution computation; it is part of deciding
+> what the computation even means. Building Task 2 without it produced two
+> real bugs that Task 2's own tests could not see — a Cell with nothing
+> evaluable reported as unstable rather than unjudgeable, and a Cell with one
+> survivor of five reported as perfectly trustworthy. Both would have reached
+> a PR.
+>
+> One clause below is also amended. "Raw and filtered **views**" is wrong at
+> this layer: a raw stability would mix a quality signal with an
+> infrastructure one into a number nobody should read. The parent design's
+> rule is about the denominators of rates, so what `CellDistribution` owes a
+> consumer is both **denominators** — `Attempts` and `EvaluableAttempts` —
+> from which it computes whichever rate it means.
+
 **Files:**
 - Modify: `internal/harness/eval/variance.go`, `variance_test.go`
 
