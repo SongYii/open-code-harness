@@ -152,6 +152,9 @@ func validateSpec(spec domain.ToolSpec) error {
 	if spec.Mutates != wantMutates {
 		return specError()
 	}
+	if spec.Source == SourceMCP {
+		return validateMCPSchema(spec.InputSchema)
+	}
 	if _, err := compileSchema(spec.InputSchema); err != nil {
 		return err
 	}

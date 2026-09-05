@@ -207,6 +207,10 @@ JSON 包装已经超过 Engine 的 32 KiB 参数帽，所以该 schema 格经
 `additionalProperties`、`enum`、`minLength`、`maxLength`、`minimum`、
 `maximum`、`minItems`、`maxItems`、`items`。
 
+**按来源区分的 schema 校验。** 上面这个封闭关键字集合只适用于 `SourceBuiltin` 规格，它们的 schema 由本项目自己编写。`tools.SourceMCP` 规格走另一条路径，因为它的 schema 由外部服务器用完整的 JSON Schema 编写：`validateMCPSchema` 只要求它是一个受 `MaxMCPSchemaBytes`（32 KiB）限制、且没有尾随内容的 JSON 对象，**不要求** `compileSchema` 成功。随后 `ValidateArgs` 在每次调用时先尝试 `compileSchema`：如果某台服务器的 schema 确实能编译，它的参数就按内置工具同样的严格程度校验；如果不能，校验降级为 `validateDegradedArgs`，仍然要求参数是一个格式良好、没有尾随内容的 JSON 对象。`InputSchema` 始终原样保存服务器的 schema，因为 Provider 适配器发给模型的正是这个字段。
+
+这条规则存在的原因是：那个封闭集合是为四个内置工具写的，会拒绝绝大多数已发布的 MCP schema —— 参数上的 `description`、`"type":"number"`、`"type":"boolean"`、`$schema`、`title`、`anyOf`、`default`，以及任何没有写 `additionalProperties: false` 的对象 schema。对外部工具强制要求它，会让一台健康服务器的每一个工具都被丢弃，而启动过程报告成功。内置路径完全没变，并且由 `TestValidateArgsNeverDegradesForABuiltin` 与 `TestBuiltinSchemaValidationIsUnchanged` 证明，而不是靠断言。对内置工具而言，严格校验保护的是本项目自己的文件系统与执行路径，挡住模型臆造的参数；而 MCP 服务器自己编写并执行自己的工具，拒绝不合其 schema 的参数本来就是它的责任。真正守护本 harness 的机制与 schema 是否严格无关：每个 MCP 工具都是 `RiskExec`，因而在现有 Policy 表下要么需要审批要么直接被拒，其服务器子进程受沙箱约束。参见 [MCP 客户端适配器设计](../superpowers/specs/2026-08-30-mcp-client-adapter-design.md) §5 的 2026-09-05 修订。
+
 词法 scope（`tools.CheckScopeLexical`）无 I/O。残留 `..`、NUL、非法
 UTF-8、外盘 Windows volume、绝对路径前缀不匹配都会拒绝
 （`TestCheckScopeLexicalDeniesEscapesWithoutIO`）。词法拒绝永不调用
