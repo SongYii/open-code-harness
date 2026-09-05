@@ -163,3 +163,7 @@ reaches it, and no task in the plan to add one.
    `Trustworthy bool`?
 4. What checked-in configuration will exercise this, and does adding one
    belong to this work or to the first live run?
+
+A proposed set of answers is in
+[2026-09-05-eval-variance-question-answers.md](2026-09-05-eval-variance-question-answers.md).
+That file existing does not adopt them.
