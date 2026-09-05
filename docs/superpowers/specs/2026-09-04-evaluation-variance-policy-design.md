@@ -1,8 +1,24 @@
 # Evaluation Variance and Baseline Policy Design
 
-**Status:** Proposed for review on 2026-09-04. Not accepted. The authority-table
-row in [`docs/README.md`](../../README.md) is deliberately not added by this
-document: adding it would record an acceptance that has not happened.
+**Status:** Accepted on 2026-09-05. Proposed on 2026-09-04 and deliberately
+left without an authority-table row until acceptance, since adding one would
+have recorded an acceptance that had not happened.
+
+Open question 1 is answered: the mechanism is accepted now, with an
+explicitly **provisional, uncalibrated** policy document, rather than waiting
+for live credentials this environment does not have. That ordering carries
+one real risk, stated so it can be watched for: a provisional number is
+easily mistaken for a calibrated one. The implementation therefore makes
+"uncalibrated" a field of the frozen document itself rather than a comment,
+so every Score derived under it carries the disclosure.
+
+Open questions 2 and 3 remain open and do not block the plan. Question 2 (a
+nightly repetition budget) does not bind while no checked-in live EvalSet
+exceeds `repetitionCount: 1`. Question 3 (whether the deterministic lane gets
+a variance policy) is left out, following this document's own reasoning that
+folding it in would blur the distinction the design rests on; a fixture lane's
+`spread > 0` is a determinism defect rather than noise, and deserves its own
+mechanism rather than this one.
 
 **Date:** 2026-09-04
 
