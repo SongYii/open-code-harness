@@ -75,6 +75,22 @@ Three behaviors are fail-closed and tested as such:
 leaves of the assembly, and stopping them first means a slow server cannot
 delay the writer's own lease release. Errors from both are joined.
 
+Teardown runs the SDK's own stdio shutdown first, then escalates to the
+server's **process group** and proves the group is gone before reporting
+success. The SDK's own last rung signals the process alone, so a server that
+spawned children of its own would leave them orphaned; and signalling is not
+collection, so proof comes from a clean return of the SDK's close or from
+probing the group with signal 0. `mcp.ErrTeardownUnproven` reports the case
+where neither establishes it, rather than a success being assumed.
+
+On non-unix platforms the escalation does not exist: process groups and the
+signals addressing them are POSIX, and this repository does not claim support
+for supervising subprocesses on Windows — the ACP subprocess executor already
+refuses outright there for the same reason rather than approximating a
+kill-only-the-parent substitute. A Windows build therefore gets the SDK's
+ladder alone, and a server that spawns children can leave them running. The
+limitation is stated, not hidden.
+
 `Assembly` exposes `Service()`, `Host()`, and `Store()` as read-only
 accessors. It owns every resource it returns. `ServeACP` speaks ACP v1
 JSON-RPC on a caller-supplied duplex; the writer receives only ACP frames.
