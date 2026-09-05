@@ -573,3 +573,16 @@ func validateMCPSchema(raw json.RawMessage) error {
 	}
 	return nil
 }
+
+// SchemaIsStrictlyValidatable reports whether this project's own compiler can
+// read raw, and therefore whether ValidateArgs will check a call's arguments
+// strictly or fall back to the degraded object check.
+//
+// It exists so a caller registering externally-authored tools can record
+// which of them will be loosely checked. The Tool runtime contract requires
+// that degradation be an auditable fact rather than an invisible one, and a
+// caller cannot state it without being able to ask.
+func SchemaIsStrictlyValidatable(raw json.RawMessage) bool {
+	_, err := compileSchema(raw)
+	return err == nil
+}
