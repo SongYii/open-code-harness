@@ -3,6 +3,7 @@ package eval
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -220,23 +221,65 @@ func TestBaselineRecordsTheAttemptIdsItWasDerivedFrom(t *testing.T) {
 	}
 }
 
-// TestBaselineRefusesToRecordAnUntrustworthyCell: a baseline is what later
-// runs are compared against, so recording a measurement already known to be
-// unreliable would poison every comparison that follows.
-func TestBaselineRefusesToRecordAnUntrustworthyCell(t *testing.T) {
+// TestBaselineRefusesToRecordACellNobodyCouldJudge: a baseline is what later
+// runs are compared against, so pinning a Cell that was never really measured
+// would poison every comparison that follows. This is the structural half of
+// design §3, and it refuses unconditionally.
+func TestBaselineRefusesToRecordACellNobodyCouldJudge(t *testing.T) {
 	reps := []CellRepetition{
-		repetition(0, ScorePass, score(0.10)),
-		repetition(1, ScorePass, score(0.90)), // spread 0.80, far over the limit
-		repetition(2, ScorePass, score(0.50)),
+		repetition(0, ScorePass, score(0.70)),
+		repetition(1, ScoreIndeterminate, nil),
+		repetition(2, ScoreIndeterminate, nil), // one evaluable, floor is three
 	}
 	_, err := BuildBaseline("b", time.Unix(0, 0).UTC(), map[CellIdentity][]CellRepetition{
 		{ScenarioDigest: "sha256:scenario", SubjectDigest: "sha256:subject", ExecutorDigest: "sha256:executor"}: reps,
 	}, validVariancePolicy())
 	if !errors.Is(err, errInvalidDocument) {
-		t.Fatalf("BuildBaseline() = %v, want an untrustworthy Cell to be refused", err)
+		t.Fatalf("BuildBaseline() = %v, want an unmeasured Cell to be refused", err)
 	}
-	if err != nil && !strings.Contains(err.Error(), "untrustworthy") {
+	if err != nil && !strings.Contains(err.Error(), "evaluable") {
 		t.Fatalf("err = %v, want it to name the cause", err)
+	}
+}
+
+// TestBaselineRecordsAWideCellUnderAnUncalibratedLimit is design §3.2 reaching
+// the baseline document.
+//
+// A spread of 0.80 against a declared 0.20 is a real measurement compared
+// against a number nobody has calibrated. Refusing to record it would let an
+// invented limit decide what history exists, and the recorded distribution
+// carries its own spread, so a later reader sees exactly how wide this
+// baseline was. Once the limits are earned, the refusal below applies.
+func TestBaselineRecordsAWideCellUnderAnUncalibratedLimit(t *testing.T) {
+	reps := []CellRepetition{
+		repetition(0, ScorePass, score(0.10)),
+		repetition(1, ScorePass, score(0.90)), // spread 0.80, far over the limit
+		repetition(2, ScorePass, score(0.50)),
+	}
+	cells := map[CellIdentity][]CellRepetition{
+		{ScenarioDigest: "sha256:scenario", SubjectDigest: "sha256:subject", ExecutorDigest: "sha256:executor"}: reps,
+	}
+
+	baseline, err := BuildBaseline("b", time.Unix(0, 0).UTC(), cells, validVariancePolicy())
+	if err != nil {
+		t.Fatalf("BuildBaseline() = %v; an uncalibrated limit must not decide what history exists", err)
+	}
+	if len(baseline.Cells) != 1 {
+		t.Fatalf("Cells = %d, want the wide Cell recorded", len(baseline.Cells))
+	}
+	// The record carries the spread itself, which is what lets a later reader
+	// see how wide this baseline was rather than taking its existence as a
+	// claim that it was narrow.
+	if math.Abs(baseline.Cells[0].NumericSpread-0.80) > 1e-9 {
+		t.Fatalf("NumericSpread = %v, want the recorded Cell to carry its own 0.80 spread",
+			baseline.Cells[0].NumericSpread)
+	}
+
+	calibrated := validVariancePolicy()
+	calibrated.Calibration = CalibrationCalibrated
+	calibrated.CalibratedFrom = "run-2026-09-05-01"
+	if _, err := BuildBaseline("b", time.Unix(0, 0).UTC(), cells, calibrated); !errors.Is(err, errInvalidDocument) {
+		t.Fatalf("BuildBaseline() = %v, want a calibrated breach to be refused", err)
 	}
 }
 

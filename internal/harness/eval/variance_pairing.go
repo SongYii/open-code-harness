@@ -30,16 +30,16 @@ type PairedDelta struct {
 
 // ComparePairedDistributions compares a baseline arm with a candidate arm.
 //
-// Both arms must be trustworthy and carry numbers. Comparing against a
-// measurement already known to be unreliable produces a delta that means
+// Both arms must be readable as results and carry numbers. Comparing against
+// a measurement already known to be unreadable produces a delta that means
 // nothing, and returning it anyway would invite exactly the reading this
 // mechanism exists to prevent.
 func ComparePairedDistributions(baseline, candidate CellDistribution) (PairedDelta, error) {
 	for name, arm := range map[string]CellDistribution{"baseline": baseline, "candidate": candidate} {
-		if !arm.Trustworthy {
+		if !arm.MayBeReadAsAResult() {
 			return PairedDelta{}, fmt.Errorf(
-				"%w: the %s arm is untrustworthy (%s); a delta against it would mean nothing",
-				errInvalidDocument, name, arm.UntrustworthyReason)
+				"%w: the %s arm cannot be read as a result (%s); a delta against it would mean nothing",
+				errInvalidDocument, name, arm.unreadableReason())
 		}
 		if len(arm.NumericScores) == 0 {
 			return PairedDelta{}, fmt.Errorf(

@@ -162,10 +162,10 @@ func BuildBaseline(id string, recordedAt time.Time, cells map[CellIdentity][]Cel
 		// A baseline is what later runs are compared against, so recording a
 		// measurement already known to be unreliable would poison every
 		// comparison that follows it.
-		if !distribution.Trustworthy {
+		if !distribution.MayBeReadAsAResult() {
 			return Baseline{}, fmt.Errorf(
-				"%w: refusing to record an untrustworthy Cell as a baseline: %s",
-				errInvalidDocument, distribution.UntrustworthyReason)
+				"%w: refusing to record a Cell that cannot be read as a result as a baseline: %s",
+				errInvalidDocument, distribution.unreadableReason())
 		}
 
 		ordered := append([]CellRepetition(nil), repetitions...)

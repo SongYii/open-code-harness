@@ -79,23 +79,71 @@ func TestWithinNoiseUsesTheWiderArmNotAnAverage(t *testing.T) {
 	}
 }
 
-// TestAnUntrustworthyArmMakesTheComparisonUnusable: comparing against a
-// measurement already known to be unreliable produces a delta that means
-// nothing.
-func TestAnUntrustworthyArmMakesTheComparisonUnusable(t *testing.T) {
-	policy := validVariancePolicy() // maxNumericSpread 0.20
-	unstable := mustDistribution(t, []CellRepetition{
+// TestAnUnmeasuredArmMakesTheComparisonUnusable: comparing against a Cell
+// nobody could judge produces a delta that means nothing. This is the
+// structural half, and it refuses unconditionally.
+func TestAnUnmeasuredArmMakesTheComparisonUnusable(t *testing.T) {
+	policy := validVariancePolicy() // minEvaluableRepetitions 3
+	barelyJudged := mustDistribution(t, []CellRepetition{
+		repetition(0, ScorePass, score(0.70)),
+		repetition(1, ScoreIndeterminate, nil),
+		repetition(2, ScoreIndeterminate, nil),
+	}, policy)
+	if barelyJudged.EvaluableEnough {
+		t.Fatal("fixture is not actually short of evaluable repetitions")
+	}
+
+	_, err := ComparePairedDistributions(barelyJudged, armOf(t, 0.70, 0.71, 0.72))
+	if !errors.Is(err, errInvalidDocument) {
+		t.Fatalf("ComparePairedDistributions() = %v, want an unmeasured arm to be refused", err)
+	}
+}
+
+// TestAWideArmUnderAnUncalibratedLimitIsDisclosedRatherThanRefused is design
+// §3.2 reaching the paired comparison.
+//
+// A spread of 0.80 against a declared 0.20 is a real measurement compared
+// against a number nobody has calibrated. Refusing the comparison would let
+// that guess decide what a reviewer is allowed to see. The mechanism already
+// has an honest answer for a noisy arm — the delta comes back WithinNoise,
+// which says "this run cannot distinguish the arms" without pretending to
+// know the arms are the same. Disclosure replaces refusal until the limits
+// are earned.
+func TestAWideArmUnderAnUncalibratedLimitIsDisclosedRatherThanRefused(t *testing.T) {
+	policy := validVariancePolicy() // maxNumericSpread 0.20, uncalibrated
+	wide := mustDistribution(t, []CellRepetition{
 		repetition(0, ScorePass, score(0.10)),
 		repetition(1, ScorePass, score(0.90)),
 		repetition(2, ScorePass, score(0.50)),
 	}, policy)
-	if unstable.Trustworthy {
-		t.Fatal("fixture is not actually untrustworthy")
+	if !wide.ExceedsDeclaredLimits {
+		t.Fatal("fixture does not actually exceed its declared spread")
 	}
 
-	_, err := ComparePairedDistributions(unstable, armOf(t, 0.70, 0.71, 0.72))
+	delta, err := ComparePairedDistributions(wide, armOf(t, 0.70, 0.71, 0.72))
+	if err != nil {
+		t.Fatalf("ComparePairedDistributions() = %v; an uncalibrated limit must not refuse a comparison", err)
+	}
+	if !delta.WithinNoise {
+		t.Fatalf("a delta against a 0.80 spread was not called within noise: %+v", delta)
+	}
+}
+
+// TestAWideArmUnderACalibratedLimitIsRefused is the other half of the same
+// rule: once the limits are earned from a cited run, the breach does bite.
+func TestAWideArmUnderACalibratedLimitIsRefused(t *testing.T) {
+	policy := validVariancePolicy()
+	policy.Calibration = CalibrationCalibrated
+	policy.CalibratedFrom = "run-2026-09-05-01"
+	wide := mustDistribution(t, []CellRepetition{
+		repetition(0, ScorePass, score(0.10)),
+		repetition(1, ScorePass, score(0.90)),
+		repetition(2, ScorePass, score(0.50)),
+	}, policy)
+
+	_, err := ComparePairedDistributions(wide, armOf(t, 0.70, 0.71, 0.72))
 	if !errors.Is(err, errInvalidDocument) {
-		t.Fatalf("ComparePairedDistributions() = %v, want an untrustworthy arm to be refused", err)
+		t.Fatalf("ComparePairedDistributions() = %v, want a calibrated breach to be refused", err)
 	}
 }
 
