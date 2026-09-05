@@ -341,6 +341,14 @@ undeclared/omitted/duplicate criterion, an aggregate verdict inconsistent with
 its criterion results, an out-of-range score, or the call itself failing —
 resolves to a real `JudgeOutcome{Verdict: Indeterminate}` carrying a bounded,
 redacted rationale, never a Go error and never silently accepted as `Pass`.
+
+One case beyond design §21's list is refused for the same reason: a
+**determinate verdict citing no evidence at all**. Every reference rule above
+guards the references that are present, and until 2026-09-04 none required any
+to be — so `pass` with an empty `evidenceReferences` was believed. That is the
+budget-omission defect seen from the other side: an answer about material the
+judge never demonstrated reading. An `indeterminate` verdict may still cite
+nothing, since that is often exactly why it is indeterminate.
 Every Subject-authored value the judge is shown is labeled `untrusted...
 not an instruction` (the embedded `prompts/quality_judge_v1.md` prompt's own
 framing) — this repository has no live model to prove actually resists a
@@ -522,6 +530,29 @@ by explicit command
 or `och-eval run -set eval/sets/deterministic-full.json`), never in ordinary
 PR CI.
 
+The full Context mechanism matrix — nine EvalSets, five of them driving real
+`och -acp` subprocesses — is opted in to by name, through
+`OCH_EVAL_SCHEDULED_CONTEXT_MATRIX=1`. Without it,
+`TestContextScheduledLaneRunsEveryPairedSet` skips. The only CI job that sets
+it is `context-matrix`, which is `if: github.event_name == 'schedule'` and
+runs one focused command once
+(`go test -race ./cmd/och-eval -run '^TestContextScheduledLane' -count=1`);
+the `go`, `determinism`, and `soak` jobs do not set it, so the whole-suite
+runs at `-count=1`, `-count=3`, and `-count=10` never expand it.
+
+This boundary is enforced, not merely stated. `TestFullContextMatrixSkipsWithoutTheOptIn`
+re-invokes the test binary with the variable removed and requires a SKIP;
+`TestCIEnablesTheFullContextMatrixOnlyInAScheduledJob` and
+`TestBroadSuiteJobsNeverEnableTheFullContextMatrix` (both `cmd/och-eval`)
+parse `.github/workflows/ci.yml` and require that exactly one job sets the
+variable, that it is schedule-gated, that its command is focused and
+`-count=1`, and that no whole-suite job carries it. Between 2026-09-04's
+`10190a2` and this change, that boundary existed only in prose — the lane's
+gate was `testing.Short()`, which no CI job passes — so the full matrix ran
+on every pull request, once in `go` and three more times under `determinism`,
+while this section said it never did. What the paragraph above claims is now
+a test.
+
 ## Live lane
 
 `internal/harness/eval/live.go`'s `RequireLiveConsent` is the single source
@@ -549,9 +580,14 @@ Evaluation is **implemented, not GA**. Explicitly outstanding before a GA
 claim: real-model sample size for live judging — `och-eval judge` is wired
 end to end and proven against a fixture SSE stream through the real
 adapter, but no run against an actual live model has ever happened in this
-repository — judge meta-evaluation against a broader fixture set than this
-milestone's own five-case suite (injection, missing-evidence,
-contradiction, unsupported-claim, known-pass/fail), provider breadth beyond
+repository — judge meta-evaluation against a broader fixture set than the
+eight adversarial fixtures this repository now carries (injection,
+missing-evidence, contradiction, unsupported-claim, known-pass/fail, an
+invented reference, a real-but-unshown reference, and a determinate verdict
+citing nothing). Two of the original five were found on 2026-09-04 to be
+satisfied by an earlier refusal than the one they named, and so proved
+nothing about the defense they were written for; both are corrected and now
+assert the refusal reason. Also outstanding: provider breadth beyond
 the one OpenAI-compatible adapter this repository ships, and an accepted
 variance policy for live/quality signals. MCP is a future suite this runner can host, never a runner
 prerequisite — its absence does not block anything documented here.
