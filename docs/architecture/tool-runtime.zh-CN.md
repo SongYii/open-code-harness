@@ -410,7 +410,11 @@ type FailToolTurn struct {
 （`TestNewRejectsFileRoot`）。外工作区参数被拒绝
 （`TestResolveRejectsForeignWorkspace`）。
 
-`adapters/localexec` 实现 `tools.CommandRunner`。`Runner.Enforcement()` 按
+`adapters/localexec` 有两个执行入口。`Run` 是 `tools.CommandRunner` 的实现：执行一条命令，启动、捕获有上限的输出、等待结束，调用返回时释放全部资源。`NewConfinedCommand` 面向自己掌管进程生命周期的调用方——一个长期存活的服务器子进程，它的 stdin/stdout 本身就是协议传输通道，因此必须由调用方接上管道并自行调用 `Start`。它返回的命令是**已配置但尚未启动**的，没有预先接管任何 stdio，并且带有与 `Run` 完全相同的工作区准入、沙箱包装、三个名字的白名单环境和独立进程组；两条路径共用同一个构造函数，因此不会各自漂移。返回的 `ConfinedCommand` 持有 `Run` 只在单次调用内持有的私有临时目录与配额登记，`Close` 会释放它们但**不会**向进程发信号——停止进程属于启动它的那一方。
+
+有一处差异是明确披露而非隐藏的。`Run` 会在自己的 `cmd.Start` 外围持有平台的启动前资源括号（macOS 上是 `RLIMIT_AS`，其他平台为空操作）。受限命令的 `Start` 由调用方掌握，因此这个括号以 `StartBracket()` 的形式暴露出来，由调用方包住真正执行启动的那段代码；不使用它的调用方将得到沙箱约束但没有 macOS 的地址空间上限。这个括号降低的是本进程自身的限制并跨 fork 继承，因此无法代替调用方跨一次本包并不发起的调用来持有（`TestStartBracketIsAvailableToTheCaller`）。
+
+`Runner.Enforcement()` 按
 效果分别报告命令被限制的完整程度——`Filesystem`/`Network`/`Memory`/`CPU`，
 各自是 `"full"`、`"partial"` 或 `"none"`——这是根据实际生效的机制算出来的
 事实，不是假定的承诺（`TestEnforcementReportsNoneWithoutAPlatformBackend`

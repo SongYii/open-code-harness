@@ -453,7 +453,30 @@ directory symlink children that leave the workspace
 rejected (`TestNewRejectsFileRoot`). A foreign workspace argument is
 rejected (`TestResolveRejectsForeignWorkspace`).
 
-`adapters/localexec` implements `tools.CommandRunner`. `Runner.Enforcement()`
+`adapters/localexec` has two execution entry points. `Run` is the
+`tools.CommandRunner` implementation: one command, started, bounded output
+captured, waited on, everything released when the call returns.
+`NewConfinedCommand` serves a caller that owns its own process lifetime — a
+long-lived server subprocess whose stdin and stdout are a protocol transport,
+so the caller must attach the pipes and call `Start` itself. It returns the
+command **configured but unstarted**, with no stdio wired, carrying the same
+workspace admission, confinement wrapper, whitelisted three-name environment,
+and process group `Run` applies; both paths share one construction function,
+so they cannot drift. The returned `ConfinedCommand` owns the private
+temporary directory and quota membership `Run` scopes to a single call, and
+`Close` releases them without signalling the process, since stopping it
+belongs to whoever started it.
+
+One difference is disclosed rather than hidden. `Run` holds the platform's
+pre-`Start` resource bracket (macOS `RLIMIT_AS`; a no-op elsewhere) around its
+own `cmd.Start`. A confined command's caller owns `Start`, so the bracket is
+exposed as `StartBracket()` for the caller to wrap whatever performs it; a
+caller that skips it gets confinement without the macOS address-space bound.
+The bracket lowers this process's own limit across the fork, so it cannot be
+held on the caller's behalf across a call this package does not make
+(`TestStartBracketIsAvailableToTheCaller`).
+
+`Runner.Enforcement()`
 reports, per effect, how completely commands are confined —
 `Filesystem`/`Network`/`Memory`/`CPU`, each `"full"`, `"partial"`, or `"none"` — a
 fact computed from what is actually active, never an assumed promise
