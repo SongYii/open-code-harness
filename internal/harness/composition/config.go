@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/SongYii/open-code-harness/internal/harness/adapters/mcp"
 	"github.com/SongYii/open-code-harness/internal/harness/contextengine"
 	"github.com/SongYii/open-code-harness/internal/harness/policy"
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
@@ -189,6 +190,19 @@ type Config struct {
 	// Approver is optional. Unset becomes a deny slot so an ACP server can
 	// attach later without reconstructing the Service.
 	Approver tools.Approver
+
+	// MCPServers names the MCP servers Open connects, in order. Empty means
+	// no MCP client is constructed at all and the assembly is exactly what it
+	// is today.
+	//
+	// This list is the admission control for which MCP servers may exist:
+	// configuration is static and read once here, never per ACP session, and
+	// the ACP adapter's existing fail-closed rejection of `mcpServers` is
+	// unchanged. A configured server that cannot be reached fails Open —
+	// there is deliberately no AllowUnsandboxedExec-style escape hatch,
+	// because starting without tools an operator asked for, while reporting
+	// success, is the more dangerous outcome.
+	MCPServers []mcp.ServerConfig
 
 	// ShutdownTimeout bounds Close. Default 10s. This is the only bound this
 	// package introduces rather than forwards.

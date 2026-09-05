@@ -32,10 +32,24 @@ type Assembly struct {
 	store     application.EventStore
 	approver  *tools.Slot
 	workspace string
+	catalog   *tools.Catalog
+	mcp       mcpServers
 
 	timeout  time.Duration
 	closeErr error
 	closed   bool
+}
+
+// Catalog is the single tool catalog this assembly built: the four builtin
+// workspace tools plus every tool discovered from a configured MCP server.
+// One catalog is the whole point of projecting external tools into
+// domain.ToolSpec — they inherit the same Policy table, Approver slot, and
+// audit trail rather than needing a second mechanism.
+func (assembly *Assembly) Catalog() *tools.Catalog {
+	if assembly == nil {
+		return nil
+	}
+	return assembly.catalog
 }
 
 // Service is the command authority for Session and Turn use cases.
@@ -158,9 +172,27 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 	if err != nil {
 		return release(fmt.Errorf("composition: command runner: %w", err))
 	}
-	catalog, err := tools.NewCatalog(tools.DefaultWorkspaceSpecs())
+	// MCP servers are connected before the catalog is built, because their
+	// discovered tools join the same catalog the builtins do — one catalog,
+	// one name-uniqueness check, one Policy table, one audit trail. A
+	// configured server that cannot be reached fails Open; see
+	// connectMCPServers for why there is no degraded mode.
+	mcpSpecs, mcpConnected, err := connectMCPServers(ctx,
+		config.MCPServers,
+		confinedCommandFactory{runner: commands, workspace: config.WorkspaceRoot})
 	if err != nil {
-		return release(fmt.Errorf("composition: tool catalog: %w", err))
+		return release(err)
+	}
+	releaseWithMCP := func(cause error) (*Assembly, error) {
+		if closeErr := mcpConnected.close(); closeErr != nil {
+			cause = errors.Join(cause, closeErr)
+		}
+		return release(cause)
+	}
+
+	catalog, err := tools.NewCatalog(append(tools.DefaultWorkspaceSpecs(), mcpSpecs...))
+	if err != nil {
+		return releaseWithMCP(fmt.Errorf("composition: tool catalog: %w", err))
 	}
 
 	appConfig := application.DefaultConfig()
@@ -201,7 +233,7 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 	// picked up instead of wedging every append behind a stale snapshot.
 	service, err := application.NewService(store, system.IDs{}, system.Clock{}, runner, sqliteStore, appConfig)
 	if err != nil {
-		return release(fmt.Errorf("composition: application service: %w", err))
+		return releaseWithMCP(fmt.Errorf("composition: application service: %w", err))
 	}
 
 	return &Assembly{
@@ -210,6 +242,8 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 		store:     store,
 		approver:  approver,
 		workspace: config.WorkspaceRoot,
+		catalog:   catalog,
+		mcp:       mcpConnected,
 		timeout:   config.ShutdownTimeout,
 	}, nil
 }
@@ -245,6 +279,10 @@ func (assembly *Assembly) Close() error {
 	assembly.closed = true
 	ctx, cancel := context.WithTimeout(context.Background(), assembly.timeout)
 	defer cancel()
-	assembly.closeErr = assembly.host.Shutdown(ctx)
+	// Servers are torn down before the host: they are leaves of this
+	// assembly, and stopping them first means a slow server cannot delay the
+	// writer's own lease release.
+	mcpErr := assembly.mcp.close()
+	assembly.closeErr = errors.Join(mcpErr, assembly.host.Shutdown(ctx))
 	return assembly.closeErr
 }

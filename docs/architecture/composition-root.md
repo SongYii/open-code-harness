@@ -38,6 +38,43 @@ after the host has launched releases the host before returning, so a failed
 assembly never leaves a lease held or a database locked. When a release itself
 fails, both errors are joined rather than one replacing the other.
 
+### MCP servers
+
+`Config.MCPServers` names the MCP servers `Open` connects, in order, between
+the command runner and the catalog. Empty — the default, and what almost every
+assembly uses — means no MCP client is constructed at all and the assembly is
+exactly what it was before this capability existed
+(`TestOpenWithNoMCPServersIsUnchanged`).
+
+Each configured server is spawned through `localexec`'s confined-command entry
+point, connected through the SDK handshake, and asked for its tool listing.
+Every discovered tool joins **the same** `tools.NewCatalog` call as the four
+builtins — one catalog, one name-uniqueness check, one Policy table, one audit
+trail — which is what makes an external tool inherit `RiskExec`'s approval
+gate rather than needing a second mechanism. `Assembly.Catalog()` exposes the
+result.
+
+The MCP command factory lives here, in `composition`, because it is the only
+package permitted to import both `localexec` and `adapters/mcp`; the MCP
+adapter declares the port and never imports its sibling.
+
+Three behaviors are fail-closed and tested as such:
+
+- A configured server that cannot be reached, that breaches a discovery
+  resource bound, or whose tools cannot be projected **fails `Open`**. There is
+  no `AllowUnsandboxedExec`-style escape hatch: an operator who configured a
+  server asked for its tools, and starting without them while reporting success
+  would make them look absent rather than broken.
+- **Two servers configured with the same name** fail `Open`, named as a
+  configuration error rather than as the derived tool-name collision
+  `NewCatalog` would otherwise report.
+- A failure part-way through **tears down the servers already connected**
+  before returning, so a partial assembly leaks no subprocess.
+
+`Close` stops every connected server before shutting the host down — they are
+leaves of the assembly, and stopping them first means a slow server cannot
+delay the writer's own lease release. Errors from both are joined.
+
 `Assembly` exposes `Service()`, `Host()`, and `Store()` as read-only
 accessors. It owns every resource it returns. `ServeACP` speaks ACP v1
 JSON-RPC on a caller-supplied duplex; the writer receives only ACP frames.
