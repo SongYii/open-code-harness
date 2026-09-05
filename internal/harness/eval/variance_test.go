@@ -274,7 +274,7 @@ func TestAnUncalibratedLimitBreachDoesNotBlockReportingACellAsAPass(t *testing.T
 		t.Fatalf("LimitsCalibration = %q; a reader of the judgement must see what it is worth",
 			distribution.LimitsCalibration)
 	}
-	if !distribution.MayBeReportedAsPass() {
+	if !distribution.MayBeReadAsAResult() {
 		t.Fatalf("an uncalibrated limit rewrote a Cell of five passes into a non-pass: %+v", distribution)
 	}
 
@@ -283,7 +283,7 @@ func TestAnUncalibratedLimitBreachDoesNotBlockReportingACellAsAPass(t *testing.T
 	calibrated.Calibration = CalibrationCalibrated
 	calibrated.CalibratedFrom = "run-2026-09-05-01"
 	earned := mustDistribution(t, breached, calibrated)
-	if earned.MayBeReportedAsPass() {
+	if earned.MayBeReadAsAResult() {
 		t.Fatalf("a calibrated limit breach must block a pass: %+v", earned)
 	}
 }
@@ -391,7 +391,7 @@ func TestTooFewEvaluableRepetitionsFailsEvaluableEnough(t *testing.T) {
 	if distribution.ExceedsDeclaredLimits {
 		t.Fatalf("the lone survivor's own perfect agreement was reported as a limit breach: %+v", distribution)
 	}
-	if distribution.MayBeReportedAsPass() {
+	if distribution.MayBeReadAsAResult() {
 		t.Fatalf("a Cell measured once out of five may not be reported as a pass: %+v", distribution)
 	}
 }

@@ -40,6 +40,8 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return regradeCommand(args[1:], stdout, stderr)
 	case "report":
 		return reportCommand(args[1:], stdout, stderr)
+	case "baseline":
+		return baselineCommand(args[1:], stdout, stderr)
 	case "judge":
 		return judgeCommand(ctx, args[1:], stdout, stderr)
 	default:

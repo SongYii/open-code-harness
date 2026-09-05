@@ -18,6 +18,13 @@ type evaluationReport struct {
 	SetID         eval.EvalSetID       `json:"setId"`
 	Attempts      []reportAttemptEntry `json:"attempts"`
 	Parity        []reportParityEntry  `json:"parity,omitempty"`
+
+	// Variance is present only when a policy was supplied. Without one the
+	// report is exactly the document it has always been, which matters
+	// because every checked-in set runs each Cell once and claims no
+	// variance signal.
+	VariancePolicy *reportVariancePolicy `json:"variancePolicy,omitempty"`
+	Variance       []reportVarianceCell  `json:"variance,omitempty"`
 }
 
 type reportAttemptEntry struct {
@@ -63,6 +70,8 @@ func reportCommand(args []string, stdout, stderr io.Writer) int {
 	setPath := flags.String("set", "", "path to the EvalSet document")
 	artifactRootFlag := flags.String("artifacts", "", "override the EvalSet document's own artifactRoot field")
 	outputPath := flags.String("output", "", "write the report document here instead of stdout")
+	variancePolicyPath := flags.String("variance-policy", "", "path to an och.eval.variance-policy document; without one no variance block is produced")
+	varianceScorer := flags.String("variance-scorer", "", "which scorer's Scores the variance block measures")
 	if err := flags.Parse(args); err != nil {
 		return exitValidation
 	}
@@ -98,9 +107,22 @@ func reportCommand(args []string, stdout, stderr io.Writer) int {
 		return exitInternal
 	}
 
+	policy, policyDigest, wantVariance, varianceErr := loadVariancePolicy(
+		varianceInputs{policyPath: *variancePolicyPath, scorerID: *varianceScorer}, stderr)
+	if varianceErr != nil {
+		fmt.Fprintln(stderr, "och-eval report:", varianceErr)
+		return exitValidation
+	}
+	if wantVariance && *varianceScorer == "" {
+		fmt.Fprintln(stderr, "och-eval report: -variance-scorer is required with -variance-policy;"+
+			" an Attempt can carry Scores from several scorers and pooling them would measure the difference between two questions")
+		return exitValidation
+	}
+
 	report := evaluationReport{FormatVersion: 1, Schema: reportSchema, SetID: set.ID}
 	exitCode := exitOK
 	var parityCandidates []parityCandidate
+	var variancePairs []eval.AttemptScore
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -149,6 +171,12 @@ func reportCommand(args []string, stdout, stderr io.Writer) int {
 				// a parity pairing" shape.
 				if result.Outcome.CollectionStatus == eval.CollectionComplete {
 					if attempt, attemptErr := eval.ReadAttempt(attemptRoot); attemptErr == nil {
+						if wantVariance {
+							for _, score := range result.Scores {
+								variancePairs = append(variancePairs,
+									eval.AttemptScore{Attempt: attempt, Score: score})
+							}
+						}
 						if arm, armErr := eval.LoadParityArm(directories); armErr == nil {
 							parityCandidates = append(parityCandidates, parityCandidate{
 								key: eval.ParityPairKeyForAttempt(attempt), arm: arm,
@@ -166,6 +194,24 @@ func reportCommand(args []string, stdout, stderr io.Writer) int {
 		if len(parityEntry.Mismatches) > 0 {
 			exitCode = maxExitCode(exitCode, exitGateFailure)
 		}
+	}
+
+	if wantVariance {
+		block, blockErr := buildVarianceBlock(variancePairs, *varianceScorer, policy)
+		if blockErr != nil {
+			fmt.Fprintln(stderr, "och-eval report: variance:", blockErr)
+			return exitInternal
+		}
+		report.VariancePolicy = &reportVariancePolicy{
+			ID: policy.ID, Version: policy.Version,
+			Digest: string(policyDigest), Calibration: string(policy.Calibration),
+		}
+		report.Variance = block
+		// Deliberately no exitCode change. A variance signal is advisory
+		// until every GA blocker it depends on has its own accepted
+		// evidence, and ordinary PR CI gates on deterministic verifiers
+		// only. Letting a variance signal turn a report red here would
+		// make a measurement nobody has calibrated into a gate.
 	}
 
 	data, err := jsonEncode(report)
