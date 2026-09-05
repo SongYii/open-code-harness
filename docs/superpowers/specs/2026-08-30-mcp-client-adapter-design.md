@@ -345,15 +345,35 @@ At `composition.Open`, for each configured server, in order:
 > it were impossible.
 >
 > **Amended rule.** Before joining, each part is sanitized to
-> `[a-zA-Z0-9_-]` with runs of `_` collapsed — which removes the
-> separator from both parts and restores injectivity — and the qualified
-> name is capped at 64 bytes, with overflow truncated and given a stable
-> 8-hex-digit FNV-1a suffix of the untruncated name rather than a silent
-> clip. This is Kimi Code's `tool-naming.ts` convention, adopted whole
-> rather than reinvented. Sanitization also disposes of a smaller
-> problem: `validateSpec` rejects leading and trailing whitespace but not
-> an interior newline, so an unsanitized server-supplied name could carry
-> control characters into a log line or a rendered prompt.
+> **`[a-zA-Z0-9-]`** — ASCII letters, digits, and hyphen, with runs of
+> the replacement character collapsed and the result trimmed. Underscore
+> is deliberately **excluded** from the part alphabet and reserved as the
+> separator; that exclusion is the entire mechanism that makes the join
+> injective. The qualified name is capped at 64 bytes, with overflow
+> truncated and given a stable 8-hex-digit FNV-1a suffix of the
+> untruncated name rather than a silent clip.
+>
+> Sanitization is itself lossy — `a/b` and `a.b` both reduce to `a-b` —
+> so a part that sanitization actually altered additionally carries an
+> 8-hex-digit FNV-1a suffix of its own original. A part that was already
+> legal passes through untouched, which keeps ordinary tool names legible
+> to the model rather than hashing every name unconditionally.
+>
+> Sanitization also disposes of a smaller problem: `validateSpec` rejects
+> leading and trailing whitespace but not an interior newline, so an
+> unsanitized server-supplied name could carry control characters into a
+> log line or a rendered prompt.
+>
+> **Second amendment, same day, found by implementing it.** This
+> paragraph first specified sanitizing to `[a-zA-Z0-9_-]` with runs of
+> `_` collapsed, and claimed that removed the separator from both parts.
+> It does not: that alphabet *keeps* the separator, so `a` + `b__c` and
+> `a__b` + `c` still both qualify to the same name. Task 1's own
+> injectivity test failed against the rule as first written, and a
+> mutation restoring that alphabet turns the test red again. The rule
+> above is the corrected one. Kimi Code's convention is still the source
+> for the cap-and-suffix mechanism; its exact alphabet is not, because
+> its separator is `__` rather than a single reserved character.
 >
 > A collision that survives sanitization (two servers genuinely
 > configured with the same `Name`, which is the case the original
