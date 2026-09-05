@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -38,6 +39,12 @@ type Server struct {
 	config  ServerConfig
 	command Command
 	session *sdk.ClientSession
+
+	// rawNames maps a qualified Catalog name back to the name the server
+	// knows. Discovery owns the qualification, so only discovery can supply
+	// the inverse, and a call for a name this server never offered is
+	// refused rather than guessed at.
+	rawNames map[string]string
 }
 
 // Validate rejects a configuration this package will not act on. It runs
@@ -118,25 +125,38 @@ func (s *Server) Session() *sdk.ClientSession { return s.session }
 
 // Close ends the session and releases the command's resources.
 //
-// Closing the session runs the SDK's own stdio shutdown — close stdin, wait,
-// SIGTERM, then Kill. That ladder signals the process rather than its group
-// and proves no reap, both weaker than this repository's established
-// practice; a later task owns escalating past it. Close reports the session's
-// own error and still releases the command either way, so a stubborn server
-// cannot leak a temporary directory.
+// The SDK's own stdio shutdown runs first — close stdin, wait, SIGTERM, then
+// Kill — because that is the specification's prescribed sequence and what a
+// well-behaved server expects. Its last rung signals the process alone and
+// proves no reap, so shutdownProcess escalates to the process group and waits
+// for real collection, reporting ErrReapUnproven rather than assuming success.
+// The command's own resources are released either way, so a stubborn server
+// cannot also leak a temporary directory.
 func (s *Server) Close() error {
 	if s == nil {
 		return nil
 	}
-	var sessionErr error
-	if s.session != nil {
-		sessionErr = s.session.Close()
-		s.session = nil
+	var command *exec.Cmd
+	if s.command != nil {
+		command = s.command.Cmd()
 	}
+	session := s.session
+	s.session = nil
+
+	// shutdownProcess runs the SDK's own stdio shutdown first, then escalates
+	// past the two things it does not do: signal the process group rather
+	// than the process alone, and prove the process was actually reaped.
+	stopErr := shutdownProcess(command, func() error {
+		if session == nil {
+			return nil
+		}
+		return session.Close()
+	})
+
 	var commandErr error
 	if s.command != nil {
 		commandErr = s.command.Close()
 		s.command = nil
 	}
-	return errors.Join(sessionErr, commandErr)
+	return errors.Join(stopErr, commandErr)
 }

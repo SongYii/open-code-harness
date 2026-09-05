@@ -53,19 +53,42 @@ func (service *Service) executeOneTool(ctx context.Context, owned *ownedTurn, ca
 	if err := tools.ValidateArgs(spec, call.Arguments); err != nil {
 		return service.failToolAndContinue(ctx, owned, call, CodeInvalidArgs, ToolTextInvalidArgs)
 	}
-	args, err := parseToolArgs(spec.Name, call.Arguments)
-	if err != nil {
-		return service.failToolAndContinue(ctx, owned, call, CodeInvalidArgs, ToolTextInvalidArgs)
+	// An externally-sourced tool skips the builtin-only argument decode and
+	// the workspace-containment path that follows it. Its arguments are the
+	// external tool's own shape, not this project's fixed toolArgs fields,
+	// and an MCP server is not a location inside this workspace — "in
+	// workspace" is not a question that applies to it. ValidateArgs above
+	// already ran against the tool's own declared schema, and is the same
+	// check for every source.
+	//
+	// Skipping containment is not a relaxation. Every externally-sourced tool
+	// is classified RiskExec and mutating at discovery, unconditionally and
+	// regardless of what the server claims about itself, so the existing
+	// Policy table denies it outright in the restrictive modes and requires
+	// approval in the permissive ones — exactly as it treats builtin exec.
+	external := spec.Source == tools.SourceMCP
+
+	args := toolArgs{Raw: call.Arguments}
+	if !external {
+		decoded, err := parseToolArgs(spec.Name, call.Arguments)
+		if err != nil {
+			return service.failToolAndContinue(ctx, owned, call, CodeInvalidArgs, ToolTextInvalidArgs)
+		}
+		decoded.Raw = call.Arguments
+		args = decoded
 	}
 
-	requested := args.scopePath(owned.state.WorkspaceRoot)
+	requested := ""
+	if !external {
+		requested = args.scopePath(owned.state.WorkspaceRoot)
+	}
 	if requested != "" {
 		scope, scopeErr := tools.CheckScopeLexical(tools.ScopeRequest{WorkspaceRoot: owned.state.WorkspaceRoot, Requested: requested})
 		if scopeErr != nil || !scope.InWorkspace {
 			return service.failToolAndContinue(ctx, owned, call, CodeScopeDenied, ToolTextScopeDenied)
 		}
 	}
-	if extra := args.execBinaryPath(); extra != "" {
+	if extra := args.execBinaryPath(); !external && extra != "" {
 		scope, scopeErr := tools.CheckScopeLexical(tools.ScopeRequest{WorkspaceRoot: owned.state.WorkspaceRoot, Requested: extra})
 		if scopeErr != nil || !scope.InWorkspace {
 			return service.failToolAndContinue(ctx, owned, call, CodeScopeDenied, ToolTextScopeDenied)
@@ -86,7 +109,7 @@ func (service *Service) executeOneTool(ctx context.Context, owned *ownedTurn, ca
 			resolved = abs
 		}
 	}
-	if extra := args.execBinaryPath(); extra != "" && !isNilValue(service.files) {
+	if extra := args.execBinaryPath(); !external && extra != "" && !isNilValue(service.files) {
 		abs, resolveErr := service.files.Resolve(ctx, owned.state.WorkspaceRoot, extra)
 		if contextError(ctx) != nil || isCancelCause(resolveErr) {
 			result, cancelErr := service.cancelOwnedTurn(ctx, owned, domain.InterruptionCallerCanceled)
@@ -231,6 +254,12 @@ func (service *Service) runToolBody(ctx context.Context, owned *ownedTurn, spec 
 }
 
 func (service *Service) invokeTool(ctx context.Context, spec domain.ToolSpec, args toolArgs, resolved string) (string, bool, string, string, error) {
+	// Keyed on Source, not Name: an externally-sourced tool's name is chosen
+	// by the operator's configuration and the server itself, so this package
+	// cannot enumerate it the way it enumerates its own four builtins.
+	if spec.Source == tools.SourceMCP {
+		return service.invokeExternalTool(ctx, spec, args)
+	}
 	switch spec.Name {
 	case tools.NameReadFile:
 		data, truncated, err := service.files.Read(ctx, resolved, MaxToolResultBytes)
@@ -286,6 +315,39 @@ func (service *Service) invokeTool(ctx context.Context, spec domain.ToolSpec, ar
 	}
 }
 
+// invokeExternalTool forwards one call to the port that owns tools this
+// project does not implement.
+//
+// The tool's own reported failure becomes a tool failure inside this Turn,
+// not a transport error that ends it. That distinction is the point: the
+// model can read a failure message and try something else, while a transport
+// error tears the Turn down. Treating a routine "file not found" as the
+// latter would end a session over an ordinary event.
+func (service *Service) invokeExternalTool(ctx context.Context, spec domain.ToolSpec, args toolArgs) (string, bool, string, string, error) {
+	if isNilValue(service.external) {
+		// Construction refuses a catalog holding an external tool with no
+		// port, so reaching here means the catalog changed underneath a
+		// running Service — impossible today, since Catalog is immutable.
+		return "", false, CodeUnknownTool, ToolTextUnknownTool, nil
+	}
+	result, err := service.external.Call(ctx, spec.Name, args.Raw)
+	if err != nil {
+		return "", false, "", "", err
+	}
+	text := result.Text
+	if len(text) > MaxToolResultBytes {
+		text = text[:MaxToolResultBytes]
+		result.Truncated = true
+	}
+	if result.IsError {
+		return text, result.Truncated, CodeExternalToolFailed, externalFailureText(text), nil
+	}
+	if result.Truncated {
+		return appendTruncation(text), true, "", "", nil
+	}
+	return text, false, "", "", nil
+}
+
 func (service *Service) failToolAndContinue(ctx context.Context, owned *ownedTurn, call engine.ToolCall, code, message string) (bool, RunTurnResult, error) {
 	message = redact.Text(message)
 	decided, err := domain.Decide(owned.state, domain.FailToolCall{
@@ -339,6 +401,12 @@ func isCancelCause(err error) bool {
 }
 
 type toolArgs struct {
+	// Raw is the exact argument JSON the model produced. Builtin tools use
+	// the decoded fields below; an externally-sourced tool has no fixed
+	// shape to decode into, so its arguments are forwarded from here
+	// verbatim.
+	Raw string `json:"-"`
+
 	Path    string   `json:"path"`
 	Content string   `json:"content"`
 	Depth   *int     `json:"depth"`
@@ -348,6 +416,7 @@ type toolArgs struct {
 
 func parseToolArgs(name, raw string) (toolArgs, error) {
 	var args toolArgs
+	args.Raw = raw
 	if err := json.Unmarshal([]byte(raw), &args); err != nil {
 		return toolArgs{}, err
 	}
@@ -402,4 +471,15 @@ func (args toolArgs) depthOrDefault() int {
 		return tools.DefaultListDirDepth
 	}
 	return *args.Depth
+}
+
+// externalFailureText is what an operator and the model see when an external
+// tool reports its own failure. The tool's own message is preferred, because
+// it is the only thing that says what actually went wrong; a generic stand-in
+// is used only when the tool said nothing.
+func externalFailureText(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return ToolTextExternalFailed
+	}
+	return text
 }
