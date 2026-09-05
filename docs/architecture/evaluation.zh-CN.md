@@ -141,6 +141,10 @@ Scenario 自身的 `fixtureDigest` 是 `DigestFixtureTree` 对其 `fixture/` 源
 
 完整的确定性矩阵（两种执行器 × 每一个 Scenario）只通过显式命令运行（`go test ./internal/harness/eval/... -run TestCheckedInDeterministicFullSetProvesToolWorkspaceSuite`，或 `och-eval run -set eval/sets/deterministic-full.json`），从不出现在常规 PR CI 中。
 
+完整的 Context 机制矩阵 —— 九个 EvalSet，其中五个会拉起真实的 `och -acp` 子进程 —— 通过 `OCH_EVAL_SCHEDULED_CONTEXT_MATRIX=1` 按名称显式启用。未设置该变量时，`TestContextScheduledLaneRunsEveryPairedSet` 会跳过。CI 中唯一设置该变量的任务是 `context-matrix`，它以 `if: github.event_name == 'schedule'` 为条件，并且只运行一条聚焦命令一次（`go test -race ./cmd/och-eval -run '^TestContextScheduledLane' -count=1`）；`go`、`determinism` 与 `soak` 任务都不设置该变量，因此 `-count=1`、`-count=3` 与 `-count=10` 的全量套件运行都不会把它展开。
+
+这条边界是被强制执行的，而不只是被声明的。`TestFullContextMatrixSkipsWithoutTheOptIn` 会在剥离该环境变量后重新调用测试二进制，并要求出现 SKIP；`TestCIEnablesTheFullContextMatrixOnlyInAScheduledJob` 与 `TestBroadSuiteJobsNeverEnableTheFullContextMatrix`（均在 `cmd/och-eval`）会解析 `.github/workflows/ci.yml`，要求恰好一个任务设置该变量、该任务以 schedule 为门禁、其命令是聚焦且 `-count=1` 的，并且没有任何全量套件任务携带它。在 2026-09-04 的 `10190a2` 与本次修改之间，这条边界只存在于文字之中 —— 该车道的门禁是 `testing.Short()`，而没有任何 CI 任务传入 `-short` —— 因此完整矩阵实际在每个 PR 上都会运行，`go` 任务一次、`determinism` 再三次，而本节当时却声称它从不运行。上一段所声明的内容，现在是一个测试。
+
 ## 实时车道
 
 `internal/harness/eval/live.go` 的 `RequireLiveConsent` 是设计 §24 双重授权门禁的唯一权威来源：一个 EvalSet 自身声明的通道与显式的 `--live` 标志必须精确一致，并且实时通道还额外要求环境中存在 `OCH_EVAL_LIVE_CONFIRM=I_UNDERSTAND` —— `RequireLiveConsent` 自身从不读取环境变量或凭据，因此一个先检查它、并在遇到非空错误时拒绝继续执行的调用方，才真正落实了"在读取任何凭据之前"这一承诺。`cmd/och-eval/run.go` 自己的 `checkLaneConsent` 委托给它执行，而不是重复实现这条规则。一次实时运行总是写入一个独立的产物根目录，本仓库也从不会自动将任何证据上传到任何地方。

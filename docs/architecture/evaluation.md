@@ -522,6 +522,29 @@ by explicit command
 or `och-eval run -set eval/sets/deterministic-full.json`), never in ordinary
 PR CI.
 
+The full Context mechanism matrix — nine EvalSets, five of them driving real
+`och -acp` subprocesses — is opted in to by name, through
+`OCH_EVAL_SCHEDULED_CONTEXT_MATRIX=1`. Without it,
+`TestContextScheduledLaneRunsEveryPairedSet` skips. The only CI job that sets
+it is `context-matrix`, which is `if: github.event_name == 'schedule'` and
+runs one focused command once
+(`go test -race ./cmd/och-eval -run '^TestContextScheduledLane' -count=1`);
+the `go`, `determinism`, and `soak` jobs do not set it, so the whole-suite
+runs at `-count=1`, `-count=3`, and `-count=10` never expand it.
+
+This boundary is enforced, not merely stated. `TestFullContextMatrixSkipsWithoutTheOptIn`
+re-invokes the test binary with the variable removed and requires a SKIP;
+`TestCIEnablesTheFullContextMatrixOnlyInAScheduledJob` and
+`TestBroadSuiteJobsNeverEnableTheFullContextMatrix` (both `cmd/och-eval`)
+parse `.github/workflows/ci.yml` and require that exactly one job sets the
+variable, that it is schedule-gated, that its command is focused and
+`-count=1`, and that no whole-suite job carries it. Between 2026-09-04's
+`10190a2` and this change, that boundary existed only in prose — the lane's
+gate was `testing.Short()`, which no CI job passes — so the full matrix ran
+on every pull request, once in `go` and three more times under `determinism`,
+while this section said it never did. What the paragraph above claims is now
+a test.
+
 ## Live lane
 
 `internal/harness/eval/live.go`'s `RequireLiveConsent` is the single source
