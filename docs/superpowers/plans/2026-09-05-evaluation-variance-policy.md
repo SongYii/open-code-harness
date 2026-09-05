@@ -14,8 +14,10 @@
 
 - **No default thresholds, ever.** A policy document must declare its limits. No run against a live model has happened in this repository, so a shipped default would be a guess wearing the authority of a specification.
 - **Provisional is a field, not a comment.** The accepted ordering ships an uncalibrated policy first, and the risk that a provisional number gets mistaken for a calibrated one is real. `Calibration` is part of the frozen document and reaches every Score derived under it.
-- Repetitions are **never** collapsed into a verdict. There is no `cellVerdict` field, and adding one is out of scope.
-- An untrustworthy Cell may never be reported as a pass, in any lane, at any maturity level.
+- Repetitions are **never** collapsed into a verdict. There is no `cellVerdict` field, and adding one is out of scope. A named decision rule published *beside* the distribution is a later possibility (design §3.5); no reducer enum is built here, because no lane yet asks "did this Cell pass?".
+- **This mechanism ships dormant, and the plan does not pretend otherwise.** All sixteen checked-in EvalSets declare `repetitionCount: 1`, and Task 4's own fail-closed rule refuses any set that references a policy at `N = 1`. No task in this plan adds a configuration that would reach the new code, and none should: the first configuration that references a variance policy is the first live quality EvalSet. The mutation tests prove the computation; they are not a consumer, and calling them one would be a relabelling.
+- **The deterministic lane takes no variance policy** (design §3.6). A determinism check is a different mechanism in a different document, and `spread` could not be its signal in any case — `NumericScore` is set only on judge paths, so on a fixture lane the spread is `0` by construction.
+- A Cell that fails `EvaluableEnough` may never be reported as a pass, in any lane, at any maturity level. `ExceedsDeclaredLimits` carries no such power while its limits are uncalibrated (design §3.2).
 - Ordinary PR CI gates on deterministic verifiers only. No quality or variance signal ever gates a pull request.
 - Every fail-closed rule is proven by a mutation that turns a test red, recorded in the evidence ledger with its observed result.
 - Follow red-green-refactor. Each task is its own commit; tasks may share a PR where the branch already carries a predecessor.
@@ -65,7 +67,7 @@ func TestVariancePolicyRejectsUnknownFields(t *testing.T)
 
 **Interfaces:** `ComputeCellDistribution(scores []Score, policy VariancePolicy) (CellDistribution, error)`.
 
-Pure: no I/O, no store access. `CellDistribution` carries `Repetitions`, `Attempts`, `Verdicts` (a count per verdict, never a derived single verdict), `NumericScores` **in repetition-index order**, `NumericSpread`, `VerdictStability`, `Trustworthy`, and `UntrustworthyReason`.
+Pure: no I/O, no store access. `CellDistribution` carries `Repetitions`, `Attempts`, `Verdicts` (a count per verdict, never a derived single verdict), `NumericScores` **in repetition-index order**, `NumericSpread`, `VerdictStability`, and — per design §3.1 and §3.2 — the two separate reliability fields `EvaluableEnough` and `ExceedsDeclaredLimits`, each with its own reason. There is no single `Trustworthy` boolean: a consumer branches on a boolean and never reads the reason beside it, so one flag would merge a structural fact with an uncalibrated threshold judgement.
 
 - [ ] **Step 1: Write failing tests**
 
@@ -79,9 +81,14 @@ func TestDistributionNeverDerivesASingleVerdict(t *testing.T)
 func TestNumericSpreadIsTheRangeNotAStandardDeviation(t *testing.T)
 func TestVerdictStabilityIsTheModalShareOfEvaluableRepetitions(t *testing.T)
 func TestALimitIsAMaximumSoEqualityDoesNotBreach(t *testing.T)
-func TestSpreadBreachMakesTheCellUntrustworthyNotFailing(t *testing.T)
-    // Untrustworthy is a statement about the measurement, never a third
+func TestSpreadBreachSetsExceedsDeclaredLimitsNotAFailingVerdict(t *testing.T)
+    // A limit breach is a statement about the measurement, never a third
     // verdict about the Subject.
+func TestAnUncalibratedLimitBreachDoesNotBlockReportingACellAsAPass(t *testing.T)
+    // Design §3.2: while the policy is uncalibrated, ExceedsDeclaredLimits
+    // is advisory. Only EvaluableEnough hard-blocks a pass.
+func TestTheTwoReliabilityFieldsAreNeverMergedIntoOne(t *testing.T)
+    // The type must not grow a Trustworthy bool that ANDs them together.
 ```
 
 - [ ] **Step 2: Implement.** Range, not standard deviation — at N in single digits a standard deviation has no useful sampling behavior, and range is what a reviewer can check by eye against the published sequence.
@@ -105,9 +112,10 @@ func TestIndeterminateIsExcludedFromEvaluableCount(t *testing.T)
 func TestEveryDistributionCarriesBothRawAndFilteredDenominators(t *testing.T)
     // Fails if either is absent. This extends the parent design's existing
     // rule for infra failures rather than inventing a second convention.
-func TestTooFewEvaluableRepetitionsIsADistinctUntrustworthyReason(t *testing.T)
+func TestTooFewEvaluableRepetitionsFailsEvaluableEnoughNotTheLimitsField(t *testing.T)
     // "mostly unjudgeable" and "judged inconsistently" are different
-    // problems and must not share a label.
+    // problems with different warrants, so design §3 gives them separate
+    // fields rather than separate reason strings on one shared label.
 ```
 
 - [ ] **Step 2: Implement.**
@@ -204,10 +212,20 @@ func TestReportNeverGatesAPullRequestOnAVarianceSignal(t *testing.T)
 func TestReportMarksAnUncalibratedPolicyOnEveryCellItGoverns(t *testing.T)
     // The accepted ordering's own risk, closed at the point a reader sees a
     // number.
+func TestReportPublishesDerivedReliabilityReadings(t *testing.T)
+    // Design §3.4: c/n, at-least-one-passed, and all-passed. Arithmetic on
+    // counts the block already carries, needing no calibrated threshold —
+    // which is why they are the one part of this that is trustworthy today.
+func TestDerivedReadingsAreNotNamedPassAtK(t *testing.T)
+    // A Cell-level "at least one of k passed" is at_least(1). Chen's pass@k
+    // is a dataset-level estimator; borrowing the name would make the first
+    // public comparison dishonest.
+func TestReportCarriesBothReliabilityFieldsSeparately(t *testing.T)
+    // Fails if the block renders one merged verdict about reliability.
 func TestRegenerateBaselineWritesADeterministicDocument(t *testing.T)
 ```
 
-- [ ] **Step 2: Implement** — `och-eval report` gains the block; `och-eval baseline` regenerates.
+- [ ] **Step 2: Implement** — `och-eval report` gains the block; `och-eval baseline` regenerates. No reducer enum: design §3.5 defers named decision rules until a consumer exists.
 - [ ] **Step 3: Mutation check** — drop the uncalibrated marker and confirm the marking test fails; restore.
 
 ---

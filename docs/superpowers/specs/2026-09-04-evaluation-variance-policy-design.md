@@ -89,7 +89,13 @@ breadth, and variance policy have separate accepted evidence"
 
 ## Non-goals
 
-- **Aggregating repetitions into one verdict.** Explicitly rejected below.
+- **Replacing the distribution with an aggregate.** Explicitly rejected
+  below. A named decision rule published *beside* the distribution is a later
+  possibility (§3.5); a reduction published *instead of* it is not.
+- **A named reducer catalogue in this slice.** No consumer asks for one
+  (§3.5).
+- **A determinism check for the deterministic lane.** Different mechanism,
+  different document (§3.6).
 - Gating ordinary pull requests on any model-judge result. The parent
   design already forbids it (§22) and nothing here relaxes that.
 - Choosing calibrated numeric thresholds. No run against a live model has
@@ -111,9 +117,17 @@ readers see them as decisions rather than as inferred defaults:
 
 | Choice | Decision | Rejected alternatives |
 | --- | --- | --- |
-| Repetition aggregation | Report the distribution; flag it untrustworthy when spread exceeds a declared threshold. Never collapse repetitions into a verdict. | Majority/median (erases the difference between 5/5 and 4/5); all-pass (one stochastic dip turns a lane red and teaches people to re-run) |
+| Repetition aggregation | Always publish the distribution. A named **decision rule** may later be applied on top of it — never a reduction that replaces the raw counts — and none is built in this slice. | Mean/median as the published answer (erases the difference between 5/5 and 4/5); all-pass (one stochastic dip turns a lane red and teaches people to re-run); an inspect_ai-style reducer catalogue now (§3.5) |
+| Reliability reporting | Two fields, not one boolean: `evaluableEnough` (structural, hard) and `exceedsDeclaredLimits` (threshold, advisory until calibrated) | A single `trustworthy` bool — a consumer branches on the bool and never reads the reason text, which is exactly how "one evaluable repetition of five" and "spread 0.33 over a guessed limit of 0.20" come to share a label |
+| Deterministic lane | Takes no variance policy (§3.6) | Folding a determinism check into this mechanism |
 | Baseline source | Both: the within-run paired arm and a pinned historical baseline document | Either alone |
 | Indeterminate repetitions | Counted separately, excluded from the quality denominator, with raw and filtered views both always shown | Counting as failure (conflates "could not judge" with "judged bad"); voiding the Cell (may never assemble a complete set) |
+
+The first three rows were settled on 2026-09-05, after the research this
+design should have had in front of it. The evidence is the
+[repetition and variance gate](../../research/architecture-gates/2026-09-05-eval-repetition-and-variance.md)
+and the [answers to its four questions](../../research/architecture-gates/2026-09-05-eval-variance-question-answers.md).
+Both are research evidence; this document is where they become binding.
 
 ## 1. The unit of measurement
 
@@ -146,14 +160,19 @@ For each Cell the report publishes:
   reader sees the actual sequence rather than a summary of it;
 - `spread` — §3;
 - `stability` — §3;
-- `trustworthy` — a boolean, with `untrustworthyReason` when false.
+- `evaluableEnough` and `exceedsDeclaredLimits` — §3.1 and §3.2, two fields
+  that are never merged into one;
+- the derived reliability readings of §3.4.
 
-There is deliberately **no** `cellVerdict` field. A consumer that wants one
-must decide its own rule and say so; the artifacts will not pre-decide it.
+There is deliberately **no** `cellVerdict` field, and no reduction of the
+repetitions into a single score. A consumer that wants a yes/no must decide
+its own rule and say so; the artifacts will not pre-decide it. A future
+**decision rule** (§3.5) may name such a rule and publish its answer *beside*
+the distribution — it may never publish it *instead of* the distribution.
 This is the same discipline the parent design applies to infra failures: show
 the reader the real distribution and refuse to hide it behind one number.
 
-## 3. Spread, stability, and the untrustworthy flag
+## 3. Spread, stability, and the two reliability fields
 
 Two spread measures, chosen because they stay honest at N in the single
 digits:
@@ -165,11 +184,58 @@ digits:
 - **Verdict stability** = `modalVerdictCount / evaluableCount`, where
   `evaluable` excludes `indeterminate` per §4. `1.0` means unanimous.
 
-A Cell is **untrustworthy** when either declared limit is exceeded:
-`numericSpread > maxNumericSpread`, or `verdictStability < minVerdictStability`.
-An untrustworthy Cell publishes its full distribution and is **not** reported
-as a pass or a fail. It is not a third verdict about the Subject; it is a
-statement about the measurement.
+Two different statements can be made about a Cell's reliability, and they
+have different warrants. They therefore get **two fields, never one boolean**.
+A consumer branches on a boolean and does not read the reason string beside
+it, so a single `trustworthy` flag with a reason attached collapses back into
+one undifferentiated claim the moment anything consumes it.
+
+### 3.1 `evaluableEnough` — a structural fact
+
+`evaluableCount < minEvaluableRepetitions`, or no evaluable repetition at
+all. This is arithmetic on counts. It needs no calibration to be certain, and
+it is certain: one survivor of five repetitions is not a measurement,
+whatever the survivor said.
+
+A Cell that is not `evaluableEnough` publishes its full distribution and
+**must not be reported as a pass**. This is a hard reporting rule.
+
+It is also not a novelty. The industrial analogues are ordinary: insufficient
+`n`, an A/B test reported inconclusive, inspect_ai returning `NaN` when every
+sample is filtered out. What *is* deliberate is being stricter than
+inspect_ai, which returns `stderr = 0` from a single sample — perfect
+precision reported where nothing was measured. That refusal stays.
+
+### 3.2 `exceedsDeclaredLimits` — a threshold judgement
+
+`numericSpread > maxNumericSpread`, or
+`verdictStability < minVerdictStability`.
+
+This field is only ever as good as the limits it compares against, and no
+limit in this repository has been calibrated — §3's own rule is that no
+default may be supplied, because no live run has ever happened here. The
+field therefore carries the policy's calibration state with it, and while
+that state is `uncalibrated`:
+
+- it is **advisory metadata**;
+- it **must not** rewrite a Cell from a pass into "not a pass".
+
+Only calibrated limits, citing the run that produced them, may harden this
+into a reporting rule the way §3.1 already is.
+
+No framework in the comparison set — inspect_ai, terminal-bench, evals,
+vitest-evals, Maka — has a gate of this kind. That fact belongs next to this
+field and not next to §3.1: the structural half is common practice, the
+threshold half is this project's own invention, and an invention that has
+never been calibrated does not get to change a verdict.
+
+### 3.3 Why the split is load-bearing
+
+Before the split, a Cell with one evaluable repetition out of five reported
+`trustworthy = true` with perfect stability, because a single surviving
+repetition is trivially unanimous. Two statements — "we could barely measure
+this" and "what we measured agreed with itself" — shared one label, and the
+label showed the reassuring one.
 
 Both limits live in a new frozen `och.eval.variance-policy` document,
 following the `och.eval.judge-config` precedent exactly (`judge_config.go`):
@@ -197,6 +263,88 @@ that produced them.
 - A Cell whose Attempts disagree on any identity digest is a hard error,
   not a merge.
 
+### 3.4 Derived reliability readings
+
+These are arithmetic on counts the distribution already publishes. They are
+**not** a gate, **not** a reduction, and they need no calibrated threshold —
+which is the reason they are worth having in a policy that admits it is
+uncalibrated.
+
+Per Cell, at `evaluableCount ≥ 2`:
+
+- `c/n` — evaluable passes over evaluable repetitions, the raw counts;
+- **at least one passed** — the optimistic envelope;
+- **all passed** — the pessimistic reading, and the one this project actually
+  cares about. A harness asking whether it can be trusted unattended wants
+  the number that *falls* as repetitions grow, not the one that rises. This
+  is τ-bench's pass^k rather than a leaderboard's pass@k.
+
+Naming, because getting it wrong would make the first public comparison
+dishonest: a Cell-level "at least one of k attempts passed" is `at_least(1)`.
+It is **not** `pass@k`. Chen et al.'s `pass@k` is an unbiased dataset-level
+estimator, and inspect_ai's `pass_at(k)` is that estimator. At the sample
+sizes a nightly lane can afford here — single digits, often two — the
+estimator and the raw `c/n` are nearly the same fact, so the estimator is not
+implemented and the counts are published instead. A suite-level `pass@k`
+curve is terminal-bench's shape and waits for a suite large enough for the
+curve to mean anything.
+
+### 3.5 Named decision rules are deferred, not rejected
+
+The long-term shape is: the distribution is always published, and a consumer
+that needs a yes/no gets a **named decision rule** applied on top of it. That
+is a better default than inspect_ai's, whose `mean` reducer erases 4/5 unless
+the caller also asks for `collect` — this design inverts which one you have
+to ask for.
+
+The vocabulary matters. inspect_ai's *reducer* **replaces** the per-epoch
+view that metrics then see. A decision rule here is applied **on top of** the
+published distribution and never deletes the raw counts. Calling it a reducer
+would, over time, license exactly the replacement this document refuses.
+
+No such rule is built in this slice. No lane currently asks "did this Cell
+pass?", and the charter forbids pre-implementing an extension point with no
+real consumer (architecture design §92). `mean` and `median` stay rejected on
+their own merits. `at_least(k)` waits for the first consumer that needs a
+yes/no.
+
+### 3.6 The deterministic lane takes no variance policy
+
+This resolves the third open question below, and the answer is no.
+
+A fixture lane's run-to-run difference is a determinism defect, not noise, so
+the useful check there is Bazel's `--runs_per_test` shape — run it twice, the
+outcomes must match, report FLAKY — which needs none of `maxNumericSpread`,
+`minVerdictStability`, a policy document, a baseline, or a paired delta.
+Routing it through this mechanism would blur the distinction the document
+rests on, and would double the cost of a scheduled matrix that was moved off
+the pull-request path (#157) precisely because it was already too expensive
+there.
+
+Spread could not serve as that check's signal in any case. `NumericScore` is
+assigned in exactly three places — `internal/harness/eval/judge.go:233`,
+`judge.go:240`, and `judge_attempt.go:159` — and all three are judge paths.
+The deterministic scorer never produces a numeric score, so on a fixture lane
+`numericScores` is empty, `spread` is `0` by construction, and a rule reading
+"spread must be exactly 0" would pass unconditionally while proving nothing.
+A determinism check has to compare the two Outcomes and Scores itemwise.
+
+If such a check is wanted, it is a separate mechanism in a separate document,
+on the cheapest smoke set only.
+
+### 3.7 This mechanism ships dormant
+
+All sixteen checked-in EvalSets declare `repetitionCount: 1`, and the
+fail-closed rule above refuses any set that references a policy at `N = 1`.
+Nothing in this repository reaches this code, and this slice does not invent
+a configuration so that something would.
+
+That is stated here rather than papered over. The mutation tests prove the
+computation is correct; they are not a consumer in the sense §92 means, and
+calling them one would be a relabelling. The mechanism is merged as a tested
+library whose first configuration has not arrived. The first configuration
+that should reference a variance policy is the first live quality EvalSet.
+
 ## 4. Indeterminate repetitions
 
 `indeterminate` is an infrastructure or judgeability signal, not a quality
@@ -214,9 +362,10 @@ denied evidence has said nothing about the Subject.
   without showing both raw and filtered views" — to quality signals, rather
   than inventing a new convention beside it.
 - A Cell in which `evaluableCount` falls below a declared
-  `minEvaluableRepetitions` is untrustworthy for that reason, reported
-  distinctly from a spread breach. "Mostly unjudgeable" and "judged
-  inconsistently" are different problems and must not share a label.
+  `minEvaluableRepetitions` fails `evaluableEnough` (§3.1). "Mostly
+  unjudgeable" and "judged inconsistently" are different problems, they carry
+  different warrants, and §3 gives them separate fields rather than separate
+  reason strings on one shared label.
 
 ## 5. Baselines
 
@@ -277,8 +426,9 @@ look for it:
   document closes exactly one of the four. Implementing it does not make the
   other three closed, and no report may present a variance-checked signal as
   a GA-grade quality claim while any of them stands open.
-- An untrustworthy Cell may never be reported as a pass, in any lane, at any
-  maturity level.
+- A Cell that fails `evaluableEnough` (§3.1) may never be reported as a pass,
+  in any lane, at any maturity level. `exceedsDeclaredLimits` (§3.2) carries
+  no such power while the limits it compares against are uncalibrated.
 
 ## 7. Testing and acceptance
 
@@ -349,9 +499,6 @@ guards that already constrain this package.
 2. **Nightly repetition budget.** Every checked-in set uses
    `repetitionCount: 1`. A live Cell at N = 5 multiplies both cost and wall
    time by five. Is there a cost ceiling this policy must respect?
-3. **Does the deterministic lane get a variance policy at all?** Fixture runs
-   should be exactly reproducible, so any spread there is a defect rather
-   than noise. Treating `spread > 0` on a fixture lane as a hard failure
-   would be a genuinely useful determinism check, but it is a different
-   mechanism from the one specified here, and folding it in would blur the
-   distinction this document rests on.
+3. ~~**Does the deterministic lane get a variance policy at all?**~~
+   **Resolved 2026-09-05: no.** See §3.6, which also records that `spread`
+   could not have been that check's signal even if the answer had been yes.
