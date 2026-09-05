@@ -107,6 +107,7 @@ git commit -m "feat(tools): define guarded file mutation values"
 - Create: `internal/harness/adapters/workspacefs/version_other.go`
 - Modify: `internal/harness/adapters/workspacefs/fs_test.go`
 - Create: `internal/harness/adapters/workspacefs/mutation_test.go`
+- Create: `internal/harness/adapters/workspacefs/mutation_fault_test.go`
 - Modify: `internal/harness/application/pipeline.go`
 - Modify: `internal/harness/application/loop_test.go`
 
@@ -129,7 +130,7 @@ _, err = files.Write(ctx, abs, []byte("lost"), tools.MutationGuard{
 if !tools.IsCode(err, tools.CodeFSStaleVersion) { t.Fatalf("stale error = %v", err) }
 ```
 
-Add cases for guarded create, concurrent creator preservation, directories, invalid UTF-8, cancellation, jail escape, unique/missing/ambiguous/replace-all edit, guard-before-match, LF/CRLF, and mode preservation.
+Add cases for guarded create, concurrent creator preservation, directories, invalid UTF-8, cancellation, jail escape, unique/missing/ambiguous/replace-all edit, guard-before-match, LF/CRLF, mode preservation, and destination preservation when publication fails.
 
 - [ ] **Step 2: Prove the adapter tests are red**
 
@@ -159,9 +160,11 @@ Migrate `countingFS`, port tests, and all compile-time callers. Until Task 3, Ap
 
 - [ ] **Step 5: Implement literal edit and staged publication**
 
-Add a per-target lock registry to `FileSystem`. Under the lock, re-jail/re-identify, validate the guard, and for edit read at most `MaxEditFileBytes+1`, normalize CRLF for literal matching, enforce cardinality, replace, and restore the dominant newline.
+Add a per-target lock registry and a private `filePublisher` dependency to `FileSystem`; default the dependency to `osPublisher`. Under the lock, re-jail/re-identify, validate the guard, and for edit read at most `MaxEditFileBytes+1`, normalize CRLF for literal matching, enforce cardinality, replace, and restore the dominant newline.
 
-Create a private sibling staging directory with `0700`, an exclusive temp file with `0600`, write all bytes, sync, apply the prior mode (or `0600` for create), and close. Publish create via `os.Link` and replace via `os.Rename`. Best-effort sync the parent and remove staging. Any pre-publication error preserves the destination.
+Create a private sibling staging directory with `0700`, an exclusive temp file with `0600`, write all bytes, sync, apply the prior mode (or `0600` for create), and close. `osPublisher` publishes create via `os.Link` and replace via `os.Rename`. Best-effort sync the parent and remove staging. Any pre-publication error preserves the destination.
+
+In the in-package fault test, inject a `failingPublisher` after staged sync/close but before link/rename. Assert an existing destination remains byte-identical, a create destination remains absent, and staging residue is removed. This is a production-shaped I/O dependency, not a test-only hook in production code.
 
 - [ ] **Step 6: Verify focused behavior and cross-builds**
 
@@ -323,43 +326,21 @@ git add internal/harness/tools internal/harness/application internal/harness/pol
 git commit -m "feat(tools): add observed literal edit_file"
 ```
 
-### Task 5: Prove fault, concurrency, lifecycle, and bypass boundaries
+### Task 5: Prove concurrency, lifecycle, and bypass boundaries
 
 **Files:**
-- Create: `internal/harness/adapters/workspacefs/mutation_fault_test.go`
 - Create: `internal/harness/adapters/workspacefs/mutation_race_test.go`
 - Create: `internal/harness/application/file_mutation_scenario_test.go`
-- Modify: `internal/harness/adapters/workspacefs/mutation.go`
 
 **Interfaces:**
 - Consumes: complete guarded adapter and Application policy.
 - Produces: acceptance evidence for lost-update prevention and honest exclusions.
 
-- [ ] **Step 1: Write failing pre-publication fault tests**
-
-Add a private test seam:
-
-```go
-type mutationHooks struct { beforePublish func() error }
-```
-
-Inject failure after staged sync/close but before link/rename. Assert an existing destination remains byte-identical, a create destination remains absent, and staging residue is removed.
-
-- [ ] **Step 2: Prove fault tests are red**
-
-Run: `go test ./internal/harness/adapters/workspacefs -run TestMutationFault -count=1`
-
-Expected: FAIL because the hook is absent.
-
-- [ ] **Step 3: Implement the private hook and cleanup**
-
-Invoke it exactly once before publication. Install deferred descriptor close and staging cleanup before writing begins. Keep the hook unexported and nil in production.
-
-- [ ] **Step 4: Add concurrency/lifecycle scenarios**
+- [ ] **Step 1: Add concurrency/lifecycle scenarios**
 
 Prove: two writers with one observed version yield one success/one stale; two unseen creators yield one success/one not-observed; Sessions cannot share observations; an ordinary next Turn retains observation; a newly constructed Service over the same durable Session starts unseen; Resume/Close/Delete clear state; an `exec` fixture can modify the file and the following structured edit detects stale without claiming exec mediation.
 
-- [ ] **Step 5: Run race and repetition matrices**
+- [ ] **Step 2: Run race and repetition matrices**
 
 ```bash
 go test -race ./internal/harness/adapters/workspacefs ./internal/harness/application -run 'Test.*(Mutation|Observation|Stale|Concurrent|Resume)' -count=10
@@ -368,15 +349,15 @@ go test ./internal/harness/tools ./internal/harness/adapters/workspacefs ./inter
 
 Expected: PASS with no race report or partial destination.
 
-- [ ] **Step 6: Run two mutation checks**
+- [ ] **Step 3: Run two mutation checks**
 
-Temporarily invert stale-version equality; the stale/concurrent matrix must fail. Restore. Temporarily bypass unique-match cardinality; edit tests must fail. Restore and rerun Step 5. Record the exact failing test names for Task 6; commit neither mutant.
+Temporarily invert stale-version equality; the stale/concurrent matrix must fail. Restore. Temporarily bypass unique-match cardinality; edit tests must fail. Restore and rerun Step 2. Record the exact failing test names for Task 6; commit neither mutant.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add internal/harness/adapters/workspacefs/mutation.go internal/harness/adapters/workspacefs/mutation_fault_test.go internal/harness/adapters/workspacefs/mutation_race_test.go internal/harness/application/file_mutation_scenario_test.go
-git commit -m "test(files): prove stale-write and atomic-publication boundaries"
+git add internal/harness/adapters/workspacefs/mutation_race_test.go internal/harness/application/file_mutation_scenario_test.go
+git commit -m "test(files): prove stale-write concurrency boundaries"
 ```
 
 ### Task 6: Publish contract and evidence, then run the full gate
