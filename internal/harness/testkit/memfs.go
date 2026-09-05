@@ -1,13 +1,16 @@
 package testkit
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"io/fs"
 	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
 )
@@ -16,6 +19,7 @@ type memNode struct {
 	dir     bool
 	data    []byte
 	symlink string
+	version tools.FileVersion
 }
 
 // MemFS is an in-memory FileSystem. It models symlink children so List can
@@ -24,6 +28,7 @@ type MemFS struct {
 	mu        sync.Mutex
 	workspace string
 	nodes     map[string]*memNode
+	sequence  uint64
 }
 
 func NewMemFS(workspace string) *MemFS {
@@ -44,7 +49,7 @@ func (mem *MemFS) AddFile(rel string, data []byte) {
 	defer mem.mu.Unlock()
 	abs := mem.joinLocked(rel)
 	mem.ensureDirLocked(path.Dir(abs))
-	mem.nodes[abs] = &memNode{data: append([]byte(nil), data...)}
+	mem.nodes[abs] = &memNode{data: append([]byte(nil), data...), version: mem.nextVersionLocked()}
 }
 
 func (mem *MemFS) AddDir(rel string) {
@@ -71,49 +76,154 @@ func (mem *MemFS) Resolve(_ context.Context, workspace, requested string) (strin
 	return abs, nil
 }
 
-func (mem *MemFS) Read(_ context.Context, abs string, limit int) ([]byte, bool, error) {
+func (mem *MemFS) Read(ctx context.Context, abs string, limit int) (tools.FileRead, error) {
 	mem.mu.Lock()
 	defer mem.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return tools.FileRead{}, err
+	}
 	if limit < 0 {
-		return nil, false, fs.ErrInvalid
+		return tools.FileRead{}, fs.ErrInvalid
 	}
 	final, err := mem.followLocked(abs)
 	if err != nil {
-		return nil, false, err
+		return tools.FileRead{}, err
 	}
 	if !mem.insideLocked(final) {
-		return nil, false, tools.ErrOutOfScope
+		return tools.FileRead{}, tools.ErrOutOfScope
 	}
 	node, ok := mem.nodes[final]
 	if !ok {
-		return nil, false, fs.ErrNotExist
+		return tools.FileRead{}, fs.ErrNotExist
 	}
 	if node.dir {
-		return nil, false, fs.ErrInvalid
+		return tools.FileRead{}, &tools.Error{Code: tools.CodeFilesystemIsDirectory}
 	}
-	data := append([]byte(nil), node.data...)
-	if limit == 0 {
-		return []byte{}, len(data) > 0, nil
+	data := node.data
+	truncated := len(data) > limit
+	if truncated {
+		data = data[:limit+1]
 	}
-	if len(data) > limit {
-		return data[:limit], true, nil
+	end := 0
+	for offset := 0; offset < len(data); {
+		if truncated && len(data) < len(node.data) && !utf8.FullRune(data[offset:]) {
+			break
+		}
+		r, n := utf8.DecodeRune(data[offset:])
+		if r == utf8.RuneError && n == 1 {
+			return tools.FileRead{}, &tools.Error{Code: tools.CodeFilesystemNotText}
+		}
+		offset += n
+		if offset <= limit {
+			end = offset
+		}
 	}
-	return data, false, nil
+	return tools.FileRead{Data: append([]byte(nil), data[:end]...), Truncated: truncated, Version: node.version}, nil
 }
 
-func (mem *MemFS) Write(_ context.Context, abs string, data []byte) error {
+func (mem *MemFS) Write(ctx context.Context, abs string, data []byte, guard tools.MutationGuard) (tools.MutationResult, error) {
 	mem.mu.Lock()
 	defer mem.mu.Unlock()
-	abs = cleanSlash(abs)
-	if !mem.insideLocked(abs) {
-		return tools.ErrOutOfScope
+	if err := ctx.Err(); err != nil {
+		return tools.MutationResult{}, err
 	}
-	parent := path.Dir(abs)
+	final, _, err := mem.mutationTargetLocked(abs, guard)
+	if err != nil {
+		return tools.MutationResult{}, err
+	}
+	if !utf8.Valid(data) {
+		return tools.MutationResult{}, &tools.Error{Code: tools.CodeFilesystemNotText}
+	}
+	return mem.publishLocked(final, data, guard), nil
+}
+
+func (mem *MemFS) Edit(ctx context.Context, abs string, old, replacement []byte, replaceAll bool, guard tools.MutationGuard) (tools.MutationResult, error) {
+	mem.mu.Lock()
+	defer mem.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return tools.MutationResult{}, err
+	}
+	if guard.Kind != tools.GuardReplaceIfVersion || len(old) == 0 {
+		return tools.MutationResult{}, &tools.Error{Code: tools.CodeInvalidArgs}
+	}
+	final, node, err := mem.mutationTargetLocked(abs, guard)
+	if err != nil {
+		return tools.MutationResult{}, err
+	}
+	if !utf8.Valid(old) || !utf8.Valid(replacement) {
+		return tools.MutationResult{}, &tools.Error{Code: tools.CodeFilesystemNotText}
+	}
+	if len(node.data) > tools.MaxEditFileBytes {
+		return tools.MutationResult{}, &tools.Error{Code: tools.CodeFilesystemTooLarge}
+	}
+	if !utf8.Valid(node.data) {
+		return tools.MutationResult{}, &tools.Error{Code: tools.CodeFilesystemNotText}
+	}
+	crlf := bytes.Count(node.data, []byte("\r\n"))
+	lf := bytes.Count(node.data, []byte("\n")) - crlf
+	data := bytes.ReplaceAll(node.data, []byte("\r\n"), []byte("\n"))
+	old = bytes.ReplaceAll(old, []byte("\r\n"), []byte("\n"))
+	replacement = bytes.ReplaceAll(replacement, []byte("\r\n"), []byte("\n"))
+	count := bytes.Count(data, old)
+	if count == 0 {
+		return tools.MutationResult{}, &tools.Error{Code: tools.CodeEditNoMatch}
+	}
+	if count > 1 && !replaceAll {
+		return tools.MutationResult{}, &tools.Error{Code: tools.CodeEditAmbiguous}
+	}
+	n := 1
+	if replaceAll {
+		n = -1
+	}
+	data = bytes.Replace(data, old, replacement, n)
+	if crlf > lf {
+		data = bytes.ReplaceAll(data, []byte("\n"), []byte("\r\n"))
+	}
+	return mem.publishLocked(final, data, guard), nil
+}
+
+func (mem *MemFS) mutationTargetLocked(abs string, guard tools.MutationGuard) (string, *memNode, error) {
+	if err := guard.Validate(); err != nil {
+		return "", nil, err
+	}
+	final, err := mem.followLocked(abs)
+	if err != nil {
+		return "", nil, err
+	}
+	if !mem.insideLocked(final) {
+		return "", nil, tools.ErrOutOfScope
+	}
+	node := mem.nodes[final]
+	if node != nil && node.dir {
+		return "", nil, &tools.Error{Code: tools.CodeFilesystemIsDirectory}
+	}
+	if guard.Kind == tools.GuardCreateIfAbsent {
+		if node != nil {
+			return "", nil, fs.ErrExist
+		}
+	} else if node == nil || node.version != guard.Version {
+		return "", nil, &tools.Error{Code: tools.CodeFilesystemStaleVersion}
+	}
+	parent := path.Dir(final)
 	if parentNode, ok := mem.nodes[parent]; !ok || !parentNode.dir {
-		return fs.ErrNotExist
+		return "", nil, fs.ErrNotExist
 	}
-	mem.nodes[abs] = &memNode{data: append([]byte(nil), data...)}
-	return nil
+	return final, node, nil
+}
+
+func (mem *MemFS) publishLocked(abs string, data []byte, guard tools.MutationGuard) tools.MutationResult {
+	version := mem.nextVersionLocked()
+	mem.nodes[abs] = &memNode{data: append([]byte(nil), data...), version: version}
+	operation := tools.MutationUpdate
+	if guard.Kind == tools.GuardCreateIfAbsent {
+		operation = tools.MutationCreate
+	}
+	return tools.MutationResult{Version: version, Operation: operation}
+}
+
+func (mem *MemFS) nextVersionLocked() tools.FileVersion {
+	mem.sequence++
+	return tools.FileVersion(fmt.Sprintf("mem:%d", mem.sequence))
 }
 
 func (mem *MemFS) List(_ context.Context, abs string, depth, limit int) ([]string, bool, error) {

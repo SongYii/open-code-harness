@@ -11,8 +11,9 @@ import (
 // Resolve is a scope probe and must not create, truncate, or write.
 type FileSystem interface {
 	Resolve(ctx context.Context, workspace, requested string) (abs string, err error)
-	Read(ctx context.Context, abs string, limit int) (data []byte, truncated bool, err error)
-	Write(ctx context.Context, abs string, data []byte) error
+	Read(ctx context.Context, abs string, limit int) (FileRead, error)
+	Write(ctx context.Context, abs string, data []byte, guard MutationGuard) (MutationResult, error)
+	Edit(ctx context.Context, abs string, old, replacement []byte, replaceAll bool, guard MutationGuard) (MutationResult, error)
 	List(ctx context.Context, abs string, depth, limit int) (names []string, truncated bool, err error)
 }
 

@@ -2,6 +2,9 @@ package workspacefs
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"io"
 	"io/fs"
@@ -9,13 +12,18 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"unicode/utf8"
 
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
 )
 
 // FileSystem is a host-backed workspace jail. Tests must use t.TempDir().
 type FileSystem struct {
-	root string
+	root      string
+	mu        sync.Mutex
+	locks     map[string]*targetLock
+	publisher filePublisher
 }
 
 var errInvalidRoot = errors.New("workspacefs: invalid workspace root")
@@ -36,7 +44,7 @@ func New(root string) (*FileSystem, error) {
 	if err != nil || !info.IsDir() {
 		return nil, errInvalidRoot
 	}
-	return &FileSystem{root: real}, nil
+	return &FileSystem{root: real, locks: make(map[string]*targetLock), publisher: osPublisher{}}, nil
 }
 
 func (files *FileSystem) Resolve(ctx context.Context, workspace, requested string) (string, error) {
@@ -65,68 +73,113 @@ func (files *FileSystem) Resolve(ctx context.Context, workspace, requested strin
 	return resolved, nil
 }
 
-func (files *FileSystem) Read(ctx context.Context, abs string, limit int) ([]byte, bool, error) {
+func (files *FileSystem) Read(ctx context.Context, abs string, limit int) (tools.FileRead, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, false, err
+		return tools.FileRead{}, err
 	}
 	if limit < 0 {
-		return nil, false, fs.ErrInvalid
+		return tools.FileRead{}, fs.ErrInvalid
 	}
 	resolved, err := files.jail(abs)
 	if err != nil {
-		return nil, false, err
+		return tools.FileRead{}, err
 	}
-	info, err := os.Lstat(resolved)
+	file, info, err := files.openRegular(resolved)
 	if err != nil {
-		return nil, false, err
-	}
-	if info.IsDir() {
-		return nil, false, fs.ErrInvalid
-	}
-	file, err := os.Open(resolved)
-	if err != nil {
-		return nil, false, err
+		return tools.FileRead{}, err
 	}
 	defer file.Close()
-	if limit == 0 {
-		var probe [1]byte
-		n, readErr := file.Read(probe[:])
-		if readErr != nil && !errors.Is(readErr, io.EOF) {
-			return nil, false, readErr
-		}
-		return []byte{}, n > 0, nil
-	}
-	buf := make([]byte, limit+1)
-	n, readErr := io.ReadFull(file, buf)
-	if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
-		return nil, false, readErr
-	}
-	if n > limit {
-		return buf[:limit], true, nil
-	}
-	return buf[:n], false, nil
+	return readDescriptor(ctx, file, info, limit)
 }
 
-func (files *FileSystem) Write(ctx context.Context, abs string, data []byte) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	resolved, err := files.jail(abs)
+// openRegular checks the opened descriptor against the jailed path identity.
+func (files *FileSystem) openRegular(abs string) (*os.File, os.FileInfo, error) {
+	info, err := os.Lstat(abs)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	if info, statErr := os.Lstat(resolved); statErr == nil && info.IsDir() {
+	if err := regularError(info); err != nil {
+		return nil, nil, err
+	}
+	file, err := os.Open(abs)
+	if err != nil {
+		return nil, nil, err
+	}
+	opened, err := file.Stat()
+	if err == nil {
+		err = regularError(opened)
+	}
+	if err == nil && !os.SameFile(info, opened) {
+		err = staleError()
+	}
+	resolved, jailErr := files.jail(abs)
+	if err == nil && jailErr != nil {
+		err = jailErr
+	}
+	if err == nil && resolved != abs {
+		err = tools.ErrOutOfScope
+	}
+	if err != nil {
+		file.Close()
+		return nil, nil, err
+	}
+	return file, opened, nil
+}
+
+func regularError(info os.FileInfo) error {
+	if info.IsDir() {
+		return &tools.Error{Code: tools.CodeFilesystemIsDirectory}
+	}
+	if !info.Mode().IsRegular() {
 		return fs.ErrInvalid
 	}
-	file, err := os.OpenFile(resolved, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	return nil
+}
+
+func readDescriptor(ctx context.Context, file *os.File, before os.FileInfo, limit int) (tools.FileRead, error) {
+	data, err := io.ReadAll(io.LimitReader(file, int64(limit)+1))
 	if err != nil {
-		return err
+		return tools.FileRead{}, err
 	}
-	if _, err := file.Write(data); err != nil {
-		file.Close()
-		return err
+	after, err := file.Stat()
+	if err != nil {
+		return tools.FileRead{}, err
 	}
-	return file.Close()
+	if err := ctx.Err(); err != nil {
+		return tools.FileRead{}, err
+	}
+	version := versionOf(before)
+	if version != versionOf(after) {
+		return tools.FileRead{}, staleError()
+	}
+	truncated := len(data) > limit
+	// A bounded read can end inside a valid UTF-8 rune. Validate every complete
+	// rune and return only complete runes within the requested byte limit.
+	end := 0
+	for offset := 0; offset < len(data); {
+		if truncated && int64(len(data)) < before.Size() && !utf8.FullRune(data[offset:]) {
+			break
+		}
+		r, n := utf8.DecodeRune(data[offset:])
+		if r == utf8.RuneError && n == 1 {
+			return tools.FileRead{}, &tools.Error{Code: tools.CodeFilesystemNotText}
+		}
+		offset += n
+		if offset <= limit {
+			end = offset
+		}
+	}
+	return tools.FileRead{Data: data[:end], Truncated: truncated, Version: version}, nil
+}
+
+func versionOf(info os.FileInfo) tools.FileVersion {
+	fields := versionFields(info)
+	encoded := make([]byte, len(fields)*8)
+	for i, field := range fields {
+		binary.BigEndian.PutUint64(encoded[i*8:], field)
+	}
+	sum := sha256.Sum256(encoded)
+	return tools.FileVersion("sha256:" + hex.EncodeToString(sum[:]))
 }
 
 func (files *FileSystem) List(ctx context.Context, abs string, depth, limit int) ([]string, bool, error) {

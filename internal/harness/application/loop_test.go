@@ -788,6 +788,33 @@ func TestModeAllowWritesExecutesWrite(t *testing.T) {
 	}
 }
 
+func TestModeAllowWritesRefusesExistingTarget(t *testing.T) {
+	fs := testkit.NewMemFS("/workspace")
+	fs.AddFile("out.txt", []byte("keep"))
+	model := newSequenceModel(
+		[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "call-1", Name: tools.NameWriteFile, Arguments: `{"path":"out.txt","content":"lost"}`}}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "continued"}, {Type: engine.StreamEventCompleted}},
+	)
+	config := application.DefaultConfig()
+	config.PolicyMode = policy.ModeAllowWrites
+	service, _ := newToolService(t, model, fs, nil, nil, config)
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-refuse-overwrite", Input: "write", Sink: &testkit.RecordingSink{}})
+	if err != nil || result.Text != "continued" {
+		t.Fatal(result, err)
+	}
+	if countEventType(result.Records, domain.EventToolCallFailed) != 1 {
+		t.Fatalf("events = %v", turnEventTypes(result.Records))
+	}
+	read, err := fs.Read(context.Background(), "/workspace/out.txt", 64)
+	if err != nil || string(read.Data) != "keep" {
+		t.Fatal(read, err)
+	}
+}
+
 func TestTableA2UnknownStartedDoesNotExecute(t *testing.T) {
 	fs := testkit.NewMemFS("/workspace")
 	fs.AddFile("README.md", []byte("hello"))
@@ -1188,17 +1215,17 @@ func (fs *countingFS) Resolve(ctx context.Context, workspace, requested string) 
 	fs.mu.Unlock()
 	return fs.FileSystem.Resolve(ctx, workspace, requested)
 }
-func (fs *countingFS) Read(ctx context.Context, abs string, limit int) ([]byte, bool, error) {
+func (fs *countingFS) Read(ctx context.Context, abs string, limit int) (tools.FileRead, error) {
 	fs.mu.Lock()
 	fs.reads++
 	fs.mu.Unlock()
 	return fs.FileSystem.Read(ctx, abs, limit)
 }
-func (fs *countingFS) Write(ctx context.Context, abs string, data []byte) error {
+func (fs *countingFS) Write(ctx context.Context, abs string, data []byte, guard tools.MutationGuard) (tools.MutationResult, error) {
 	fs.mu.Lock()
 	fs.writes++
 	fs.mu.Unlock()
-	return fs.FileSystem.Write(ctx, abs, data)
+	return fs.FileSystem.Write(ctx, abs, data, guard)
 }
 func (fs *countingFS) List(ctx context.Context, abs string, depth, limit int) ([]string, bool, error) {
 	fs.mu.Lock()
@@ -1216,10 +1243,10 @@ type blockingFS struct {
 	once    sync.Once
 }
 
-func (fs *blockingFS) Read(ctx context.Context, abs string, limit int) ([]byte, bool, error) {
+func (fs *blockingFS) Read(ctx context.Context, abs string, limit int) (tools.FileRead, error) {
 	fs.once.Do(func() { close(fs.entered) })
 	<-ctx.Done()
-	return nil, false, ctx.Err()
+	return tools.FileRead{}, ctx.Err()
 }
 
 func scriptedToolIdentity() engine.RequestIdentity {

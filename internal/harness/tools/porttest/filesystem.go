@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
@@ -17,6 +18,79 @@ func SeedListTree(put func(rel string, data []byte)) {
 	put("README.md", []byte("hi"))
 	put("src/foo.go", []byte("package src"))
 	put("src/nested/bar.go", []byte("package nested"))
+}
+
+// FileSystemGuardedMutation exercises guards and edits through the final port.
+func FileSystemGuardedMutation(t *testing.T, files tools.FileSystem, workspace string, put func(string, []byte)) {
+	t.Helper()
+	ctx := context.Background()
+	abs, err := files.Resolve(ctx, workspace, "edit.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := files.Write(ctx, abs, []byte("a\r\na\r\n"), tools.MutationGuard{Kind: tools.GuardCreateIfAbsent})
+	if err != nil || created.Operation != tools.MutationCreate || created.Version == "" {
+		t.Fatal(created, err)
+	}
+	if _, err := files.Write(ctx, abs, []byte("lost"), tools.MutationGuard{Kind: tools.GuardCreateIfAbsent}); !errors.Is(err, fs.ErrExist) {
+		t.Fatal(err)
+	}
+	guard := tools.MutationGuard{Kind: tools.GuardReplaceIfVersion, Version: created.Version}
+	if _, err := files.Edit(ctx, abs, []byte("missing"), []byte("x"), false, guard); !tools.IsCode(err, tools.CodeEditNoMatch) {
+		t.Fatal(err)
+	}
+	if _, err := files.Edit(ctx, abs, []byte("a"), []byte("x"), false, guard); !tools.IsCode(err, tools.CodeEditAmbiguous) {
+		t.Fatal(err)
+	}
+	result, err := files.Edit(ctx, abs, []byte("a\n"), []byte("b\n"), true, guard)
+	if err != nil || result.Version == guard.Version || result.Operation != tools.MutationUpdate {
+		t.Fatal(result, err)
+	}
+	read, err := files.Read(ctx, abs, 64)
+	if err != nil || string(read.Data) != "b\r\nb\r\n" || read.Version != result.Version {
+		t.Fatal(read, err)
+	}
+	if _, err := files.Edit(ctx, abs, []byte("missing"), []byte("x"), false, guard); !tools.IsCode(err, tools.CodeFilesystemStaleVersion) {
+		t.Fatal(err)
+	}
+	guard.Version = read.Version
+	put("edit.txt", []byte("b\r\nb\r\n"))
+	if _, err := files.Write(ctx, abs, []byte("lost"), guard); !tools.IsCode(err, tools.CodeFilesystemStaleVersion) {
+		t.Fatal(err)
+	}
+	put("edit.txt", []byte{0xff})
+	if _, err := files.Read(ctx, abs, 64); !tools.IsCode(err, tools.CodeFilesystemNotText) {
+		t.Fatal(err)
+	}
+	put("edit.txt", []byte("a\xe2"))
+	if _, err := files.Read(ctx, abs, 1); !tools.IsCode(err, tools.CodeFilesystemNotText) {
+		t.Fatalf("incomplete rune at EOF: %v", err)
+	}
+	put("edit.txt", []byte("a🙂z"))
+	read, err = files.Read(ctx, abs, 2)
+	if err != nil || !read.Truncated || string(read.Data) != "a" {
+		t.Fatalf("split rune: %#v, %v", read, err)
+	}
+	put("edit.txt", []byte(strings.Repeat("x", tools.MaxEditFileBytes+1)))
+	read, err = files.Read(ctx, abs, 8)
+	if err != nil || !read.Truncated {
+		t.Fatal(read, err)
+	}
+	guard.Version = read.Version
+	if _, err := files.Edit(ctx, abs, []byte("x"), []byte("y"), true, guard); !tools.IsCode(err, tools.CodeFilesystemTooLarge) {
+		t.Fatal(err)
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := files.Read(canceled, abs, 8); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if _, err := files.Write(canceled, abs, []byte("lost"), guard); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if _, err := files.Edit(canceled, abs, []byte("x"), []byte("y"), true, guard); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
 }
 
 // FileSystemListDepthAndCap pins depth 1 vs 2 and the 256-entry cap.
@@ -77,38 +151,35 @@ func FileSystemReadWriteJail(t *testing.T, files tools.FileSystem, workspace str
 	if err != nil {
 		t.Fatalf("Resolve(note.txt) = %v", err)
 	}
-	if err := files.Write(ctx, abs, []byte("hello")); err != nil {
+	if _, err := files.Write(ctx, abs, []byte("hello"), tools.MutationGuard{Kind: tools.GuardCreateIfAbsent}); err != nil {
 		t.Fatal(err)
 	}
-	data, truncated, err := files.Read(ctx, abs, 64)
-	if err != nil || truncated || string(data) != "hello" {
-		t.Fatalf("Read() = %q truncated=%t err=%v", data, truncated, err)
+	read, err := files.Read(ctx, abs, 64)
+	if err != nil || read.Truncated || string(read.Data) != "hello" || read.Version == "" {
+		t.Fatalf("Read() = %#v err=%v", read, err)
 	}
-	data, truncated, err = files.Read(ctx, abs, 2)
-	if err != nil || !truncated || string(data) != "he" {
-		t.Fatalf("Read(limit=2) = %q truncated=%t err=%v", data, truncated, err)
+	version := read.Version
+	read, err = files.Read(ctx, abs, 2)
+	if err != nil || !read.Truncated || string(read.Data) != "he" || read.Version != version {
+		t.Fatalf("Read(limit=2) = %#v err=%v", read, err)
 	}
-	data, truncated, err = files.Read(ctx, abs, 0)
-	if err != nil || !truncated || len(data) != 0 {
-		t.Fatalf("Read(limit=0) = %q truncated=%t err=%v", data, truncated, err)
+	read, err = files.Read(ctx, abs, 0)
+	if err != nil || !read.Truncated || len(read.Data) != 0 {
+		t.Fatalf("Read(limit=0) = %#v err=%v", read, err)
 	}
-	if _, _, err := files.Read(ctx, abs, -1); err == nil {
+	if _, err := files.Read(ctx, abs, -1); err == nil {
 		t.Fatal("Read(limit=-1): expected error")
 	}
 
 	raw := []byte{0xff, 0xfe, 'x'}
-	if err := files.Write(ctx, abs, raw); err != nil {
-		t.Fatal(err)
-	}
-	data, truncated, err = files.Read(ctx, abs, 64)
-	if err != nil || truncated || !reflect.DeepEqual(data, raw) {
-		t.Fatalf("Read(invalid UTF-8) = %q truncated=%t err=%v", data, truncated, err)
+	if _, err := files.Write(ctx, abs, raw, tools.MutationGuard{Kind: tools.GuardReplaceIfVersion, Version: version}); !tools.IsCode(err, tools.CodeFilesystemNotText) {
+		t.Fatalf("Write(invalid UTF-8) error=%v", err)
 	}
 
-	if err := files.Write(ctx, "/etc/passwd", []byte("no")); err != tools.ErrOutOfScope && !tools.IsCode(err, tools.CodeScopeDenied) {
+	if _, err := files.Write(ctx, "/etc/passwd", []byte("no"), tools.MutationGuard{Kind: tools.GuardCreateIfAbsent}); err != tools.ErrOutOfScope && !tools.IsCode(err, tools.CodeScopeDenied) {
 		t.Fatalf("Write outside error = %v", err)
 	}
-	if _, _, err := files.Read(ctx, "/etc/passwd", 8); err != tools.ErrOutOfScope && !tools.IsCode(err, tools.CodeScopeDenied) {
+	if _, err := files.Read(ctx, "/etc/passwd", 8); err != tools.ErrOutOfScope && !tools.IsCode(err, tools.CodeScopeDenied) {
 		t.Fatalf("Read outside error = %v", err)
 	}
 
@@ -116,7 +187,7 @@ func FileSystemReadWriteJail(t *testing.T, files tools.FileSystem, workspace str
 	if err != nil {
 		t.Fatalf("Resolve(missing) = %v", err)
 	}
-	if _, _, err := files.Read(ctx, missing, 8); !errors.Is(err, fs.ErrNotExist) {
+	if _, err := files.Read(ctx, missing, 8); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("missing Read error = %v", err)
 	}
 }

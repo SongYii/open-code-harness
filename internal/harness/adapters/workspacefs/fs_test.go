@@ -27,6 +27,11 @@ func TestReadWriteJail(t *testing.T) {
 	porttest.FileSystemReadWriteJail(t, files, root)
 }
 
+func TestGuardedMutationPort(t *testing.T) {
+	files, root := newTestFS(t)
+	porttest.FileSystemGuardedMutation(t, files, root, func(rel string, data []byte) { writeRel(t, root, rel, data) })
+}
+
 func TestResolveSymlinkEscapeDoesNotReadOrWrite(t *testing.T) {
 	files, root := newTestFS(t)
 	outsideDir := t.TempDir()
@@ -132,10 +137,10 @@ func TestCanceledContext(t *testing.T) {
 	if _, err := files.Resolve(ctx, root, "x"); err == nil {
 		t.Fatal("Resolve: expected canceled")
 	}
-	if _, _, err := files.Read(ctx, root, 8); err == nil {
+	if _, err := files.Read(ctx, root, 8); err == nil {
 		t.Fatal("Read: expected canceled")
 	}
-	if err := files.Write(ctx, filepath.Join(root, "x"), []byte("x")); err == nil {
+	if _, err := files.Write(ctx, filepath.Join(root, "x"), []byte("x"), tools.MutationGuard{Kind: tools.GuardCreateIfAbsent}); err == nil {
 		t.Fatal("Write: expected canceled")
 	}
 	if _, _, err := files.List(ctx, root, 1, 8); err == nil {

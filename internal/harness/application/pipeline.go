@@ -233,20 +233,20 @@ func (service *Service) runToolBody(ctx context.Context, owned *ownedTurn, spec 
 func (service *Service) invokeTool(ctx context.Context, spec domain.ToolSpec, args toolArgs, resolved string) (string, bool, string, string, error) {
 	switch spec.Name {
 	case tools.NameReadFile:
-		data, truncated, err := service.files.Read(ctx, resolved, MaxToolResultBytes)
+		read, err := service.files.Read(ctx, resolved, MaxToolResultBytes)
 		if err != nil {
 			return "", false, "", "", err
 		}
-		if !utf8.Valid(data) {
+		if !utf8.Valid(read.Data) {
 			return "", false, CodeInvalidArgs, ToolTextInvalidArgs, nil
 		}
-		text := string(data)
-		if truncated {
+		text := string(read.Data)
+		if read.Truncated {
 			return appendTruncation(text), true, "", "", nil
 		}
 		return text, false, "", "", nil
 	case tools.NameWriteFile:
-		if err := service.files.Write(ctx, resolved, []byte(args.Content)); err != nil {
+		if _, err := service.files.Write(ctx, resolved, []byte(args.Content), tools.MutationGuard{Kind: tools.GuardCreateIfAbsent}); err != nil {
 			return "", false, "", "", err
 		}
 		return fmt.Sprintf("wrote %d bytes", len(args.Content)), false, "", "", nil

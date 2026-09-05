@@ -48,7 +48,12 @@ func TestMemFSReadWriteResolve(t *testing.T) {
 		t.Fatalf("Resolve new file = %q, %v", abs, err)
 	}
 	porttest.FileSystemReadWriteJail(t, mem, "/workspace")
-	if _, _, err := mem.Read(context.Background(), "/workspace/missing", 8); err != fs.ErrNotExist {
+	if _, err := mem.Read(context.Background(), "/workspace/missing", 8); err != fs.ErrNotExist {
 		t.Fatalf("missing Read error = %v", err)
 	}
+}
+
+func TestMemFSGuardedMutation(t *testing.T) {
+	mem := testkit.NewMemFS("/workspace")
+	porttest.FileSystemGuardedMutation(t, mem, "/workspace", mem.AddFile)
 }
