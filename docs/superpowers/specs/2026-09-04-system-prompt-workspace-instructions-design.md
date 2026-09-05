@@ -1,6 +1,6 @@
 # Versioned System Prompt and Append-Only Workspace Instructions Design
 
-**Status:** Draft for written review; architecture accepted in conversation on 2026-09-04
+**Status:** Accepted on 2026-09-05
 
 **Date:** 2026-09-04
 
