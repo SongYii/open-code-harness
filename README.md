@@ -123,7 +123,30 @@ The numbered milestone list lives in
   [Context Engine contract](docs/architecture/context-engine.md) and its
   [evidence ledger](docs/architecture/context-engine-evidence.md).
 
-TUI, MCP, and OpenTelemetry are not yet implemented. Evaluation
+- MCP client adapter (`internal/harness/adapters/mcp`, wired through
+  `composition` and `application`): implemented and verified; not GA.
+  External tools discovered from configured stdio MCP servers are projected
+  into this project's own `domain.ToolSpec` and registered in the **same**
+  `tools.Catalog` as the four builtins, so they flow through the same Policy
+  table, Approver slot, and audit trail rather than a second mechanism. The
+  wire protocol is the official `modelcontextprotocol/go-sdk`, pinned to an
+  exact version — deliberately the opposite choice from ACP, whose framing
+  this project owns three times over, because the MCP specification has
+  shipped five schema revisions with a live backward-incompatible split
+  (charter §12.1). Each server runs under the same bwrap/Seatbelt confinement
+  the `exec` tool uses, reached through a port the adapter declares and
+  composition fills, since the adapter may not import a sibling adapter.
+  Every discovered tool is classified `RiskExec` unconditionally, never from
+  the server's own hints. Discovery is bounded (256 tools, 64 KiB per
+  definition); an untrusted raw tool name is qualified injectively; schema
+  validation degrades rather than dropping a tool, because this project's
+  builtin-shaped compiler rejects most published MCP schemas; startup fails
+  closed on an unreachable or duplicate-named server; and teardown escalates
+  to the process group and proves it is gone. See the
+  [MCP client adapter contract](docs/architecture/mcp-client.md) and its
+  [evidence ledger](docs/architecture/mcp-client-evidence.md).
+
+TUI and OpenTelemetry are not yet implemented. Evaluation
 (`internal/harness/eval`, `cmd/och-eval`) is implemented but not GA: frozen
 Scenario/Subject/Executor identity, append-only Attempt/Outcome/Evidence
 Manifest/Score documents, both the in-process and real `och -acp` subprocess
