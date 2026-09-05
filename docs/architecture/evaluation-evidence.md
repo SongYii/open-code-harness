@@ -87,7 +87,9 @@ description at the time:
   ACP-executor pairing for this specific suite — the Context mechanism suite
   needs empirically-tuned token budgets against the real Context Engine
   trigger math, deliberately not guessed at under this milestone's own time
-  budget.
+  budget. That deferral has since been closed: the suite landed with ten
+  Scenarios, each paired with the ACP executor. This bullet records the state
+  at the time of Task 16, not the current one.
 - **Task 17** is now complete through `och-eval judge`: the frozen
   `och.eval.judge-config` document, its EvalSet/manifest binding,
   consent-before-credential ordering, deterministic prerequisites, the real
@@ -156,8 +158,77 @@ Two Scenario-shaped facts were also found only by running:
 - Both CI lanes are wired: one representative Context Cell in ordinary PR CI
   (`pr-context.json`, still exactly four Cells total) and every paired set
   plus ACP recovery in the scheduled lane, with the scan regression and its
-  benchmarks guarded against removal.
+  benchmarks guarded against removal. As landed in `10190a2` the two lanes
+  were not actually separated; see the section below.
 - No claim is made about a crash during an open compaction bracket.
+
+## Context suite: the scheduled lane was never isolated
+
+Recorded as its own finding because it is the exact failure mode this
+repository's executable-documentation rules exist for, reappearing one layer
+down — in CI configuration rather than in prose.
+
+`10190a2` landed the scheduled lane with the stated split "a tiny PR lane, the
+complete matrix only by explicit command". Three places said so: the lane's own
+comment (`cmd/och-eval/context_scheduled_test.go`), that commit message, and
+the Evaluation contract's own [four-Cell PR lane](evaluation.md#the-four-cell-pr-lane)
+section. The gate in the code was `testing.Short()`.
+
+No CI job passes `-short`. So the full nine-set matrix — five of whose sets
+start real `och -acp` subprocesses — ran on **every pull request**: once in the
+`go` job (`go test -race ./... -count=1`) and three more times in
+`determinism` (`-count=3`), with `soak` adding ten more nightly. Measured on
+the development machine at 39s without the race detector and 64s with it, so
+the pull-request path was paying roughly 4.3 minutes per PR for a lane three
+documents said it never ran, and the nightly soak was repeating an end-to-end
+subprocess matrix ten times as if it were a flakiness sample.
+
+The fix is an opt-in named `OCH_EVAL_SCHEDULED_CONTEXT_MATRIX`, following the
+`DOCSGUARD_CHECK_EXTERNAL_LINKS` precedent already in
+`internal/docsguard/citations_test.go`: only `"1"` enables the lane, anything
+else fails closed. Exactly one CI job sets it — `context-matrix`, gated on
+`if: github.event_name == 'schedule'`, running one focused command
+(`go test -race ./cmd/och-eval -run '^TestContextScheduledLane' -count=1`).
+`-short` was deliberately not used: it would have silently changed which other
+tests run.
+
+The guards check executable facts, never comments. Parsing a comment to see
+whether it agrees with CI would reproduce the original defect, since the
+comment was already correct and the wiring was not.
+
+| Guard | What it asserts |
+| --- | --- |
+| `TestFullContextMatrixSkipsWithoutTheOptIn` | Re-invokes this test binary (`os.Args[0]`) with the variable stripped from the environment and requires `--- SKIP` from the matrix test. Proves default-off by running it, not by reading it. |
+| `TestCIEnablesTheFullContextMatrixOnlyInAScheduledJob` | Parses `.github/workflows/ci.yml`: exactly one job may set the variable, it must carry `if: github.event_name == 'schedule'`, and its single `go test` invocation must be focused on `./cmd/och-eval`, name `^TestContextScheduledLane`, and use `-count=1`. |
+| `TestBroadSuiteJobsNeverEnableTheFullContextMatrix` | The same file's whole-suite jobs — `go`, `determinism`, `soak` — must all still exist and none may set the variable. |
+| `TestScheduledContextMatrixOptInFailsClosed` | `""`, `"0"`, `"true"`, `"yes"`, `"2"`, `" 1"` all leave the matrix off; only `"1"` enables it. |
+| `TestScheduledLaneCoversEveryCheckedInContextSet` | `contextScheduledSets` is maintained by hand, so a tenth set added later would simply never run while the lane still passed. Membership is decided by two independent facts — the set's own declared `fixture` lane and the `context-` id prefix that separates it from the PR lane's `pr-context` — not by a filename convention alone. |
+| `TestEveryInProcessContextSetHasAnIdenticalACPArm` | The suite design's pairing claim as a structural fact: every `context-X-inprocess` set has a `context-X-acp` twin carrying the identical Scenario list, the first declaring an `in_process` executor and the second an `acp_subprocess` one. `context-recovery-acp` has no in-process arm by design, since restart recovery is only meaningful against a real subprocess. |
+
+The workflow file is parsed line-wise into job blocks rather than with a YAML
+library, because the repository pins its dependency graph (`go mod tidy -diff`,
+govulncheck) and a new module is not worth four assertions over a file this
+project writes itself.
+
+Five mutations were performed and observed, then restored:
+
+| Mutation | Result |
+| --- | --- |
+| Delete `requireScheduledContextMatrix(t)` from the matrix test | `TestFullContextMatrixSkipsWithoutTheOptIn` fails in 38.7s — the child process really did start running the nine-set matrix instead of skipping, and the guard reported the missing SKIP. Caught, restored. |
+| Add the variable to the `go` job (the pull-request path) | Both CI guards fail: `2 CI jobs set OCH_EVAL_SCHEDULED_CONTEXT_MATRIX ([go context-matrix]); exactly one may`, and `job "go" runs the whole suite and sets ...`. Caught, restored. |
+| Change the scheduled job to `-count=3` | `TestCIEnablesTheFullContextMatrixOnlyInAScheduledJob` fails. Caught, restored. |
+| Delete `if: github.event_name == 'schedule'` from the scheduled job | Same guard fails. Caught, restored. |
+| Widen the scheduled job's command to `go test -race ./... -count=1` | Both CI guards fail. Caught, restored. |
+| Drop `context-anchor-acp.json` from `contextScheduledSets` | `TestScheduledLaneCoversEveryCheckedInContextSet` fails, naming the set that would have stopped running. Caught, restored. |
+| Delete one of `context-core-acp.json`'s four Scenarios, leaving its in-process twin intact | `TestEveryInProcessContextSetHasAnIdenticalACPArm` fails with both Scenario lists. Caught, restored. The first attempt at this mutation used `context-anchor-acp.json`, which declares a single Scenario, so removing it produced an empty set that an unrelated pre-existing validation rejected first (`at least one scenario is required`) — a red test proving nothing about this guard. Redone against a four-Scenario set. |
+
+One process note, since this ledger records how evidence was obtained and not
+only its result: the first attempt at the last three mutations restored the
+workflow with `git checkout`, which reverted the not-yet-staged
+`context-matrix` job along with the mutation, so those runs were observed
+against a file with no such job at all and proved nothing about the intended
+mutation. They were redone against a file-copy baseline, with the unmutated
+baseline confirmed green first. The results above are from the redone runs.
 
 ## Mechanism → test → mutation result
 
@@ -326,11 +397,68 @@ Process-leak check: `ps aux | grep -iE "acpchild|/och "` after every full
 test run in this session found nothing — no ACP subprocess or `acpchild`
 test double was ever left running.
 
+## Judge meta-eval: two of the original five fixtures proved nothing
+
+Found on 2026-09-04 while broadening the meta-eval suite, and recorded here
+because the defect is in the *tests*, which is where it is hardest to see: a
+green test that is satisfied by the wrong refusal looks exactly like a green
+test that works.
+
+`testJudgeConfig` declares two criteria, `quality` and `continuity`.
+`TestRunJudgeRejectsNonexistentEvidenceReference` and
+`TestRunJudgeUnresolvedContradictionIsAlwaysIndeterminate` each named only
+`quality` in the judge output they fed in. `RunJudge` checks for an omitted
+required criterion (`judge.go`, the `seenCriteria` loop) *before* it validates
+evidence references or applies the contradiction rule, so both fixtures were
+refused with `judge output omitted required criterion "continuity"` and never
+reached the code they existed to test. Both asserted only
+`Verdict == Indeterminate`, which that earlier refusal satisfies.
+
+Proven by mutation rather than by reading:
+
+| Mutation | Before the fix | After the fix |
+| --- | --- | --- |
+| Delete the `available[ref]` "never shown to it" check entirely | `TestRunJudgeRejectsNonexistentEvidenceReference` **still passed** | Fails, as does the new real-but-unshown fixture |
+| Replace the contradiction/missing branch condition with `if false` | `TestRunJudgeUnresolvedContradictionIsAlwaysIndeterminate` **still passed** | Fails |
+| Delete the new citation-free check | n/a — the check did not exist | `TestRunJudgeRejectsADeterminateVerdictCitingNoEvidence/pass` fails with `Verdict = "pass", want "indeterminate"` |
+
+The contradiction fixture also returned an empty `ContradictoryEvidence`
+list, which is direct evidence the branch never ran; it now asserts the audit
+path survives into the outcome.
+
+Both fixtures now declare every required criterion and assert the refusal
+**reason**, not merely that some refusal happened. That assertion is the
+anti-recurrence measure: a meta-eval fixture that accepts any refusal will
+eventually be satisfied by the wrong one.
+
+## Judge meta-eval: a determinate verdict citing nothing was believed
+
+A real production gap found by the same pass, in the same family as the
+already-fixed budget-omission defect. Every evidence-reference rule guarded
+the references that were present — nonexistent, empty-string, and duplicate
+references are all refused — and none required any reference to exist. A
+judge returning `pass` with `evidenceReferences: []` was accepted at face
+value, so the most economical way for a judge to pass an Attempt was to cite
+nothing at all.
+
+`RunJudge` now refuses a determinate verdict that cites no evidence,
+contradiction, or missing entry. `indeterminate` is deliberately exempt and
+has its own fixture (`TestRunJudgeIndeterminateMayCiteNoEvidence`), so the
+guard cannot later be tightened into refusing every citation-free output —
+citing nothing is often exactly why an attempt is indeterminate.
+
+The adversarial fixture set is now eight: injection, missing-evidence,
+contradiction, unsupported-claim, known-pass/fail, an invented reference, a
+real-but-unshown reference (`workspace/output.txt` — a genuine manifest entry
+that no declared criterion role puts in the bundle, which is the shape a
+reference check written against the manifest instead of the bundle would
+wrongly accept), and a determinate verdict citing nothing.
+
 ## Known limitations and open blockers (not GA)
 
 See the contract document's own [Maturity and GA blockers](evaluation.md#maturity-and-ga-blockers)
 section. Summarized: real-model live-judge sample size, judge
-meta-evaluation breadth beyond this milestone's own five-case fixture suite,
+meta-evaluation breadth beyond the eight adversarial fixtures recorded above,
 provider breadth beyond one OpenAI-compatible adapter, and an accepted
 variance policy for live/quality signals are all explicitly outstanding.
 MCP is a future suite this runner can host, never a runner prerequisite.

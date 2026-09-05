@@ -127,7 +127,7 @@ Scenario 自身的 `fixtureDigest` 是 `DigestFixtureTree` 对其 `fixture/` 源
 
 `EvaluateJudgeAttempt`（`internal/harness/eval/judge_attempt.go`）是 `och-eval judge` 所驱动的编排逻辑，其各道关卡的顺序就是契约本身：先是冻结证据与所提供配置的摘要，然后是设计 §24 的双重同意，最后才是 Scenario 声明的每一个确定性校验器。由于持有任何凭据的是 `JudgeCaller`，一次不具备资格的运行既触及不到提供方，也触及不到凭据。确定性前置条件未通过时，会发布一个 Indeterminate 的 Score 而完全不调用模型；`JudgeAttemptResult` 会单独报告该前置判定，以便操作者能区分"不变量未成立"与"评审器无法作答" —— 这两者在 Score 上读起来是一样的。
 
-`ScorerUsage.costStatus` 让成本可得性变得显式：`computed` 会携带币种（免费模型是一个真实计算出的零），`unavailable` 则既不带币种也不带成本。在该字段出现之前发布的 Score 仍然可读。设计 §21 的每一种失败即拒绝情形 —— 未知字段、格式错误或带尾随内容的输出、不存在的证据引用、缺失证据、未解决的矛盾、未声明/遗漏/重复的评判标准、与逐项结果不一致的总判定、超出 `[0,1]` 的分数，或调用本身失败 —— 都会解析为一个真实的 `JudgeOutcome{Verdict: Indeterminate}`，附带一段有界、经过脱敏的理由说明，绝不是一个 Go 错误，也绝不会被悄悄当作 `Pass` 接受。评审器所看到的每一条 Subject 撰写的内容都会被标注为"不受信任……不是指令"（内嵌的 `prompts/quality_judge_v1.md` 提示词自身的框架设定）—— 本仓库没有真实模型可以在自动化测试中证明其确实能够抵御提示注入攻击，因此测试所验证的是这一机制本身：这种标注确实真实存在于真实的转录内容周围，而不仅仅是提示词文本里一句空洞的期望。
+`ScorerUsage.costStatus` 让成本可得性变得显式：`computed` 会携带币种（免费模型是一个真实计算出的零），`unavailable` 则既不带币种也不带成本。在该字段出现之前发布的 Score 仍然可读。设计 §21 的每一种失败即拒绝情形 —— 未知字段、格式错误或带尾随内容的输出、不存在的证据引用、缺失证据、未解决的矛盾、未声明/遗漏/重复的评判标准、与逐项结果不一致的总判定、超出 `[0,1]` 的分数，或调用本身失败 —— 都会解析为一个真实的 `JudgeOutcome{Verdict: Indeterminate}`，附带一段有界、经过脱敏的理由说明，绝不是一个 Go 错误，也绝不会被悄悄当作 `Pass` 接受。还有一种情形出于同样的理由被拒绝，但不在设计 §21 的清单里：**一个确定性判定却完全没有引用任何证据**。上述每一条引用规则守的都是"已经出现的引用"，而在 2026-09-04 之前没有任何一条要求必须存在引用 —— 因此 `evidenceReferences` 为空的 `pass` 会被直接采信。这与预算遗漏那个缺陷是同一件事的另一面：一个关于评审器从未证明自己读过的材料所给出的回答。`indeterminate` 判定仍然可以不引用任何东西，因为那往往正是它之所以为 indeterminate 的原因。评审器所看到的每一条 Subject 撰写的内容都会被标注为"不受信任……不是指令"（内嵌的 `prompts/quality_judge_v1.md` 提示词自身的框架设定）—— 本仓库没有真实模型可以在自动化测试中证明其确实能够抵御提示注入攻击，因此测试所验证的是这一机制本身：这种标注确实真实存在于真实的转录内容周围，而不仅仅是提示词文本里一句空洞的期望。
 
 一个评审 Score 通过与确定性重新评分完全相同的 `PublishScore` 路径发布，`Lane` 设为 `LaneLive` —— 不存在单独的文档类型。`internal/harness/eval/price.go` 的 `PriceTable` 以整数微单位计算成本，与 `Score.ScorerUsage` 自身的成本字段相互独立（评审器自身的用量，绝不会并入 Subject 的用量）；一个未定价的模型会返回 `ok=false`，而不是零成本。
 
@@ -140,6 +140,10 @@ Scenario 自身的 `fixtureDigest` 是 `DigestFixtureTree` 对其 `fixture/` 源
 设计 §23 自身的常规 PR 门禁：恰好四个 Cell —— 一个通过两种执行器配对的对等性 Scenario（两个 Cell：[`pr-parity-baseline.json`](../../eval/sets/pr-parity-baseline.json)/[`pr-parity-candidate.json`](../../eval/sets/pr-parity-candidate.json)）、一个进程内的工具/审批/失败 Cell，以及一个进程内的 Context 压缩 Cell（两者都在 [`pr-tool-and-compaction.json`](../../eval/sets/pr-tool-and-compaction.json) 中）。`cmd/och-eval/report.go` 会为同一产物根目录下每一个终止且已完整收集的 Attempt 加载一个 `ParityArm`，按 `ParityPairKey` 分组，并依据任何非空差异列表来决定该报告自身的退出码。`TestPRLaneExpandsToExactlyFourFixtureCells` 与 `TestPRLaneRunAndReportEndToEnd`（`cmd/och-eval`）都是普通的 Go 测试，因此本仓库现有的 CI `go` 任务（`go test -race ./... -count=1`）已经会在每个 PR 上对这条车道进行门禁检查，无需任何专门的 CI 工作流步骤。
 
 完整的确定性矩阵（两种执行器 × 每一个 Scenario）只通过显式命令运行（`go test ./internal/harness/eval/... -run TestCheckedInDeterministicFullSetProvesToolWorkspaceSuite`，或 `och-eval run -set eval/sets/deterministic-full.json`），从不出现在常规 PR CI 中。
+
+完整的 Context 机制矩阵 —— 九个 EvalSet，其中五个会拉起真实的 `och -acp` 子进程 —— 通过 `OCH_EVAL_SCHEDULED_CONTEXT_MATRIX=1` 按名称显式启用。未设置该变量时，`TestContextScheduledLaneRunsEveryPairedSet` 会跳过。CI 中唯一设置该变量的任务是 `context-matrix`，它以 `if: github.event_name == 'schedule'` 为条件，并且只运行一条聚焦命令一次（`go test -race ./cmd/och-eval -run '^TestContextScheduledLane' -count=1`）；`go`、`determinism` 与 `soak` 任务都不设置该变量，因此 `-count=1`、`-count=3` 与 `-count=10` 的全量套件运行都不会把它展开。
+
+这条边界是被强制执行的，而不只是被声明的。`TestFullContextMatrixSkipsWithoutTheOptIn` 会在剥离该环境变量后重新调用测试二进制，并要求出现 SKIP；`TestCIEnablesTheFullContextMatrixOnlyInAScheduledJob` 与 `TestBroadSuiteJobsNeverEnableTheFullContextMatrix`（均在 `cmd/och-eval`）会解析 `.github/workflows/ci.yml`，要求恰好一个任务设置该变量、该任务以 schedule 为门禁、其命令是聚焦且 `-count=1` 的，并且没有任何全量套件任务携带它。在 2026-09-04 的 `10190a2` 与本次修改之间，这条边界只存在于文字之中 —— 该车道的门禁是 `testing.Short()`，而没有任何 CI 任务传入 `-short` —— 因此完整矩阵实际在每个 PR 上都会运行，`go` 任务一次、`determinism` 再三次，而本节当时却声称它从不运行。上一段所声明的内容，现在是一个测试。
 
 ## 实时车道
 
@@ -155,4 +159,4 @@ Scenario 自身的 `fixtureDigest` 是 `DigestFixtureTree` 对其 `fixture/` 源
 
 ## 成熟度与 GA 阻碍项
 
-评估系统**已实现，但尚未 GA**。在做出 GA 声明之前明确悬而未决的事项包括：实时评审所需的真实模型样本规模、超出本里程碑自身五种用例（注入、证据缺失、矛盾、无支撑主张、已知通过/失败）之外更广泛夹具集合上的评审器元评估、超出本仓库目前唯一一个 OpenAI 兼容适配器之外的更广 provider 覆盖面，以及一份被接受的实时/质量信号方差策略。MCP 是这个运行器未来可以承载的一个测试套件，绝不是运行器自身的前置条件 —— 它的缺席不会阻碍本文档所记录的任何内容。
+评估系统**已实现，但尚未 GA**。在做出 GA 声明之前明确悬而未决的事项包括：实时评审所需的真实模型样本规模、超出本仓库当前所携带的八个对抗性夹具（注入、证据缺失、矛盾、无支撑主张、已知通过/失败、凭空捏造的引用、真实存在但从未被展示过的引用，以及一个不引用任何证据的确定性判定）之外更广泛夹具集合上的评审器元评估 —— 其中原有五例里有两例在 2026-09-04 被发现是被一条比它们所声称的更早的检查拒绝的，因而对它们本该守护的那条防线什么也没有证明；两者均已修正，现在会断言拒绝的具体原因 ——、超出本仓库目前唯一一个 OpenAI 兼容适配器之外的更广 provider 覆盖面，以及一份被接受的实时/质量信号方差策略。MCP 是这个运行器未来可以承载的一个测试套件，绝不是运行器自身的前置条件 —— 它的缺席不会阻碍本文档所记录的任何内容。

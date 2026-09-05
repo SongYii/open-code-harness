@@ -123,6 +123,30 @@ jobs:
       - name: Repeat the race suite
         run: go test -race ./... -count=3
 
+  # The full Context mechanism matrix: nine EvalSets, five of them driving real
+  # `och -acp` subprocesses, measured at 64s under the race detector. It is
+  # opt-in by name so no other lane can pick it up by accident — the `go` job
+  # would run it on every pull request and `determinism` three more times, and
+  # an end-to-end subprocess matrix is not a flakiness sample. Focused and
+  # exactly once: `soak`'s -count=10 must never reach it either.
+  #
+  # cmd/och-eval and cmd/och do not embed the web bridge bundle, so this job
+  # needs no npm step.
+  context-matrix:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run the full Context mechanism matrix
+        env:
+          OCH_EVAL_SCHEDULED_CONTEXT_MATRIX: "1"
+        run: go test -race ./cmd/och-eval -run '^TestContextScheduledLane' -count=1
+
   # Deeper repetition and the network-dependent citation gate. Nightly only.
   soak:
     if: github.event_name == 'schedule'
