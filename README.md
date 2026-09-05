@@ -135,7 +135,12 @@ JudgeConfig bound into an Attempt's own evidence so a Score's judge
 identity is provable offline) are all real and tested. Real-model live
 sample size — no run against an actual live model has happened here — judge
 meta-evaluation breadth, provider breadth, and an accepted variance policy
-are still outstanding before a GA claim. See the
+are still outstanding before a GA claim. The variance *mechanism* is now
+implemented and verified (distribution over repetitions, a structural
+reliability rule separated from an uncalibrated threshold one, two baselines,
+and derived readings that need no threshold at all), but it ships **dormant** —
+no checked-in EvalSet reaches it — and no calibrated limits exist, so the
+policy itself is not accepted. See the
 [Evaluation contract](docs/architecture/evaluation.md) and its
 [evidence ledger](docs/architecture/evaluation-evidence.md). The project
 remains pre-v0.
