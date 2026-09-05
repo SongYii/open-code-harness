@@ -126,6 +126,10 @@ func ComputeCellDistribution(repetitions []CellRepetition, policy VariancePolicy
 		return CellDistribution{}, fmt.Errorf("eval: variance: %w", err)
 	}
 
+	if err := requireOneCell(repetitions); err != nil {
+		return CellDistribution{}, err
+	}
+
 	ordered := append([]CellRepetition(nil), repetitions...)
 	sort.SliceStable(ordered, func(i, j int) bool {
 		return ordered[i].Attempt.RepetitionIndex < ordered[j].Attempt.RepetitionIndex
@@ -334,4 +338,37 @@ func hasVerdictField(distribution CellDistribution) bool {
 		}
 	}
 	return false
+}
+
+// requireOneCell refuses a set of repetitions that are not repetitions of one
+// thing.
+//
+// Repetitions are comparable only because every identity input is frozen and
+// digested. Two Attempts differing in Scenario, Subject, or Executor are
+// measurements of different things, and a spread computed across them would
+// be a number with no meaning. Duplicate repetition indexes are refused for a
+// smaller but related reason: the published sequence is ordered by index, so
+// two Attempts claiming one position make it unreproducible.
+func requireOneCell(repetitions []CellRepetition) error {
+	first := repetitions[0].Attempt
+	seen := make(map[int]struct{}, len(repetitions))
+	for _, repetition := range repetitions {
+		attempt := repetition.Attempt
+		switch {
+		case attempt.ScenarioDigest != first.ScenarioDigest:
+			return fmt.Errorf("%w: repetitions disagree on scenarioDigest (%q and %q); they are not repetitions of one Cell",
+				errInvalidDocument, first.ScenarioDigest, attempt.ScenarioDigest)
+		case attempt.SubjectDigest != first.SubjectDigest:
+			return fmt.Errorf("%w: repetitions disagree on subjectDigest (%q and %q); they are not repetitions of one Cell",
+				errInvalidDocument, first.SubjectDigest, attempt.SubjectDigest)
+		case attempt.ExecutorDigest != first.ExecutorDigest:
+			return fmt.Errorf("%w: repetitions disagree on executorDigest (%q and %q); they are not repetitions of one Cell",
+				errInvalidDocument, first.ExecutorDigest, attempt.ExecutorDigest)
+		}
+		if _, duplicate := seen[attempt.RepetitionIndex]; duplicate {
+			return fmt.Errorf("%w: two repetitions claim index %d", errInvalidDocument, attempt.RepetitionIndex)
+		}
+		seen[attempt.RepetitionIndex] = struct{}{}
+	}
+	return nil
 }
