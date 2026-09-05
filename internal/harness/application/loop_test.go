@@ -760,6 +760,195 @@ func TestApprovalTimeoutContinuesTurn(t *testing.T) {
 	}
 }
 
+func TestFileToolErrorsUseBoundedRecoveryResults(t *testing.T) {
+	tests := []struct {
+		name    string
+		code    tools.ErrorCode
+		message string
+	}{
+		{name: "not observed", code: tools.CodeFilesystemNotObserved, message: "read the file before changing it"},
+		{name: "stale version", code: tools.CodeFilesystemStaleVersion, message: "file changed since it was read; re-read it and retry"},
+		{name: "literal absent", code: tools.CodeEditNoMatch, message: "literal was not found"},
+		{name: "literal ambiguous", code: tools.CodeEditAmbiguous, message: "literal appears more than once; include more context or use replace_all"},
+		{name: "not regular", code: tools.CodeFilesystemIsDirectory, message: "target is not a regular file"},
+		{name: "not text", code: tools.CodeFilesystemNotText, message: "file is not valid UTF-8 text"},
+		{name: "too large", code: tools.CodeFilesystemTooLarge, message: "file exceeds the edit size limit"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			files := &readErrorFS{
+				FileSystem: testkit.NewMemFS("/workspace"),
+				err:        fmt.Errorf("private adapter detail path=/workspace/private.txt version=secret-v9: %w", &tools.Error{Code: test.code}),
+			}
+			model := newSequenceModel(
+				[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "call-read", Name: tools.NameReadFile, Arguments: `{"path":"private.txt"}`}}, {Type: engine.StreamEventCompleted}},
+				[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "continued"}, {Type: engine.StreamEventCompleted}},
+			)
+			service, _ := newToolService(t, model, files, nil, nil, application.DefaultConfig())
+			created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+				SessionID: created.SessionID, RequestID: domain.RunTurnRequestID("request-error-" + test.name), Input: "inspect", Sink: &testkit.RecordingSink{},
+			})
+			if err != nil || result.Text != "continued" {
+				t.Fatalf("RunTurn() = (%#v, %v)", result, err)
+			}
+			failed := lastToolFailed(result.Records)
+			if failed.Code != string(test.code) || failed.Message != test.message {
+				t.Fatalf("failed result = %#v, want code %q and message %q", failed, test.code, test.message)
+			}
+			if strings.Contains(failed.Message, "private.txt") || strings.Contains(failed.Message, "secret-v9") {
+				t.Fatalf("failed result leaked adapter detail: %#v", failed)
+			}
+		})
+	}
+}
+
+func TestReadWriteStaleRecoveryAndMutationAdvance(t *testing.T) {
+	mem := testkit.NewMemFS("/workspace")
+	mem.AddFile("state.txt", []byte("A"))
+	files := &staleOnceFS{FileSystem: mem}
+	model := newSequenceModel(
+		[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "call-read-a", Name: tools.NameReadFile, Arguments: `{"path":"state.txt"}`}}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "call-write-stale", Name: tools.NameWriteFile, Arguments: `{"path":"state.txt","content":"C"}`}}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "call-read-b", Name: tools.NameReadFile, Arguments: `{"path":"state.txt"}`}}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "call-write-c", Name: tools.NameWriteFile, Arguments: `{"path":"state.txt","content":"C"}`}}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "call-write-d", Name: tools.NameWriteFile, Arguments: `{"path":"state.txt","content":"D"}`}}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "recovered"}, {Type: engine.StreamEventCompleted}},
+	)
+	config := application.DefaultConfig()
+	config.PolicyMode = policy.ModeAllowWrites
+	service, _ := newToolService(t, model, files, nil, nil, config)
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+		SessionID: created.SessionID, RequestID: "request-stale-recovery", Input: "update", Sink: &testkit.RecordingSink{},
+	})
+	if err != nil || result.Text != "recovered" {
+		t.Fatalf("RunTurn() = (%#v, %v)", result, err)
+	}
+	calls := model.Calls()
+	if got := lastToolMessage(calls[2].Messages).Text; got != "file changed since it was read; re-read it and retry" {
+		t.Fatalf("stale tool result = %q", got)
+	}
+	if got := lastToolMessage(calls[3].Messages).Text; got != "B" {
+		t.Fatalf("re-read tool result = %q, want B", got)
+	}
+	failed := lastToolFailed(result.Records)
+	if failed.Code != "fs_stale_version" || failed.Message != "file changed since it was read; re-read it and retry" {
+		t.Fatalf("stale failure = %#v", failed)
+	}
+	read, err := mem.Read(context.Background(), "/workspace/state.txt", 64)
+	if err != nil || string(read.Data) != "D" {
+		t.Fatalf("final file = (%q, %v), want D", read.Data, err)
+	}
+	guards := files.Guards()
+	if len(guards) != 3 {
+		t.Fatalf("write guards = %#v, want three service writes", guards)
+	}
+	for index, guard := range guards {
+		if guard.Kind != tools.GuardReplaceIfVersion || guard.Version == "" {
+			t.Fatalf("write guard %d = %#v, want versioned replacement", index, guard)
+		}
+	}
+	if guards[0].Version == guards[1].Version || guards[1].Version == guards[2].Version {
+		t.Fatalf("write guards did not advance across re-read and successful mutation: %#v", guards)
+	}
+}
+
+func TestReadObservationSurvivesLoadAndIsIsolatedBySession(t *testing.T) {
+	mem := testkit.NewMemFS("/workspace")
+	mem.AddFile("shared.txt", []byte("A"))
+	files := &guardRecordingFS{FileSystem: mem}
+	model := newSequenceModel(
+		[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "a-read", Name: tools.NameReadFile, Arguments: `{"path":"shared.txt"}`}}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "a-read-done"}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "b-write", Name: tools.NameWriteFile, Arguments: `{"path":"shared.txt","content":"B"}`}}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "b-write-done"}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "a-write", Name: tools.NameWriteFile, Arguments: `{"path":"shared.txt","content":"C"}`}}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "a-write-done"}, {Type: engine.StreamEventCompleted}},
+	)
+	config := application.DefaultConfig()
+	config.PolicyMode = policy.ModeAllowWrites
+	service, _ := newToolService(t, model, files, nil, nil, config)
+	sessionA, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionB, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: sessionA.SessionID, RequestID: "request-a-read", Input: "read", Sink: &testkit.RecordingSink{}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.LoadSession(context.Background(), sessionA.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: sessionB.SessionID, RequestID: "request-b-write", Input: "write", Sink: &testkit.RecordingSink{}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: sessionA.SessionID, RequestID: "request-a-write", Input: "write", Sink: &testkit.RecordingSink{}}); err != nil {
+		t.Fatal(err)
+	}
+	guards := files.Guards()
+	if len(guards) != 2 || guards[0].Kind != tools.GuardCreateIfAbsent || guards[1].Kind != tools.GuardReplaceIfVersion || guards[1].Version == "" {
+		t.Fatalf("session write guards = %#v, want unseen B create then observed A replace", guards)
+	}
+	read, err := mem.Read(context.Background(), "/workspace/shared.txt", 64)
+	if err != nil || string(read.Data) != "C" {
+		t.Fatalf("final file = (%q, %v), want C", read.Data, err)
+	}
+}
+
+func TestResumeSessionClearsFileObservationsOnlyAfterSuccessfulAdmission(t *testing.T) {
+	mem := testkit.NewMemFS("/workspace")
+	mem.AddFile("state.txt", []byte("A"))
+	files := &guardRecordingFS{FileSystem: mem}
+	model := newSequenceModel(
+		[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "read", Name: tools.NameReadFile, Arguments: `{"path":"state.txt"}`}}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "read-done"}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "write-after-failed-resume", Name: tools.NameWriteFile, Arguments: `{"path":"state.txt","content":"B"}`}}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "first-write-done"}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "write-after-resume", Name: tools.NameWriteFile, Arguments: `{"path":"state.txt","content":"C"}`}}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "second-write-done"}, {Type: engine.StreamEventCompleted}},
+	)
+	config := application.DefaultConfig()
+	config.PolicyMode = policy.ModeAllowWrites
+	service, _ := newToolService(t, model, files, nil, nil, config)
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-read", Input: "read", Sink: &testkit.RecordingSink{}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ResumeSession(context.Background(), application.ResumeSessionRequest{SessionID: created.SessionID, WorkspaceRoot: "/foreign"}); err == nil {
+		t.Fatal("ResumeSession() with foreign workspace succeeded")
+	}
+	if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-first-write", Input: "write", Sink: &testkit.RecordingSink{}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ResumeSession(context.Background(), application.ResumeSessionRequest{SessionID: created.SessionID, WorkspaceRoot: "/workspace"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-second-write", Input: "write", Sink: &testkit.RecordingSink{}}); err != nil {
+		t.Fatal(err)
+	}
+	guards := files.Guards()
+	if len(guards) != 2 || guards[0].Kind != tools.GuardReplaceIfVersion || guards[1].Kind != tools.GuardCreateIfAbsent {
+		t.Fatalf("resume write guards = %#v, want failed resume retain then successful resume clear", guards)
+	}
+	read, err := mem.Read(context.Background(), "/workspace/state.txt", 64)
+	if err != nil || string(read.Data) != "B" {
+		t.Fatalf("final file = (%q, %v), want B after cleared observation refused overwrite", read.Data, err)
+	}
+}
+
 func TestModeAllowWritesExecutesWrite(t *testing.T) {
 	fs := testkit.NewMemFS("/workspace")
 	counter := &countingFS{FileSystem: fs}
@@ -1236,6 +1425,65 @@ func (fs *countingFS) List(ctx context.Context, abs string, depth, limit int) ([
 func (fs *countingFS) Resolves() int { fs.mu.Lock(); defer fs.mu.Unlock(); return fs.resolves }
 func (fs *countingFS) Reads() int    { fs.mu.Lock(); defer fs.mu.Unlock(); return fs.reads }
 func (fs *countingFS) Writes() int   { fs.mu.Lock(); defer fs.mu.Unlock(); return fs.writes }
+
+type readErrorFS struct {
+	tools.FileSystem
+	err error
+}
+
+func (fs *readErrorFS) Read(context.Context, string, int) (tools.FileRead, error) {
+	return tools.FileRead{}, fs.err
+}
+
+type guardRecordingFS struct {
+	tools.FileSystem
+	mu     sync.Mutex
+	guards []tools.MutationGuard
+}
+
+func (fs *guardRecordingFS) Write(ctx context.Context, abs string, data []byte, guard tools.MutationGuard) (tools.MutationResult, error) {
+	fs.mu.Lock()
+	fs.guards = append(fs.guards, guard)
+	fs.mu.Unlock()
+	return fs.FileSystem.Write(ctx, abs, data, guard)
+}
+
+func (fs *guardRecordingFS) Guards() []tools.MutationGuard {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	return append([]tools.MutationGuard(nil), fs.guards...)
+}
+
+type staleOnceFS struct {
+	tools.FileSystem
+	mu          sync.Mutex
+	forcedStale bool
+	guards      []tools.MutationGuard
+}
+
+func (fs *staleOnceFS) Write(ctx context.Context, abs string, data []byte, guard tools.MutationGuard) (tools.MutationResult, error) {
+	fs.mu.Lock()
+	fs.guards = append(fs.guards, guard)
+	forceStale := !fs.forcedStale
+	fs.forcedStale = true
+	fs.mu.Unlock()
+	if forceStale {
+		read, err := fs.FileSystem.Read(ctx, abs, 64)
+		if err != nil {
+			return tools.MutationResult{}, err
+		}
+		if _, err := fs.FileSystem.Write(ctx, abs, []byte("B"), tools.MutationGuard{Kind: tools.GuardReplaceIfVersion, Version: read.Version}); err != nil {
+			return tools.MutationResult{}, err
+		}
+	}
+	return fs.FileSystem.Write(ctx, abs, data, guard)
+}
+
+func (fs *staleOnceFS) Guards() []tools.MutationGuard {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	return append([]tools.MutationGuard(nil), fs.guards...)
+}
 
 type blockingFS struct {
 	tools.FileSystem

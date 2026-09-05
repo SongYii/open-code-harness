@@ -198,6 +198,7 @@ func (service *Service) ResumeSession(ctx context.Context, request ResumeSession
 		return domain.Session{}, applicationError(CategoryValidation, "domain_rejected", false, err)
 	}
 	state.WorkspaceRoot = storedRoot
+	service.filesSeen.forget(request.SessionID)
 	return state.Clone(), nil
 }
 
@@ -251,6 +252,10 @@ func (service *Service) DeleteSession(ctx context.Context, request DeleteSession
 		return err
 	}
 	_, _, err = CommitAppendIntent(ctx, service.store, state, intent)
+	if err == nil {
+		service.filesSeen.forget(request.SessionID)
+		return nil
+	}
 	if !isAppendOutcomeUnknown(err) {
 		return err
 	}
@@ -261,7 +266,11 @@ func (service *Service) DeleteSession(ctx context.Context, request DeleteSession
 		return err
 	}
 	_, _, err = ApplyCommittedIntent(state, intent, receipt)
-	return err
+	if err != nil {
+		return err
+	}
+	service.filesSeen.forget(request.SessionID)
+	return nil
 }
 
 func (service *Service) CloseSession(ctx context.Context, request CloseSessionRequest) (CloseSessionResult, error) {
@@ -290,6 +299,7 @@ func (service *Service) CloseSession(ctx context.Context, request CloseSessionRe
 	if err != nil {
 		return CloseSessionResult{}, err
 	}
+	service.filesSeen.forget(request.SessionID)
 	return CloseSessionResult{Session: next.Clone(), Records: records}, nil
 }
 

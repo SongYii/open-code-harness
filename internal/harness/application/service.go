@@ -129,6 +129,7 @@ type Service struct {
 	files      tools.FileSystem
 	commands   tools.CommandRunner
 	approver   tools.Approver
+	filesSeen  *fileObservations
 }
 
 func NewService(store EventStore, ids IDGenerator, clock Clock, runner *engine.TurnRunner, authority AuthoritySource, config Config) (*Service, error) {
@@ -192,7 +193,7 @@ func NewService(store EventStore, ids IDGenerator, clock Clock, runner *engine.T
 	service := &Service{
 		store: store, ids: ids, clock: clock, runner: runner, authority: authority,
 		config: config, executions: newExecutionRegistry(), policy: policyEngine,
-		approver: approver,
+		approver: approver, filesSeen: newFileObservations(),
 	}
 	if catalogEnabled {
 		service.catalog = config.Catalog

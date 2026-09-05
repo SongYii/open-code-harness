@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
+	"github.com/SongYii/open-code-harness/internal/harness/tools"
 )
 
 // ErrorCategory is a stable class of application-facing failure.
@@ -65,8 +66,35 @@ const (
 	ToolTextOutputLimit     = "tool output exceeded the size limit"
 	ToolTextExecTimeout     = "command timed out"
 	ToolTextResourceLimit   = "command exceeded a resource limit"
+	ToolTextFSNotObserved   = "read the file before changing it"
+	ToolTextFSStaleVersion  = "file changed since it was read; re-read it and retry"
+	ToolTextEditNoMatch     = "literal was not found"
+	ToolTextEditAmbiguous   = "literal appears more than once; include more context or use replace_all"
+	ToolTextFSIsDirectory   = "target is not a regular file"
+	ToolTextFSNotText       = "file is not valid UTF-8 text"
+	ToolTextFSTooLarge      = "file exceeds the edit size limit"
 	TruncationMarker        = "\n[truncated]"
 )
+
+func fileToolErrorResult(err error) (string, string, bool) {
+	for _, mapping := range []struct {
+		code tools.ErrorCode
+		text string
+	}{
+		{code: tools.CodeFilesystemNotObserved, text: ToolTextFSNotObserved},
+		{code: tools.CodeFilesystemStaleVersion, text: ToolTextFSStaleVersion},
+		{code: tools.CodeEditNoMatch, text: ToolTextEditNoMatch},
+		{code: tools.CodeEditAmbiguous, text: ToolTextEditAmbiguous},
+		{code: tools.CodeFilesystemIsDirectory, text: ToolTextFSIsDirectory},
+		{code: tools.CodeFilesystemNotText, text: ToolTextFSNotText},
+		{code: tools.CodeFilesystemTooLarge, text: ToolTextFSTooLarge},
+	} {
+		if tools.IsCode(err, mapping.code) {
+			return string(mapping.code), mapping.text, true
+		}
+	}
+	return "", "", false
+}
 
 // Error is a stable application-facing failure. Cause remains available for
 // deliberate programmatic inspection but is never rendered by Error.

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"strings"
 	"unicode/utf8"
 
@@ -216,7 +217,7 @@ func (service *Service) runToolBody(ctx context.Context, owned *ownedTurn, spec 
 	}
 	owned.executed[owned.toolItemID] = struct{}{}
 
-	content, truncated, failCode, failText, execErr := service.invokeTool(ctx, spec, args, resolved)
+	content, truncated, failCode, failText, execErr := service.invokeTool(ctx, owned.result.SessionID, spec, args, resolved)
 	if isCancelCause(execErr) || contextError(ctx) != nil {
 		result, err := service.cancelOwnedTurn(ctx, owned, domain.InterruptionCallerCanceled)
 		return true, result, err
@@ -224,31 +225,41 @@ func (service *Service) runToolBody(ctx context.Context, owned *ownedTurn, spec 
 	if failCode != "" {
 		return service.failToolAndContinue(ctx, owned, call, failCode, failText)
 	}
+	if mappedCode, mappedText, ok := fileToolErrorResult(execErr); ok {
+		return service.failToolAndContinue(ctx, owned, call, mappedCode, mappedText)
+	}
 	if execErr != nil {
 		return service.failToolAndContinue(ctx, owned, call, CodeInvalidArgs, ToolTextInvalidArgs)
 	}
 	return service.completeToolAndContinue(ctx, owned, call, content, truncated)
 }
 
-func (service *Service) invokeTool(ctx context.Context, spec domain.ToolSpec, args toolArgs, resolved string) (string, bool, string, string, error) {
+func (service *Service) invokeTool(ctx context.Context, sessionID domain.SessionID, spec domain.ToolSpec, args toolArgs, resolved string) (string, bool, string, string, error) {
 	switch spec.Name {
 	case tools.NameReadFile:
 		read, err := service.files.Read(ctx, resolved, MaxToolResultBytes)
 		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				service.filesSeen.recordAbsent(sessionID, resolved)
+			}
 			return "", false, "", "", err
 		}
 		if !utf8.Valid(read.Data) {
 			return "", false, CodeInvalidArgs, ToolTextInvalidArgs, nil
 		}
+		service.filesSeen.recordPresent(sessionID, resolved, read.Version)
 		text := string(read.Data)
 		if read.Truncated {
 			return appendTruncation(text), true, "", "", nil
 		}
 		return text, false, "", "", nil
 	case tools.NameWriteFile:
-		if _, err := service.files.Write(ctx, resolved, []byte(args.Content), tools.MutationGuard{Kind: tools.GuardCreateIfAbsent}); err != nil {
+		guard := service.filesSeen.guardForWrite(sessionID, resolved)
+		mutation, err := service.files.Write(ctx, resolved, []byte(args.Content), guard)
+		if err != nil {
 			return "", false, "", "", err
 		}
+		service.filesSeen.recordPresent(sessionID, resolved, mutation.Version)
 		return fmt.Sprintf("wrote %d bytes", len(args.Content)), false, "", "", nil
 	case tools.NameListDir:
 		names, truncated, err := service.files.List(ctx, resolved, args.depthOrDefault(), tools.MaxListDirEntries)
