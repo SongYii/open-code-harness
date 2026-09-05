@@ -99,7 +99,23 @@ today, stated with their limits.
   exposure beyond loopback: no TLS, no support for binding elsewhere.
   See [Web trajectory UI](docs/architecture/web-trajectory-ui.md).
 
+### Structured file-mutation protection
+
+- **Observed structured writes.** `read_file` records a hidden, process-local
+  version per Session and canonical target. `write_file` uses guarded create or
+  guarded replace; `edit_file` requires an observed present version, checks
+  freshness before literal matching, and stages whole-file publication without
+  in-place truncation. Policy and any required Approver still run before this
+  guard. Stable tool results never render target paths, contents, adapter causes,
+  or opaque versions. The edit target is bounded to 1 MiB; model literals are
+  bounded to 32 KiB each. See the [implemented contract](docs/architecture/observed-file-mutation.md).
+
 ### Not enforced
+- **Structured file guards do not mediate every writer.** `exec`, foreign
+  processes, and kernel-level writers do not share the observation lock or a
+  kernel CAS. A later structured operation can detect a changed version, but an
+  uncooperative writer can still win the final guard-check-to-rename race.
+  Observations are not persisted, and Windows runtime behavior is not claimed.
 
 - **Windows has no OS-level `exec` confinement in this slice.**
   `composition.Open` fails closed there by default, the same as any host

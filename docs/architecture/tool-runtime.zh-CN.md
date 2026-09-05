@@ -23,7 +23,7 @@ Policy 是 `policy.Engine.Decide(Input) Decision`——一张表，不是 `next(
 瀑布，也不写在工具体里。`ModeAllowWrites` 随 `policy` 包交付。
 `NewService` / `DefaultConfig` 默认仍是 `ModeDefault`。
 
-四个内置工具：`read_file`、`write_file`、`list_dir`、`exec`。
+五个内置工具：`read_file`、`write_file`、`list_dir`、`exec`、`edit_file`。
 `list_dir` 的 `depth` 省略 ≡ 1，最大 2，整次 256 条。管线是
 `tool.call.started` → 校验 → 词法 → `Resolve` → `Decide` → 审批 → 执行。
 循环中途 append 使用 `step_append_*` 加 `ResolveAppend`。模型可见的工具
@@ -180,9 +180,9 @@ deny。未知 risk deny。网络 risk 或 `Network=true` 即使在
 （`TestModeAllowWritesExecutesWrite`）。该模式下 `exec` 仍要审批。生产
 组合仍是 `ModeDefault`。
 
-## 四个内置工具
+## 五个内置工具
 
-`tools.DefaultWorkspaceSpecs` 是四个名字唯一的 `domain.ToolSpec`
+`tools.DefaultWorkspaceSpecs` 是五个名字唯一的 `domain.ToolSpec`
 （`TestDefaultWorkspaceSpecsLockedContracts`）。已交付的 Source 是
 `builtin`；`mcp` 在目录类型上合法，以便以后的适配器投影进来。没有 MCP
 客户端。
@@ -193,6 +193,7 @@ deny。未知 risk deny。网络 risk 或 `Network=true` 即使在
 | `write_file` | `path`、`content` | — | write / true | `wrote <n> bytes`（不含路径） |
 | `list_dir` | `path` | `depth` 1–2；省略 ≡ 1 | read / false | 相对路径一行一个；256 条上限 |
 | `exec` | `argv`（至少 1 项，无 shell） | `cwd`；省略 = 工作区根 | exec / true | 先 `exit <code>\n` 再合计 ≤ 64 KiB 的输出 |
+| `edit_file` | `path`、非空 `old_string`、`new_string` | boolean `replace_all`；省略 = false | write / true | `edited file` 或 `replaced all occurrences` |
 
 `list_dir.depth` 为 0 或 3、小数或字符串都是 `invalid_args`
 （`TestValidateArgsDefaultWorkspaceSpecs`）。`exec` 拒绝模型 `timeout`
@@ -568,3 +569,12 @@ go test ./internal/harness/domain ./internal/harness/engine \
 
 这些排除项用于保持依赖顺序，不降低已经验证的 Step 循环路径，也防止把本
 里程碑误称为 GA harness。
+
+### 观察式文件修改更新
+
+第五个 builtin 是 `edit_file`：关闭的 `RiskWrite` schema，必需 `path`、非空
+`old_string`、`new_string`，可选 boolean `replace_all` 默认 false。path 为
+1–4096 bytes，每个 literal 最多 32 KiB；adapter 另把可编辑的完整目标限制为
+1 MiB。`write_file` 不再是 unconditional overwrite：隐藏的每 Session 观察推导
+受 guard 的 create 或 replace。精确签名、恢复消息、发布序列、生命周期语义、平台状态
+和排除项见[观察式文件修改合同](observed-file-mutation.zh-CN.md)。

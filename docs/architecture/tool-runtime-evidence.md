@@ -9,7 +9,7 @@ This ledger is the public completion record. The design remains the frozen
 PR sequence (design PRs 1–7 plus this docs PR). Commit history, executable
 gates, and the commands below support the completion statement.
 
-Application owns the Step loop. Policy is a pure Decide table. Four
+Application owns the Step loop. Policy is a pure Decide table. Five
 builtins run behind ports. `workspacefs` and `localexec` are not an OS
 sandbox. Default `go test` is keyless and uses `t.TempDir()` only.
 
@@ -145,7 +145,7 @@ excluded by design (CGO constraint), and Windows remains unsandboxed
 本台账是公开完成记录。设计保留为冻结的 PR 顺序。完成结论由提交历史、
 可执行门和下述验证命令共同支撑。
 
-Application 拥有 Step 循环。Policy 是纯 Decide 表。四个内置工具走端口。
+Application 拥有 Step 循环。Policy 是纯 Decide 表。五个内置工具走端口。
 `workspacefs` 与 `localexec` 不是 OS 沙箱。默认 `go test` 无密钥，且只用
 `t.TempDir()`。
 
@@ -190,3 +190,12 @@ SQLite、JSONL、Runtime Host/崩溃续跑、Context Engine、Application 重试
 [exec 沙箱与资源配额完成证据](exec-sandboxing-resource-quotas-evidence.md)
 中实现。Landlock 因 CGO 约束仍按设计排除；Windows 仍无沙箱（改为默认在
 该平台上 fail-closed）。
+
+## Observed file mutation update
+
+The later [observed file mutation evidence ledger](observed-file-mutation-evidence.md)
+records the fifth builtin, guarded FileSystem port, process-local observations,
+atomic publication evidence, and its deliberately narrower external-writer and
+platform claims. It supersedes this ledger's four-builtin wording only for that
+implemented extension; this original Tool Runtime evidence remains authoritative
+for its own Step-loop and Policy evidence.

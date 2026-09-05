@@ -23,7 +23,7 @@ Policy is `policy.Engine.Decide(Input) Decision` — a table, not a `next()`
 waterfall and not code inside tool bodies. `ModeAllowWrites` ships in
 `policy`. `NewService` / `DefaultConfig` stay on `ModeDefault`.
 
-Four builtins exist: `read_file`, `write_file`, `list_dir`, `exec`.
+Five builtins exist: `read_file`, `write_file`, `list_dir`, `exec`, `edit_file`.
 `list_dir` `depth` omitted ≡ 1, maximum 2, 256-entry cap. The pipeline is
 `tool.call.started` → validate → lexical → `Resolve` → `Decide` → approval
 → execute. Mid-loop appends use `step_append_*` plus `ResolveAppend`.
@@ -186,9 +186,9 @@ allows (`TestAllowAllIsUnconditional`) and is banned outside tests.
 (`TestModeAllowWritesExecutesWrite`). `exec` still requires approval in
 that mode. Production composition remains `ModeDefault`.
 
-## Four builtins
+## Five builtins
 
-`tools.DefaultWorkspaceSpecs` is four name-unique `domain.ToolSpec` values
+`tools.DefaultWorkspaceSpecs` is five name-unique `domain.ToolSpec` values
 (`TestDefaultWorkspaceSpecsLockedContracts`). Source `builtin` is shipped;
 source `mcp` is catalog-legal so a later adapter can project into the same
 type. There is no MCP client.
@@ -199,6 +199,7 @@ type. There is no MCP client.
 | `write_file` | `path`, `content` | — | write / true | `wrote <n> bytes` (no path) |
 | `list_dir` | `path` | `depth` 1–2; omitted ≡ 1 | read / false | relative paths, one per line; 256-entry cap |
 | `exec` | `argv` (min 1, no shell) | `cwd`; omitted = workspace root | exec / true | `exit <code>\n` then combined output ≤ 64 KiB |
+| `edit_file` | `path`, non-empty `old_string`, `new_string` | boolean `replace_all`; omitted = false | write / true | `edited file` or `replaced all occurrences` |
 
 `list_dir.depth` 0 or 3, a fractional depth, or a string depth is
 `invalid_args` (`TestValidateArgsDefaultWorkspaceSpecs`). `exec` rejects a
@@ -609,3 +610,14 @@ This implemented contract does not provide:
 These exclusions preserve dependency order. They do not weaken the
 verified Step-loop path, and they prevent this milestone from being
 presented as a GA harness.
+
+### Observed file mutation update
+
+The fifth builtin is `edit_file`, a closed `RiskWrite` schema requiring `path`,
+non-empty `old_string`, and `new_string`, with optional boolean `replace_all`
+defaulting false. Its path is 1–4096 bytes and each literal is at most 32 KiB;
+the adapter separately bounds the full editable target at 1 MiB. `write_file`
+is no longer an unconditional overwrite: hidden per-session observations derive
+guarded create or replace. The complete signatures, recovery messages,
+publication sequence, lifecycle semantics, platform status, and exclusions are
+in the [observed file mutation contract](observed-file-mutation.md).

@@ -28,7 +28,7 @@ The numbered milestone list lives in
 - Provider adapter (`adapters/openaicompat`): implemented and verified; not GA.
   Thin OpenAI-compatible Chat Completions SSE client behind `engine.Model`,
   not a vendor SDK or plugin kernel.
-- Tool Runtime, Policy, and four builtin workspace tools: implemented and
+- Tool Runtime, Policy, and five builtin workspace tools: implemented and
   verified; not GA. Application-owned Step loop and a pure Policy Decide
   table behind ports; not a plugin kernel. `exec` is now confined by bwrap
   and a cgroup v2 memory and CPU quota on Linux, or Seatbelt, RLIMIT_AS,
@@ -40,13 +40,18 @@ The numbered milestone list lives in
   text are scanned for a small, hardcoded set of secret shapes and
   redacted before persistence, audit replication, or ACP projection; see
   the [secret redaction contract](docs/architecture/secret-redaction.md)
-  and its
-  [evidence ledger](docs/architecture/secret-redaction-evidence.md).
+  and its [evidence ledger](docs/architecture/secret-redaction-evidence.md).
 - SQLite canonical EventStore (`adapters/sqlite`): implemented and verified;
   not GA. Pure-Go durable adapter behind the EventStore v2 port, passing the
   adapter-neutral conformance suite unchanged: verified open profile, WAL,
   full-shape migrations, append transaction with exact retry, pinned reads,
   fencing lease primitive, and verified backup.
+- Observed-state safe file mutation: implemented and verified; not GA. Hidden
+  per-session file observations guard `write_file` and the fifth `edit_file`
+  builtin; guarded workspace publication is atomic within its stated scope.
+  It excludes exec mediation, external/kernel CAS, persisted observations, and
+  Windows runtime coverage; see the [implemented contract](docs/architecture/observed-file-mutation.md)
+  and [evidence ledger](docs/architecture/observed-file-mutation-evidence.md).
 - JSONL audit replica: implemented and verified; not GA. Audit codec v1 with
   chain maintenance inside the append transaction, codec-v1 backfill, a
   crash-convergent exporter, consistent export, and eight-step verified
