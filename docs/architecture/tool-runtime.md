@@ -213,6 +213,40 @@ the closed set in `tools/schema.go`: `type`, `properties`, `required`,
 `additionalProperties`, `enum`, `minLength`, `maxLength`, `minimum`,
 `maximum`, `minItems`, `maxItems`, `items`.
 
+**Externally-sourced tool dispatch.** `invokeTool`'s branch for a
+`tools.SourceMCP` spec is keyed on `Source`, not `Name`: an external tool's
+name is chosen by the operator's configuration and by the server, so the
+closed four-name switch can never match it. Ahead of that branch, two
+builtin-only steps are skipped — `parseToolArgs`'s fixed-field decode, because
+an external tool's arguments are its own shape rather than this project's, and
+the `scopePath`/`Resolve` workspace-containment path, because an external
+server is not a location inside this workspace and "in workspace" is not a
+question that applies to it. `WorkspaceIn` is therefore true for every
+external call.
+
+Skipping containment is not a relaxation. Every externally-sourced tool is
+classified `RiskExec` and mutating at discovery, unconditionally and
+regardless of what the server claims about itself, so the existing Policy
+table denies it outright under `ModeReadOnly`/`ModeDenyAll` and requires
+approval under `ModeDefault`/`ModeAllowWrites` — exactly as it treats builtin
+`exec`. `ValidateArgs` still runs, against the tool's own declared schema,
+and is the same check for every source.
+
+A tool that runs and reports its own failure becomes a tool failure inside the
+Turn (`CodeExternalToolFailed`, carrying the tool's own message, or
+`ToolTextExternalFailed` when it said nothing). Only a call that could not
+reach the tool is an error that ends the Turn. The distinction is load-bearing:
+a tool failure is an ordinary event the model can read and react to, so
+conflating the two would let a routine "file not found" tear down a session.
+External results are bounded by `MaxToolResultBytes` and carry the same
+`prefix + \n[truncated]` shape every other truncated tool result does.
+
+The `tools.ExternalTools` port lives beside `FileSystem` and `CommandRunner`
+so Application dispatches without importing an adapter, and
+`catalogPortNeeds` derives the requirement from `Source` rather than `Risk` —
+an MCP tool is always `RiskExec` but touches neither the workspace filesystem
+nor the command runner.
+
 **Source-aware schema validation.** The closed keyword set above applies to
 `SourceBuiltin` specs, whose schemas this project writes itself. A
 `tools.SourceMCP` spec is validated differently, because its schema is

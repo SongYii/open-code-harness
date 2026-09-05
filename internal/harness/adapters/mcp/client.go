@@ -39,6 +39,12 @@ type Server struct {
 	config  ServerConfig
 	command Command
 	session *sdk.ClientSession
+
+	// rawNames maps a qualified Catalog name back to the name the server
+	// knows. Discovery owns the qualification, so only discovery can supply
+	// the inverse, and a call for a name this server never offered is
+	// refused rather than guessed at.
+	rawNames map[string]string
 }
 
 // Validate rejects a configuration this package will not act on. It runs

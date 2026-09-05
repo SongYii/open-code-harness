@@ -200,6 +200,9 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 	appConfig.Catalog = catalog
 	appConfig.Files = files
 	appConfig.Commands = commands
+	if len(mcpSpecs) > 0 {
+		appConfig.ExternalTools = newExternalToolRouter(mcpConnected, mcpSpecs)
+	}
 	approver := tools.NewSlot(config.Approver)
 	appConfig.Approver = approver
 	identity := model.Identity()

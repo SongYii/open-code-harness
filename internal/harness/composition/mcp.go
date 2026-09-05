@@ -99,3 +99,31 @@ func connectMCPServers(ctx context.Context, configs []mcp.ServerConfig, factory 
 	}
 	return specs, connected, nil
 }
+
+// externalToolRouter dispatches a call to whichever connected server owns the
+// qualified tool name.
+//
+// Routing is by exact name and nothing else: a name no server claims is
+// refused rather than broadcast or guessed at, because guessing would let one
+// server answer for another's tool.
+type externalToolRouter struct {
+	byName map[string]*mcp.Server
+}
+
+func newExternalToolRouter(servers mcpServers, specs []domain.ToolSpec) externalToolRouter {
+	router := externalToolRouter{byName: make(map[string]*mcp.Server, len(specs))}
+	for _, server := range servers {
+		for _, name := range server.QualifiedNames() {
+			router.byName[name] = server
+		}
+	}
+	return router
+}
+
+func (router externalToolRouter) Call(ctx context.Context, name, arguments string) (tools.ExternalToolResult, error) {
+	server, ok := router.byName[name]
+	if !ok {
+		return tools.ExternalToolResult{}, fmt.Errorf("composition: mcp: no configured server provides tool %q", name)
+	}
+	return server.Call(ctx, name, arguments)
+}

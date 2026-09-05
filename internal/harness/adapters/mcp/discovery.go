@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -94,6 +96,10 @@ func (s *Server) Discover(ctx context.Context) (DiscoveryResult, error) {
 		if degraded {
 			result.Degraded = append(result.Degraded, spec.Name)
 		}
+		if s.rawNames == nil {
+			s.rawNames = make(map[string]string)
+		}
+		s.rawNames[spec.Name] = tool.Name
 		result.Specs = append(result.Specs, spec)
 	}
 	return result, nil
@@ -161,4 +167,73 @@ func (s *Server) projectTool(tool *sdk.Tool) (domain.ToolSpec, *DiscoveryDiagnos
 	// contract's source-aware validation); it never decides whether the tool
 	// exists.
 	return spec, nil, !tools.SchemaIsStrictlyValidatable(schema), nil
+}
+
+// Call invokes one discovered tool by its qualified name.
+//
+// Arguments are the raw JSON the model produced, already validated against
+// the tool's own declared schema, and are forwarded verbatim: their shape
+// belongs to the server, not to this project.
+//
+// A tool that runs and reports its own failure returns IsError, not an error.
+// Only a call that could not reach the tool at all is an error, because the
+// two mean different things to a Turn: the first is an event the model can
+// read and react to, the second ends the Turn.
+func (s *Server) Call(ctx context.Context, qualifiedName string, arguments string) (tools.ExternalToolResult, error) {
+	if s == nil || s.session == nil {
+		return tools.ExternalToolResult{}, fmt.Errorf("%w: server is not connected", ErrInvalidServerConfig)
+	}
+	raw, ok := s.rawNames[qualifiedName]
+	if !ok {
+		return tools.ExternalToolResult{}, fmt.Errorf("%w: server %q does not provide %q",
+			ErrInvalidServerConfig, s.config.Name, qualifiedName)
+	}
+
+	// The SDK marshals Arguments as JSON, so a json.RawMessage forwards the
+	// model's own bytes without a decode-and-re-encode round trip that could
+	// change them.
+	params := &sdk.CallToolParams{Name: raw}
+	if strings.TrimSpace(arguments) != "" {
+		params.Arguments = json.RawMessage(arguments)
+	}
+
+	result, err := s.session.CallTool(ctx, params)
+	if err != nil {
+		return tools.ExternalToolResult{}, fmt.Errorf("%w: server %q tool %q: %w",
+			ErrConnect, s.config.Name, raw, err)
+	}
+	return tools.ExternalToolResult{Text: renderContent(result.Content), IsError: result.IsError}, nil
+}
+
+// renderContent flattens a tool result's content blocks into the text the
+// model sees. Only text blocks are projected; other block kinds are named
+// rather than dropped silently, so a result that carried an image or a
+// resource is visibly incomplete instead of appearing empty.
+func renderContent(blocks []sdk.Content) string {
+	parts := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		switch typed := block.(type) {
+		case *sdk.TextContent:
+			parts = append(parts, typed.Text)
+		case nil:
+			continue
+		default:
+			parts = append(parts, fmt.Sprintf("[unsupported content block %T]", block))
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+// QualifiedNames lists the Catalog names this server contributed, so a router
+// can address calls without re-deriving the qualification.
+func (s *Server) QualifiedNames() []string {
+	if s == nil {
+		return nil
+	}
+	names := make([]string, 0, len(s.rawNames))
+	for name := range s.rawNames {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
