@@ -40,7 +40,19 @@ repository.
 
 `mcp/shared.go:51-53` carries three live protocol versions —
 `2026-07-28`, `2025-11-25`, `2025-06-18` — with version negotiation
-(`shared.go:94`, citing the 2025-11-25 lifecycle spec). The `_meta`-carried
+(`shared.go:94`, citing the 2025-11-25 lifecycle spec).
+
+> **Corrected 2026-09-05 when the dependency actually landed.** The commit
+> read above is not a released version, and the design requires pinning a
+> release. Task 3 pinned `v1.7.0` and re-read every claim in this document
+> against the module that actually entered the build. Three held exactly —
+> `CommandTransport`'s shape, the shutdown ladder, and the production import
+> set. This one did not: `v1.7.0` carries **four** protocol versions, adding
+> `2025-03-26` (`shared.go:50-54`, with `latestProtocolVersion` naming
+> `2026-07-28`). The correction strengthens the argument rather than weakening
+> it — there is more era-handling to absorb, not less — but it is recorded
+> because a claim read at an untagged commit is not automatically true of the
+> release that ships. The `_meta`-carried
 request identity the gate described as the "modern" era is handled at
 `shared.go:555,662,682`, and `shared.go:636` marks an older mechanism
 deprecated as of `2026-07-28`.
@@ -134,6 +146,14 @@ Verified by reading production (non-test) imports only. Importing
 `golang-jwt/jwt/v5`, `google/go-cmp`, and `golang.org/x/tools` appear in the
 SDK's own `go.mod` but are **test-only** within it (zero non-test files
 reference them), so they do not enter this project's build graph.
+
+> **Confirmed 2026-09-05 by the real thing.** Adding `v1.7.0` and running
+> `go mod tidy` added exactly the seven modules predicted above and no others;
+> `golang-jwt/jwt/v5` did not appear. `go list -deps ./internal/harness/adapters/mcp`
+> lists `golang.org/x/oauth2` and `golang.org/x/oauth2/internal` in the
+> production build graph, so the unavoidable-OAuth finding is now proven by
+> the toolchain rather than inferred from imports. `govulncheck` reports no
+> vulnerabilities across the enlarged graph, and `go mod tidy -diff` is clean.
 
 Two consequences the plan must handle rather than discover:
 
