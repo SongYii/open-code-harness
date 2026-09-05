@@ -16,6 +16,18 @@
   committed implementation. `tools.SourceMCP` remains, after this design,
   a catalog-legal value with no adapter behind it until a concrete
   external-tool need justifies the implementation cost §2 estimates.
+- **Amended 2026-09-04 — implementation authorized.** The prerequisite in
+  the paragraph above is lifted by project decision, not because a
+  specific external tool arrived; the decision to build was taken
+  directly. That paragraph is kept as the state at the time rather than
+  rewritten. An implementation plan now follows this design.
+  Four contracts below are amended in the same pass, each because the
+  [implementation-time
+  re-verification](../../research/architecture-gates/2026-09-04-mcp-implementation-reverification.md)
+  found repository facts that did not match them: §3's dependency count
+  and its sibling-import rule versus §6, §5's collision claim, and §6's
+  assumption that `localexec` already exposes a reusable API. Every
+  amendment is marked in place.
 - **Stability:** new surface; adds no code and changes no existing
   `experimental`/pre-GA contract
 - **Repository:** `open-code-harness` (`github.com/SongYii/open-code-harness`)
@@ -191,6 +203,22 @@ may import `internal/harness/adapters/mcp`, exactly the rule every existing
 adapter already obeys. This is a mechanical extension of an existing test
 table, not a new architectural mechanism.
 
+> **Amendment, 2026-09-04 — this rule and §6 contradicted each other.**
+> §6 requires the mcp adapter to reuse `localexec`'s confinement.
+> `localexec` is a sibling adapter, so satisfying §6 as written breaks the
+> rule above, and `TestForbiddenImport` would catch it on the first build.
+>
+> Resolution: **the mcp adapter never imports `localexec`.** It owns a
+> narrow port — a confined-command factory returning a configured but
+> unstarted `*exec.Cmd` — and `composition`, the one package permitted to
+> import both, supplies the `localexec`-backed implementation. This keeps
+> the import rule exactly as written, keeps confinement owned by the
+> adapter that already implements it, and matches how every other
+> capability crosses a boundary in this project. The alternative —
+> extracting confinement into a shared non-adapter package — is a larger
+> change to a security-critical component with a single caller today, and
+> is rejected for this slice.
+
 `internal/harness/adapters/mcp` adds `modelcontextprotocol/go-sdk` as this
 project's second non-test module dependency (after `modernc.org/sqlite`,
 per `SECURITY.md`'s dependency statement — itself already slightly stale,
@@ -200,6 +228,30 @@ this design should also correct that statement). The SDK is pinned to an
 exact version (not a range), matching this project's own `modernc.org/sqlite
 v1.56.0` precedent and Codex's own `rmcp = "=3.1.3"` exact pin (gate,
 §"openai/codex").
+
+> **Amendment, 2026-09-04 — the dependency count above is wrong, and the
+> real one is larger than a count of one module.** The paragraph is kept
+> as written because it was accurate on 2026-08-30; the web trajectory UI
+> slice has since added `github.com/coder/websocket`, so non-test
+> dependencies already number four (`modernc.org/sqlite`,
+> `golang.org/x/sys`, `golang.org/x/term`, `github.com/coder/websocket`;
+> `github.com/chromedp/chromedp` is genuinely test-only).
+>
+> More importantly, adopting the SDK is not one module. Importing
+> `github.com/modelcontextprotocol/go-sdk/mcp` transitively requires, on
+> production paths only: `github.com/google/jsonschema-go`,
+> `github.com/yosida95/uritemplate/v3`, `github.com/segmentio/encoding`
+> (plus `segmentio/asm`), `golang.org/x/sync`, `golang.org/x/time`, and
+> **`golang.org/x/oauth2`** — the last reached via `mcp` → `auth` →
+> `oauthex`, and therefore unavoidable even though this design is
+> stdio-only and reaches no OAuth code path. The graph goes from four
+> non-test dependencies to roughly eleven. (`golang-jwt/jwt/v5`,
+> `google/go-cmp`, and `golang.org/x/tools` appear in the SDK's own
+> `go.mod` but are test-only within it and stay out of this build.)
+>
+> The implementing slice must rewrite `SECURITY.md`'s dependency
+> statement to describe this posture honestly, including the unreachable
+> OAuth dependency, rather than leaving a `go.mod` diff to speak for it.
 
 ## 4. Server configuration and admission
 
@@ -277,6 +329,56 @@ At `composition.Open`, for each configured server, in order:
    prefixed) fails `NewCatalog` exactly as a builtin duplicate would today
    — caught at startup, not at first call.
 
+> **Amendment, 2026-09-04 — the parenthesical above is false, and the gap
+> is reachable by an untrusted server.** The prefix is not injective.
+> `tools.validateSpec` (`catalog.go:133-136`) accepts any non-empty,
+> valid-UTF-8, non-whitespace-padded name, so `__` may appear inside
+> either part: server `a` with tool `b__c` and server `a__b` with tool
+> `c` both qualify to `mcp__a__b__c`, with distinct server names.
+>
+> Raw tool names come from the MCP server, which this design's own threat
+> model treats as untrusted, and `NewCatalog` fails closed at
+> `composition.Open`. So a hostile or buggy server can pick a tool name
+> that collides with a *different* configured server's tool and prevent
+> the harness from starting. Startup denial of service is low severity,
+> but it is externally reachable and the sentence above reasons as though
+> it were impossible.
+>
+> **Amended rule.** Before joining, each part is sanitized to
+> **`[a-zA-Z0-9-]`** — ASCII letters, digits, and hyphen, with runs of
+> the replacement character collapsed and the result trimmed. Underscore
+> is deliberately **excluded** from the part alphabet and reserved as the
+> separator; that exclusion is the entire mechanism that makes the join
+> injective. The qualified name is capped at 64 bytes, with overflow
+> truncated and given a stable 8-hex-digit FNV-1a suffix of the
+> untruncated name rather than a silent clip.
+>
+> Sanitization is itself lossy — `a/b` and `a.b` both reduce to `a-b` —
+> so a part that sanitization actually altered additionally carries an
+> 8-hex-digit FNV-1a suffix of its own original. A part that was already
+> legal passes through untouched, which keeps ordinary tool names legible
+> to the model rather than hashing every name unconditionally.
+>
+> Sanitization also disposes of a smaller problem: `validateSpec` rejects
+> leading and trailing whitespace but not an interior newline, so an
+> unsanitized server-supplied name could carry control characters into a
+> log line or a rendered prompt.
+>
+> **Second amendment, same day, found by implementing it.** This
+> paragraph first specified sanitizing to `[a-zA-Z0-9_-]` with runs of
+> `_` collapsed, and claimed that removed the separator from both parts.
+> It does not: that alphabet *keeps* the separator, so `a` + `b__c` and
+> `a__b` + `c` still both qualify to the same name. Task 1's own
+> injectivity test failed against the rule as first written, and a
+> mutation restoring that alphabet turns the test red again. The rule
+> above is the corrected one. Kimi Code's convention is still the source
+> for the cap-and-suffix mechanism; its exact alphabet is not, because
+> its separator is `__` rather than a single reserved character.
+>
+> A collision that survives sanitization (two servers genuinely
+> configured with the same `Name`, which is the case the original
+> sentence meant) still fails `NewCatalog` at startup, unchanged.
+
 ## 6. Reusing `exec`'s OS-level confinement for the subprocess
 
 A stdio-transport MCP server is, from the operating system's point of
@@ -292,6 +394,40 @@ call (it persists for the harness process's lifetime, not one tool
 invocation), so the resource-quota lifecycle differs in duration, not in
 mechanism — a detail an implementation plan would need to work out against
 `localexec`'s actual API, not this design.
+
+> **Amendment, 2026-09-04 — there is no such API to reuse; it must be
+> built.** The sentence above correctly deferred this to a plan, but the
+> answer is larger than "work out against the actual API": `localexec`
+> has no API that fits.
+>
+> Its only execution entry point is
+> `Runner.Run(ctx, spec) (tools.CommandResult, error)` (`runner.go:133`),
+> which runs to completion, captures output into a capped buffer
+> (`:177-179`), and scopes both the temporary directory (`defer
+> os.RemoveAll`, `:158`) and the cgroup registration (`defer
+> runner.cgroup.unregister`, `:189`) to that one call. An MCP stdio
+> server needs the opposite: a live process with stdin/stdout pipes whose
+> confinement, temp directory, and quota membership last for the
+> harness's lifetime.
+>
+> The machinery is reusable — `bwrapArgv(...)` and
+> `seatbeltCommandArgv(...)` are pure argv transforms (`:165,167`), and
+> `cgroup.addProcess`/`register`/`unregister` take a bare pid — so
+> `localexec` gains a second, long-lived entry point beside `Run`,
+> returning a configured but unstarted `*exec.Cmd` together with a handle
+> owning the temporary directory and quota membership until closed. That
+> is its own plan task with its own tests, not a wiring detail. The macOS
+> `beginRlimitBracket` (`:181`) is a mutex-guarded, process-wide limit
+> held only around `Start`, which suits a long-lived child, but the plan
+> must confirm that rather than inherit it silently.
+>
+> The returned command also carries `Setpgid`, because the SDK's own
+> `CommandTransport.Close` ladder signals the process rather than its
+> group and proves no reap — both weaker than this repository's existing
+> ACP practice. See the re-verification document's §3.
+>
+> Per §3's amendment, the mcp adapter consumes this through a port
+> `composition` fills; it never imports `localexec` itself.
 
 ## 7. Invocation dispatch
 

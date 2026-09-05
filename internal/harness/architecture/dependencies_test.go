@@ -45,6 +45,8 @@ func TestClassifyProductionDirectory(t *testing.T) {
 		{name: "workspacefs production subpackage", directory: "internal/harness/adapters/workspacefs/internal", want: ownerWorkspaceFS, inspect: true, hasOwner: true},
 		{name: "localexec root", directory: "internal/harness/adapters/localexec", want: ownerLocalExec, inspect: true, hasOwner: true},
 		{name: "localexec production subpackage", directory: "internal/harness/adapters/localexec/internal", want: ownerLocalExec, inspect: true, hasOwner: true},
+		{name: "mcp root", directory: "internal/harness/adapters/mcp", want: ownerMCP, inspect: true, hasOwner: true},
+		{name: "mcp production subpackage", directory: "internal/harness/adapters/mcp/internal", want: ownerMCP, inspect: true, hasOwner: true},
 		{name: "sqlite root", directory: "internal/harness/adapters/sqlite", want: ownerSQLite, inspect: true, hasOwner: true},
 		{name: "runtime root", directory: "internal/harness/runtime", want: ownerRuntime, inspect: true, hasOwner: true},
 		{name: "runtime production subpackage", directory: "internal/harness/runtime/internal", want: ownerRuntime, inspect: true, hasOwner: true},
@@ -163,6 +165,19 @@ func TestForbiddenImport(t *testing.T) {
 		{name: "composition may import sqlite", owner: ownerComposition, importPath: modulePath + "/internal/harness/adapters/sqlite", forbidden: false},
 		{name: "composition may import openaicompat", owner: ownerComposition, importPath: modulePath + "/internal/harness/adapters/openaicompat", forbidden: false},
 		{name: "composition may import localexec", owner: ownerComposition, importPath: modulePath + "/internal/harness/adapters/localexec", forbidden: false},
+		{name: "composition may import mcp", owner: ownerComposition, importPath: modulePath + "/internal/harness/adapters/mcp", forbidden: false},
+		// The mcp adapter reuses localexec's OS-level confinement for the
+		// server subprocess, but must never import it: design §3's
+		// 2026-09-04 amendment resolves that contradiction with a port the
+		// mcp adapter declares and composition fills.
+		{name: "mcp cannot import localexec", owner: ownerMCP, importPath: modulePath + "/internal/harness/adapters/localexec", forbidden: true},
+		{name: "mcp cannot import workspacefs", owner: ownerMCP, importPath: modulePath + "/internal/harness/adapters/workspacefs", forbidden: true},
+		{name: "mcp cannot import sqlite", owner: ownerMCP, importPath: modulePath + "/internal/harness/adapters/sqlite", forbidden: true},
+		{name: "mcp cannot import acp", owner: ownerMCP, importPath: modulePath + "/internal/harness/adapters/acp", forbidden: true},
+		{name: "mcp cannot import composition", owner: ownerMCP, importPath: modulePath + "/internal/harness/composition", forbidden: true},
+		{name: "mcp cannot import testkit", owner: ownerMCP, importPath: modulePath + "/internal/harness/testkit", forbidden: true},
+		{name: "application cannot import mcp", owner: ownerApplication, importPath: modulePath + "/internal/harness/adapters/mcp", forbidden: true},
+		{name: "tools cannot import mcp", owner: ownerTools, importPath: modulePath + "/internal/harness/adapters/mcp", forbidden: true},
 		{name: "composition may import runtime", owner: ownerComposition, importPath: modulePath + "/internal/harness/runtime", forbidden: false},
 		{name: "composition cannot import testkit", owner: ownerComposition, importPath: modulePath + "/internal/harness/testkit", forbidden: true},
 		{name: "system cannot import adapters", owner: ownerSystem, importPath: modulePath + "/internal/harness/adapters/sqlite", forbidden: true},
@@ -396,6 +411,7 @@ const (
 	ownerTools        packageOwner = "tools"
 	ownerWorkspaceFS  packageOwner = "workspacefs"
 	ownerLocalExec    packageOwner = "localexec"
+	ownerMCP          packageOwner = "mcp"
 	ownerSystem       packageOwner = "system"
 	ownerACP          packageOwner = "acp"
 	ownerComposition  packageOwner = "composition"
@@ -436,6 +452,7 @@ func packageOwnership(directory string) (packageOwner, bool) {
 		{root: "internal/harness/policy", owner: ownerPolicy},
 		{root: "internal/harness/adapters/workspacefs", owner: ownerWorkspaceFS},
 		{root: "internal/harness/adapters/localexec", owner: ownerLocalExec},
+		{root: "internal/harness/adapters/mcp", owner: ownerMCP},
 		{root: "internal/harness/adapters/system", owner: ownerSystem},
 		{root: "internal/harness/adapters/acp", owner: ownerACP},
 		{root: "internal/harness/composition", owner: ownerComposition},
@@ -621,6 +638,22 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/adapters",
 			modulePath+"/internal/harness/testkit",
 		)
+	case ownerMCP:
+		// The MCP adapter projects external tools into the same ports the
+		// builtins use, so it may import domain and tools — and nothing
+		// upward. It reuses localexec's OS-level confinement for the server
+		// subprocess without importing it: the 2026-09-04 amendment to
+		// design §3 resolves that contradiction with a port this adapter
+		// declares and composition fills. The generic sibling-adapter rule
+		// below already forbids localexec; these are the non-adapter
+		// boundaries it does not cover.
+		forbidden = append(forbidden,
+			modulePath+"/internal/harness/application",
+			modulePath+"/internal/harness/composition",
+			modulePath+"/internal/harness/runtime",
+			modulePath+"/internal/harness/eval",
+			modulePath+"/internal/harness/testkit",
+		)
 	}
 	// The Runtime Host owns the canonical store's lifecycle and its Config
 	// embeds sqlite.Config; the Slice 4 design established that dependency.
@@ -689,6 +722,8 @@ func adapterOwnerRoot(owner packageOwner) (string, bool) {
 		return adaptersRoot + "/sqlite", true
 	case ownerACP:
 		return adaptersRoot + "/acp", true
+	case ownerMCP:
+		return adaptersRoot + "/mcp", true
 	default:
 		return "", false
 	}
@@ -909,7 +944,7 @@ func TestOnlyCompositionAndRuntimeMayNameAnAdapter(t *testing.T) {
 		ownerDomain, ownerEngine, ownerApplication, ownerPolicy, ownerTools,
 		ownerRuntime, ownerMemory, ownerOpenAICompat, ownerSQLite,
 		ownerWorkspaceFS, ownerLocalExec, ownerSystem, ownerACP,
-		ownerTranscript, ownerEval,
+		ownerTranscript, ownerEval, ownerMCP,
 	}
 	permitted := func(owner packageOwner, adapter string) bool {
 		if selfRoot, ok := adapterOwnerRoot(owner); ok && adapter == selfRoot {

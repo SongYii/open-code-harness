@@ -192,7 +192,10 @@ name-unique and immutable. What it does not specify is what happens when the
 raw name will not fit that catalog — and Kimi's implementation supplies
 exactly the three missing rules:
 
-- every part sanitized to `[a-zA-Z0-9_-]`, with runs of `_` collapsed;
+- every part sanitized (Kimi sanitizes to `[a-zA-Z0-9_-]`; this project
+  must exclude the separator character from the part alphabet instead —
+  see the design's second 2026-09-04 amendment, which Task 1's own
+  injectivity test forced);
 - a 64-character cap on the qualified name;
 - on overflow, truncation plus a stable 8-hex-digit FNV-1a suffix, rather
   than a silent clip that could collide.
@@ -314,6 +317,73 @@ into a shared non-adapter package, is a larger change to a security-critical
 component that currently has a single caller. The plan should take the first
 and say so; either way, this is a real fork in the road that the design left
 open, not an implementation detail.
+
+### 7.4 §5's schema rule would drop essentially every real tool
+
+Found while implementing Task 1, by feeding realistic schemas to
+`tools.compileSchema` rather than reasoning about it.
+
+Design §5 says an MCP tool's `InputSchema` is "passed through verbatim, then
+independently compiled by this project's own `tools.compileSchema` … a schema
+this project's own compiler rejects drops that one tool, logged, not fatal to
+the whole server." That is a sound-sounding rule whose practical effect is
+near-total rejection.
+
+`allowedSchemaKeywords` (`schema.go:14-27`) admits exactly twelve keywords —
+`type`, `properties`, `required`, `additionalProperties`, `enum`,
+`minLength`, `maxLength`, `minimum`, `maximum`, `minItems`, `maxItems`,
+`items` — and the allowlist is applied recursively, because
+`compileObjectKeywords` compiles each nested property through
+`compileSchemaObject` (`schema.go:148-165`). `compileSchemaObject` also
+accepts only four type values: `object`, `string`, `integer`, `array`.
+Object schemas must additionally set `additionalProperties: false`
+(`schema.go:122-125`, "Object schemas must close extra fields so
+model-invented keys cannot pass").
+
+Measured, by compiling each of these:
+
+| Realistic schema feature | Accepted |
+| --- | --- |
+| `{"type":"object","additionalProperties":false,"properties":{}}` | yes |
+| a property carrying `"description"` | **no** |
+| top-level `"$schema"` | **no** |
+| top-level `"title"` | **no** |
+| an object schema without `additionalProperties:false` | **no** |
+| `"type":"number"` | **no** |
+| `"type":"boolean"` | **no** |
+| `"anyOf": [...]` | **no** |
+| a property carrying `"default"` | **no** |
+
+A per-property `description` is close to universal in published MCP tool
+schemas, and `number`/`boolean` are ordinary JSON Schema types. Under §5 as
+written, a correctly configured, healthy MCP server would be discovered
+successfully, have every one of its tools dropped with a log line, and leave
+the harness running with an empty MCP contribution — the worst shape of
+failure, because it is silent and looks like success.
+
+This is the one finding here that is not merely a plan detail. It needs a
+decision before Task 4 can be built, and the options are not equivalent:
+
+1. **Widen `tools.compileSchema`** to a realistic JSON Schema subset. This
+   edits an implemented contract the design's own header lists as one it must
+   not change, and it relaxes a validator whose strictness is deliberate —
+   `additionalProperties: false` exists so model-invented keys cannot pass.
+2. **Normalize incoming schemas** — strip unknown keywords, inject
+   `additionalProperties: false`, map unsupported types. Harmless for
+   `description` and `title`; **not** harmless for `anyOf` or a dropped type
+   constraint, where stripping changes what the schema means and could admit
+   arguments the server intended to reject.
+3. **Validate MCP arguments with the SDK's own `jsonschema` support** and
+   confine `tools.compileSchema` to builtins. Honest about the two sources
+   having different schema dialects, but it means an MCP tool's arguments are
+   no longer checked by the same code path as a builtin's, which §7 currently
+   relies on.
+4. **Accept the narrow subset** and document that only servers publishing
+   schemas in this project's dialect are usable. Defensible only if some real
+   server actually does.
+
+Nothing here recommends one. The measurement is the contribution; the choice
+is a design decision, and Task 4 is blocked until it is made.
 
 ## 8. Stale statements this slice must correct
 
