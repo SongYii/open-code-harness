@@ -58,13 +58,59 @@ type CellDistribution struct {
 	// unanimous.
 	VerdictStability float64
 
-	// Trustworthy reports whether this measurement can be read as a result
-	// at all. It is a statement about the measurement, never a third verdict
-	// about the Subject.
-	Trustworthy bool
+	// EvaluableEnough reports whether enough repetitions were judgeable for
+	// this Cell to be a measurement at all.
+	//
+	// This is a structural fact: arithmetic on counts, certain without any
+	// calibration. One survivor of five repetitions is not a measurement,
+	// whatever the survivor said. A Cell that is not EvaluableEnough must
+	// never be reported as a pass.
+	EvaluableEnough bool
 
-	// UntrustworthyReason states why, when Trustworthy is false.
-	UntrustworthyReason string
+	// NotEvaluableEnoughReason states why, when EvaluableEnough is false.
+	NotEvaluableEnoughReason string
+
+	// ExceedsDeclaredLimits reports whether the evaluable repetitions
+	// disagreed by more than the policy declared.
+	//
+	// This is a threshold judgement, and it is only ever as good as the
+	// limits it compares against. It is kept apart from EvaluableEnough
+	// because the two have different warrants and only one of them can
+	// block a result: while LimitsCalibration is uncalibrated, this field
+	// is advisory and must not rewrite a Cell from a pass into "not a pass".
+	//
+	// No framework in the comparison set — inspect_ai, terminal-bench,
+	// evals, vitest-evals, Maka — has a gate of this kind. That is a fact
+	// about this field, not about EvaluableEnough, whose analogues
+	// (insufficient n, an inconclusive A/B test) are ordinary.
+	ExceedsDeclaredLimits bool
+
+	// ExceededLimitsReason states which limit, when ExceedsDeclaredLimits.
+	ExceededLimitsReason string
+
+	// LimitsCalibration carries the policy's calibration state, so a reader
+	// of ExceedsDeclaredLimits cannot see the judgement without also seeing
+	// what it is worth.
+	LimitsCalibration Calibration
+}
+
+// MayBeReportedAsPass applies the one hard reporting rule of design §3.
+//
+// It reads only the structural half deliberately. A limit breach under an
+// uncalibrated policy is a number compared against a guess, and a guess does
+// not get to turn a pass into a non-pass; a Cell nobody could judge is a
+// different matter and blocks unconditionally. This is not the old merged
+// boolean returning under a new name: it is the reporting rule, it never
+// consults ExceedsDeclaredLimits while the limits are uncalibrated, and both
+// fields stay separately published either way.
+func (d CellDistribution) MayBeReportedAsPass() bool {
+	if !d.EvaluableEnough {
+		return false
+	}
+	if d.LimitsCalibration == CalibrationCalibrated && d.ExceedsDeclaredLimits {
+		return false
+	}
+	return true
 }
 
 // ComputeCellDistribution measures one Cell's repetitions against a policy.
@@ -112,7 +158,9 @@ func ComputeCellDistribution(repetitions []CellRepetition, policy VariancePolicy
 	distribution.NumericSpread = spreadOf(distribution.NumericScores)
 	distribution.VerdictStability = modalShare(distribution.Verdicts, evaluable)
 
-	distribution.Trustworthy, distribution.UntrustworthyReason = judgeTrustworthiness(distribution, policy)
+	distribution.LimitsCalibration = policy.Calibration
+	distribution.EvaluableEnough, distribution.NotEvaluableEnoughReason = judgeEvaluability(distribution, policy)
+	distribution.ExceedsDeclaredLimits, distribution.ExceededLimitsReason = judgeDeclaredLimits(distribution, policy)
 	return distribution, nil
 }
 
@@ -178,59 +226,96 @@ func exceeds(value, limit float64) bool { return value > limit+limitEpsilon }
 // falls reports whether value is below limit, on the same terms.
 func falls(value, limit float64) bool { return value < limit-limitEpsilon }
 
-// judgeTrustworthiness applies the policy's declared limits.
+// judgeEvaluability answers the structural question: were enough
+// repetitions judgeable for this to be a measurement?
+//
+// It is deliberately a separate function from judgeDeclaredLimits, and its
+// answer is deliberately a separate field. The two questions have different
+// warrants — this one is certain, that one is only as good as an
+// uncalibrated number — and an earlier revision that merged them into one
+// boolean with a joined reason string reported a Cell with a single
+// evaluable repetition of five as perfectly trustworthy.
+// Two bugs found by probing this file's own first implementation forced the
+// separation. With nothing evaluable, the modal share is not 0.0 — it is
+// undefined — and reporting "stability 0.0000 is below 0.8000" tells an
+// operator the Cell was judged inconsistently when it was never judged at
+// all. And with a single survivor among four unjudgeable repetitions,
+// stability computes to a perfect 1/1 and spread to 0 from one number,
+// reproducing the "perfect stability, measured never" hazard through a
+// configuration that looks entirely correct — the policy document's own
+// two-repetition floor cannot see this, because the shortfall happens at run
+// time rather than in the configuration.
+func judgeEvaluability(distribution CellDistribution, policy VariancePolicy) (bool, string) {
+	if distribution.EvaluableAttempts >= policy.MinEvaluableRepetitions {
+		return true, ""
+	}
+	if distribution.EvaluableAttempts == 0 {
+		return false, fmt.Sprintf(
+			"no repetition was evaluable; %d of %d could not be judged",
+			distribution.Verdicts[ScoreIndeterminate], distribution.Attempts)
+	}
+	return false, fmt.Sprintf(
+		"only %d of %d repetitions were evaluable, below the declared minimum %d",
+		distribution.EvaluableAttempts, distribution.Attempts, policy.MinEvaluableRepetitions)
+}
+
+// judgeDeclaredLimits answers the threshold question: did the evaluable
+// repetitions disagree by more than the policy declared?
 //
 // Both comparisons treat a declared limit as inclusive: a value exactly at
 // the limit is within it. Getting that backwards would silently make every
 // policy one notch stricter than it reads.
-func judgeTrustworthiness(distribution CellDistribution, policy VariancePolicy) (bool, string) {
-	var reasons []string
-
-	// Too few judgeable repetitions is its own reason, reported before and
-	// separately from any spread or stability claim.
-	//
-	// Two bugs found by probing this file's own first implementation forced
-	// this ordering. With nothing evaluable, the modal share is not 0.0 —
-	// it is undefined — and reporting "stability 0.0000 is below 0.8000"
-	// tells an operator the Cell was judged inconsistently when it was never
-	// judged at all. And with a single survivor among four unjudgeable
-	// repetitions, stability computes to a perfect 1/1 and spread to 0 from
-	// one number, reproducing the "perfect stability, measured never" hazard
-	// through a configuration that looks entirely correct — the policy
-	// document's own two-repetition floor cannot see this, because the
-	// shortfall happens at run time rather than in the configuration.
-	if distribution.EvaluableAttempts < policy.MinEvaluableRepetitions {
-		if distribution.EvaluableAttempts == 0 {
-			reasons = append(reasons, fmt.Sprintf(
-				"no repetition was evaluable; %d of %d could not be judged",
-				distribution.Verdicts[ScoreIndeterminate], distribution.Attempts))
-		} else {
-			reasons = append(reasons, fmt.Sprintf(
-				"only %d of %d repetitions were evaluable, below the declared minimum %d",
-				distribution.EvaluableAttempts, distribution.Attempts, policy.MinEvaluableRepetitions))
-		}
-	}
-
+//
+// The answer does not depend on the policy's calibration state — an
+// uncalibrated limit is still a limit, and hiding the comparison would leave
+// an operator unable to see the number they wrote being crossed. What
+// calibration governs is what the answer is allowed to do, which is
+// MayBeReportedAsPass's business, not this function's.
+func judgeDeclaredLimits(distribution CellDistribution, policy VariancePolicy) (bool, string) {
 	// Spread and stability are claims about how the evaluable repetitions
 	// agreed, so they are only made when there were any. Stating them for an
 	// empty set would be asserting something about a measurement that never
-	// happened.
-	if distribution.EvaluableAttempts > 0 {
-		if exceeds(distribution.NumericSpread, policy.MaxNumericSpread) {
-			reasons = append(reasons, fmt.Sprintf(
-				"numeric spread %.4f exceeds the declared maximum %.4f",
-				distribution.NumericSpread, policy.MaxNumericSpread))
-		}
-		if falls(distribution.VerdictStability, policy.MinVerdictStability) {
-			reasons = append(reasons, fmt.Sprintf(
-				"verdict stability %.4f is below the declared minimum %.4f",
-				distribution.VerdictStability, policy.MinVerdictStability))
-		}
+	// happened; that Cell's problem is structural and judgeEvaluability has
+	// already named it.
+	if distribution.EvaluableAttempts == 0 {
+		return false, ""
+	}
+
+	var reasons []string
+	if exceeds(distribution.NumericSpread, policy.MaxNumericSpread) {
+		reasons = append(reasons, fmt.Sprintf(
+			"numeric spread %.4f exceeds the declared maximum %.4f",
+			distribution.NumericSpread, policy.MaxNumericSpread))
+	}
+	if falls(distribution.VerdictStability, policy.MinVerdictStability) {
+		reasons = append(reasons, fmt.Sprintf(
+			"verdict stability %.4f is below the declared minimum %.4f",
+			distribution.VerdictStability, policy.MinVerdictStability))
 	}
 	if len(reasons) == 0 {
-		return true, ""
+		return false, ""
 	}
-	return false, strings.Join(reasons, "; ")
+	return true, strings.Join(reasons, "; ")
+}
+
+// hasMergedReliabilityField reports whether CellDistribution has grown a
+// field that merges the two reliability answers back into one.
+//
+// It exists for the same reason as hasVerdictField: the separation of a
+// structural fact from an uncalibrated threshold judgement is a design
+// decision that a later convenience field would quietly undo. A consumer
+// branches on a boolean and does not read the reason string beside it, so a
+// single "trustworthy" flag is not a summary of the two fields — it is a
+// replacement for them.
+func hasMergedReliabilityField(distribution CellDistribution) bool {
+	value := reflect.TypeOf(distribution)
+	for i := 0; i < value.NumField(); i++ {
+		switch value.Field(i).Name {
+		case "Trustworthy", "Untrustworthy", "UntrustworthyReason", "Reliable":
+			return true
+		}
+	}
+	return false
 }
 
 // hasVerdictField reports whether CellDistribution has grown a single

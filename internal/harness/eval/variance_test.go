@@ -150,8 +150,8 @@ func TestALimitIsAMaximumSoEqualityDoesNotBreach(t *testing.T) {
 		repetition(0, ScorePass, score(0.60)),
 		repetition(1, ScorePass, score(0.80)), // spread exactly 0.20
 	}, policy)
-	if !exactSpread.Trustworthy {
-		t.Fatalf("a spread exactly at the limit was called untrustworthy: %+v", exactSpread)
+	if exactSpread.ExceedsDeclaredLimits {
+		t.Fatalf("a spread exactly at the limit was reported as exceeding it: %+v", exactSpread)
 	}
 
 	exactStability := mustDistribution(t, []CellRepetition{
@@ -161,15 +161,15 @@ func TestALimitIsAMaximumSoEqualityDoesNotBreach(t *testing.T) {
 		repetition(3, ScorePass, score(0.70)),
 		repetition(4, ScoreFail, score(0.70)), // stability exactly 0.80
 	}, policy)
-	if !exactStability.Trustworthy {
-		t.Fatalf("a stability exactly at the limit was called untrustworthy: %+v", exactStability)
+	if exactStability.ExceedsDeclaredLimits {
+		t.Fatalf("a stability exactly at the limit was reported as exceeding it: %+v", exactStability)
 	}
 }
 
-// TestSpreadBreachMakesTheCellUntrustworthyNotFailing is the distinction the
-// design rests on: untrustworthy is a statement about the measurement, never
-// a third verdict about the Subject.
-func TestSpreadBreachMakesTheCellUntrustworthyNotFailing(t *testing.T) {
+// TestSpreadBreachSetsExceedsDeclaredLimitsNotAFailingVerdict is the
+// distinction the design rests on: a limit breach is a statement about the
+// measurement, never a third verdict about the Subject.
+func TestSpreadBreachSetsExceedsDeclaredLimitsNotAFailingVerdict(t *testing.T) {
 	distribution := mustDistribution(t, []CellRepetition{
 		repetition(0, ScorePass, score(0.71)),
 		repetition(1, ScorePass, score(0.74)),
@@ -178,11 +178,17 @@ func TestSpreadBreachMakesTheCellUntrustworthyNotFailing(t *testing.T) {
 		repetition(4, ScorePass, score(0.41)), // spread 0.33 > 0.20
 	}, validVariancePolicy())
 
-	if distribution.Trustworthy {
-		t.Fatalf("a 0.33 spread under a 0.20 limit was called trustworthy: %+v", distribution)
+	if !distribution.ExceedsDeclaredLimits {
+		t.Fatalf("a 0.33 spread under a 0.20 limit was reported as within it: %+v", distribution)
 	}
-	if distribution.UntrustworthyReason == "" {
-		t.Fatal("an untrustworthy Cell carries no stated reason")
+	if distribution.ExceededLimitsReason == "" {
+		t.Fatal("a Cell over its declared limits carries no stated reason")
+	}
+	// The breach is real and reported, and the repetitions were plentiful and
+	// judgeable, so the structural half must stay clean. Merging the two
+	// would lose exactly this distinction.
+	if !distribution.EvaluableEnough {
+		t.Fatalf("five judged repetitions were called structurally insufficient: %+v", distribution)
 	}
 	// Every verdict here was a pass. The Cell is untrustworthy, and that must
 	// not have been achieved by rewriting what the judge said.
@@ -191,7 +197,7 @@ func TestSpreadBreachMakesTheCellUntrustworthyNotFailing(t *testing.T) {
 	}
 }
 
-func TestVerdictInstabilityAlsoMakesTheCellUntrustworthy(t *testing.T) {
+func TestVerdictInstabilityAlsoExceedsTheDeclaredLimits(t *testing.T) {
 	distribution := mustDistribution(t, []CellRepetition{
 		repetition(0, ScorePass, score(0.70)),
 		repetition(1, ScoreFail, score(0.70)),
@@ -199,8 +205,8 @@ func TestVerdictInstabilityAlsoMakesTheCellUntrustworthy(t *testing.T) {
 		repetition(3, ScoreFail, score(0.70)), // stability 0.50 < 0.80
 	}, validVariancePolicy())
 
-	if distribution.Trustworthy {
-		t.Fatalf("a 0.50 stability under a 0.80 floor was called trustworthy: %+v", distribution)
+	if !distribution.ExceedsDeclaredLimits {
+		t.Fatalf("a 0.50 stability under a 0.80 floor was reported as within it: %+v", distribution)
 	}
 }
 
@@ -215,6 +221,70 @@ func TestDistributionCarriesNoDerivedCellVerdict(t *testing.T) {
 
 	if hasVerdictField(distribution) {
 		t.Fatal("CellDistribution grew a single derived verdict field; repetitions are reported, never collapsed")
+	}
+}
+
+// TestTheTwoReliabilityFieldsAreNeverMergedIntoOne is the second shape guard.
+//
+// The split of a structural fact from an uncalibrated threshold judgement is
+// a design decision that a later convenience field would quietly undo, and
+// the failure is not hypothetical: an earlier revision carried one
+// Trustworthy bool with a joined reason string, and reported a Cell with one
+// evaluable repetition of five as trustworthy with perfect stability.
+func TestTheTwoReliabilityFieldsAreNeverMergedIntoOne(t *testing.T) {
+	distribution := mustDistribution(t, []CellRepetition{
+		repetition(0, ScorePass, score(0.7)),
+		repetition(1, ScorePass, score(0.7)),
+		repetition(2, ScorePass, score(0.7)),
+	}, validVariancePolicy())
+
+	if hasMergedReliabilityField(distribution) {
+		t.Fatal("CellDistribution grew a merged reliability field; a consumer branches on the bool and never reads the reason beside it")
+	}
+}
+
+// TestAnUncalibratedLimitBreachDoesNotBlockReportingACellAsAPass is design
+// §3.2's rule, and it is the reason the two fields differ in power rather
+// than only in name.
+//
+// No limit in this repository has been calibrated — no run against a live
+// model has ever happened here — so exceedsDeclaredLimits compares a real
+// measurement against a guess. A guess is worth reporting and is not worth
+// overriding a verdict with. A shortfall in evaluable repetitions, by
+// contrast, is arithmetic and blocks unconditionally.
+func TestAnUncalibratedLimitBreachDoesNotBlockReportingACellAsAPass(t *testing.T) {
+	uncalibrated := validVariancePolicy()
+	if uncalibrated.Calibration != CalibrationUncalibrated {
+		t.Fatalf("Calibration = %q; this test needs an uncalibrated policy", uncalibrated.Calibration)
+	}
+
+	breached := []CellRepetition{
+		repetition(0, ScorePass, score(0.71)),
+		repetition(1, ScorePass, score(0.74)),
+		repetition(2, ScorePass, score(0.69)),
+		repetition(3, ScorePass, score(0.73)),
+		repetition(4, ScorePass, score(0.41)), // spread 0.33 > 0.20
+	}
+
+	distribution := mustDistribution(t, breached, uncalibrated)
+	if !distribution.ExceedsDeclaredLimits {
+		t.Fatalf("the breach must still be reported, not suppressed: %+v", distribution)
+	}
+	if distribution.LimitsCalibration != CalibrationUncalibrated {
+		t.Fatalf("LimitsCalibration = %q; a reader of the judgement must see what it is worth",
+			distribution.LimitsCalibration)
+	}
+	if !distribution.MayBeReportedAsPass() {
+		t.Fatalf("an uncalibrated limit rewrote a Cell of five passes into a non-pass: %+v", distribution)
+	}
+
+	// Once the limits are earned from a real run, the same breach does bite.
+	calibrated := uncalibrated
+	calibrated.Calibration = CalibrationCalibrated
+	calibrated.CalibratedFrom = "run-2026-09-05-01"
+	earned := mustDistribution(t, breached, calibrated)
+	if earned.MayBeReportedAsPass() {
+		t.Fatalf("a calibrated limit breach must block a pass: %+v", earned)
 	}
 }
 
@@ -269,19 +339,26 @@ func TestNoEvaluableRepetitionsIsNamedAsSuchNotAsInstability(t *testing.T) {
 		repetition(2, ScoreIndeterminate, nil),
 	}, validVariancePolicy())
 
-	if distribution.Trustworthy {
-		t.Fatal("a Cell nothing could judge was called trustworthy")
+	if distribution.EvaluableEnough {
+		t.Fatal("a Cell nothing could judge was called structurally sufficient")
 	}
-	if strings.Contains(distribution.UntrustworthyReason, "stability") {
+	if !strings.Contains(distribution.NotEvaluableEnoughReason, "evaluable") {
+		t.Fatalf("reason = %q; it must name the real problem", distribution.NotEvaluableEnoughReason)
+	}
+	// The threshold half must stay silent rather than inventing a stability
+	// claim about a measurement that never happened. Separate fields make
+	// this checkable; a single joined reason string did not.
+	if distribution.ExceedsDeclaredLimits {
 		t.Fatalf("reason = %q; a Cell with nothing evaluable must not be reported as unstable",
-			distribution.UntrustworthyReason)
+			distribution.ExceededLimitsReason)
 	}
-	if !strings.Contains(distribution.UntrustworthyReason, "evaluable") {
-		t.Fatalf("reason = %q; it must name the real problem", distribution.UntrustworthyReason)
+	if distribution.ExceededLimitsReason != "" {
+		t.Fatalf("ExceededLimitsReason = %q, want empty for a Cell with nothing evaluable",
+			distribution.ExceededLimitsReason)
 	}
 }
 
-// TestTooFewEvaluableRepetitionsIsUntrustworthy is the second and sharper
+// TestTooFewEvaluableRepetitionsFailsEvaluableEnough is the second and sharper
 // bug: the single-sample hazard reappearing through a door the policy
 // document's own guard does not cover.
 //
@@ -292,7 +369,7 @@ func TestNoEvaluableRepetitionsIsNamedAsSuchNotAsInstability(t *testing.T) {
 // spread of 0 from the single survivor — the same "perfect stability,
 // measured never" this whole mechanism exists to prevent, arrived at through
 // a configuration that looks entirely correct.
-func TestTooFewEvaluableRepetitionsIsUntrustworthy(t *testing.T) {
+func TestTooFewEvaluableRepetitionsFailsEvaluableEnough(t *testing.T) {
 	policy := validVariancePolicy() // minEvaluableRepetitions 3
 	distribution := mustDistribution(t, []CellRepetition{
 		repetition(0, ScorePass, score(0.70)),
@@ -302,11 +379,20 @@ func TestTooFewEvaluableRepetitionsIsUntrustworthy(t *testing.T) {
 		repetition(4, ScoreIndeterminate, nil),
 	}, policy)
 
-	if distribution.Trustworthy {
-		t.Fatalf("one evaluable repetition of five produced a trustworthy Cell: %+v", distribution)
+	if distribution.EvaluableEnough {
+		t.Fatalf("one evaluable repetition of five was called structurally sufficient: %+v", distribution)
 	}
-	if !strings.Contains(distribution.UntrustworthyReason, "evaluable") {
-		t.Fatalf("reason = %q; it must name the shortfall", distribution.UntrustworthyReason)
+	if !strings.Contains(distribution.NotEvaluableEnoughReason, "evaluable") {
+		t.Fatalf("reason = %q; it must name the shortfall", distribution.NotEvaluableEnoughReason)
+	}
+	// The single survivor agreed with itself perfectly, so the threshold half
+	// sees nothing wrong. That is precisely why it cannot be the field a
+	// consumer reads: only the structural half knows this was never measured.
+	if distribution.ExceedsDeclaredLimits {
+		t.Fatalf("the lone survivor's own perfect agreement was reported as a limit breach: %+v", distribution)
+	}
+	if distribution.MayBeReportedAsPass() {
+		t.Fatalf("a Cell measured once out of five may not be reported as a pass: %+v", distribution)
 	}
 }
 
@@ -338,7 +424,10 @@ func TestBothDenominatorsArePublished(t *testing.T) {
 }
 
 // TestEvaluableShortfallAndInstabilityAreReportedSeparately keeps the two
-// reasons from being merged into one message once both can occur.
+// answers from being merged once both can occur. They are separate fields
+// with separate reasons, because they have separate warrants: the shortfall
+// is certain arithmetic, the instability is a comparison against a number
+// nobody has calibrated.
 func TestEvaluableShortfallAndInstabilityAreReportedSeparately(t *testing.T) {
 	policy := validVariancePolicy()
 	policy.MinEvaluableRepetitions = 4
@@ -348,11 +437,16 @@ func TestEvaluableShortfallAndInstabilityAreReportedSeparately(t *testing.T) {
 		repetition(2, ScoreIndeterminate, nil),
 	}, policy)
 
-	if distribution.Trustworthy {
-		t.Fatal("a Cell both short of evaluable repetitions and unstable was called trustworthy")
+	if distribution.EvaluableEnough {
+		t.Fatal("a Cell short of evaluable repetitions was called structurally sufficient")
 	}
-	reason := distribution.UntrustworthyReason
-	if !strings.Contains(reason, "evaluable") || !strings.Contains(reason, "stability") {
-		t.Fatalf("reason = %q, want both problems named", reason)
+	if !distribution.ExceedsDeclaredLimits {
+		t.Fatal("a Cell whose evaluable repetitions disagreed was reported as within its limits")
+	}
+	if !strings.Contains(distribution.NotEvaluableEnoughReason, "evaluable") {
+		t.Fatalf("structural reason = %q, want the shortfall named", distribution.NotEvaluableEnoughReason)
+	}
+	if !strings.Contains(distribution.ExceededLimitsReason, "stability") {
+		t.Fatalf("threshold reason = %q, want the instability named", distribution.ExceededLimitsReason)
 	}
 }
