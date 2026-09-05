@@ -77,6 +77,19 @@ func TestNewServiceToolComposition(t *testing.T) {
 		_, err = application.NewService(store, ids, testkit.FixedClock{Time: toolClock()}, runner, v2Authority, config)
 		assertApplicationError(t, err, application.CategoryPolicy, "invalid_configuration")
 	})
+	t.Run("edit-only catalog missing files", func(t *testing.T) {
+		edit, ok := catalog.Spec(tools.NameEditFile)
+		if !ok {
+			t.Fatal("default edit_file spec missing")
+		}
+		editOnly, err := tools.NewCatalog([]domain.ToolSpec{edit})
+		if err != nil {
+			t.Fatal(err)
+		}
+		config := toolConfig(editOnly, nil, nil, nil)
+		_, err = application.NewService(store, ids, testkit.FixedClock{Time: toolClock()}, runner, v2Authority, config)
+		assertApplicationError(t, err, application.CategoryPolicy, "invalid_configuration")
+	})
 	t.Run("unknown policy mode", func(t *testing.T) {
 		config := application.DefaultConfig()
 		config.PolicyMode = "yolo"
@@ -949,6 +962,237 @@ func TestResumeSessionClearsFileObservationsOnlyAfterSuccessfulAdmission(t *test
 	}
 }
 
+func TestEditFileLexicalEscapeDoesNotReachPolicyOrFilesystem(t *testing.T) {
+	mem := testkit.NewMemFS("/workspace")
+	files := &countingFS{FileSystem: mem}
+	model := newSequenceModel(
+		[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "edit", Name: tools.NameEditFile, Arguments: `{"path":"../state.txt","old_string":"old","new_string":"new"}`}}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "continued"}, {Type: engine.StreamEventCompleted}},
+	)
+	config := application.DefaultConfig()
+	config.PolicyMode = policy.ModeAllowWrites
+	service, _ := newToolService(t, model, files, nil, nil, config)
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-edit-escape", Input: "edit", Sink: &testkit.RecordingSink{}})
+	if err != nil || result.Text != "continued" {
+		t.Fatalf("RunTurn() = (%#v, %v)", result, err)
+	}
+	if failed := lastToolFailed(result.Records); failed.Code != application.CodeScopeDenied || failed.Message != application.ToolTextScopeDenied {
+		t.Fatalf("escape edit failure = %#v", failed)
+	}
+	if files.Resolves() != 0 || files.Edits() != 0 || countEventType(result.Records, domain.EventPolicyDecisionRecorded) != 0 {
+		t.Fatalf("escape edit reached guarded layers: resolves=%d edits=%d events=%v", files.Resolves(), files.Edits(), turnEventTypes(result.Records))
+	}
+}
+
+func TestEditFileRequiresObservation(t *testing.T) {
+	mem := testkit.NewMemFS("/workspace")
+	mem.AddFile("state.txt", []byte("old value"))
+	files := &countingFS{FileSystem: mem}
+	model := newSequenceModel(
+		[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "edit", Name: tools.NameEditFile, Arguments: `{"path":"state.txt","old_string":"old","new_string":"new"}`}}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "continued"}, {Type: engine.StreamEventCompleted}},
+	)
+	config := application.DefaultConfig()
+	config.PolicyMode = policy.ModeAllowWrites
+	service, _ := newToolService(t, model, files, nil, nil, config)
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-edit-unseen", Input: "edit", Sink: &testkit.RecordingSink{}})
+	if err != nil || result.Text != "continued" {
+		t.Fatalf("RunTurn() = (%#v, %v)", result, err)
+	}
+	if failed := lastToolFailed(result.Records); failed.Code != string(tools.CodeFilesystemNotObserved) || failed.Message != application.ToolTextFSNotObserved {
+		t.Fatalf("unseen edit failure = %#v", failed)
+	}
+	if files.Edits() != 0 {
+		t.Fatalf("unseen edit called FileSystem.Edit %d times", files.Edits())
+	}
+}
+
+func TestEditFileRejectsEqualStringsDuringApplicationParsing(t *testing.T) {
+	mem := testkit.NewMemFS("/workspace")
+	mem.AddFile("state.txt", []byte("same"))
+	files := &countingFS{FileSystem: mem}
+	model := newSequenceModel(
+		[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "edit", Name: tools.NameEditFile, Arguments: `{"path":"state.txt","old_string":"same","new_string":"same"}`}}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "continued"}, {Type: engine.StreamEventCompleted}},
+	)
+	config := application.DefaultConfig()
+	config.PolicyMode = policy.ModeAllowWrites
+	service, _ := newToolService(t, model, files, nil, nil, config)
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-edit-equal", Input: "edit", Sink: &testkit.RecordingSink{}})
+	if err != nil || result.Text != "continued" {
+		t.Fatalf("RunTurn() = (%#v, %v)", result, err)
+	}
+	if failed := lastToolFailed(result.Records); failed.Code != application.CodeInvalidArgs || failed.Message != application.ToolTextInvalidArgs {
+		t.Fatalf("equal edit failure = %#v", failed)
+	}
+	if files.Resolves() != 0 || files.Edits() != 0 {
+		t.Fatalf("equal edit touched filesystem: resolves=%d edits=%d", files.Resolves(), files.Edits())
+	}
+}
+
+func TestEditFileAuthorizationPrecedesObservationGuard(t *testing.T) {
+	tests := []struct {
+		name          string
+		mode          policy.Mode
+		approver      *testkit.ScriptedApprover
+		wantCode      string
+		wantText      string
+		wantApprovals int
+	}{
+		{name: "read only denial", mode: policy.ModeReadOnly, approver: testkit.NewScriptedApprover(testkit.ScriptedApproval{Answer: tools.ApprovalAnswer{Granted: true}}), wantCode: application.CodePolicyDenied, wantText: application.ToolTextPolicyDenied},
+		{name: "default approval denial", mode: policy.ModeDefault, approver: testkit.NewScriptedApprover(testkit.ScriptedApproval{Answer: tools.ApprovalAnswer{Granted: false}}), wantCode: application.CodeApprovalDenied, wantText: application.ToolTextApprovalDenied, wantApprovals: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			mem := testkit.NewMemFS("/workspace")
+			mem.AddFile("state.txt", []byte("old value"))
+			files := &countingFS{FileSystem: mem}
+			model := newSequenceModel(
+				[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "edit", Name: tools.NameEditFile, Arguments: `{"path":"state.txt","old_string":"old","new_string":"new"}`}}, {Type: engine.StreamEventCompleted}},
+				[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "continued"}, {Type: engine.StreamEventCompleted}},
+			)
+			config := application.DefaultConfig()
+			config.PolicyMode = test.mode
+			service, _ := newToolService(t, model, files, nil, test.approver, config)
+			created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: domain.RunTurnRequestID("request-edit-auth-" + test.name), Input: "edit", Sink: &testkit.RecordingSink{}})
+			if err != nil || result.Text != "continued" {
+				t.Fatalf("RunTurn() = (%#v, %v)", result, err)
+			}
+			if failed := lastToolFailed(result.Records); failed.Code != test.wantCode || failed.Message != test.wantText {
+				t.Fatalf("authorization failure = %#v", failed)
+			}
+			if got := len(test.approver.Calls()); got != test.wantApprovals {
+				t.Fatalf("approval calls = %d, want %d", got, test.wantApprovals)
+			}
+			if files.Edits() != 0 {
+				t.Fatalf("denied edit called FileSystem.Edit %d times", files.Edits())
+			}
+		})
+	}
+}
+
+func TestEditFileUniqueAndReplaceAllAdvanceObservationWithoutLeaks(t *testing.T) {
+	mem := testkit.NewMemFS("/workspace")
+	mem.AddFile("state.txt", []byte("red blue red"))
+	files := &editRecordingFS{FileSystem: mem}
+	approver := testkit.NewScriptedApprover(
+		testkit.ScriptedApproval{Answer: tools.ApprovalAnswer{Granted: true}},
+		testkit.ScriptedApproval{Answer: tools.ApprovalAnswer{Granted: true}},
+	)
+	model := newSequenceModel(
+		[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "read", Name: tools.NameReadFile, Arguments: `{"path":"state.txt"}`}}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "unique", Name: tools.NameEditFile, Arguments: `{"path":"state.txt","old_string":"blue","new_string":"green"}`}}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "all", Name: tools.NameEditFile, Arguments: `{"path":"state.txt","old_string":"red","new_string":"amber","replace_all":true}`}}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "done"}, {Type: engine.StreamEventCompleted}},
+	)
+	sink := &testkit.RecordingSink{}
+	service, _ := newToolService(t, model, files, nil, approver, application.DefaultConfig())
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-edit-success", Input: "edit", Sink: sink})
+	if err != nil || result.Text != "done" {
+		t.Fatalf("RunTurn() = (%#v, %v)", result, err)
+	}
+	calls := model.Calls()
+	if got := lastToolMessage(calls[2].Messages).Text; got != "edited file" {
+		t.Fatalf("unique edit result = %q", got)
+	}
+	if got := lastToolMessage(calls[3].Messages).Text; got != "replaced all occurrences" {
+		t.Fatalf("replace-all edit result = %q", got)
+	}
+	read, err := mem.Read(context.Background(), "/workspace/state.txt", 64)
+	if err != nil || string(read.Data) != "amber green amber" {
+		t.Fatalf("final file = (%q, %v)", read.Data, err)
+	}
+	invocations := files.Invocations()
+	if len(invocations) != 2 || invocations[0].replaceAll || !invocations[1].replaceAll {
+		t.Fatalf("edit invocations = %#v", invocations)
+	}
+	if invocations[0].guard.Kind != tools.GuardReplaceIfVersion || invocations[0].guard.Version == "" || invocations[1].guard.Kind != tools.GuardReplaceIfVersion || invocations[1].guard.Version == "" || invocations[0].guard.Version == invocations[1].guard.Version {
+		t.Fatalf("edit guards did not advance = %#v", invocations)
+	}
+	if got := len(approver.Calls()); got != 2 {
+		t.Fatalf("approval calls = %d, want 2", got)
+	}
+	public, err := json.Marshal(struct {
+		Records   []domain.RecordedEvent
+		Runtime   []engine.RuntimeEvent
+		Requests  []engine.ModelRequest
+		Approvals []tools.ApprovalRequest
+	}{result.Records, sink.Delivered(), calls, approver.Calls()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(public), "amber green amber") {
+		t.Fatalf("public edit surfaces copied resulting file content: %s", public)
+	}
+	if strings.Contains(string(public), "mem:") {
+		t.Fatalf("public edit surfaces leaked an internal file version: %s", public)
+	}
+}
+
+func TestEditFileMatchAndStaleFailures(t *testing.T) {
+	tests := []struct {
+		name      string
+		data      string
+		oldString string
+		wantCode  tools.ErrorCode
+		wantText  string
+		stale     bool
+	}{
+		{name: "missing literal", data: "alpha", oldString: "omega", wantCode: tools.CodeEditNoMatch, wantText: application.ToolTextEditNoMatch},
+		{name: "ambiguous literal", data: "alpha alpha", oldString: "alpha", wantCode: tools.CodeEditAmbiguous, wantText: application.ToolTextEditAmbiguous},
+		{name: "stale observation", data: "alpha", oldString: "alpha", wantCode: tools.CodeFilesystemStaleVersion, wantText: application.ToolTextFSStaleVersion, stale: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			mem := testkit.NewMemFS("/workspace")
+			mem.AddFile("state.txt", []byte(test.data))
+			var files tools.FileSystem = mem
+			if test.stale {
+				files = &staleEditFS{FileSystem: mem}
+			}
+			model := newSequenceModel(
+				[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "read", Name: tools.NameReadFile, Arguments: `{"path":"state.txt"}`}}, {Type: engine.StreamEventCompleted}},
+				[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "edit", Name: tools.NameEditFile, Arguments: fmt.Sprintf(`{"path":"state.txt","old_string":%q,"new_string":"new"}`, test.oldString)}}, {Type: engine.StreamEventCompleted}},
+				[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "continued"}, {Type: engine.StreamEventCompleted}},
+			)
+			config := application.DefaultConfig()
+			config.PolicyMode = policy.ModeAllowWrites
+			service, _ := newToolService(t, model, files, nil, nil, config)
+			created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: domain.RunTurnRequestID("request-edit-failure-" + test.name), Input: "edit", Sink: &testkit.RecordingSink{}})
+			if err != nil || result.Text != "continued" {
+				t.Fatalf("RunTurn() = (%#v, %v)", result, err)
+			}
+			if failed := lastToolFailed(result.Records); failed.Code != string(test.wantCode) || failed.Message != test.wantText {
+				t.Fatalf("edit failure = %#v", failed)
+			}
+		})
+	}
+}
+
 func TestModeAllowWritesExecutesWrite(t *testing.T) {
 	fs := testkit.NewMemFS("/workspace")
 	counter := &countingFS{FileSystem: fs}
@@ -1395,6 +1639,7 @@ type countingFS struct {
 	resolves int
 	reads    int
 	writes   int
+	edits    int
 	lists    int
 }
 
@@ -1416,6 +1661,12 @@ func (fs *countingFS) Write(ctx context.Context, abs string, data []byte, guard 
 	fs.mu.Unlock()
 	return fs.FileSystem.Write(ctx, abs, data, guard)
 }
+func (fs *countingFS) Edit(ctx context.Context, abs string, old, replacement []byte, replaceAll bool, guard tools.MutationGuard) (tools.MutationResult, error) {
+	fs.mu.Lock()
+	fs.edits++
+	fs.mu.Unlock()
+	return fs.FileSystem.Edit(ctx, abs, old, replacement, replaceAll, guard)
+}
 func (fs *countingFS) List(ctx context.Context, abs string, depth, limit int) ([]string, bool, error) {
 	fs.mu.Lock()
 	fs.lists++
@@ -1425,6 +1676,7 @@ func (fs *countingFS) List(ctx context.Context, abs string, depth, limit int) ([
 func (fs *countingFS) Resolves() int { fs.mu.Lock(); defer fs.mu.Unlock(); return fs.resolves }
 func (fs *countingFS) Reads() int    { fs.mu.Lock(); defer fs.mu.Unlock(); return fs.reads }
 func (fs *countingFS) Writes() int   { fs.mu.Lock(); defer fs.mu.Unlock(); return fs.writes }
+func (fs *countingFS) Edits() int    { fs.mu.Lock(); defer fs.mu.Unlock(); return fs.edits }
 
 type readErrorFS struct {
 	tools.FileSystem
@@ -1452,6 +1704,53 @@ func (fs *guardRecordingFS) Guards() []tools.MutationGuard {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	return append([]tools.MutationGuard(nil), fs.guards...)
+}
+
+type editInvocation struct {
+	replaceAll bool
+	guard      tools.MutationGuard
+}
+
+type editRecordingFS struct {
+	tools.FileSystem
+	mu          sync.Mutex
+	invocations []editInvocation
+}
+
+func (fs *editRecordingFS) Edit(ctx context.Context, abs string, old, replacement []byte, replaceAll bool, guard tools.MutationGuard) (tools.MutationResult, error) {
+	fs.mu.Lock()
+	fs.invocations = append(fs.invocations, editInvocation{replaceAll: replaceAll, guard: guard})
+	fs.mu.Unlock()
+	return fs.FileSystem.Edit(ctx, abs, old, replacement, replaceAll, guard)
+}
+
+func (fs *editRecordingFS) Invocations() []editInvocation {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	return append([]editInvocation(nil), fs.invocations...)
+}
+
+type staleEditFS struct {
+	tools.FileSystem
+	mu          sync.Mutex
+	forcedStale bool
+}
+
+func (fs *staleEditFS) Edit(ctx context.Context, abs string, old, replacement []byte, replaceAll bool, guard tools.MutationGuard) (tools.MutationResult, error) {
+	fs.mu.Lock()
+	forceStale := !fs.forcedStale
+	fs.forcedStale = true
+	fs.mu.Unlock()
+	if forceStale {
+		read, err := fs.FileSystem.Read(ctx, abs, 64)
+		if err != nil {
+			return tools.MutationResult{}, err
+		}
+		if _, err := fs.FileSystem.Write(ctx, abs, []byte("external change"), tools.MutationGuard{Kind: tools.GuardReplaceIfVersion, Version: read.Version}); err != nil {
+			return tools.MutationResult{}, err
+		}
+	}
+	return fs.FileSystem.Edit(ctx, abs, old, replacement, replaceAll, guard)
 }
 
 type staleOnceFS struct {

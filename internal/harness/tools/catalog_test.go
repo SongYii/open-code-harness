@@ -11,8 +11,8 @@ import (
 
 func TestDefaultWorkspaceSpecsLockedContracts(t *testing.T) {
 	specs := DefaultWorkspaceSpecs()
-	if len(specs) != 4 {
-		t.Fatalf("len(DefaultWorkspaceSpecs()) = %d, want 4", len(specs))
+	if len(specs) != 5 {
+		t.Fatalf("len(DefaultWorkspaceSpecs()) = %d, want 5", len(specs))
 	}
 
 	byName := map[string]domain.ToolSpec{}
@@ -50,6 +50,21 @@ func TestDefaultWorkspaceSpecsLockedContracts(t *testing.T) {
 		},
 	})
 
+	edit := mustSpec(t, byName, NameEditFile)
+	if edit.Risk != domain.RiskWrite || !edit.Mutates || edit.Source != SourceBuiltin {
+		t.Fatalf("edit_file identity = %#v", edit)
+	}
+	assertSchema(t, edit.InputSchema, map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"path", "old_string", "new_string"},
+		"properties": map[string]any{
+			"path":        map[string]any{"type": "string", "minLength": float64(1), "maxLength": float64(4096)},
+			"old_string":  map[string]any{"type": "string", "minLength": float64(1), "maxLength": float64(32768)},
+			"new_string":  map[string]any{"type": "string", "maxLength": float64(32768)},
+			"replace_all": map[string]any{"type": "boolean"},
+		},
+	})
 	list := mustSpec(t, byName, NameListDir)
 	if list.Risk != domain.RiskRead || list.Mutates {
 		t.Fatalf("list_dir identity = %#v", list)
@@ -105,11 +120,50 @@ func TestDefaultWorkspaceSpecsLockedContracts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCatalog(DefaultWorkspaceSpecs()) error = %v", err)
 	}
-	if got := catalog.Specs(); len(got) != 4 {
+	if got := catalog.Specs(); len(got) != 5 {
 		t.Fatalf("Specs() len = %d", len(got))
 	}
 	if _, ok := catalog.Spec(NameListDir); !ok {
 		t.Fatal("Spec(list_dir) missing")
+	}
+}
+
+func TestNewCatalogAllowsBooleanLeafButRejectsBooleanRoot(t *testing.T) {
+	base := DefaultWorkspaceSpecs()[0]
+	leaf := mutateSpec(base, func(s *domain.ToolSpec) {
+		s.InputSchema = []byte(`{"type":"object","additionalProperties":false,"properties":{"enabled":{"type":"boolean"}}}`)
+	})
+	if _, err := NewCatalog([]domain.ToolSpec{leaf}); err != nil {
+		t.Fatalf("NewCatalog(boolean leaf) error = %v", err)
+	}
+
+	root := mutateSpec(base, func(s *domain.ToolSpec) {
+		s.InputSchema = []byte(`{"type":"boolean"}`)
+	})
+	if _, err := NewCatalog([]domain.ToolSpec{root}); !IsCode(err, CodeInvalidSpec) {
+		t.Fatalf("NewCatalog(boolean root) error = %v, want %s", err, CodeInvalidSpec)
+	}
+}
+
+func TestNewCatalogRejectsBooleanLeafKeywordsFromOtherTypes(t *testing.T) {
+	base := DefaultWorkspaceSpecs()[0]
+	for _, keyword := range []string{"properties", "required", "additionalProperties", "minLength", "maxLength", "minimum", "maximum", "minItems", "maxItems", "items"} {
+		t.Run(keyword, func(t *testing.T) {
+			value := `true`
+			if keyword == "properties" {
+				value = `{}`
+			} else if keyword == "required" {
+				value = `[]`
+			} else if keyword == "items" {
+				value = `{"type":"string"}`
+			}
+			spec := mutateSpec(base, func(s *domain.ToolSpec) {
+				s.InputSchema = []byte(`{"type":"object","additionalProperties":false,"properties":{"enabled":{"type":"boolean","` + keyword + `":` + value + `}}}`)
+			})
+			if _, err := NewCatalog([]domain.ToolSpec{spec}); !IsCode(err, CodeInvalidSpec) {
+				t.Fatalf("NewCatalog(boolean leaf with %s) error = %v, want %s", keyword, err, CodeInvalidSpec)
+			}
+		})
 	}
 }
 
@@ -185,7 +239,7 @@ func TestCatalogCopiesAreDefensive(t *testing.T) {
 		t.Fatal("catalog mutated through Spec() schema bytes")
 	}
 	schemas := catalog.Schemas()
-	if len(schemas) != 4 || schemas[0].Name != NameReadFile {
+	if len(schemas) != 5 || schemas[0].Name != NameReadFile {
 		t.Fatalf("Schemas() = %#v", schemas)
 	}
 	schemas[0].InputSchema[0] = 'Z'

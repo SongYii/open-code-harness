@@ -76,6 +76,9 @@ func compileSchema(raw json.RawMessage) (*compiledSchema, error) {
 	if decoder.More() {
 		return nil, specError()
 	}
+	if obj["type"] != "object" {
+		return nil, specError()
+	}
 	return compileSchemaObject(obj)
 }
 
@@ -104,6 +107,10 @@ func compileSchemaObject(obj map[string]any) (*compiledSchema, error) {
 		}
 	case "integer":
 		if err := compileIntegerKeywords(compiled, obj); err != nil {
+			return nil, err
+		}
+	case "boolean":
+		if err := compileBooleanKeywords(obj); err != nil {
 			return nil, err
 		}
 	case "array":
@@ -210,6 +217,10 @@ func compileStringKeywords(compiled *compiledSchema, obj map[string]any) error {
 	return nil
 }
 
+func compileBooleanKeywords(obj map[string]any) error {
+	return rejectKeywords(obj, "properties", "required", "additionalProperties", "minLength", "maxLength", "minimum", "maximum", "minItems", "maxItems", "items")
+}
+
 func compileIntegerKeywords(compiled *compiledSchema, obj map[string]any) error {
 	if err := rejectKeywords(obj, "properties", "required", "additionalProperties", "minLength", "maxLength", "minItems", "maxItems", "items"); err != nil {
 		return err
@@ -297,6 +308,11 @@ func (s *compiledSchema) validate(value any) error {
 		return s.validateObject(value)
 	case "string":
 		return s.validateString(value)
+	case "boolean":
+		if _, ok := value.(bool); !ok {
+			return argsError()
+		}
+		return nil
 	case "integer":
 		return s.validateInteger(value)
 	case "array":

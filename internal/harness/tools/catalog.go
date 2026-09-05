@@ -9,6 +9,7 @@ import (
 
 const (
 	NameReadFile  = "read_file"
+	NameEditFile  = "edit_file"
 	NameWriteFile = "write_file"
 	NameListDir   = "list_dir"
 	NameExec      = "exec"
@@ -28,6 +29,7 @@ const (
 const (
 	schemaReadFile  = `{"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string","minLength":1,"maxLength":4096}}}`
 	schemaWriteFile = `{"type":"object","additionalProperties":false,"required":["path","content"],"properties":{"path":{"type":"string","minLength":1,"maxLength":4096},"content":{"type":"string","maxLength":32768}}}`
+	schemaEditFile  = `{"type":"object","additionalProperties":false,"required":["path","old_string","new_string"],"properties":{"path":{"type":"string","minLength":1,"maxLength":4096},"old_string":{"type":"string","minLength":1,"maxLength":32768},"new_string":{"type":"string","maxLength":32768},"replace_all":{"type":"boolean"}}}`
 	schemaListDir   = `{"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string","minLength":1,"maxLength":4096},"depth":{"type":"integer","minimum":1,"maximum":2}}}`
 	schemaExec      = `{"type":"object","additionalProperties":false,"required":["argv"],"properties":{"argv":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"string","maxLength":4096}},"cwd":{"type":"string","minLength":1,"maxLength":4096}}}`
 )
@@ -125,6 +127,14 @@ func DefaultWorkspaceSpecs() []domain.ToolSpec {
 			InputSchema: []byte(schemaExec),
 			Source:      SourceBuiltin,
 			Risk:        domain.RiskExec,
+			Mutates:     true,
+		},
+		{
+			Name:        NameEditFile,
+			Description: "Replace a literal string in an observed UTF-8 workspace file.",
+			InputSchema: []byte(schemaEditFile),
+			Source:      SourceBuiltin,
+			Risk:        domain.RiskWrite,
 			Mutates:     true,
 		},
 	}

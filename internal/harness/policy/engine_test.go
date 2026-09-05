@@ -67,6 +67,12 @@ func TestDecideDefaultTable(t *testing.T) {
 			effect: EffectRequireApproval, rule: RuleDefaultWriteRequiresApproval, reason: ReasonInWorkspace,
 		},
 		{
+			name:   "default edit_file in workspace",
+			mode:   ModeDefault,
+			input:  Input{Name: "edit_file", Risk: domain.RiskWrite, Mutates: true, WorkspaceIn: true},
+			effect: EffectRequireApproval, rule: RuleDefaultWriteRequiresApproval, reason: ReasonInWorkspace,
+		},
+		{
 			name:   "default exec in workspace",
 			mode:   ModeDefault,
 			input:  Input{Name: "exec", Risk: domain.RiskExec, Mutates: true, WorkspaceIn: true},
@@ -94,6 +100,12 @@ func TestDecideDefaultTable(t *testing.T) {
 			name:   "read_only write in workspace",
 			mode:   ModeReadOnly,
 			input:  Input{Name: "write_file", Risk: domain.RiskWrite, Mutates: true, WorkspaceIn: true},
+			effect: EffectDeny, rule: RuleReadOnlyWriteDenied, reason: ReasonInWorkspace,
+		},
+		{
+			name:   "read_only edit_file in workspace",
+			mode:   ModeReadOnly,
+			input:  Input{Name: "edit_file", Risk: domain.RiskWrite, Mutates: true, WorkspaceIn: true},
 			effect: EffectDeny, rule: RuleReadOnlyWriteDenied, reason: ReasonInWorkspace,
 		},
 		{
@@ -187,6 +199,11 @@ func TestDecideAllowWritesEveryCell(t *testing.T) {
 			name:   "write out of workspace",
 			input:  Input{Name: "write_file", Risk: domain.RiskWrite, Mutates: true, WorkspaceIn: false},
 			effect: EffectDeny, rule: RuleOutOfWorkspace, reason: ReasonOutOfWorkspace,
+		},
+		{
+			name:   "edit in workspace",
+			input:  Input{Name: "edit_file", Risk: domain.RiskWrite, Mutates: true, WorkspaceIn: true},
+			effect: EffectAllow, rule: RuleAllowWritesWriteAllow, reason: ReasonInWorkspace,
 		},
 		{
 			name:   "exec in workspace still asks",

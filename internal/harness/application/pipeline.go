@@ -253,6 +253,20 @@ func (service *Service) invokeTool(ctx context.Context, sessionID domain.Session
 			return appendTruncation(text), true, "", "", nil
 		}
 		return text, false, "", "", nil
+	case tools.NameEditFile:
+		guard, err := service.filesSeen.guardForEdit(sessionID, resolved)
+		if err != nil {
+			return "", false, "", "", err
+		}
+		mutation, err := service.files.Edit(ctx, resolved, []byte(args.OldString), []byte(args.NewString), args.ReplaceAll, guard)
+		if err != nil {
+			return "", false, "", "", err
+		}
+		service.filesSeen.recordPresent(sessionID, resolved, mutation.Version)
+		if args.ReplaceAll {
+			return "replaced all occurrences", false, "", "", nil
+		}
+		return "edited file", false, "", "", nil
 	case tools.NameWriteFile:
 		guard := service.filesSeen.guardForWrite(sessionID, resolved)
 		mutation, err := service.files.Write(ctx, resolved, []byte(args.Content), guard)
@@ -350,11 +364,14 @@ func isCancelCause(err error) bool {
 }
 
 type toolArgs struct {
-	Path    string   `json:"path"`
-	Content string   `json:"content"`
-	Depth   *int     `json:"depth"`
-	Argv    []string `json:"argv"`
-	Cwd     string   `json:"cwd"`
+	Path       string   `json:"path"`
+	Content    string   `json:"content"`
+	OldString  string   `json:"old_string"`
+	NewString  string   `json:"new_string"`
+	ReplaceAll bool     `json:"replace_all"`
+	Depth      *int     `json:"depth"`
+	Argv       []string `json:"argv"`
+	Cwd        string   `json:"cwd"`
 }
 
 func parseToolArgs(name, raw string) (toolArgs, error) {
@@ -363,8 +380,11 @@ func parseToolArgs(name, raw string) (toolArgs, error) {
 		return toolArgs{}, err
 	}
 	switch name {
-	case tools.NameReadFile, tools.NameWriteFile, tools.NameListDir:
+	case tools.NameReadFile, tools.NameWriteFile, tools.NameListDir, tools.NameEditFile:
 		if args.Path == "" {
+			return toolArgs{}, argsError()
+		}
+		if name == tools.NameEditFile && (args.OldString == "" || args.OldString == args.NewString) {
 			return toolArgs{}, argsError()
 		}
 	case tools.NameExec:
