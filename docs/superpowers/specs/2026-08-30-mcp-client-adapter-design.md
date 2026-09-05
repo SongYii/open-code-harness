@@ -316,6 +316,64 @@ At `composition.Open`, for each configured server, in order:
    | `Name` | `mcp__<server.Name>__<rawToolName>` (§1.5) |
    | `Description` | passed through verbatim |
    | `InputSchema` | passed through verbatim, then independently compiled by this project's own `tools.compileSchema` (`schema.go:66`) — a schema this project's own compiler rejects drops that one tool, logged, not fatal to the whole server |
+
+> **Amendment, 2026-09-05 — the drop rule would empty every real server;
+> validation degrades instead.** Task 1 measured `tools.compileSchema`
+> against realistic MCP schemas. Its keyword allowlist is twelve entries
+> applied recursively and it admits four type values, so it rejects a
+> per-property `description`, `$schema`, `title`, `"type":"number"`,
+> `"type":"boolean"`, `anyOf`, `default`, and any object schema omitting
+> `additionalProperties: false`. Under the row above, a healthy,
+> correctly configured server would be discovered, have **every** tool
+> dropped with a log line, and leave the harness running with an empty
+> MCP contribution — silent, and shaped exactly like success.
+>
+> No reference project validates external tool schemas this way. Codex
+> stores `input_schema` as an untyped `serde_json::Value`; Kimi Code's
+> entire check is "is it a JSON object?"; DeepSeek Harness passes the
+> input schema through verbatim and, for the output schema it does
+> check, records the rule as "unsupported MCP vocabulary falls back to
+> JsonValue"; Maka uses Ajv, a standards-complete validator. Zero of four
+> apply an in-house allowlist.
+>
+> **Amended rule: degrade, never drop.** For a `tools.SourceMCP` spec:
+>
+> - `InputSchema` holds the server's schema **verbatim**, because the
+>   same field is what `openaicompat/model.go:346` sends to the model.
+>   Substituting a permissive stand-in would hide the tool's real
+>   parameters from the model and make the tool uncallable, so the two
+>   uses of this field must be separated by *behavior*, not by content.
+> - Registration (`tools.validateSpec`, `catalog.go:155`) requires an
+>   MCP spec's schema to be a bounded JSON object, not a compilable one.
+> - Per-call validation (`tools.ValidateArgs`, `schema.go:47`) tries
+>   `compileSchema` first: if the schema compiles, arguments are checked
+>   exactly as strictly as a builtin's; if it does not, the check
+>   degrades to requiring the arguments to be a JSON object. The tool
+>   stays usable either way.
+> - Degradation is **recorded, not silent** — discovery logs which tools
+>   fell back, so "this tool's arguments are loosely checked" is an
+>   auditable fact rather than an invisible one.
+>
+> **This narrowly amends the header's "implemented contracts this design
+> must not change" list.** `tools` is on that list, and these are the only
+> two `compileSchema` call sites in the repository. The builtin path is
+> unchanged byte for byte — the branch is keyed on `spec.Source` and
+> `SourceBuiltin` behavior must be proven identical by test. The
+> alternative, widening `compileSchema` itself, would relax a
+> deliberately strict validator for the four builtin tools too, whose
+> `additionalProperties: false` exists so model-invented keys cannot
+> pass; that is a larger change for no gain here.
+>
+> **Why the looser check is defensible for MCP and not for builtins.**
+> For a builtin, this project writes the schema *and* executes the call,
+> so strictness protects its own filesystem and exec paths from arguments
+> the model invented. For an MCP tool, the server writes the schema and
+> the server executes the call; rejecting bad arguments is its own
+> responsibility, and the schema is its own declaration. What protects
+> this harness is unchanged and does not depend on schema strictness at
+> all: every MCP tool is `RiskExec`, therefore `require_approval` in the
+> permissive modes and denied outright in the restrictive ones, and the
+> server subprocess runs under `localexec`'s confinement.
    | `Source` | `tools.SourceMCP` |
    | `Risk` | `domain.RiskExec`, always (§1.4) |
    | `Mutates` | `true`, always — required by `validateSpec`'s existing `Risk`/`Mutates` pairing rule (`catalog.go:150-154`), and consistent with treating every MCP tool as conservatively as `exec` |

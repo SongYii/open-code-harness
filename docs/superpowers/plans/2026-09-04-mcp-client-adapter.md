@@ -181,6 +181,46 @@ Design §3 as amended: the adapter never imports `localexec`. It declares what i
 
 ---
 
+### Task 4a: Source-aware schema validation in `tools`
+
+**Files:**
+- Modify: `internal/harness/tools/catalog.go` (`validateSpec`), `internal/harness/tools/schema.go` (`ValidateArgs`), and their tests
+- Modify: `docs/architecture/tool-runtime.md` and its Chinese reading copy
+
+**Interfaces:** No new exported surface. Two existing call sites gain a `spec.Source` branch — the only two `compileSchema` callers in the repository.
+
+Prerequisite for Task 4, and the one task in this plan that touches an implemented contract. Design §5's 2026-09-05 amendment authorizes it narrowly: `SourceBuiltin` behavior must be unchanged, and a test must prove that rather than assert it.
+
+- [ ] **Step 1: Write failing tests**
+
+```go
+func TestBuiltinSchemaValidationIsUnchanged(t *testing.T)
+    // Every builtin spec still compiles, and every schema compileSchema
+    // rejected before is still rejected for a builtin source.
+
+func TestCatalogAcceptsAnMCPSpecWhoseSchemaThisProjectCannotCompile(t *testing.T)
+    // A realistic server schema — per-property description, "type":"number",
+    // no additionalProperties — registers rather than being refused.
+
+func TestCatalogStillRejectsAnMCPSchemaThatIsNotAJSONObject(t *testing.T)
+    // Degrading is not the same as accepting anything.
+
+func TestValidateArgsStaysStrictWhenAnMCPSchemaDoesCompile(t *testing.T)
+    // A server that happens to publish a compilable schema gets the full check.
+
+func TestValidateArgsDegradesToObjectCheckWhenAnMCPSchemaCannotCompile(t *testing.T)
+    // ... and a non-object argument payload is still refused.
+
+func TestValidateArgsNeverDegradesForABuiltin(t *testing.T)
+    // The branch must not leak into the builtin path.
+```
+
+- [ ] **Step 2: Implement** — branch both call sites on `spec.Source`. MCP registration requires a bounded JSON object; MCP per-call validation tries `compileSchema` and falls back to an object check. Builtin paths untouched.
+- [ ] **Step 3: Update the Tool runtime contract** — this is a documented behavior change to an implemented contract; the contract document and its reading copy change with the code, per this repository's own rule.
+- [ ] **Step 4: Mutation check** — remove the `spec.Source` guard so builtins also degrade, and confirm `TestValidateArgsNeverDegradesForABuiltin` fails; restore.
+
+---
+
 ### Task 4: Bounded discovery and `ToolSpec` mapping
 
 **Files:**
@@ -189,23 +229,13 @@ Design §3 as amended: the adapter never imports `localexec`. It declares what i
 
 **Interfaces:** Produces `(*Server).Discover(ctx) ([]domain.ToolSpec, error)` and the exported bounds `MaxToolsPerServer = 256`, `MaxToolDefinitionBytes = 65536`.
 
-> **BLOCKED — do not start this task until the schema question is decided.**
-> Task 1 measured `tools.compileSchema` against realistic MCP tool schemas
-> and found it rejects a per-property `description`, `$schema`, `title`,
-> `"type":"number"`, `"type":"boolean"`, `anyOf`, `default`, and any object
-> schema that omits `additionalProperties: false`. Its keyword allowlist is
-> twelve entries applied recursively, and it admits only four type values.
->
-> Under design §5 as written — "a schema this project's own compiler rejects
-> drops that one tool, logged, not fatal" — a healthy, correctly configured
-> MCP server would be discovered successfully, have **every** tool dropped,
-> and leave the harness running with an empty MCP contribution. Silent, and
-> shaped exactly like success.
->
-> The four options and their real costs are set out in the re-verification
-> document's §7.4. Each is a design decision with a different blast radius;
-> one of them edits an implemented contract. Building Task 4 before that
-> choice is made would encode whichever answer happened to be convenient.
+> **Unblocked 2026-09-05: degrade, never drop.** Task 1 measured
+> `tools.compileSchema` against realistic MCP schemas and found it rejects
+> nearly all of them, which would have emptied every real server while the
+> harness reported success. The decision, recorded as an amendment to design
+> §5, follows DeepSeek Harness's rule — unsupported vocabulary degrades the
+> check rather than discarding the tool. **Task 4a below is its prerequisite
+> and must land first.**
 
 Design §5. Uses the SDK's own `cs.Tools(ctx, nil)` iterator, which owns cursor pagination, and `cs.InitializeResult().Capabilities.Tools` to decide whether the server offers tools at all.
 
