@@ -19,7 +19,7 @@ gate. It makes no live-model, network, provider, or API-key claim.
 | 3 observations | `895789e` | process-local per-session observations, lifecycle clears, fixed recovery mapping |
 | 4 edit tool | `6620472` | fifth closed-schema `edit_file`, parse/dispatch and Policy/Approver ordering |
 | 5 proof | `d87b206` | concurrent/stale/exec/lifecycle scenarios and mutation evidence |
-| 6 documentation | this commit | synchronized contract, reading copy, indexes, security limit, and this ledger |
+| 6 documentation | `0713b8e` | synchronized contract, reading copy, indexes, security limit, and this ledger |
 
 Task 2's brief omitted `internal/harness/testkit/memfs.go` and
 `memfs_test.go`; the migration was approved because every compile-time
@@ -34,8 +34,8 @@ production capability beyond equivalent guarded semantics.
 | 1 | `go test ./internal/harness/tools -run 'TestMutationGuard|TestFilesystemErrorCodes' -count=1` first failed for missing values/codes, then passed; the re-review found the initial three wrong wire values and `5998f73` corrected them. |
 | 2 | `go test ./internal/harness/adapters/workspacefs ./internal/harness/tools/porttest -count=1` first failed against old signatures, then passed. The incomplete-UTF-8-at-EOF regression first failed in `TestGuardedMutationPort` and `TestMemFSGuardedMutation`, then passed after the bounded-read correction. |
 | 3 | `go test ./internal/harness/application -run TestFileObservations -count=1` first failed for absent table, then passed. Wiring tests first returned generic invalid arguments/create guards, then passed after observation/error/lifecycle wiring. |
-| 4 | tools schema/catalog tests first failed for `NameEditFile`; application edit tests first returned `unknown_tool`; both named focused commands passed after implementation. |
-| 5 | initial scenario fixture exposed only an append-identity collision from a fresh deterministic ID generator; the fixture was corrected without production change. Focused mutation scenario command passed afterwards. |
+| 4 | `go test ./internal/harness/tools -run 'TestDefaultWorkspaceSpecs|TestValidateArgs|TestNewCatalog' -count=1` first failed on `undefined: NameEditFile`, then passed (`ok .../tools 0.010s`). `go test ./internal/harness/application -run 'Test.*EditFile|Test.*Edit.*Approval' -count=1` first returned `unknown_tool`, then passed (`ok .../application 0.023s`). |
+| 5 | Initial scenario fixture exposed only an append-identity collision from a fresh deterministic ID generator; it was corrected without production change. `go test ./internal/harness/adapters/workspacefs ./internal/harness/application -run 'Test.*Mutation' -count=1` then exited 0 (`workspacefs 0.135s`; `application 0.033s`). |
 
 Prior tasks recorded successful focused packages, repository tests, vet, and
 race/repetition where applicable. This ledger does not silently upgrade those
@@ -44,7 +44,7 @@ historical runs into Windows runtime coverage.
 ## Task 5 mutation and concurrency proof
 
 Task 5 temporarily inverted both stale-version equality checks (`!=` to `==`).
-The targeted matrix failed, including these boundary tests:
+Task 5 records that its targeted matrix exited 1. The exhaustive failing test/subtest list for that mutant run was:
 
 ```text
 TestMutationPublicationFailurePreservesDestinationAndCleansStage/replace
@@ -69,9 +69,9 @@ TestFileMutationExecBypassIsDetectedByFollowingStructuredEdit
 The reported concurrent result was `0 success, 2 stale; want exactly one of
 each`; the exec scenario lost its bounded stale result. The mutant was restored
 and `git diff -- internal/harness/adapters/workspacefs/mutation.go` was empty
-before GREEN reruns. A second mutant bypassed `count > 1 && !replaceAll`; it
-failed exactly `TestGuardedMutationPort` and
-`TestMutationEditLiteralAndNewlines/ambiguous`, then was restored.
+before GREEN reruns. The Task 5 report calls this failing invocation “the targeted matrix”; it does not retain a separate mutant command line. Its exact retained stale/concurrent matrix command is the successful post-restoration command shown below. This ledger does not reconstruct a missing invocation.
+
+A second mutant temporarily disabled `count > 1 && !replaceAll`. Its edit matrix exited 1 with exactly `TestGuardedMutationPort` (`fs_test.go:32: <nil>`) and `TestMutationEditLiteralAndNewlines/ambiguous` (`mutation_test.go:106: <nil>`). The report similarly does not retain a separate edit-matrix command; it records the mutation, two exact failures, restoration, and an empty `git diff -- internal/harness/adapters/workspacefs/mutation.go` before the post-restoration GREEN matrix. No command is invented here.
 
 The recorded repetition command exited zero without a race report:
 
@@ -90,9 +90,7 @@ claim of a public lifecycle observation seam.
 
 ## Fresh Task 6 ordinary-PR gate
 
-The following commands were run from the repository root after the Task 6
-documentation edits. Results and elapsed times are recorded only in the final
-Task 6 implementer report once this fresh execution completes:
+The following commands were run from the repository root after the Task 6 documentation edits; this ledger records their results. The implementer report contains the fuller execution narrative:
 
 ```text
 go test ./internal/docsguard ./internal/harness/architecture -count=1
@@ -125,18 +123,27 @@ the exact requested gate, not an external scheduler.
 
 `go test ./internal/docsguard ./internal/harness/architecture -count=1` exited 0
 in 4.5s (`docsguard` 0.173s; `architecture` 0.342s). `git diff --check` exited
-0. `npm ci && npm run build` exited 0 in 8.0s (83 packages, 0 vulnerabilities;
-Vite build 59ms). `go vet ./...` exited 0 in 4.2s. `env CGO_ENABLED=0 go build
-./...` exited 0 in 23.7s; Windows and Darwin `go build ./...` both exited 0 as
-compile-only evidence, never runtime coverage.
+0; elapsed time was not captured. `npm ci && npm run build` exited 0 in 8.0s
+(83 packages, 0 vulnerabilities; Vite build 59ms). `go vet ./...` exited 0 in
+4.2s. The chained CGO-disabled, Windows, and Darwin `go build ./...` commands
+exited 0 in 23.7s. Windows and Darwin individual elapsed times were not
+captured; both are compile-only evidence, never runtime coverage.
 
 The first exact `go test -race ./... -count=1` run exited 1 after about 307s.
 Only `internal/harness/adapters/sqlite` failed:
 `TestConformance/limits_copies_cancellation_and_corruption` reported `rejected
-over-limit request leaked identities: store/writer_fenced (session=session-request-plus-one
-expected=0 actual=0 identity_kind= may_have_committed=false)`. The Task 6 diff
-was docs-only and Tasks 4–5 contain no SQLite paths. The focused race command
-passed once, then passed at `-count=3` (4/4 total; 17.9s then 38.4s). The exact
-full race command was rerun once without a SQLite change and exited 0 in about
-250s, including SQLite in 59.0s. This ledger retains the initial intermittent
-failure; it does not relabel that first execution as a pass.
+over-limit request leaked identities: store/writer_fenced
+(session=session-request-plus-one expected=0 actual=0 identity_kind=
+may_have_committed=false)`. The Task 6 diff was docs-only and Tasks 4–5 contain
+no SQLite paths. The focused investigation ran:
+
+```text
+go test -race ./internal/harness/adapters/sqlite -run 'TestConformance/limits_copies_cancellation_and_corruption' -count=1
+# exit 0 in 17.925s
+go test -race ./internal/harness/adapters/sqlite -run 'TestConformance/limits_copies_cancellation_and_corruption' -count=3
+# exit 0 in 38.379s (4/4 focused passes)
+```
+
+The exact full race command was rerun once without a SQLite change and exited 0
+in about 250s, including SQLite in 59.0s. This ledger retains the initial
+intermittent failure; it does not relabel that first execution as a pass.
