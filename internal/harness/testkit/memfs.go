@@ -171,15 +171,55 @@ func (mem *MemFS) Edit(ctx context.Context, abs string, old, replacement []byte,
 	if count > 1 && !replaceAll {
 		return tools.MutationResult{}, &tools.Error{Code: tools.CodeEditAmbiguous}
 	}
-	n := 1
+	replacements := 1
 	if replaceAll {
-		n = -1
+		replacements = count
 	}
-	data = bytes.Replace(data, old, replacement, n)
-	if crlf > lf {
+	restoreCRLF := crlf > lf
+	if !memEditResultWithinLimit(data, old, replacement, replacements, restoreCRLF) {
+		return tools.MutationResult{}, &tools.Error{Code: tools.CodeFilesystemTooLarge}
+	}
+	data = bytes.Replace(data, old, replacement, replacements)
+	if restoreCRLF {
 		data = bytes.ReplaceAll(data, []byte("\n"), []byte("\r\n"))
 	}
 	return mem.publishLocked(final, data, guard), nil
+}
+
+func memEditResultWithinLimit(data, old, replacement []byte, count int, restoreCRLF bool) bool {
+	intermediate, ok := memReplacedSize(len(data), len(old), len(replacement), count, tools.MaxEditFileBytes)
+	if !ok {
+		return false
+	}
+	if !restoreCRLF {
+		return true
+	}
+	newlines, ok := memReplacedSize(
+		bytes.Count(data, []byte("\n")),
+		bytes.Count(old, []byte("\n")),
+		bytes.Count(replacement, []byte("\n")),
+		count,
+		tools.MaxEditFileBytes,
+	)
+	return ok && newlines <= tools.MaxEditFileBytes-intermediate
+}
+
+func memReplacedSize(base, old, replacement, count, limit int) (int, bool) {
+	if base < 0 || old < 0 || replacement < 0 || count < 0 || limit < 0 {
+		return 0, false
+	}
+	if replacement <= old {
+		shrink := old - replacement
+		if shrink > 0 && count > base/shrink {
+			return 0, false
+		}
+		result := base - count*shrink
+		return result, result <= limit
+	}
+	if base > limit || count > (limit-base)/(replacement-old) {
+		return 0, false
+	}
+	return base + count*(replacement-old), true
 }
 
 func (mem *MemFS) mutationTargetLocked(abs string, guard tools.MutationGuard) (string, *memNode, error) {

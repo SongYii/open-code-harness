@@ -98,12 +98,16 @@ func (files *FileSystem) Edit(ctx context.Context, abs string, old, replacement 
 		if count > 1 && !replaceAll {
 			return nil, &tools.Error{Code: tools.CodeEditAmbiguous}
 		}
-		n := 1
+		replacements := 1
 		if replaceAll {
-			n = -1
+			replacements = count
 		}
-		data = bytes.Replace(data, old, replacement, n)
-		if crlf > lf {
+		restoreCRLF := crlf > lf
+		if !editResultWithinLimit(data, old, replacement, replacements, restoreCRLF) {
+			return nil, &tools.Error{Code: tools.CodeFilesystemTooLarge}
+		}
+		data = bytes.Replace(data, old, replacement, replacements)
+		if restoreCRLF {
 			data = bytes.ReplaceAll(data, []byte("\n"), []byte("\r\n"))
 		}
 		return data, nil
@@ -112,6 +116,46 @@ func (files *FileSystem) Edit(ctx context.Context, abs string, old, replacement 
 
 func normalizeNewlines(data []byte) []byte {
 	return bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+}
+
+func editResultWithinLimit(data, old, replacement []byte, count int, restoreCRLF bool) bool {
+	intermediate, ok := replacedSize(len(data), len(old), len(replacement), count, tools.MaxEditFileBytes)
+	if !ok {
+		return false
+	}
+	if !restoreCRLF {
+		return true
+	}
+	newlines, ok := replacedSize(
+		bytes.Count(data, []byte("\n")),
+		bytes.Count(old, []byte("\n")),
+		bytes.Count(replacement, []byte("\n")),
+		count,
+		tools.MaxEditFileBytes,
+	)
+	return ok && newlines <= tools.MaxEditFileBytes-intermediate
+}
+
+// replacedSize computes base-count*old+count*replacement without overflowing.
+// For shrinking replacements, every counted non-overlapping match proves the
+// subtraction is bounded by base. For expanding replacements, division checks
+// the remaining budget before multiplication.
+func replacedSize(base, old, replacement, count, limit int) (int, bool) {
+	if base < 0 || old < 0 || replacement < 0 || count < 0 || limit < 0 {
+		return 0, false
+	}
+	if replacement <= old {
+		shrink := old - replacement
+		if shrink > 0 && count > base/shrink {
+			return 0, false
+		}
+		result := base - count*shrink
+		return result, result <= limit
+	}
+	if base > limit || count > (limit-base)/(replacement-old) {
+		return 0, false
+	}
+	return base + count*(replacement-old), true
 }
 
 // mutate serializes this adapter's mutations. Revalidation narrows but cannot
@@ -198,9 +242,16 @@ func (files *FileSystem) publish(ctx context.Context, requested, resolved string
 	if err != nil {
 		return tools.MutationResult{}, err
 	}
+	var verifier *os.File
 	_, err = io.Copy(file, bytes.NewReader(data))
 	if err == nil {
 		err = file.Sync()
+	}
+	if err == nil {
+		// Open while the staging file is still owner-readable. The intended
+		// destination mode may remove read permission, but this descriptor can
+		// still verify the published inode without weakening that mode.
+		verifier, err = os.Open(staged)
 	}
 	if err == nil {
 		err = file.Chmod(mode)
@@ -209,6 +260,14 @@ func (files *FileSystem) publish(ctx context.Context, requested, resolved string
 	if err == nil {
 		err = closeErr
 	}
+	if err != nil {
+		if verifier != nil {
+			_ = verifier.Close()
+		}
+		return tools.MutationResult{}, err
+	}
+	defer verifier.Close()
+	stagedInfo, err := verifier.Stat()
 	if err != nil {
 		return tools.MutationResult{}, err
 	}
@@ -238,7 +297,7 @@ func (files *FileSystem) publish(ctx context.Context, requested, resolved string
 		_ = dir.Sync()
 		_ = dir.Close()
 	}
-	info, err := os.Stat(resolved)
+	version, err := verifyPublished(ctx, verifier, stagedInfo, resolved, data)
 	if err != nil {
 		return tools.MutationResult{}, err
 	}
@@ -246,5 +305,47 @@ func (files *FileSystem) publish(ctx context.Context, requested, resolved string
 	if create {
 		operation = tools.MutationCreate
 	}
-	return tools.MutationResult{Version: versionOf(info), Operation: operation}, nil
+	return tools.MutationResult{Version: version, Operation: operation}, nil
+}
+
+// verifyPublished binds the returned version to the staged inode and expected
+// bytes. It can detect interference before and during this bounded check, but
+// cannot make the subsequent return atomic with external filesystem writers.
+func verifyPublished(ctx context.Context, verifier *os.File, stagedInfo os.FileInfo, destination string, expected []byte) (tools.FileVersion, error) {
+	before, err := verifier.Stat()
+	if err != nil || !os.SameFile(stagedInfo, before) || !sameStagedContentMetadata(stagedInfo, before) {
+		return "", staleError()
+	}
+	destinationBefore, err := os.Lstat(destination)
+	if err != nil || regularError(destinationBefore) != nil || !os.SameFile(before, destinationBefore) || versionOf(before) != versionOf(destinationBefore) {
+		return "", staleError()
+	}
+	if _, err := verifier.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	data, err := io.ReadAll(io.LimitReader(verifier, int64(tools.MaxEditFileBytes)+1))
+	if err != nil {
+		return "", err
+	}
+	after, err := verifier.Stat()
+	if err != nil {
+		return "", staleError()
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if versionOf(before) != versionOf(after) || !bytes.Equal(data, expected) {
+		return "", staleError()
+	}
+	destinationAfter, err := os.Lstat(destination)
+	if err != nil || regularError(destinationAfter) != nil || !os.SameFile(after, destinationAfter) || versionOf(after) != versionOf(destinationAfter) {
+		return "", staleError()
+	}
+	return versionOf(after), nil
+}
+
+func sameStagedContentMetadata(staged, published os.FileInfo) bool {
+	return staged.Size() == published.Size() &&
+		staged.Mode() == published.Mode() &&
+		staged.ModTime().Equal(published.ModTime())
 }
