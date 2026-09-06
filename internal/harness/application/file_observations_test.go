@@ -47,6 +47,55 @@ func TestFileObservationsTransitions(t *testing.T) {
 	}
 }
 
+func TestFileObservationEditGuardTransitions(t *testing.T) {
+	sessionID := domain.SessionID("session-1")
+	target := "/workspace/a.txt"
+	wantReplace := tools.MutationGuard{Kind: tools.GuardReplaceIfVersion, Version: "v1"}
+	tests := []struct {
+		name      string
+		record    func(*fileObservations)
+		wantGuard tools.MutationGuard
+		wantError tools.ErrorCode
+	}{
+		{
+			name:      "unseen",
+			wantError: tools.CodeFilesystemNotObserved,
+		},
+		{
+			name: "observed absent",
+			record: func(observations *fileObservations) {
+				observations.recordAbsent(sessionID, target)
+			},
+			wantError: tools.CodeFilesystemNotFound,
+		},
+		{
+			name: "observed present",
+			record: func(observations *fileObservations) {
+				observations.recordPresent(sessionID, target, "v1")
+			},
+			wantGuard: wantReplace,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			observations := newFileObservations()
+			if test.record != nil {
+				test.record(observations)
+			}
+			guard, err := observations.guardForEdit(sessionID, target)
+			if test.wantError != "" {
+				if !tools.IsCode(err, test.wantError) {
+					t.Fatalf("guardForEdit() error = %v, want %s", err, test.wantError)
+				}
+				return
+			}
+			if err != nil || guard != test.wantGuard {
+				t.Fatalf("guardForEdit() = (%#v, %v), want (%#v, nil)", guard, err, test.wantGuard)
+			}
+		})
+	}
+}
+
 func TestFileObservationsConcurrentAccess(t *testing.T) {
 	observations := newFileObservations()
 	const workers = 24

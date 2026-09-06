@@ -37,10 +37,10 @@ func FileSystemGuardedMutation(t *testing.T, files tools.FileSystem, workspace s
 		t.Fatal(err)
 	}
 	guard := tools.MutationGuard{Kind: tools.GuardReplaceIfVersion, Version: created.Version}
-	if _, err := files.Edit(ctx, abs, []byte("missing"), []byte("x"), false, guard); !tools.IsCode(err, tools.CodeEditNoMatch) {
+	if _, err := files.Edit(ctx, abs, []byte("missing"), []byte("x"), false, guard); !tools.IsCode(err, tools.CodeFilesystemEditNotFound) {
 		t.Fatal(err)
 	}
-	if _, err := files.Edit(ctx, abs, []byte("a"), []byte("x"), false, guard); !tools.IsCode(err, tools.CodeEditAmbiguous) {
+	if _, err := files.Edit(ctx, abs, []byte("a"), []byte("x"), false, guard); !tools.IsCode(err, tools.CodeFilesystemAmbiguousEdit) {
 		t.Fatal(err)
 	}
 	result, err := files.Edit(ctx, abs, []byte("a\n"), []byte("b\n"), true, guard)

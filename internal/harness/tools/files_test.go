@@ -24,19 +24,26 @@ func TestMutationGuardValidate(t *testing.T) {
 }
 
 func TestFilesystemErrorCodes(t *testing.T) {
-	codes := []ErrorCode{
-		CodeFilesystemNotObserved,
-		CodeFilesystemStaleVersion,
-		CodeEditNoMatch,
-		CodeEditAmbiguous,
-		CodeFilesystemIsDirectory,
-		CodeFilesystemNotText,
-		CodeFilesystemTooLarge,
+	codes := []struct {
+		code ErrorCode
+		want string
+	}{
+		{CodeFilesystemNotObserved, "fs_not_observed"},
+		{CodeFilesystemNotFound, "fs_not_found"},
+		{CodeFilesystemStaleVersion, "fs_stale_version"},
+		{CodeFilesystemEditNotFound, "fs_edit_not_found"},
+		{CodeFilesystemAmbiguousEdit, "fs_ambiguous_edit"},
+		{CodeFilesystemNotRegularFile, "fs_not_regular_file"},
+		{CodeFilesystemNotText, "fs_not_text"},
+		{CodeFilesystemTooLarge, "fs_too_large"},
 	}
-	for _, code := range codes {
-		err := &Error{Code: code}
-		if !IsCode(err, code) {
-			t.Fatalf("IsCode(%q) = false", code)
+	for _, test := range codes {
+		err := &Error{Code: test.code}
+		if !IsCode(err, test.code) {
+			t.Fatalf("IsCode(%q) = false", test.code)
+		}
+		if got := string(test.code); got != test.want {
+			t.Fatalf("wire code = %q, want %q", got, test.want)
 		}
 		message := err.Error()
 		if strings.Contains(message, "/tmp/") || strings.Contains(message, "v1") {

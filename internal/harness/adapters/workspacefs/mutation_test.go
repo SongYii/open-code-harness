@@ -83,8 +83,8 @@ func TestMutationEditLiteralAndNewlines(t *testing.T) {
 		code                         tools.ErrorCode
 	}{
 		{name: "unique", before: "one two", old: "one", new: "ONE", want: "ONE two"},
-		{name: "missing", before: "one", old: "absent", new: "x", code: tools.CodeEditNoMatch},
-		{name: "ambiguous", before: "one one", old: "one", new: "x", code: tools.CodeEditAmbiguous},
+		{name: "missing", before: "one", old: "absent", new: "x", code: tools.CodeFilesystemEditNotFound},
+		{name: "ambiguous", before: "one one", old: "one", new: "x", code: tools.CodeFilesystemAmbiguousEdit},
 		{name: "all", before: "one one", old: "one", new: "x", want: "x x", all: true},
 		{name: "lf", before: "a\nb\n", old: "a\r\nb", new: "x\r\ny", want: "x\ny\n"},
 		{name: "crlf", before: "a\r\nb\r\n", old: "a\nb", new: "x\ny", want: "x\r\ny\r\n"},
@@ -141,10 +141,10 @@ func TestMutationGuardBeforeMatchAndExternalChange(t *testing.T) {
 func TestMutationRejectsInvalidTargetsAndText(t *testing.T) {
 	files, root := newTestFS(t)
 	ctx := context.Background()
-	if _, err := files.Read(ctx, root, 8); !tools.IsCode(err, tools.CodeFilesystemIsDirectory) {
+	if _, err := files.Read(ctx, root, 8); !tools.IsCode(err, tools.CodeFilesystemNotRegularFile) {
 		t.Fatal(err)
 	}
-	if _, err := files.Write(ctx, root, []byte("x"), tools.MutationGuard{Kind: tools.GuardCreateIfAbsent}); !tools.IsCode(err, tools.CodeFilesystemIsDirectory) {
+	if _, err := files.Write(ctx, root, []byte("x"), tools.MutationGuard{Kind: tools.GuardCreateIfAbsent}); !tools.IsCode(err, tools.CodeFilesystemNotRegularFile) {
 		t.Fatal(err)
 	}
 	abs := filepath.Join(root, "binary")
