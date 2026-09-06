@@ -1,6 +1,7 @@
 package porttest
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -115,6 +116,50 @@ func FileSystemReadWriteJail(t *testing.T, files tools.FileSystem, workspace str
 		Kind: tools.GuardReplaceIfVersion, Version: read.Version,
 	}); !tools.IsCode(err, tools.CodeFSStaleVersion) {
 		t.Fatalf("replayed guard = %v, want %q", err, tools.CodeFSStaleVersion)
+	}
+
+	for i, test := range []struct {
+		name        string
+		before      []byte
+		old         []byte
+		replacement []byte
+	}{
+		{
+			name:        "replace all expansion",
+			before:      bytes.Repeat([]byte("a"), 33),
+			old:         []byte("a"),
+			replacement: bytes.Repeat([]byte("b"), 32_768),
+		},
+		{
+			name:        "dominant CRLF restoration expansion",
+			before:      bytes.Repeat([]byte("a\r\n"), 270_000),
+			old:         []byte("a"),
+			replacement: []byte("\n"),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			expansionAbs, err := files.Resolve(ctx, workspace, fmt.Sprintf("expansion-%d.txt", i))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := files.Write(ctx, expansionAbs, test.before, tools.MutationGuard{Kind: tools.GuardCreateIfAbsent}); err != nil {
+				t.Fatal(err)
+			}
+			observed, err := files.Read(ctx, expansionAbs, tools.MaxEditFileBytes)
+			if err != nil || observed.Truncated {
+				t.Fatal(observed, err)
+			}
+			_, err = files.Edit(ctx, expansionAbs, test.old, test.replacement, true, tools.MutationGuard{
+				Kind: tools.GuardReplaceIfVersion, Version: observed.Version,
+			})
+			if !tools.IsCode(err, tools.CodeFSTooLarge) {
+				t.Fatalf("Edit() error = %v, want fs_too_large", err)
+			}
+			after, err := files.Read(ctx, expansionAbs, tools.MaxEditFileBytes)
+			if err != nil || after.Truncated || !bytes.Equal(after.Data, test.before) || after.Version != observed.Version {
+				t.Fatalf("rejected edit changed observation: before=%#v after=%#v err=%v", observed, after, err)
+			}
+		})
 	}
 
 	// Non-text is refused rather than returned. A literal edit over arbitrary

@@ -142,3 +142,65 @@ func assertNoResidue(t *testing.T, root string, allowed ...string) {
 		}
 	}
 }
+
+type postPublicationMutator struct {
+	inPlace bool
+}
+
+func (publisher postPublicationMutator) Publish(staged, destination string, create bool) error {
+	if err := (osPublisher{}).Publish(staged, destination, create); err != nil {
+		return err
+	}
+	if publisher.inPlace {
+		return os.WriteFile(destination, []byte("external change"), 0o600)
+	}
+	competing := filepath.Join(filepath.Dir(destination), "external-stage")
+	if err := os.WriteFile(competing, []byte("external change"), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(competing, destination)
+}
+
+func TestMutationPostPublicationChangeReturnsStale(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		inPlace bool
+	}{
+		{name: "external rename"},
+		{name: "external in-place mutation", inPlace: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			files, err := New(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			abs := filepath.Join(root, "note")
+			if err := os.WriteFile(abs, []byte("before"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			observed, err := files.Read(context.Background(), abs, 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			guard := tools.MutationGuard{Kind: tools.GuardReplaceIfVersion, Version: observed.Version}
+			files.publisher = postPublicationMutator{inPlace: test.inPlace}
+			result, err := files.Write(context.Background(), abs, []byte("ours"), guard)
+			if !tools.IsCode(err, tools.CodeFSStaleVersion) {
+				t.Fatalf("Write() = %#v, %v; want zero result and fs_stale_version", result, err)
+			}
+			if result != (tools.MutationResult{}) {
+				t.Fatalf("stale Write result = %#v, want zero value", result)
+			}
+
+			files.publisher = osPublisher{}
+			if _, err := files.Write(context.Background(), abs, []byte("blind next write"), guard); !tools.IsCode(err, tools.CodeFSStaleVersion) {
+				t.Fatalf("next Write() error = %v, want fs_stale_version", err)
+			}
+			got, err := os.ReadFile(abs)
+			if err != nil || string(got) != "external change" {
+				t.Fatalf("external revision = %q, %v", got, err)
+			}
+		})
+	}
+}
