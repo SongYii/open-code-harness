@@ -57,9 +57,10 @@ Application 维护同步、进程本地的表，键是 Session ID 加已解析�
 | --- | --- |
 | 成功 `read_file` | 记录 `present(返回版本)` |
 | 缺失的 `read_file` | 记录 `absent`；返回普通 not-found 行为 |
-| unseen/absent 后 `write_file` | 用 `create_if_absent` guard |
+| unseen/absent 后 `write_file` | 用 `create_if_absent` guard；`fs.ErrExist` 映射为 `fs_not_observed` |
 | present(v) 后 `write_file` | 用 `replace_if_version(v)` guard |
-| unseen/absent 后 `edit_file` | `fs_not_observed` |
+| unseen 后 `edit_file` | `fs_not_observed` |
+| absent 后 `edit_file` | `fs_not_found` |
 | present(v) 后 `edit_file` | 用 `replace_if_version(v)` guard |
 | 成功 write/edit | 用返回版本更新状态 |
 | 失败 mutation | 保留先前状态 |
@@ -79,15 +80,18 @@ probe → `policy.Engine.Decide` → 必需的 `Approver` grant → observation 
 | Code | 精确模型可见消息 |
 | --- | --- |
 | `fs_not_observed` | `read the file before changing it` |
+| `fs_not_found` | `file does not exist; create it or re-read after it appears` |
 | `fs_stale_version` | `file changed since it was read; re-read it and retry` |
-| `edit_no_match` | `literal was not found` |
-| `edit_ambiguous` | `literal appears more than once; include more context or use replace_all` |
-| `fs_is_directory` | `target is not a regular file` |
+| `fs_edit_not_found` | `literal was not found` |
+| `fs_ambiguous_edit` | `literal appears more than once; include more context or use replace_all` |
+| `fs_not_regular_file` | `target is not a regular file` |
 | `fs_not_text` | `file is not valid UTF-8 text` |
 | `fs_too_large` | `file exceeds the edit size limit` |
 
 映射只输出这些有界字面量与 code；路径、内容、不透明版本和 adapter cause 不会进入工具结果、
 records、runtime events、model messages 或 approval requests。
+
+目录和特殊文件都归为 `fs_not_regular_file`；adapter 会在打开非普通文件前检查 mode，避免读取 FIFO。
 
 ## 发布与范围边界
 

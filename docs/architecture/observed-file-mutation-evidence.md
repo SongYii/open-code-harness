@@ -3,7 +3,8 @@
 - Scope: [Implemented observed file mutation contract](observed-file-mutation.md)
 - Design: [Observed-state safe file mutation](../superpowers/specs/2026-09-04-observed-file-mutation-design.md)
 - Plan: [six-task implementation plan](../superpowers/plans/2026-09-05-observed-file-mutation.md)
-- Status: Tasks 1–6 implemented and locally verified; internal pre-v0, not GA
+- Status: Tasks 1–6 plus final-review Fixes A and B implemented and locally
+  verified; internal pre-v0, not GA
 
 This ledger separates original task evidence from the fresh final ordinary-PR
 gate. It makes no live-model, network, provider, or API-key claim.
@@ -14,12 +15,34 @@ gate. It makes no live-model, network, provider, or API-key claim.
 | --- | --- | --- |
 | design / plan | `73f3098` | accepted observed-state design and six-task plan |
 | 1 values and errors | `c5dea0f` | opaque values, guards, 1 MiB bound, seven error families |
-| 1 contract correction | `5998f73` | required wire values `fs_is_directory`, `edit_no_match`, `edit_ambiguous`; Task 1 re-review approved |
+| 1 superseded contract correction | `5998f73` | earlier re-review record; its `fs_is_directory`, `edit_no_match`, and `edit_ambiguous` values were superseded by final-review Fix B after they were found inconsistent with the accepted plan |
 | 2 guarded adapter | `111f530` | final FileSystem port, staged atomic workspacefs implementation, and approved MemFS migration deviation |
 | 3 observations | `895789e` | process-local per-session observations, lifecycle clears, fixed recovery mapping |
 | 4 edit tool | `6620472` | fifth closed-schema `edit_file`, parse/dispatch and Policy/Approver ordering |
 | 5 proof | `d87b206` | concurrent/stale/exec/lifecycle scenarios and mutation evidence |
 | 6 documentation | `0713b8e` | synchronized contract, reading copy, indexes, security limit, and this ledger |
+| final review Fix A RED | `4a44822` | adapter mutation-safety regressions |
+| final review Fix A GREEN | `0d98071` | bounded edit publication and published-version verification |
+| final review Fix B RED | `86d9dc2` | exact recovery/wire-contract, observation, and FIFO regressions |
+| final review Fix B code | `bbaf36f` | eight-code mapping, observed-absent recovery, and non-regular target classification; synchronized documentation follows in a separate commit |
+
+## Final broad-review findings and corrections
+
+The final broad review found four important issues: edit expansion could exceed
+the bound; returned mutation versions could adopt an unobserved external
+change; observed-absent and create-conflict recovery was incomplete; and the
+wire contract used three obsolete names while special files fell through to
+generic invalid arguments. Fix A commits `4a44822` and `0d98071` closed the
+first two findings. Fix B code commit `bbaf36f` closes the latter two.
+
+The accepted design's observation table always required observed-absent edit to
+return `FS_NOT_FOUND`. The Task 1/3 seven-code enumerations accidentally
+omitted the corresponding eighth wire code `fs_not_found`; the plan now calls
+out this correction without rewriting the historical accepted design. Fix B
+uses the exact stable names `fs_edit_not_found`, `fs_ambiguous_edit`, and
+`fs_not_regular_file`. Directory and special-file targets share the final
+regular-file code, and `fs.ErrExist` from a create-if-absent write maps to the
+read-before-change `fs_not_observed` recovery result.
 
 Task 2's brief omitted `internal/harness/testkit/memfs.go` and
 `memfs_test.go`; the migration was approved because every compile-time
@@ -147,3 +170,57 @@ go test -race ./internal/harness/adapters/sqlite -run 'TestConformance/limits_co
 The exact full race command was rerun once without a SQLite change and exited 0
 in about 250s, including SQLite in 59.0s. This ledger retains the initial
 intermittent failure; it does not relabel that first execution as a pass.
+
+## Final Fix B execution evidence
+
+The RED-only commit preceded production code. This exact command exited 1
+because the new stable identifiers did not yet exist:
+
+```text
+go test ./internal/harness/tools ./internal/harness/adapters/workspacefs ./internal/harness/application -run 'Test(FilesystemErrorCodes|FileObservationEditGuardTransitions|EditFileAfterMissingReadReturnsNotFoundWithoutAdvancingObservation|ModeAllowWritesRefusesExistingTarget|MutationEditLiteralAndNewlines|MutationRejectsInvalidTargetsAndText|MutationRejectsFIFOAsNotRegularFileBeforeOpening)$' -count=1
+```
+
+The captured failures were `undefined: CodeFilesystemNotFound`,
+`CodeFilesystemEditNotFound`, `CodeFilesystemAmbiguousEdit`, and
+`CodeFilesystemNotRegularFile` in the new tests/shared port. This is the
+expected missing-contract failure, not a test harness error.
+
+After `bbaf36f`, the following focused command exited 0:
+
+```text
+go test ./internal/harness/tools ./internal/harness/adapters/workspacefs ./internal/harness/application ./internal/harness/testkit -run 'Test(FilesystemErrorCodes|FileObservationEditGuardTransitions|EditFileAfterMissingReadReturnsNotFoundWithoutAdvancingObservation|ModeAllowWritesRefusesExistingTarget|MutationEditLiteralAndNewlines|MutationRejectsInvalidTargetsAndText|MutationRejectsFIFOAsNotRegularFileBeforeOpening|MemFSGuardedMutation)$' -count=1
+```
+
+It reported `ok` for `tools`, `workspacefs`, `application`, and `testkit`.
+The broader affected-package command also exited 0:
+
+```text
+go test ./internal/harness/tools ./internal/harness/tools/porttest ./internal/harness/testkit ./internal/harness/adapters/workspacefs ./internal/harness/application -count=1
+```
+
+The affected race matrix exited 0 with no race report:
+
+```text
+go test -race ./internal/harness/testkit ./internal/harness/adapters/workspacefs ./internal/harness/application -run 'Test.*(Mutation|Observation|EditFile|ModeAllowWrites|FileToolErrors)' -count=2
+```
+
+The platform-specific FIFO test is limited to Linux/Darwin. The following
+compile-only checks both exited 0:
+
+```text
+env GOOS=windows go test -exec=/usr/bin/true ./internal/harness/adapters/workspacefs -run '^$'
+env GOOS=darwin go test -exec=/usr/bin/true ./internal/harness/adapters/workspacefs -run '^$'
+```
+
+The final broad command chain exited 0:
+
+```text
+go test ./internal/docsguard ./internal/harness/architecture -count=1
+go test ./... -count=1
+go vet ./...
+git diff --check
+```
+
+Its captured output reported `ok` for `docsguard`, `architecture`, and the
+listed command packages; no command in the chain reported a failure. No elapsed
+time is claimed for these Fix B executions.

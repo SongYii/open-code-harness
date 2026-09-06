@@ -65,9 +65,10 @@ resolved canonical target. A state is `unseen`, `absent`, or `present(version)`:
 | --- | --- |
 | successful `read_file` | record `present(returned version)` |
 | missing `read_file` | record `absent`; return ordinary not-found behavior |
-| `write_file` after unseen or absent | guarded `create_if_absent` |
+| `write_file` after unseen or absent | guarded `create_if_absent`; `fs.ErrExist` maps to `fs_not_observed` |
 | `write_file` after present(v) | guarded `replace_if_version(v)` |
-| `edit_file` after unseen or absent | `fs_not_observed` |
+| `edit_file` after unseen | `fs_not_observed` |
+| `edit_file` after absent | `fs_not_found` |
 | `edit_file` after present(v) | guarded `replace_if_version(v)` |
 | successful write or edit | replace state with returned version |
 | failed mutation | retain the prior state |
@@ -91,16 +92,20 @@ The complete new code/message mapping is fixed and lower-case on the wire:
 | Code | Exact model-visible message |
 | --- | --- |
 | `fs_not_observed` | `read the file before changing it` |
+| `fs_not_found` | `file does not exist; create it or re-read after it appears` |
 | `fs_stale_version` | `file changed since it was read; re-read it and retry` |
-| `edit_no_match` | `literal was not found` |
-| `edit_ambiguous` | `literal appears more than once; include more context or use replace_all` |
-| `fs_is_directory` | `target is not a regular file` |
+| `fs_edit_not_found` | `literal was not found` |
+| `fs_ambiguous_edit` | `literal appears more than once; include more context or use replace_all` |
+| `fs_not_regular_file` | `target is not a regular file` |
 | `fs_not_text` | `file is not valid UTF-8 text` |
 | `fs_too_large` | `file exceeds the edit size limit` |
 
 The mapping emits only these bounded literals and codes. Paths, contents,
 opaque versions, and adapter causes are not rendered into tool results,
 records, runtime events, model messages, or approval requests.
+
+Directories and special targets are both `fs_not_regular_file`; the adapter
+checks target mode before opening a non-regular target, avoiding FIFO reads.
 
 ## Publication and scope boundary
 
