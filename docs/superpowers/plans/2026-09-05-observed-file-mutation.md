@@ -335,7 +335,7 @@ git commit -m "feat(tools): add observed literal edit_file"
 - Consumes: complete guarded adapter and Application policy.
 - Produces: acceptance evidence for lost-update prevention and honest exclusions.
 
-- [ ] **Step 1: Write failing pre-publication fault tests**
+- [x] **Step 1: Write failing pre-publication fault tests**
 
 Add a private test seam:
 
@@ -345,21 +345,21 @@ type mutationHooks struct { beforePublish func() error }
 
 Inject failure after staged sync/close but before link/rename. Assert an existing destination remains byte-identical, a create destination remains absent, and staging residue is removed.
 
-- [ ] **Step 2: Prove fault tests are red**
+- [x] **Step 2: Prove fault tests are red**
 
 Run: `go test ./internal/harness/adapters/workspacefs -run TestMutationFault -count=1`
 
 Expected: FAIL because the hook is absent.
 
-- [ ] **Step 3: Implement the private hook and cleanup**
+- [x] **Step 3: Implement the private hook and cleanup**
 
 Invoke it exactly once before publication. Install deferred descriptor close and staging cleanup before writing begins. Keep the hook unexported and nil in production.
 
-- [ ] **Step 4: Add concurrency/lifecycle scenarios**
+- [x] **Step 4: Add concurrency/lifecycle scenarios**
 
 Prove: two writers with one observed version yield one success/one stale; two unseen creators yield one success/one not-observed; Sessions cannot share observations; an ordinary next Turn retains observation; a newly constructed Service over the same durable Session starts unseen; Resume/Close/Delete clear state; an `exec` fixture can modify the file and the following structured edit detects stale without claiming exec mediation.
 
-- [ ] **Step 5: Run race and repetition matrices**
+- [x] **Step 5: Run race and repetition matrices**
 
 ```bash
 go test -race ./internal/harness/adapters/workspacefs ./internal/harness/application -run 'Test.*(Mutation|Observation|Stale|Concurrent|Resume)' -count=10
@@ -368,11 +368,11 @@ go test ./internal/harness/tools ./internal/harness/adapters/workspacefs ./inter
 
 Expected: PASS with no race report or partial destination.
 
-- [ ] **Step 6: Run two mutation checks**
+- [x] **Step 6: Run two mutation checks**
 
 Temporarily invert stale-version equality; the stale/concurrent matrix must fail. Restore. Temporarily bypass unique-match cardinality; edit tests must fail. Restore and rerun Step 5. Record the exact failing test names for Task 6; commit neither mutant.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/harness/adapters/workspacefs/mutation.go internal/harness/adapters/workspacefs/mutation_fault_test.go internal/harness/adapters/workspacefs/mutation_race_test.go internal/harness/application/file_mutation_scenario_test.go

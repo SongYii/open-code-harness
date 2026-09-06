@@ -110,3 +110,34 @@ func TestFileObservationsUnderConcurrency(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestEachServiceGetsItsOwnObservationTable is the process-restart property,
+// asserted here rather than through a second Service over a shared store.
+//
+// The claim is that observations do not survive a process: they are not
+// persisted, so a restart -- or any second process holding the same durable
+// Session -- begins having seen nothing and must read before it may change
+// anything. That is the honest consequence of keeping versions out of Domain
+// events, where they would look like durable history while describing a
+// filesystem the reader may not even be running on.
+//
+// Driving it end to end would need two Services over one store, and this
+// package's sequence ID generator restarts from the same values, so the second
+// Service collides on append identity before it can reach a tool. The property
+// itself is exactly this: no two Services share a table.
+func TestEachServiceGetsItsOwnObservationTable(t *testing.T) {
+	first := newFileObservations()
+	second := newFileObservations()
+	session, target := domain.SessionID("session-1"), "/workspace/a.txt"
+
+	first.recordPresent(session, target, "v1")
+	if second.seen(session, target) {
+		t.Fatal("a second table inherited the first one's observations")
+	}
+	if _, err := second.guardForEdit(session, target); !tools.IsCode(err, tools.CodeFSNotObserved) {
+		t.Fatalf("second table edit guard = %v, want %q", err, tools.CodeFSNotObserved)
+	}
+	if got := second.guardForWrite(session, target); got.Kind != tools.GuardCreateIfAbsent {
+		t.Fatalf("second table write guard = %#v, want a fail-closed create", got)
+	}
+}

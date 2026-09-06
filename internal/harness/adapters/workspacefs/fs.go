@@ -26,6 +26,17 @@ type FileSystem struct {
 	locksOnce sync.Once
 	locksMu   sync.Mutex
 	locks     map[string]*pathLock
+
+	// hooks is a test-only seam, nil in production. See mutation_fault_test.go:
+	// the window between a synced staged replacement and the rename that
+	// publishes it is not otherwise reachable, and "a failure there is a
+	// non-event" is the central claim of this adapter.
+	hooks mutationHooks
+}
+
+// mutationHooks is the private fault-injection seam.
+type mutationHooks struct {
+	beforePublish func() error
 }
 
 var errInvalidRoot = errors.New("workspacefs: invalid workspace root")

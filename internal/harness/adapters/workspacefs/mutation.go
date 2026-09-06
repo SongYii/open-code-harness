@@ -227,6 +227,14 @@ func (files *FileSystem) publish(target string, data []byte, prior os.FileInfo) 
 	}
 	defer os.Remove(staged)
 
+	// Everything above is reversible; everything below is not. The hook fires
+	// exactly here, on that boundary.
+	if files.hooks.beforePublish != nil {
+		if err := files.hooks.beforePublish(); err != nil {
+			return tools.MutationResult{}, err
+		}
+	}
+
 	if prior == nil {
 		// Link fails if the destination exists, so two creators racing past
 		// the in-process lock still cannot both win.
