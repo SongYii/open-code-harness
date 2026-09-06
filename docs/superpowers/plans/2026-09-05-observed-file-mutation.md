@@ -396,19 +396,19 @@ git commit -m "test(files): prove stale-write and atomic-publication boundaries"
 - Consumes: Tasks 1–5 commits and mutation results.
 - Produces: auditable implemented behavior and limitations; no runtime change.
 
-- [ ] **Step 1: Write the implemented contract and Chinese copy**
+- [x] **Step 1: Write the implemented contract and Chinese copy**
 
 Document exact Go signatures, five schemas, observation transitions, errors, atomic sequence, numeric bounds, lifecycle clears, and platform status. Explicitly exclude exec and the external check-to-rename race. Link the accepted design and plan.
 
-- [ ] **Step 2: Write the evidence ledger**
+- [x] **Step 2: Write the evidence ledger**
 
 Record every task commit, exact command/output, mutation failing test names, race/repetition and cross-build results, and deviations. Never record an unrun command or claim Windows runtime coverage.
 
-- [ ] **Step 3: Update existing authority/security docs**
+- [x] **Step 3: Update existing authority/security docs**
 
 Index the contract/evidence; change Tool Runtime from four to five built-ins and remove unconditional-write language; update root status; explain structured-tool protection and exec/external-writer limits in `SECURITY.md`. Do not absorb unrelated CC changes.
 
-- [ ] **Step 4: Run docs and complete ordinary-PR gates**
+- [x] **Step 4: Run docs and complete ordinary-PR gates**
 
 ```bash
 go test ./internal/docsguard ./internal/harness/architecture -count=1
@@ -424,14 +424,14 @@ env GOOS=darwin go build ./...
 
 Expected: every command exits 0. Record actual elapsed times and scheduled-matrix behavior.
 
-- [ ] **Step 5: Commit docs/evidence**
+- [x] **Step 5: Commit docs/evidence**
 
 ```bash
 git add README.md SECURITY.md docs/README.md docs/architecture/observed-file-mutation.md docs/architecture/observed-file-mutation.zh-CN.md docs/architecture/observed-file-mutation-evidence.md docs/architecture/tool-runtime.md docs/architecture/tool-runtime.zh-CN.md docs/architecture/tool-runtime-evidence.md
 git commit -m "docs: record observed file mutation contract and evidence"
 ```
 
-- [ ] **Step 6: Final branch review**
+- [x] **Step 6: Final branch review**
 
 ```bash
 git diff --check main...HEAD

@@ -23,7 +23,12 @@ Policy is `policy.Engine.Decide(Input) Decision` — a table, not a `next()`
 waterfall and not code inside tool bodies. `ModeAllowWrites` ships in
 `policy`. `NewService` / `DefaultConfig` stay on `ModeDefault`.
 
-Four builtins exist: `read_file`, `write_file`, `list_dir`, `exec`.
+Five builtins exist: `read_file`, `write_file`, `edit_file`, `list_dir`,
+`exec`. Every destructive one is guarded: `write_file` and `edit_file` carry a
+`tools.MutationGuard` derived from what the session actually read, and neither
+can overwrite a file this session has not observed. See
+[Observed-State Safe File Mutation](observed-file-mutation.md) for the guard,
+the version, atomic publication, and the seven filesystem failure codes.
 `list_dir` `depth` omitted ≡ 1, maximum 2, 256-entry cap. The pipeline is
 `tool.call.started` → validate → lexical → `Resolve` → `Decide` → approval
 → execute. Mid-loop appends use `step_append_*` plus `ResolveAppend`.
@@ -197,6 +202,7 @@ type. There is no MCP client.
 | --- | --- | --- | --- | --- |
 | `read_file` | `path` | — | read / false | UTF-8 file; over 64 KiB keeps prefix + `\n[truncated]` |
 | `write_file` | `path`, `content` | — | write / true | `wrote <n> bytes` (no path) |
+| `edit_file` | `path`, `old_string`, `new_string` | `replace_all` | write / true | `edited file` or `replaced all occurrences` (no path, no content) |
 | `list_dir` | `path` | `depth` 1–2; omitted ≡ 1 | read / false | relative paths, one per line; 256-entry cap |
 | `exec` | `argv` (min 1, no shell) | `cwd`; omitted = workspace root | exec / true | `exit <code>\n` then combined output ≤ 64 KiB |
 
@@ -260,7 +266,8 @@ which still requires one well-formed JSON object with nothing trailing it.
 `InputSchema` always holds the server's schema verbatim, because the same
 field is what the Provider adapter sends to the model.
 
-This exists because the closed set was written for the four builtin tools and
+This exists because the closed set was written for this project's own builtin
+tools and
 rejects most published MCP schemas — a per-property `description`,
 `"type":"number"`, `"type":"boolean"`, `$schema`, `title`, `anyOf`, `default`,
 and any object schema omitting `additionalProperties: false`. Requiring it of

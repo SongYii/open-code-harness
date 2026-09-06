@@ -99,7 +99,38 @@ today, stated with their limits.
   exposure beyond loopback: no TLS, no support for binding elsewhere.
   See [Web trajectory UI](docs/architecture/web-trajectory-ui.md).
 
+- **Structured file changes cannot destroy work the agent never saw.** Every
+  destructive operation on the `tools.FileSystem` port carries a guard
+  derived from what the session actually read: a write to a target this
+  session has not observed is a create, refused if anything is there, and a
+  write to a target it did observe is refused unless the file still carries
+  the version it was read at. Publication stages the replacement beside the
+  target, syncs it, and links or renames it into place, so the destination is
+  never truncated and a failure before that point leaves the original
+  byte-identical. This is an integrity property, not an authorization one:
+  Policy and the Approver still run first, and freshness never grants
+  permission. See
+  [Observed-state safe file mutation](docs/architecture/observed-file-mutation.md).
+
 ### Not enforced
+
+- **`exec` is outside the file-mutation guarantee.** A command run through
+  `exec` can rewrite anything inside the workspace, and the guard above
+  neither knows nor prevents it. What is enforced is that the damage is not
+  compounded: the next structured write against a file `exec` changed is
+  refused as stale rather than layered on top of it. Confinement bounds what
+  `exec` can reach; nothing bounds what it does inside the workspace it is
+  given.
+- **The window between a guard check and its publication is not closed.** The
+  guard closes the window an agent controls — minutes and tool calls — not the
+  microseconds between the version comparison and the `rename`. A writer that
+  lands there loses its change silently. Closing it needs an OS-level
+  exclusive-create-and-swap primitive this project does not have.
+- **Observations are process-local and are not shared between processes.**
+  Two `och` processes over one workspace each have their own table and
+  neither sees the other's reads. The guard still refuses the second one's
+  blind write, which is the property that matters, but neither process can
+  report what the other observed.
 
 - **Windows has no OS-level `exec` confinement in this slice.**
   `composition.Open` fails closed there by default, the same as any host
