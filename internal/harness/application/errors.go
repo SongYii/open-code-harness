@@ -1,7 +1,9 @@
 package application
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
@@ -57,6 +59,7 @@ const (
 // retries.
 const (
 	CodeFSNotObserved    = "fs_not_observed"
+	CodeFSNotFound       = "fs_not_found"
 	CodeFSStaleVersion   = "fs_stale_version"
 	CodeFSEditNotFound   = "fs_edit_not_found"
 	CodeFSAmbiguousEdit  = "fs_ambiguous_edit"
@@ -103,6 +106,7 @@ const (
 // the workspace layout is not theirs to learn from a failure message.
 const (
 	ToolTextFSNotObserved    = "read the file before changing it"
+	ToolTextFSNotFound       = "file does not exist; create it or re-read after it appears"
 	ToolTextFSStaleVersion   = "file changed since it was read; re-read it and retry"
 	ToolTextFSEditNotFound   = "literal was not found"
 	ToolTextFSAmbiguousEdit  = "literal appears more than once; include more context or use replace_all"
@@ -125,8 +129,12 @@ const (
 // so a genuine I/O error is never dressed up as a guard refusal.
 func classifyFilesystemError(err error) (code string, text string, ok bool) {
 	switch {
+	case errors.Is(err, fs.ErrExist):
+		return CodeFSNotObserved, ToolTextFSNotObserved, true
 	case tools.IsCode(err, tools.CodeFSNotObserved):
 		return CodeFSNotObserved, ToolTextFSNotObserved, true
+	case tools.IsCode(err, tools.CodeFSNotFound):
+		return CodeFSNotFound, ToolTextFSNotFound, true
 	case tools.IsCode(err, tools.CodeFSStaleVersion):
 		return CodeFSStaleVersion, ToolTextFSStaleVersion, true
 	case tools.IsCode(err, tools.CodeFSEditNotFound):

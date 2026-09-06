@@ -321,20 +321,9 @@ func (service *Service) invokeTool(ctx context.Context, session domain.SessionID
 		if err != nil {
 			// A failed mutation never advances the observation. Recording the
 			// attempt would let a second try succeed on the strength of the
-			// first one having failed.
-			//
-			// The refusal is also re-labelled where the adapter cannot know
-			// better. A create-if-absent guard is what an unseen target gets,
-			// and the adapter reports "stale" when something is in fact
-			// there -- but telling a model the file changed since it was read,
-			// when this session never read it, sends it to re-read a file it
-			// has no memory of and calls that a retry. What actually needs to
-			// happen is the first read.
-			if tools.IsCode(err, tools.CodeFSStaleVersion) &&
-				guard.Kind == tools.GuardCreateIfAbsent &&
-				!service.observations.seen(session, resolved) {
-				return "", false, "", "", &tools.Error{Code: tools.CodeFSNotObserved}
-			}
+			// first one having failed. A create conflict remains fs.ErrExist
+			// here so the shared classifier can provide the bounded
+			// read-before-change recovery result.
 			return "", false, "", "", err
 		}
 		service.observations.recordPresent(session, resolved, result.Version)

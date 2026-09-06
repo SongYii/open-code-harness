@@ -102,7 +102,7 @@ func (files *FileSystem) Read(ctx context.Context, abs string, limit int) (tools
 		return tools.FileRead{}, err
 	}
 	if info.IsDir() {
-		return tools.FileRead{}, fs.ErrInvalid
+		return tools.FileRead{}, fsError(tools.CodeFSNotRegularFile)
 	}
 	if !info.Mode().IsRegular() {
 		return tools.FileRead{}, fsError(tools.CodeFSNotRegularFile)

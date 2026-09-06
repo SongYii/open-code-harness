@@ -207,10 +207,9 @@ func (files *FileSystem) checkGuard(target string, guard tools.MutationGuard) (o
 		return nil, fsError(tools.CodeFSNotRegularFile)
 	}
 	if guard.Kind == tools.GuardCreateIfAbsent {
-		// Something is already there, so the promise "nothing is here" is
-		// false. This is the same class of answer as a stale version: the
-		// state the caller expected is not the state that exists.
-		return nil, fsError(tools.CodeFSStaleVersion)
+		// Keep the filesystem-level create conflict intact. Application maps it
+		// to the bounded read-before-change recovery result.
+		return nil, fs.ErrExist
 	}
 	if versionOf(info) != guard.Version {
 		return nil, fsError(tools.CodeFSStaleVersion)
@@ -248,9 +247,6 @@ func (files *FileSystem) publish(ctx context.Context, target string, data []byte
 	}
 	create := prior == nil
 	if err := files.publisher.Publish(staged, target, create); err != nil {
-		if errors.Is(err, fs.ErrExist) {
-			return tools.MutationResult{}, fsError(tools.CodeFSStaleVersion)
-		}
 		return tools.MutationResult{}, err
 	}
 	// Removing the create staging link changes ctime, so verify only after the

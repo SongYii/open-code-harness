@@ -85,6 +85,9 @@ func FileSystemReadWriteJail(t *testing.T, files tools.FileSystem, workspace str
 	if created.Operation != tools.MutationCreate || created.Version == "" {
 		t.Fatalf("create = %+v, want a create carrying a version", created)
 	}
+	if _, err := files.Write(ctx, abs, []byte("lost"), tools.MutationGuard{Kind: tools.GuardCreateIfAbsent}); !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("second create = %v, want fs.ErrExist", err)
+	}
 	read, err := files.Read(ctx, abs, 64)
 	if err != nil || read.Truncated || string(read.Data) != "hello" {
 		t.Fatalf("Read() = %+v err=%v", read, err)

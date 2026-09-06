@@ -104,7 +104,7 @@ func (mem *MemFS) Read(_ context.Context, abs string, limit int) (tools.FileRead
 		return tools.FileRead{}, fs.ErrNotExist
 	}
 	if node.dir {
-		return tools.FileRead{}, fs.ErrInvalid
+		return tools.FileRead{}, &tools.Error{Code: tools.CodeFSNotRegularFile}
 	}
 	version := memVersion(node)
 	data := append([]byte(nil), node.data...)
@@ -188,7 +188,7 @@ func (mem *MemFS) prepareMutationLocked(abs string, guard tools.MutationGuard) (
 	case node.dir || node.symlink != "":
 		return nil, "", &tools.Error{Code: tools.CodeFSNotRegularFile}
 	case guard.Kind == tools.GuardCreateIfAbsent:
-		return nil, "", &tools.Error{Code: tools.CodeFSStaleVersion}
+		return nil, "", fs.ErrExist
 	case memVersion(node) != guard.Version:
 		return nil, "", &tools.Error{Code: tools.CodeFSStaleVersion}
 	}
