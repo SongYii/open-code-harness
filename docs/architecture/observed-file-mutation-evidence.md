@@ -16,11 +16,24 @@ differently than planned.
 | `0619cf8` | 4 | `edit_file` in the catalog, boolean schema leaf, parse and dispatch |
 | `8ea5d63` | 5 | Pre-publication fault seam, boundary scenarios, race and repetition matrices |
 
+## Latest-main integration commits
+
+These are the implementation and documentation commits that exist on this
+branch's `origin/main` lineage:
+
+| Review source | Integrated commit | Role |
+| --- | --- | --- |
+| `4a44822` | `a74309e8314035fc4d14d11428ce6ab25542ace0` | Fix A RED |
+| `0d98071` | `4b6dbd24dc1829c0171946067fb759bfc0d5e425` | Fix A GREEN |
+| `86d9dc2` | `3367a5b34a7313198fc6082f0ee9f5e69da9dd28` | Fix B RED |
+| `bbaf36f` | `0714c68aea0a16f0b45344f1896402971b2285bd` | Fix B GREEN |
+| `102d706` | `ef27018efda1731aff085d59dd7a8fcfabe9e81d` | synchronized documentation |
+
 ## Final-review source provenance
 
 The final-review fixes were originally reviewed as the following source
-commits. They are provenance only; the next evidence-only commit records the
-actual latest-main integration SHAs.
+commits. This table is provenance only; implementation claims use the
+latest-main integration SHAs above.
 
 | Source commit | Role | Finding covered |
 | --- | --- | --- |
