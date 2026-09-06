@@ -88,6 +88,14 @@ func compileSchema(raw json.RawMessage) (*compiledSchema, error) {
 	if decoder.More() {
 		return nil, specError()
 	}
+	// A Tool's arguments are always a closed object. Every guarantee downstream
+	// -- required fields, rejected unknown keys, per-field bounds -- is stated
+	// in terms of an object's properties, so a root of any other type would
+	// have nothing to close and nothing to check. Leaf kinds like boolean are
+	// legal inside properties; they are not legal as the whole schema.
+	if kind, _ := obj["type"].(string); kind != "object" {
+		return nil, specError()
+	}
 	return compileSchemaObject(obj)
 }
 
@@ -120,6 +128,14 @@ func compileSchemaObject(obj map[string]any) (*compiledSchema, error) {
 		}
 	case "array":
 		if err := compileArrayKeywords(compiled, obj); err != nil {
+			return nil, err
+		}
+	case "boolean":
+		// A boolean has no constraints of its own beyond its type, so any
+		// keyword borrowed from another type would be silently ignored -- and
+		// a schema whose stated bound does nothing is worse than one with no
+		// bound, because a reader believes it.
+		if err := compileBooleanKeywords(compiled, obj); err != nil {
 			return nil, err
 		}
 	default:
@@ -313,6 +329,11 @@ func (s *compiledSchema) validate(value any) error {
 		return s.validateInteger(value)
 	case "array":
 		return s.validateArray(value)
+	case "boolean":
+		if _, ok := value.(bool); !ok {
+			return argsError()
+		}
+		return nil
 	default:
 		return argsError()
 	}
@@ -585,4 +606,25 @@ func validateMCPSchema(raw json.RawMessage) error {
 func SchemaIsStrictlyValidatable(raw json.RawMessage) bool {
 	_, err := compileSchema(raw)
 	return err == nil
+}
+
+// compileBooleanKeywords accepts a boolean leaf and nothing else.
+//
+// Only "type" and the shared enum are meaningful here. Every other keyword the
+// compiler knows belongs to a different type, and accepting one would let a
+// schema state a bound this validator does not enforce.
+//
+// This is a leaf-only kind on purpose: compileSchema's root check still
+// requires an object, so a tool whose entire argument schema is a boolean
+// remains invalid. The closed-field guarantee every other check rests on needs
+// an object to close.
+func compileBooleanKeywords(compiled *compiledSchema, obj map[string]any) error {
+	for key := range obj {
+		switch key {
+		case "type", "enum":
+		default:
+			return specError()
+		}
+	}
+	return nil
 }

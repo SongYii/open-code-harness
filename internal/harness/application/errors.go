@@ -109,6 +109,13 @@ const (
 	ToolTextFSNotRegularFile = "target is not a regular file"
 	ToolTextFSNotText        = "file is not valid UTF-8 text"
 	ToolTextFSTooLarge       = "file exceeds the edit size limit"
+
+	// A successful edit acknowledges itself in a sentence and does not copy
+	// the resulting file back. Returning the file would spend exactly the
+	// context budget an edit tool exists to save, and the model already knows
+	// what it asked for.
+	ToolTextEdited      = "edited file"
+	ToolTextReplacedAll = "replaced all occurrences"
 )
 
 // classifyFilesystemError maps an adapter refusal to the Tool Result a model

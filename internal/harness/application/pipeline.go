@@ -294,6 +294,24 @@ func (service *Service) invokeTool(ctx context.Context, session domain.SessionID
 			return appendTruncation(text), true, "", "", nil
 		}
 		return text, false, "", "", nil
+	case tools.NameEditFile:
+		// Unlike a write, an edit has no fail-closed fallback guard: there is
+		// no honest promise to make about text the session has never seen, so
+		// the refusal comes from the observation table rather than from the
+		// filesystem.
+		guard, guardErr := service.observations.guardForEdit(session, resolved)
+		if guardErr != nil {
+			return "", false, "", "", guardErr
+		}
+		result, err := service.files.Edit(ctx, resolved, []byte(args.OldString), []byte(args.NewString), args.ReplaceAll, guard)
+		if err != nil {
+			return "", false, "", "", err
+		}
+		service.observations.recordPresent(session, resolved, result.Version)
+		if args.ReplaceAll {
+			return ToolTextReplacedAll, false, "", "", nil
+		}
+		return ToolTextEdited, false, "", "", nil
 	case tools.NameWriteFile:
 		// The guard is derived immediately before the call rather than held
 		// from earlier in the Step, so the window between deciding and acting
@@ -454,6 +472,10 @@ type toolArgs struct {
 	Depth   *int     `json:"depth"`
 	Argv    []string `json:"argv"`
 	Cwd     string   `json:"cwd"`
+
+	OldString  string `json:"old_string"`
+	NewString  string `json:"new_string"`
+	ReplaceAll bool   `json:"replace_all"`
 }
 
 func parseToolArgs(name, raw string) (toolArgs, error) {
@@ -465,6 +487,17 @@ func parseToolArgs(name, raw string) (toolArgs, error) {
 	switch name {
 	case tools.NameReadFile, tools.NameWriteFile, tools.NameListDir:
 		if args.Path == "" {
+			return toolArgs{}, argsError()
+		}
+	case tools.NameEditFile:
+		if args.Path == "" || args.OldString == "" {
+			return toolArgs{}, argsError()
+		}
+		// An edit whose replacement equals what it replaces cannot change
+		// anything, so running it would spend an approval and a publication
+		// to produce the file that already exists. The schema cannot express
+		// "these two fields differ", so it is checked here.
+		if args.OldString == args.NewString {
 			return toolArgs{}, argsError()
 		}
 	case tools.NameExec:

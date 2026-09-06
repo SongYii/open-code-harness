@@ -3,6 +3,8 @@ package tools
 import (
 	"strings"
 	"testing"
+
+	"github.com/SongYii/open-code-harness/internal/harness/domain"
 )
 
 // TestMutationGuardValidate pins the four legal combinations.
@@ -98,5 +100,113 @@ func TestAnUnknownCodeIsNeverAccepted(t *testing.T) {
 func TestMaxEditFileBytesIsOneMebibyte(t *testing.T) {
 	if MaxEditFileBytes != 1<<20 {
 		t.Fatalf("MaxEditFileBytes = %d, want %d", MaxEditFileBytes, 1<<20)
+	}
+}
+
+// TestDefaultWorkspaceSpecsIncludeEditFile. A literal edit is the difference
+// between an agent that rewrites a file it half-remembers and one that changes
+// the part it means to, so it belongs in the default set rather than behind
+// configuration.
+func TestDefaultWorkspaceSpecsIncludeEditFile(t *testing.T) {
+	specs := DefaultWorkspaceSpecs()
+	if len(specs) != 5 {
+		t.Fatalf("default specs = %d, want 5", len(specs))
+	}
+	var edit *domain.ToolSpec
+	for i := range specs {
+		if specs[i].Name == NameEditFile {
+			edit = &specs[i]
+		}
+	}
+	if edit == nil {
+		t.Fatal("edit_file is not in the default workspace specs")
+	}
+	if edit.Risk != domain.RiskWrite || !edit.Mutates {
+		t.Fatalf("edit_file spec = %+v, want RiskWrite and Mutates", *edit)
+	}
+	if edit.Source != SourceBuiltin {
+		t.Fatalf("edit_file source = %q, want builtin", edit.Source)
+	}
+}
+
+// TestEditFileSchemaIsClosedAndBounded. The schema is the only thing standing
+// between a model-invented field and this package's own argument struct.
+func TestEditFileSchemaIsClosedAndBounded(t *testing.T) {
+	var edit domain.ToolSpec
+	for _, spec := range DefaultWorkspaceSpecs() {
+		if spec.Name == NameEditFile {
+			edit = spec
+		}
+	}
+
+	tests := []struct {
+		name string
+		args string
+		ok   bool
+	}{
+		{"minimal", `{"path":"a.txt","old_string":"a","new_string":"b"}`, true},
+		{"replace_all omitted is legal", `{"path":"a.txt","old_string":"a","new_string":"b"}`, true},
+		{"replace_all true", `{"path":"a.txt","old_string":"a","new_string":"b","replace_all":true}`, true},
+		{"replace_all false", `{"path":"a.txt","old_string":"a","new_string":"b","replace_all":false}`, true},
+		{"replace_all is not a string", `{"path":"a.txt","old_string":"a","new_string":"b","replace_all":"yes"}`, false},
+		{"replace_all is not a number", `{"path":"a.txt","old_string":"a","new_string":"b","replace_all":1}`, false},
+		{"empty new_string is legal deletion", `{"path":"a.txt","old_string":"a","new_string":""}`, true},
+		{"empty old_string matches everywhere", `{"path":"a.txt","old_string":"","new_string":"b"}`, false},
+		{"missing old_string", `{"path":"a.txt","new_string":"b"}`, false},
+		{"missing new_string", `{"path":"a.txt","old_string":"a"}`, false},
+		{"missing path", `{"old_string":"a","new_string":"b"}`, false},
+		{"unknown field", `{"path":"a.txt","old_string":"a","new_string":"b","regex":true}`, false},
+	}
+	for _, test := range tests {
+		err := ValidateArgs(edit, test.args)
+		if ok := err == nil; ok != test.ok {
+			t.Fatalf("%s: ValidateArgs = %v, want ok=%t", test.name, err, test.ok)
+		}
+	}
+}
+
+// TestABooleanLeafIsAllowedButABooleanToolSchemaIsNot.
+//
+// replace_all needs a boolean property, which the compiler did not previously
+// accept anywhere. Allowing it at a leaf is not the same as allowing a tool
+// whose whole argument object is a boolean: the root has to stay an object, or
+// the closed-field guarantee everything else depends on has nothing to close.
+func TestABooleanLeafIsAllowedButABooleanToolSchemaIsNot(t *testing.T) {
+	leaf := domain.ToolSpec{
+		Name: "leaf", Source: SourceBuiltin, Risk: domain.RiskRead,
+		InputSchema: []byte(`{"type":"object","additionalProperties":false,"required":["flag"],"properties":{"flag":{"type":"boolean"}}}`),
+	}
+	if err := ValidateArgs(leaf, `{"flag":true}`); err != nil {
+		t.Fatalf("a boolean leaf was rejected: %v", err)
+	}
+	if err := ValidateArgs(leaf, `{"flag":"true"}`); err == nil {
+		t.Fatal("a string was accepted for a boolean leaf")
+	}
+
+	root := domain.ToolSpec{
+		Name: "root", Source: SourceBuiltin, Risk: domain.RiskRead,
+		InputSchema: []byte(`{"type":"boolean"}`),
+	}
+	if _, err := NewCatalog([]domain.ToolSpec{root}); err == nil {
+		t.Fatal("a tool whose whole argument schema is a boolean was accepted")
+	}
+}
+
+// TestABooleanLeafRejectsBorrowedKeywords keeps the new leaf from becoming a
+// place where string or integer constraints are silently ignored.
+func TestABooleanLeafRejectsBorrowedKeywords(t *testing.T) {
+	for _, schema := range []string{
+		`{"type":"object","additionalProperties":false,"properties":{"flag":{"type":"boolean","minLength":1}}}`,
+		`{"type":"object","additionalProperties":false,"properties":{"flag":{"type":"boolean","maximum":2}}}`,
+		`{"type":"object","additionalProperties":false,"properties":{"flag":{"type":"boolean","items":{"type":"string"}}}}`,
+		`{"type":"object","additionalProperties":false,"properties":{"flag":{"type":"boolean","properties":{}}}}`,
+	} {
+		spec := domain.ToolSpec{
+			Name: "leaf", Source: SourceBuiltin, Risk: domain.RiskRead,
+			InputSchema: []byte(schema),
+		}
+		if _, err := NewCatalog([]domain.ToolSpec{spec}); err == nil {
+			t.Fatalf("a boolean leaf borrowed a keyword it cannot honour: %s", schema)
+		}
 	}
 }

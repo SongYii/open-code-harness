@@ -10,6 +10,7 @@ import (
 const (
 	NameReadFile  = "read_file"
 	NameWriteFile = "write_file"
+	NameEditFile  = "edit_file"
 	NameListDir   = "list_dir"
 	NameExec      = "exec"
 
@@ -28,8 +29,14 @@ const (
 const (
 	schemaReadFile  = `{"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string","minLength":1,"maxLength":4096}}}`
 	schemaWriteFile = `{"type":"object","additionalProperties":false,"required":["path","content"],"properties":{"path":{"type":"string","minLength":1,"maxLength":4096},"content":{"type":"string","maxLength":32768}}}`
-	schemaListDir   = `{"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string","minLength":1,"maxLength":4096},"depth":{"type":"integer","minimum":1,"maximum":2}}}`
-	schemaExec      = `{"type":"object","additionalProperties":false,"required":["argv"],"properties":{"argv":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"string","maxLength":4096}},"cwd":{"type":"string","minLength":1,"maxLength":4096}}}`
+	// schemaEditFile bounds old_string and new_string at the same 32,768 bytes
+	// write_file's content uses, so the edit path inherits an argument limit
+	// rather than inventing one. replace_all is the only matching option there
+	// is: no regular expressions, no globs, nothing whose behaviour a reader
+	// has to simulate to predict.
+	schemaEditFile = `{"type":"object","additionalProperties":false,"required":["path","old_string","new_string"],"properties":{"path":{"type":"string","minLength":1,"maxLength":4096},"old_string":{"type":"string","minLength":1,"maxLength":32768},"new_string":{"type":"string","maxLength":32768},"replace_all":{"type":"boolean"}}}`
+	schemaListDir  = `{"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string","minLength":1,"maxLength":4096},"depth":{"type":"integer","minimum":1,"maximum":2}}}`
+	schemaExec     = `{"type":"object","additionalProperties":false,"required":["argv"],"properties":{"argv":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"string","maxLength":4096}},"cwd":{"type":"string","minLength":1,"maxLength":4096}}}`
 )
 
 // Catalog is an immutable name-unique ToolSpec set.
@@ -107,6 +114,14 @@ func DefaultWorkspaceSpecs() []domain.ToolSpec {
 			Name:        NameWriteFile,
 			Description: "Write a UTF-8 file inside the workspace.",
 			InputSchema: []byte(schemaWriteFile),
+			Source:      SourceBuiltin,
+			Risk:        domain.RiskWrite,
+			Mutates:     true,
+		},
+		{
+			Name:        NameEditFile,
+			Description: "Replace an exact literal inside a UTF-8 workspace file that was read first.",
+			InputSchema: []byte(schemaEditFile),
 			Source:      SourceBuiltin,
 			Risk:        domain.RiskWrite,
 			Mutates:     true,

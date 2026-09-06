@@ -274,7 +274,7 @@ git commit -m "feat(application): guard file writes with session observations"
 - Consumes: `FileSystem.Edit` and Task 3 observations.
 - Produces: default `edit_file` ToolSpec and complete execution path.
 
-- [ ] **Step 1: Write failing catalog/schema tests**
+- [x] **Step 1: Write failing catalog/schema tests**
 
 Require five default tools and this closed schema:
 
@@ -284,27 +284,27 @@ Require five default tools and this closed schema:
 
 Add validation cases for omitted/true/false/non-boolean `replace_all`, empty `old_string`, equal old/new strings at Application parsing, and unknown fields. Add compiler tests allowing boolean leaf properties while still rejecting boolean as a top-level Tool schema.
 
-- [ ] **Step 2: Prove schema tests are red**
+- [x] **Step 2: Prove schema tests are red**
 
 Run: `go test ./internal/harness/tools -run 'TestDefaultWorkspaceSpecs|TestValidateArgs|TestNewCatalog' -count=1`
 
 Expected: FAIL because `edit_file` and boolean leaf validation are absent.
 
-- [ ] **Step 3: Add the catalog and boolean leaf**
+- [x] **Step 3: Add the catalog and boolean leaf**
 
 Add `NameEditFile` and a `RiskWrite`, `Mutates:true`, `SourceBuiltin` spec. Extend recursive schema compilation with a boolean leaf that accepts only bool values and rejects object/string/integer/array keywords; keep `compileSchema`'s root check object-only so a top-level boolean Tool schema remains invalid.
 
-- [ ] **Step 4: Write failing Application behavior tests**
+- [x] **Step 4: Write failing Application behavior tests**
 
 Prove unseen edit rejection, read-then-unique success, stale/missing/ambiguous codes, `replace_all`, read-only denial, default approval/denial, observation advancement after edit, and absence of versions from arguments/results/runtime/transcript.
 
-- [ ] **Step 5: Prove behavior tests are red**
+- [x] **Step 5: Prove behavior tests are red**
 
 Run: `go test ./internal/harness/application -run 'Test.*EditFile|Test.*Edit.*Approval' -count=1`
 
 Expected: FAIL because parse/dispatch do not recognize `edit_file`.
 
-- [ ] **Step 6: Implement parse, guard, dispatch, and acknowledgement**
+- [x] **Step 6: Implement parse, guard, dispatch, and acknowledgement**
 
 ```go
 OldString string `json:"old_string"`
@@ -314,7 +314,7 @@ ReplaceAll bool `json:"replace_all"`
 
 Treat edit as a filesystem tool in port-needs and lexical scope. After Policy/Approver, derive the edit guard, call `FileSystem.Edit`, and record the returned version. Return only `edited file` or `replaced all occurrences`; do not copy the resulting file into Tool Result.
 
-- [ ] **Step 7: Verify and commit**
+- [x] **Step 7: Verify and commit**
 
 Run: `go test ./internal/harness/tools ./internal/harness/policy ./internal/harness/application -count=1`
 
