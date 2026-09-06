@@ -282,7 +282,7 @@ func verifyPublished(ctx context.Context, verifier *os.File, stagedInfo os.FileI
 	if _, err := verifier.Seek(0, io.SeekStart); err != nil {
 		return "", err
 	}
-	data, err := io.ReadAll(io.LimitReader(verifier, int64(tools.MaxEditFileBytes)+1))
+	matches, err := publishedContentMatches(verifier, expected)
 	if err != nil {
 		return "", err
 	}
@@ -293,7 +293,7 @@ func verifyPublished(ctx context.Context, verifier *os.File, stagedInfo os.FileI
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	if versionOf(before) != versionOf(after) || !bytes.Equal(data, expected) {
+	if versionOf(before) != versionOf(after) || !matches {
 		return "", fsError(tools.CodeFSStaleVersion)
 	}
 	destinationAfter, err := os.Lstat(destination)
@@ -301,6 +301,38 @@ func verifyPublished(ctx context.Context, verifier *os.File, stagedInfo os.FileI
 		return "", fsError(tools.CodeFSStaleVersion)
 	}
 	return versionOf(after), nil
+}
+
+// publishedContentMatches compares the staged descriptor with the caller's
+// existing payload using bounded scratch space. The final one-byte probe is
+// load-bearing: matching expected as a prefix is not enough to verify what was
+// published.
+func publishedContentMatches(verifier *os.File, expected []byte) (bool, error) {
+	var chunk [32 * 1024]byte
+	for offset := 0; offset < len(expected); {
+		remaining := len(expected) - offset
+		if remaining > len(chunk) {
+			remaining = len(chunk)
+		}
+		n, err := io.ReadFull(verifier, chunk[:remaining])
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				return false, nil
+			}
+			return false, err
+		}
+		if !bytes.Equal(chunk[:n], expected[offset:offset+n]) {
+			return false, nil
+		}
+		offset += n
+	}
+
+	var extra [1]byte
+	n, err := verifier.Read(extra[:])
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	return n == 0 && errors.Is(err, io.EOF), nil
 }
 
 func sameStagedContentMetadata(staged, published os.FileInfo) bool {
