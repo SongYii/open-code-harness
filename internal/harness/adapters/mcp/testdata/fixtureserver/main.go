@@ -15,7 +15,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -40,9 +43,23 @@ func runServer(server *mcp.Server) {
 }
 
 func main() {
-	// OCH_FIXTURE_MODE lets one binary cover the failure shapes the tests
-	// need without a second program.
-	switch os.Getenv("OCH_FIXTURE_MODE") {
+	// Mode and tool-listing selection come from either the environment or
+	// argv. Argv matters for the composition tests: a confined child's
+	// environment is a three-name whitelist, so an env switch deliberately
+	// cannot reach it — which is the confinement working, not a limitation
+	// to route around.
+	mode := os.Getenv("OCH_FIXTURE_MODE")
+	toolsMode := os.Getenv("OCH_FIXTURE_TOOLS")
+	for _, arg := range os.Args[1:] {
+		if value, ok := strings.CutPrefix(arg, "--mode="); ok {
+			mode = value
+		}
+		if value, ok := strings.CutPrefix(arg, "--tools="); ok {
+			toolsMode = value
+		}
+	}
+
+	switch mode {
 	case "exit_before_handshake":
 		// A server that dies immediately: Connect must fail closed rather
 		// than hang or report a connected session.
@@ -51,13 +68,29 @@ func main() {
 		// A server that never speaks: Connect must be governed by the
 		// caller's context rather than blocking forever.
 		select {}
+	case "spawns_child":
+		// A server that starts a long-lived child of its own. The SDK's own
+		// shutdown ladder ends at Process.Kill(), which reaches this process
+		// but not its child, so the child survives unless teardown signals
+		// the whole process group.
+		// A plain long-lived child in this process's own group. `exec -a` is
+		// a bash builtin and /bin/sh is dash on many hosts, so the child is
+		// identified by its process group rather than by a renamed argv.
+		child := exec.Command("/bin/sleep", "600")
+		if err := child.Start(); err != nil {
+			log.Printf("fixture child failed: %v", err)
+		}
+	case "ignores_sigterm":
+		// A server that refuses the gentle rungs entirely, so the ladder has
+		// to reach SIGKILL and still prove reap.
+		signal.Ignore(syscall.SIGTERM, syscall.SIGINT)
 	}
 
 	server := mcp.NewServer(&mcp.Implementation{Name: "och-fixture", Version: "v1"}, nil)
 
 	// Discovery fixtures. Each mode makes the server return a listing shape
 	// the discovery tests need to observe, including the hostile ones.
-	switch os.Getenv("OCH_FIXTURE_TOOLS") {
+	switch toolsMode {
 	case "flood":
 		// One more than the bound, to prove the count limit stops it.
 		for i := 0; i <= 256; i++ {

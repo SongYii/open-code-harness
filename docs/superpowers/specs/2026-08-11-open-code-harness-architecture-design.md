@@ -321,6 +321,20 @@ Session、Turn、Item、ModelAttempt、ToolExecution 和 Approval 都必须有�
 - Maka: <https://github.com/maka-agent/maka-agent>
 - A2A Specification: <https://github.com/a2aproject/A2A/blob/main/docs/specification.md>
 
+### 12.1 先调研，不要重复造轮子
+
+实现任何**基础组件**之前——协议客户端、编解码器、校验器、调度器、通用数据结构等等——必须先调研现成方案，再决定自己写还是采用。这是一条硬性顺序要求，不是建议。
+
+调研至少覆盖三件事：
+
+1. **有没有官方或成熟实现。** 读它的真实代码，不是读它的 README。
+2. **同类项目怎么选的。** 上面列出的参考项目若在同一问题上独立收敛到同一方案，这本身就是强证据。
+3. **采用的真实代价。** 依赖会传递，必须用工具实测（例如 `go list -deps`）而不是估计，并如实写进 `SECURITY.md` 这类声明依赖姿态的文档。
+
+**决定自己写时，必须写明理由。** 本项目在这一点上刻意不一致，而这种不一致本身是有原则的：ACP 协议选择自己拥有实现（分帧契约小且稳定，值得自己拥有），MCP 则选择采用官方 SDK（规范在两年内发布五个修订版且存在向后不兼容的新旧纪元分裂，官方 SDK 正是为吸收这种变动而存在）。一致性体现在**按契约的稳定程度决定自不自己写**，而不是永远倒向同一边。
+
+调研产物必须落成可审计的文档，放在 `docs/research/architecture-gates/`，并钉住所读代码的 commit——口头结论不算数，一次架构门的结论也不自动适用于日后：设计若声明实施时需重新核验，就必须重新核验（参见 [MCP 实施前重新验证](../../research/architecture-gates/2026-09-04-mcp-implementation-reverification.md)，它在真正引入依赖时推翻了先前结论中的一条）。
+
 参考项目用于比较设计和形成评测，不构成本项目的代码继承关系。后续子系统 Architecture Gate 必须重新核验当时仍公开的 Pi、Kimi Code、Grok Build、Codex、Maka 与官方 DeepSeek Harness；DeepSeek-Reasonix 只作为社区上下文。采用/拒绝边界见 [DeepSeek Harness 对照与交付顺序](../../research/architecture-gates/2026-08-15-deepseek-harness-and-roadmap.zh-CN.md)。
 
 ## 13. 后续规格拆分

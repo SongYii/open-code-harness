@@ -207,6 +207,14 @@ JSON 包装已经超过 Engine 的 32 KiB 参数帽，所以该 schema 格经
 `additionalProperties`、`enum`、`minLength`、`maxLength`、`minimum`、
 `maximum`、`minItems`、`maxItems`、`items`。
 
+**外部来源工具的调用分发。** `invokeTool` 中针对 `tools.SourceMCP` 规格的分支以 `Source` 为键，而不是 `Name`：外部工具的名字由操作者的配置和服务器共同决定，那个封闭的四名字 `switch` 永远匹配不到它。在该分支之前，有两个**仅适用于内置工具**的步骤被跳过——`parseToolArgs` 的固定字段解码（外部工具的参数是它自己的形状，不是本项目的），以及 `scopePath`/`Resolve` 的工作区包含性检查（外部服务器不是本工作区内的一个位置，"是否在工作区内"这个问题对它不成立）。因此每一次外部调用的 `WorkspaceIn` 都为真。
+
+跳过包含性检查**不是放松**。每个外部来源的工具在发现阶段都被无条件地、且不管服务器如何自称地分类为 `RiskExec` 且会改变状态，因此现有的 Policy 表在 `ModeReadOnly`/`ModeDenyAll` 下直接拒绝它、在 `ModeDefault`/`ModeAllowWrites` 下要求审批——与它对待内置 `exec` 完全一致。`ValidateArgs` 照常运行，依据的是工具自己声明的 schema，且对任何来源都是同一个检查。
+
+一个**运行了但报告自身失败**的工具，会成为该 Turn 内的一次工具失败（`CodeExternalToolFailed`，携带工具自己的消息；若它什么都没说则用 `ToolTextExternalFailed`）。只有**根本无法触达**该工具的调用才是终结该 Turn 的错误。这个区分是承重的：工具失败是模型能读到并据以调整的普通事件，把两者混为一谈会让一次寻常的"文件不存在"拆掉整个会话。外部结果同样受 `MaxToolResultBytes` 约束，并采用与其他所有被截断的工具结果相同的 `前缀 + \n[truncated]` 形状。
+
+`tools.ExternalTools` 端口与 `FileSystem`、`CommandRunner` 并列，因此 Application 无需导入任何适配器即可分发；而 `catalogPortNeeds` 依据 `Source` 而非 `Risk` 推导端口需求——MCP 工具永远是 `RiskExec`，但它既不碰工作区文件系统也不碰命令执行器。
+
 **按来源区分的 schema 校验。** 上面这个封闭关键字集合只适用于 `SourceBuiltin` 规格，它们的 schema 由本项目自己编写。`tools.SourceMCP` 规格走另一条路径，因为它的 schema 由外部服务器用完整的 JSON Schema 编写：`validateMCPSchema` 只要求它是一个受 `MaxMCPSchemaBytes`（32 KiB）限制、且没有尾随内容的 JSON 对象，**不要求** `compileSchema` 成功。随后 `ValidateArgs` 在每次调用时先尝试 `compileSchema`：如果某台服务器的 schema 确实能编译，它的参数就按内置工具同样的严格程度校验；如果不能，校验降级为 `validateDegradedArgs`，仍然要求参数是一个格式良好、没有尾随内容的 JSON 对象。`InputSchema` 始终原样保存服务器的 schema，因为 Provider 适配器发给模型的正是这个字段。
 
 这条规则存在的原因是：那个封闭集合是为四个内置工具写的，会拒绝绝大多数已发布的 MCP schema —— 参数上的 `description`、`"type":"number"`、`"type":"boolean"`、`$schema`、`title`、`anyOf`、`default`，以及任何没有写 `additionalProperties: false` 的对象 schema。对外部工具强制要求它，会让一台健康服务器的每一个工具都被丢弃，而启动过程报告成功。内置路径完全没变，并且由 `TestValidateArgsNeverDegradesForABuiltin` 与 `TestBuiltinSchemaValidationIsUnchanged` 证明，而不是靠断言。对内置工具而言，严格校验保护的是本项目自己的文件系统与执行路径，挡住模型臆造的参数；而 MCP 服务器自己编写并执行自己的工具，拒绝不合其 schema 的参数本来就是它的责任。真正守护本 harness 的机制与 schema 是否严格无关：每个 MCP 工具都是 `RiskExec`，因而在现有 Policy 表下要么需要审批要么直接被拒，其服务器子进程受沙箱约束。参见 [MCP 客户端适配器设计](../superpowers/specs/2026-08-30-mcp-client-adapter-design.md) §5 的 2026-09-05 修订。

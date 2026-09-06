@@ -37,6 +37,11 @@ const (
 	CodeToolOutputLimit = "output_limit"
 	CodeExecTimeout     = "exec_timeout"
 	CodeResourceLimit   = "resource_limit"
+	// CodeExternalToolFailed marks a tool that ran and reported its own
+	// failure, as distinct from a call that could not reach it. The first is
+	// an ordinary event inside a Turn that the model can read and react to;
+	// the second ends the Turn.
+	CodeExternalToolFailed = "external_tool_failed"
 )
 
 // Context Engine failure codes (design §16). The pre-existing
@@ -65,6 +70,7 @@ const (
 	ToolTextOutputLimit     = "tool output exceeded the size limit"
 	ToolTextExecTimeout     = "command timed out"
 	ToolTextResourceLimit   = "command exceeded a resource limit"
+	ToolTextExternalFailed  = "external tool reported a failure"
 	TruncationMarker        = "\n[truncated]"
 )
 

@@ -39,8 +39,11 @@ type Config struct {
 	Catalog                       *tools.Catalog
 	Files                         tools.FileSystem
 	Commands                      tools.CommandRunner
-	Approver                      tools.Approver
-	Context                       ContextConfig
+	// ExternalTools invokes tools whose specs came from outside this project
+	// (source "mcp"). Required only when the catalog actually holds one.
+	ExternalTools tools.ExternalTools
+	Approver      tools.Approver
+	Context       ContextConfig
 }
 
 // ContextConfig configures the Context Engine (design 2026-09-01). The
@@ -126,6 +129,7 @@ type Service struct {
 	executions *executionRegistry
 	policy     policy.Engine
 	catalog    *tools.Catalog
+	external   tools.ExternalTools
 	files      tools.FileSystem
 	commands   tools.CommandRunner
 	approver   tools.Approver
@@ -196,6 +200,7 @@ func NewService(store EventStore, ids IDGenerator, clock Clock, runner *engine.T
 	}
 	if catalogEnabled {
 		service.catalog = config.Catalog
+		service.external = config.ExternalTools
 		service.files = config.Files
 		service.commands = config.Commands
 	}
@@ -223,18 +228,33 @@ func validateToolComposition(config Config, catalogEnabled bool) error {
 	if nativeTools != engine.CapabilitySupported && nativeTools != engine.CapabilityRequired {
 		return applicationError(CategoryPolicy, "invalid_configuration", false, nil)
 	}
-	needsFiles, needsCommands := catalogPortNeeds(config.Catalog.Specs())
+	needsFiles, needsCommands, needsExternal := catalogPortNeeds(config.Catalog.Specs())
 	if needsFiles && isNilValue(config.Files) {
 		return applicationError(CategoryPolicy, "invalid_configuration", false, nil)
 	}
 	if needsCommands && isNilValue(config.Commands) {
 		return applicationError(CategoryPolicy, "invalid_configuration", false, nil)
 	}
+	// A catalog holding an externally-sourced tool with no port to dispatch it
+	// would accept the call and fail at invocation, which is the shape of
+	// failure this validation exists to prevent.
+	if needsExternal && isNilValue(config.ExternalTools) {
+		return applicationError(CategoryPolicy, "invalid_configuration", false, nil)
+	}
 	return nil
 }
 
-func catalogPortNeeds(specs []domain.ToolSpec) (needsFiles, needsCommands bool) {
+func catalogPortNeeds(specs []domain.ToolSpec) (needsFiles, needsCommands, needsExternal bool) {
 	for _, spec := range specs {
+		// An externally-sourced tool is dispatched through ExternalTools and
+		// touches neither the workspace filesystem nor the command runner,
+		// however it is risk-classified. Deriving its port need from Risk —
+		// which is always RiskExec for MCP — would demand a command runner
+		// this tool never uses.
+		if spec.Source == tools.SourceMCP {
+			needsExternal = true
+			continue
+		}
 		switch spec.Risk {
 		case domain.RiskRead, domain.RiskWrite:
 			needsFiles = true
@@ -243,7 +263,7 @@ func catalogPortNeeds(specs []domain.ToolSpec) (needsFiles, needsCommands bool) 
 			needsCommands = true
 		}
 	}
-	return needsFiles, needsCommands
+	return needsFiles, needsCommands, needsExternal
 }
 
 func (service *Service) appendResolutionConfig() AppendResolutionConfig {

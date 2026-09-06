@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -91,6 +92,10 @@ func fixtureFactory(t *testing.T, env ...string) *fakeFactory {
 	t.Helper()
 	command := exec.Command(fixtureServerPath(t))
 	command.Env = append([]string{"PATH=" + os.Getenv("PATH")}, env...)
+	// The real localexec-backed factory always hands over a process group
+	// leader, and teardown signals the group. A fake that omitted it would
+	// exercise a configuration production never uses.
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	return &fakeFactory{command: &fakeCommand{cmd: command}}
 }
 

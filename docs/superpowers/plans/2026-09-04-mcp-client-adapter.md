@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status:** Implemented. Every task below landed; see the [completion evidence](../../architecture/mcp-client-evidence.md) for commits, mutation results, and the design clauses the implementation overturned along the way. Task 4a was inserted during implementation, when Task 1 measured what this project's own schema compiler actually accepts.
+
 **Goal:** Implement milestone 9 — a stdio-transport MCP client adapter behind the existing `tools` ports, so external MCP tools flow through the same Catalog, `Policy.Decide` table, `Approver` slot, and audit trail as the four builtin workspace tools.
 
 **Architecture:** `internal/harness/adapters/mcp` owns discovery, name qualification, and invocation, and imports the official SDK. It never imports a sibling adapter: OS-level confinement arrives through a narrow port that `composition` fills with a `localexec`-backed implementation. `localexec` gains a second, long-lived entry point beside `Run`. `application/pipeline.go` gains one dispatch branch keyed on `spec.Source`. `composition` owns server configuration, discovery ordering, Catalog assembly, and shutdown.
@@ -40,7 +42,7 @@ The re-verification measured reference MCP client layers spanning 1,179 to 16,17
 
 Design §5 as amended. The prefix alone is not injective — `__` may appear inside either part — and raw tool names come from an untrusted server, so an unqualified join lets one server collide with another server's tool and fail `NewCatalog` at `composition.Open`, stopping the harness from starting.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```go
 func TestQualifyToolNameIsInjectiveAcrossTheSeparator(t *testing.T) {
@@ -88,10 +90,10 @@ func TestQualifiedNamesAreCatalogLegal(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Implement** — sanitize each part to `[a-zA-Z0-9_-]` with `_` runs collapsed, join as `mcp_<server>_<tool>` after sanitization has removed the separator ambiguity, cap at 64 bytes, and on overflow truncate and append `_` plus an 8-hex-digit FNV-1a of the untruncated name. Kimi Code's `tool-naming.ts` convention, adopted rather than reinvented.
-- [ ] **Step 3: Extend the architecture table** — add the `internal/harness/adapters/mcp` owner entry and forbidden-import rows so the package is legal from its first commit and may not import a sibling adapter.
-- [ ] **Step 4: Verify** — `go test ./internal/harness/adapters/mcp ./internal/harness/architecture -race -count=1`.
-- [ ] **Step 5: Mutation check** — remove the sanitization step and confirm the injectivity test fails; restore.
+- [x] **Step 2: Implement** — sanitize each part to `[a-zA-Z0-9_-]` with `_` runs collapsed, join as `mcp_<server>_<tool>` after sanitization has removed the separator ambiguity, cap at 64 bytes, and on overflow truncate and append `_` plus an 8-hex-digit FNV-1a of the untruncated name. Kimi Code's `tool-naming.ts` convention, adopted rather than reinvented.
+- [x] **Step 3: Extend the architecture table** — add the `internal/harness/adapters/mcp` owner entry and forbidden-import rows so the package is legal from its first commit and may not import a sibling adapter.
+- [x] **Step 4: Verify** — `go test ./internal/harness/adapters/mcp ./internal/harness/architecture -race -count=1`.
+- [x] **Step 5: Mutation check** — remove the sanitization step and confirm the injectivity test fails; restore.
 
 ---
 
@@ -105,7 +107,7 @@ func TestQualifiedNamesAreCatalogLegal(t *testing.T) {
 
 Design §6 as amended. `Run` runs to completion, captures output into a capped buffer, and scopes both the temp directory and the cgroup registration to the call. An MCP stdio server needs the opposite. The reusable machinery is already well-factored: `bwrapArgv` and `seatbeltCommandArgv` are pure argv transforms, and the cgroup helpers take a bare pid.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```go
 func TestNewConfinedCommandReturnsAnUnstartedCommand(t *testing.T) {
@@ -157,10 +159,10 @@ func TestRunBehaviorIsUnchanged(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Implement** — extract the confinement argv/env/tempdir construction shared by `Run` and the new path; `Run` keeps its exact current behavior. `NewConfinedCommand` returns an unstarted `*exec.Cmd` with `Setpgid`, a whitelisted environment, and a handle owning the temp directory. `Register(pid)` performs the cgroup `addProcess`; `Close` unregisters and removes the temp directory.
-- [ ] **Step 3: Confirm the macOS rlimit bracket** — `beginRlimitBracket` is a mutex-guarded, process-wide limit held only around `Start`. Since the caller now owns `Start`, document explicitly whether the bracket is applied by the caller, by the handle, or not at all on this path, and test the chosen answer. Do not inherit it silently.
-- [ ] **Step 4: Verify** — `go test ./internal/harness/adapters/localexec -race -count=1`, plus the full suite to prove `Run` is unchanged.
-- [ ] **Step 5: Mutation check** — drop `Setpgid` and confirm the test fails; restore.
+- [x] **Step 2: Implement** — extract the confinement argv/env/tempdir construction shared by `Run` and the new path; `Run` keeps its exact current behavior. `NewConfinedCommand` returns an unstarted `*exec.Cmd` with `Setpgid`, a whitelisted environment, and a handle owning the temp directory. `Register(pid)` performs the cgroup `addProcess`; `Close` unregisters and removes the temp directory.
+- [x] **Step 3: Confirm the macOS rlimit bracket** — `beginRlimitBracket` is a mutex-guarded, process-wide limit held only around `Start`. Since the caller now owns `Start`, document explicitly whether the bracket is applied by the caller, by the handle, or not at all on this path, and test the chosen answer. Do not inherit it silently.
+- [x] **Step 4: Verify** — `go test ./internal/harness/adapters/localexec -race -count=1`, plus the full suite to prove `Run` is unchanged.
+- [x] **Step 5: Mutation check** — drop `Setpgid` and confirm the test fails; restore.
 
 ---
 
@@ -174,10 +176,10 @@ func TestRunBehaviorIsUnchanged(t *testing.T) {
 
 Design §3 as amended: the adapter never imports `localexec`. It declares what it needs; `composition` supplies it.
 
-- [ ] **Step 1: Write failing tests** — drive `Connect` against a fake `CommandFactory` returning a command that runs a real in-repo test MCP server binary, proving the SDK handshake completes and that a factory error fails `Connect` closed.
-- [ ] **Step 2: Add the dependency** — `github.com/modelcontextprotocol/go-sdk` pinned to an **exact** version, matching the `modernc.org/sqlite v1.56.0` precedent. Run `go mod tidy` and record the resulting graph.
-- [ ] **Step 3: Rewrite `SECURITY.md`'s dependency statement** — it currently claims sqlite is the only non-test dependency, which was already untrue before this work (there are four). State the real posture, and disclose that `golang.org/x/oauth2` enters via `mcp → auth → oauthex` even though this slice is stdio-only and reaches no OAuth code path.
-- [ ] **Step 4: Verify** — `go mod tidy -diff` clean, `govulncheck ./...` clean, CGO-disabled build, both cross-builds.
+- [x] **Step 1: Write failing tests** — drive `Connect` against a fake `CommandFactory` returning a command that runs a real in-repo test MCP server binary, proving the SDK handshake completes and that a factory error fails `Connect` closed.
+- [x] **Step 2: Add the dependency** — `github.com/modelcontextprotocol/go-sdk` pinned to an **exact** version, matching the `modernc.org/sqlite v1.56.0` precedent. Run `go mod tidy` and record the resulting graph.
+- [x] **Step 3: Rewrite `SECURITY.md`'s dependency statement** — it currently claims sqlite is the only non-test dependency, which was already untrue before this work (there are four). State the real posture, and disclose that `golang.org/x/oauth2` enters via `mcp → auth → oauthex` even though this slice is stdio-only and reaches no OAuth code path.
+- [x] **Step 4: Verify** — `go mod tidy -diff` clean, `govulncheck ./...` clean, CGO-disabled build, both cross-builds.
 
 ---
 
@@ -191,7 +193,7 @@ Design §3 as amended: the adapter never imports `localexec`. It declares what i
 
 Prerequisite for Task 4, and the one task in this plan that touches an implemented contract. Design §5's 2026-09-05 amendment authorizes it narrowly: `SourceBuiltin` behavior must be unchanged, and a test must prove that rather than assert it.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```go
 func TestBuiltinSchemaValidationIsUnchanged(t *testing.T)
@@ -215,9 +217,9 @@ func TestValidateArgsNeverDegradesForABuiltin(t *testing.T)
     // The branch must not leak into the builtin path.
 ```
 
-- [ ] **Step 2: Implement** — branch both call sites on `spec.Source`. MCP registration requires a bounded JSON object; MCP per-call validation tries `compileSchema` and falls back to an object check. Builtin paths untouched.
-- [ ] **Step 3: Update the Tool runtime contract** — this is a documented behavior change to an implemented contract; the contract document and its reading copy change with the code, per this repository's own rule.
-- [ ] **Step 4: Mutation check** — remove the `spec.Source` guard so builtins also degrade, and confirm `TestValidateArgsNeverDegradesForABuiltin` fails; restore.
+- [x] **Step 2: Implement** — branch both call sites on `spec.Source`. MCP registration requires a bounded JSON object; MCP per-call validation tries `compileSchema` and falls back to an object check. Builtin paths untouched.
+- [x] **Step 3: Update the Tool runtime contract** — this is a documented behavior change to an implemented contract; the contract document and its reading copy change with the code, per this repository's own rule.
+- [x] **Step 4: Mutation check** — remove the `spec.Source` guard so builtins also degrade, and confirm `TestValidateArgsNeverDegradesForABuiltin` fails; restore.
 
 ---
 
@@ -239,7 +241,7 @@ func TestValidateArgsNeverDegradesForABuiltin(t *testing.T)
 
 Design §5. Uses the SDK's own `cs.Tools(ctx, nil)` iterator, which owns cursor pagination, and `cs.InitializeResult().Capabilities.Tools` to decide whether the server offers tools at all.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```go
 func TestDiscoverRejectsAServerExceedingTheToolBound(t *testing.T)      // 257 tools -> whole server fails
@@ -250,9 +252,9 @@ func TestDiscoveredNamesAreQualifiedAndCatalogLegal(t *testing.T)
 func TestDiscoverIsBoundedWhenTheServerNeverStopsPaginating(t *testing.T) // hostile server: the bound stops it
 ```
 
-- [ ] **Step 2: Implement** — map each tool per the design's table: qualified `Name`, verbatim `Description`, verbatim `InputSchema` independently compiled by this project's own `tools.compileSchema` (a schema this project rejects drops that one tool, logged, not fatal), `Source: tools.SourceMCP`, `Risk: domain.RiskExec`, `Mutates: true`.
-- [ ] **Step 3: Verify** — `go test ./internal/harness/adapters/mcp -race -count=1`.
-- [ ] **Step 4: Mutation check** — raise `MaxToolsPerServer` past the hostile fixture and confirm the pagination bound test fails; restore.
+- [x] **Step 2: Implement** — map each tool per the design's table: qualified `Name`, verbatim `Description`, verbatim `InputSchema` independently compiled by this project's own `tools.compileSchema` (a schema this project rejects drops that one tool, logged, not fatal), `Source: tools.SourceMCP`, `Risk: domain.RiskExec`, `Mutates: true`.
+- [x] **Step 3: Verify** — `go test ./internal/harness/adapters/mcp -race -count=1`.
+- [x] **Step 4: Mutation check** — raise `MaxToolsPerServer` past the hostile fixture and confirm the pagination bound test fails; restore.
 
 ---
 
@@ -263,7 +265,7 @@ func TestDiscoverIsBoundedWhenTheServerNeverStopsPaginating(t *testing.T) // hos
 
 **Interfaces:** Produces `composition.Config.MCPServers []mcp.ServerConfig`, wired at `Open`.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```go
 func TestOpenFailsClosedWhenAConfiguredServerCannotBeDiscovered(t *testing.T)
@@ -273,8 +275,8 @@ func TestOpenWithNoMCPServersIsByteForByteTheAssemblyItIsToday(t *testing.T)
 func TestCloseTearsDownEveryServerProcessByGroupWithReapProven(t *testing.T)
 ```
 
-- [ ] **Step 2: Implement** — `composition` constructs the `localexec`-backed `CommandFactory`, connects and discovers each configured server in order, feeds every surviving spec into the same `tools.NewCatalog(...)` call the four builtins already use, and registers teardown with `Assembly.Close`.
-- [ ] **Step 3: Verify** — full composition conformance suite.
+- [x] **Step 2: Implement** — `composition` constructs the `localexec`-backed `CommandFactory`, connects and discovers each configured server in order, feeds every surviving spec into the same `tools.NewCatalog(...)` call the four builtins already use, and registers teardown with `Assembly.Close`.
+- [x] **Step 3: Verify** — full composition conformance suite.
 
 ---
 
@@ -285,7 +287,7 @@ func TestCloseTearsDownEveryServerProcessByGroupWithReapProven(t *testing.T)
 
 The SDK's `CommandTransport.Close` closes stdin, waits, sends `SIGTERM`, then calls `Process.Kill()` — which signals **the process, not the group** — and proves no reap. Both are weaker than this repository's existing ACP practice.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```go
 func TestShutdownReapsAServerThatIgnoresSIGTERM(t *testing.T)
@@ -293,8 +295,8 @@ func TestShutdownLeavesNoGrandchildBehind(t *testing.T)   // server spawns its o
 func TestShutdownReportsUnprovenReapRatherThanClaimingSuccess(t *testing.T)
 ```
 
-- [ ] **Step 2: Implement** — use `CommandTransport.Close` as the first, gentlest rung, then escalate to the process group and prove reap before returning, mirroring `escalateCancel`'s existing discipline rather than inventing a second ladder.
-- [ ] **Step 3: Mutation check** — signal the process instead of the group and confirm the grandchild test fails; restore.
+- [x] **Step 2: Implement** — use `CommandTransport.Close` as the first, gentlest rung, then escalate to the process group and prove reap before returning, mirroring `escalateCancel`'s existing discipline rather than inventing a second ladder.
+- [x] **Step 3: Mutation check** — signal the process instead of the group and confirm the grandchild test fails; restore.
 
 ---
 
@@ -305,7 +307,7 @@ func TestShutdownReportsUnprovenReapRatherThanClaimingSuccess(t *testing.T)
 
 Design §7. `invokeTool`'s closed four-branch `switch spec.Name` gains a fifth branch keyed on `spec.Source == tools.SourceMCP`, since an MCP name is server-chosen and cannot be enumerated by this package.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```go
 func TestMCPToolArgumentsAreSchemaValidatedBeforeDispatch(t *testing.T)
@@ -315,8 +317,8 @@ func TestMCPToolResultIsRedactedOnTheExistingPath(t *testing.T)
 func TestMCPToolIsErrorBecomesAToolFailureNotATransportError(t *testing.T)
 ```
 
-- [ ] **Step 2: Implement** — `ValidateArgs` already runs unconditionally and is already source-agnostic. Skip `parseToolArgs` and the `scopePath`/`Resolve` containment check for MCP specs; call `policy.Decide` with `WorkspaceIn: true, Risk: domain.RiskExec`. Carry the raw validated arguments to the branch. Map `CallToolResult.IsError` to this project's existing tool-failure shape, not to a transport error.
-- [ ] **Step 3: Verify** — `go test ./internal/harness/application -race -count=1`.
+- [x] **Step 2: Implement** — `ValidateArgs` already runs unconditionally and is already source-agnostic. Skip `parseToolArgs` and the `scopePath`/`Resolve` containment check for MCP specs; call `policy.Decide` with `WorkspaceIn: true, Risk: domain.RiskExec`. Carry the raw validated arguments to the branch. Map `CallToolResult.IsError` to this project's existing tool-failure shape, not to a transport error.
+- [x] **Step 3: Verify** — `go test ./internal/harness/application -race -count=1`.
 
 ---
 
@@ -326,10 +328,10 @@ func TestMCPToolIsErrorBecomesAToolFailureNotATransportError(t *testing.T)
 - Create: `docs/architecture/mcp-client.md`, `docs/architecture/mcp-client.zh-CN.md`, `docs/architecture/mcp-client-evidence.md`
 - Modify: `docs/README.md` (authority rows, milestone 9 status), root `README.md`, `SECURITY.md`
 
-- [ ] **Step 1** — write the implemented contract, including every resource bound, the fail-closed startup rule, the name-qualification rule, and the exclusions (no Streamable HTTP, no OAuth, no per-session server configuration, Windows unsupported for the same process-group reason the ACP executor already states).
-- [ ] **Step 2** — write the evidence ledger: commits, verification commands with real output, every mutation performed and its observed result, and any contract clause the implementation had to correct.
-- [ ] **Step 3** — update `docs/README.md`'s milestone 9 entry from "designed, not implemented" to its real state, add the contract/reading-copy/evidence authority rows, and reference the contract from the root README (`TestImplementedContractsAppearInRootReadme` requires it).
-- [ ] **Step 4: Verify** — `go test ./internal/docsguard -count=1`, full race suite, cross-builds.
+- [x] **Step 1** — write the implemented contract, including every resource bound, the fail-closed startup rule, the name-qualification rule, and the exclusions (no Streamable HTTP, no OAuth, no per-session server configuration, Windows unsupported for the same process-group reason the ACP executor already states).
+- [x] **Step 2** — write the evidence ledger: commits, verification commands with real output, every mutation performed and its observed result, and any contract clause the implementation had to correct.
+- [x] **Step 3** — update `docs/README.md`'s milestone 9 entry from "designed, not implemented" to its real state, add the contract/reading-copy/evidence authority rows, and reference the contract from the root README (`TestImplementedContractsAppearInRootReadme` requires it).
+- [x] **Step 4: Verify** — `go test ./internal/docsguard -count=1`, full race suite, cross-builds.
 
 ---
 
