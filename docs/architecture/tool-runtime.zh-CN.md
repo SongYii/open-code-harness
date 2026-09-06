@@ -23,7 +23,11 @@ Policy 是 `policy.Engine.Decide(Input) Decision`——一张表，不是 `next(
 瀑布，也不写在工具体里。`ModeAllowWrites` 随 `policy` 包交付。
 `NewService` / `DefaultConfig` 默认仍是 `ModeDefault`。
 
-四个内置工具：`read_file`、`write_file`、`list_dir`、`exec`。
+五个内置工具：`read_file`、`write_file`、`edit_file`、`list_dir`、`exec`。
+每一个破坏性工具都带守卫：`write_file` 和 `edit_file` 携带一个由本会话实际读过
+什么导出的 `tools.MutationGuard`，两者都无法覆盖本会话没有观测过的文件。守卫、
+版本、原子发布和七个文件系统失败码见
+[基于观测状态的安全文件变更](observed-file-mutation.zh-CN.md)。
 `list_dir` 的 `depth` 省略 ≡ 1，最大 2，整次 256 条。管线是
 `tool.call.started` → 校验 → 词法 → `Resolve` → `Decide` → 审批 → 执行。
 循环中途 append 使用 `step_append_*` 加 `ResolveAppend`。模型可见的工具
@@ -191,6 +195,7 @@ deny。未知 risk deny。网络 risk 或 `Network=true` 即使在
 | --- | --- | --- | --- | --- |
 | `read_file` | `path` | — | read / false | UTF-8 文件；超过 64 KiB 保留前缀 + `\n[truncated]` |
 | `write_file` | `path`、`content` | — | write / true | `wrote <n> bytes`（不含路径） |
+| `edit_file` | `path`、`old_string`、`new_string` | `replace_all` | write / true | `edited file` 或 `replaced all occurrences`（不含路径、不含内容） |
 | `list_dir` | `path` | `depth` 1–2；省略 ≡ 1 | read / false | 相对路径一行一个；256 条上限 |
 | `exec` | `argv`（至少 1 项，无 shell） | `cwd`；省略 = 工作区根 | exec / true | 先 `exit <code>\n` 再合计 ≤ 64 KiB 的输出 |
 

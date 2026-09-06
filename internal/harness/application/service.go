@@ -133,6 +133,11 @@ type Service struct {
 	files      tools.FileSystem
 	commands   tools.CommandRunner
 	approver   tools.Approver
+
+	// observations is what each session has actually read. It is what turns
+	// "write this file" into a guarded promise, and it is process-local by
+	// design -- see file_observations.go.
+	observations *fileObservations
 }
 
 func NewService(store EventStore, ids IDGenerator, clock Clock, runner *engine.TurnRunner, authority AuthoritySource, config Config) (*Service, error) {
@@ -196,7 +201,7 @@ func NewService(store EventStore, ids IDGenerator, clock Clock, runner *engine.T
 	service := &Service{
 		store: store, ids: ids, clock: clock, runner: runner, authority: authority,
 		config: config, executions: newExecutionRegistry(), policy: policyEngine,
-		approver: approver,
+		approver: approver, observations: newFileObservations(),
 	}
 	if catalogEnabled {
 		service.catalog = config.Catalog

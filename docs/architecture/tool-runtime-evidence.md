@@ -190,3 +190,24 @@ SQLite、JSONL、Runtime Host/崩溃续跑、Context Engine、Application 重试
 [exec 沙箱与资源配额完成证据](exec-sandboxing-resource-quotas-evidence.md)
 中实现。Landlock 因 CGO 约束仍按设计排除；Windows 仍无沙箱（改为默认在
 该平台上 fail-closed）。
+
+
+## Update: a fifth builtin and guarded mutation (2026-09-06)
+
+This ledger records the four-builtin runtime as it stood on 2026-08-16, and
+that record stands as written. Two things about it are now out of date, and
+both are documented in their own place rather than edited into the history
+above.
+
+`edit_file` is a fifth builtin, `RiskWrite` and mutating, inheriting the same
+Policy row `write_file` already sat in. And the `write_file` this ledger
+verified was an unconditional `O_TRUNC` overwrite; it no longer is. Every
+destructive operation on the `tools.FileSystem` port now carries a guard
+derived from what the session actually read, and publication is staged and
+renamed into place rather than truncating the destination.
+
+The contract is [Observed-State Safe File Mutation](observed-file-mutation.md)
+and its evidence is
+[observed-file-mutation-evidence.md](observed-file-mutation-evidence.md),
+including fourteen mutation results and the two mutations that initially
+caught nothing.

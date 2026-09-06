@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"unicode/utf8"
 
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
 )
@@ -16,6 +18,25 @@ import (
 // FileSystem is a host-backed workspace jail. Tests must use t.TempDir().
 type FileSystem struct {
 	root string
+
+	// locks serializes mutations per target path. See lockPath: this defends
+	// the window between a guard check and its publication against this
+	// process racing itself; the guard itself is what defends against every
+	// other writer.
+	locksOnce sync.Once
+	locksMu   sync.Mutex
+	locks     map[string]*pathLock
+
+	// hooks is a test-only seam, nil in production. See mutation_fault_test.go:
+	// the window between a synced staged replacement and the rename that
+	// publishes it is not otherwise reachable, and "a failure there is a
+	// non-event" is the central claim of this adapter.
+	hooks mutationHooks
+}
+
+// mutationHooks is the private fault-injection seam.
+type mutationHooks struct {
+	beforePublish func() error
 }
 
 var errInvalidRoot = errors.New("workspacefs: invalid workspace root")
@@ -65,29 +86,71 @@ func (files *FileSystem) Resolve(ctx context.Context, workspace, requested strin
 	return resolved, nil
 }
 
-func (files *FileSystem) Read(ctx context.Context, abs string, limit int) ([]byte, bool, error) {
+// Read observes a file: its bytes, whether they were clipped, and the version
+// those particular bytes were seen at.
+//
+// The version is taken from the open descriptor before and after reading, and
+// a change between the two is reported as stale rather than returned. Bytes
+// paired with a version they were not actually read at would be worse than no
+// version at all, because every guard built on them would be a false promise.
+func (files *FileSystem) Read(ctx context.Context, abs string, limit int) (tools.FileRead, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, false, err
+		return tools.FileRead{}, err
 	}
 	if limit < 0 {
-		return nil, false, fs.ErrInvalid
+		return tools.FileRead{}, fs.ErrInvalid
 	}
 	resolved, err := files.jail(abs)
 	if err != nil {
-		return nil, false, err
+		return tools.FileRead{}, err
 	}
 	info, err := os.Lstat(resolved)
 	if err != nil {
-		return nil, false, err
+		return tools.FileRead{}, err
 	}
 	if info.IsDir() {
-		return nil, false, fs.ErrInvalid
+		return tools.FileRead{}, fs.ErrInvalid
+	}
+	if !info.Mode().IsRegular() {
+		return tools.FileRead{}, fsError(tools.CodeFSNotRegularFile)
 	}
 	file, err := os.Open(resolved)
 	if err != nil {
-		return nil, false, err
+		return tools.FileRead{}, err
 	}
 	defer file.Close()
+
+	before, err := file.Stat()
+	if err != nil {
+		return tools.FileRead{}, err
+	}
+
+	data, truncated, err := readClipped(file, limit)
+	if err != nil {
+		return tools.FileRead{}, err
+	}
+
+	after, err := file.Stat()
+	if err != nil {
+		return tools.FileRead{}, err
+	}
+	version := versionOf(before)
+	if version != versionOf(after) {
+		return tools.FileRead{}, fsError(tools.CodeFSStaleVersion)
+	}
+
+	// A clip can land inside a multi-byte character. Dropping the partial
+	// rune keeps that from being reported as the file not being text.
+	if truncated {
+		data = trimPartialRune(data)
+	}
+	if !utf8.Valid(data) {
+		return tools.FileRead{}, fsError(tools.CodeFSNotText)
+	}
+	return tools.FileRead{Data: data, Truncated: truncated, Version: version}, nil
+}
+
+func readClipped(file *os.File, limit int) ([]byte, bool, error) {
 	if limit == 0 {
 		var probe [1]byte
 		n, readErr := file.Read(probe[:])
@@ -105,28 +168,6 @@ func (files *FileSystem) Read(ctx context.Context, abs string, limit int) ([]byt
 		return buf[:limit], true, nil
 	}
 	return buf[:n], false, nil
-}
-
-func (files *FileSystem) Write(ctx context.Context, abs string, data []byte) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	resolved, err := files.jail(abs)
-	if err != nil {
-		return err
-	}
-	if info, statErr := os.Lstat(resolved); statErr == nil && info.IsDir() {
-		return fs.ErrInvalid
-	}
-	file, err := os.OpenFile(resolved, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	if _, err := file.Write(data); err != nil {
-		file.Close()
-		return err
-	}
-	return file.Close()
 }
 
 func (files *FileSystem) List(ctx context.Context, abs string, depth, limit int) ([]string, bool, error) {

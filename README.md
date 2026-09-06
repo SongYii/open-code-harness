@@ -28,9 +28,18 @@ The numbered milestone list lives in
 - Provider adapter (`adapters/openaicompat`): implemented and verified; not GA.
   Thin OpenAI-compatible Chat Completions SSE client behind `engine.Model`,
   not a vendor SDK or plugin kernel.
-- Tool Runtime, Policy, and four builtin workspace tools: implemented and
+- Tool Runtime, Policy, and five builtin workspace tools: implemented and
   verified; not GA. Application-owned Step loop and a pure Policy Decide
-  table behind ports; not a plugin kernel. `exec` is now confined by bwrap
+  table behind ports; not a plugin kernel. Every destructive file operation
+  carries a guard derived from what the session actually read, so an agent
+  cannot overwrite a file it never looked at or one that changed since it
+  did, and publication is staged and renamed into place rather than
+  truncating the destination; `edit_file` performs bounded literal
+  replacement, unique-match by default. `exec` is deliberately outside that
+  guarantee and the limit is tested rather than asserted. See the
+  [observed-state safe file mutation contract](docs/architecture/observed-file-mutation.md)
+  and its
+  [evidence ledger](docs/architecture/observed-file-mutation-evidence.md). `exec` is now confined by bwrap
   and a cgroup v2 memory and CPU quota on Linux, or Seatbelt, RLIMIT_AS,
   and RLIMIT_CPU on macOS, when available, with a fail-closed startup
   gate and a named, logged escape hatch otherwise; see the
@@ -127,7 +136,7 @@ The numbered milestone list lives in
   `composition` and `application`): implemented and verified; not GA.
   External tools discovered from configured stdio MCP servers are projected
   into this project's own `domain.ToolSpec` and registered in the **same**
-  `tools.Catalog` as the four builtins, so they flow through the same Policy
+  `tools.Catalog` as the builtins, so they flow through the same Policy
   table, Approver slot, and audit trail rather than a second mechanism. The
   wire protocol is the official `modelcontextprotocol/go-sdk`, pinned to an
   exact version — deliberately the opposite choice from ACP, whose framing

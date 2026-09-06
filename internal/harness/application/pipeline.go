@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"strings"
 	"unicode/utf8"
 
@@ -239,7 +240,7 @@ func (service *Service) runToolBody(ctx context.Context, owned *ownedTurn, spec 
 	}
 	owned.executed[owned.toolItemID] = struct{}{}
 
-	content, truncated, failCode, failText, execErr := service.invokeTool(ctx, spec, args, resolved)
+	content, truncated, failCode, failText, execErr := service.invokeTool(ctx, owned.result.SessionID, spec, args, resolved)
 	if isCancelCause(execErr) || contextError(ctx) != nil {
 		result, err := service.cancelOwnedTurn(ctx, owned, domain.InterruptionCallerCanceled)
 		return true, result, err
@@ -248,12 +249,19 @@ func (service *Service) runToolBody(ctx context.Context, owned *ownedTurn, spec 
 		return service.failToolAndContinue(ctx, owned, call, failCode, failText)
 	}
 	if execErr != nil {
+		// A guard refusal is an ordinary event inside a Turn that the model
+		// can read and act on, so it gets its own code and an instruction
+		// rather than the generic invalid-arguments answer everything else
+		// falls back to.
+		if code, text, ok := classifyFilesystemError(execErr); ok {
+			return service.failToolAndContinue(ctx, owned, call, code, text)
+		}
 		return service.failToolAndContinue(ctx, owned, call, CodeInvalidArgs, ToolTextInvalidArgs)
 	}
 	return service.completeToolAndContinue(ctx, owned, call, content, truncated)
 }
 
-func (service *Service) invokeTool(ctx context.Context, spec domain.ToolSpec, args toolArgs, resolved string) (string, bool, string, string, error) {
+func (service *Service) invokeTool(ctx context.Context, session domain.SessionID, spec domain.ToolSpec, args toolArgs, resolved string) (string, bool, string, string, error) {
 	// Keyed on Source, not Name: an externally-sourced tool's name is chosen
 	// by the operator's configuration and the server itself, so this package
 	// cannot enumerate it the way it enumerates its own four builtins.
@@ -262,22 +270,74 @@ func (service *Service) invokeTool(ctx context.Context, spec domain.ToolSpec, ar
 	}
 	switch spec.Name {
 	case tools.NameReadFile:
-		data, truncated, err := service.files.Read(ctx, resolved, MaxToolResultBytes)
+		read, err := service.files.Read(ctx, resolved, MaxToolResultBytes)
 		if err != nil {
+			// An authoritative not-found is itself an observation: the
+			// session now knows nothing is there, which is what lets a
+			// following write make a create-if-absent promise honestly.
+			if errors.Is(err, fs.ErrNotExist) {
+				service.observations.recordAbsent(session, resolved)
+			}
 			return "", false, "", "", err
 		}
-		if !utf8.Valid(data) {
+		if !utf8.Valid(read.Data) {
 			return "", false, CodeInvalidArgs, ToolTextInvalidArgs, nil
 		}
-		text := string(data)
-		if truncated {
+		// A truncated read is still an observation of this exact version, and
+		// the version is what a later guard compares. What it does not license
+		// is a whole-file replacement built from a partial view -- that is the
+		// caller's problem to reason about, not something to hide by refusing
+		// to remember the read.
+		service.observations.recordPresent(session, resolved, read.Version)
+		text := string(read.Data)
+		if read.Truncated {
 			return appendTruncation(text), true, "", "", nil
 		}
 		return text, false, "", "", nil
-	case tools.NameWriteFile:
-		if err := service.files.Write(ctx, resolved, []byte(args.Content)); err != nil {
+	case tools.NameEditFile:
+		// Unlike a write, an edit has no fail-closed fallback guard: there is
+		// no honest promise to make about text the session has never seen, so
+		// the refusal comes from the observation table rather than from the
+		// filesystem.
+		guard, guardErr := service.observations.guardForEdit(session, resolved)
+		if guardErr != nil {
+			return "", false, "", "", guardErr
+		}
+		result, err := service.files.Edit(ctx, resolved, []byte(args.OldString), []byte(args.NewString), args.ReplaceAll, guard)
+		if err != nil {
 			return "", false, "", "", err
 		}
+		service.observations.recordPresent(session, resolved, result.Version)
+		if args.ReplaceAll {
+			return ToolTextReplacedAll, false, "", "", nil
+		}
+		return ToolTextEdited, false, "", "", nil
+	case tools.NameWriteFile:
+		// The guard is derived immediately before the call rather than held
+		// from earlier in the Step, so the window between deciding and acting
+		// is as small as this package can make it.
+		guard := service.observations.guardForWrite(session, resolved)
+		result, err := service.files.Write(ctx, resolved, []byte(args.Content), guard)
+		if err != nil {
+			// A failed mutation never advances the observation. Recording the
+			// attempt would let a second try succeed on the strength of the
+			// first one having failed.
+			//
+			// The refusal is also re-labelled where the adapter cannot know
+			// better. A create-if-absent guard is what an unseen target gets,
+			// and the adapter reports "stale" when something is in fact
+			// there -- but telling a model the file changed since it was read,
+			// when this session never read it, sends it to re-read a file it
+			// has no memory of and calls that a retry. What actually needs to
+			// happen is the first read.
+			if tools.IsCode(err, tools.CodeFSStaleVersion) &&
+				guard.Kind == tools.GuardCreateIfAbsent &&
+				!service.observations.seen(session, resolved) {
+				return "", false, "", "", &tools.Error{Code: tools.CodeFSNotObserved}
+			}
+			return "", false, "", "", err
+		}
+		service.observations.recordPresent(session, resolved, result.Version)
 		return fmt.Sprintf("wrote %d bytes", len(args.Content)), false, "", "", nil
 	case tools.NameListDir:
 		names, truncated, err := service.files.List(ctx, resolved, args.depthOrDefault(), tools.MaxListDirEntries)
@@ -412,6 +472,10 @@ type toolArgs struct {
 	Depth   *int     `json:"depth"`
 	Argv    []string `json:"argv"`
 	Cwd     string   `json:"cwd"`
+
+	OldString  string `json:"old_string"`
+	NewString  string `json:"new_string"`
+	ReplaceAll bool   `json:"replace_all"`
 }
 
 func parseToolArgs(name, raw string) (toolArgs, error) {
@@ -423,6 +487,17 @@ func parseToolArgs(name, raw string) (toolArgs, error) {
 	switch name {
 	case tools.NameReadFile, tools.NameWriteFile, tools.NameListDir:
 		if args.Path == "" {
+			return toolArgs{}, argsError()
+		}
+	case tools.NameEditFile:
+		if args.Path == "" || args.OldString == "" {
+			return toolArgs{}, argsError()
+		}
+		// An edit whose replacement equals what it replaces cannot change
+		// anything, so running it would spend an approval and a publication
+		// to produce the file that already exists. The schema cannot express
+		// "these two fields differ", so it is checked here.
+		if args.OldString == args.NewString {
 			return toolArgs{}, argsError()
 		}
 	case tools.NameExec:

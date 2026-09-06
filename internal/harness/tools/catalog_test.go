@@ -11,8 +11,8 @@ import (
 
 func TestDefaultWorkspaceSpecsLockedContracts(t *testing.T) {
 	specs := DefaultWorkspaceSpecs()
-	if len(specs) != 4 {
-		t.Fatalf("len(DefaultWorkspaceSpecs()) = %d, want 4", len(specs))
+	if len(specs) != 5 {
+		t.Fatalf("len(DefaultWorkspaceSpecs()) = %d, want 5", len(specs))
 	}
 
 	byName := map[string]domain.ToolSpec{}
@@ -49,6 +49,34 @@ func TestDefaultWorkspaceSpecsLockedContracts(t *testing.T) {
 			"content": map[string]any{"type": "string", "maxLength": float64(32768)},
 		},
 	})
+
+	edit := mustSpec(t, byName, NameEditFile)
+	if edit.Risk != domain.RiskWrite || !edit.Mutates {
+		t.Fatalf("edit_file identity = %#v", edit)
+	}
+	assertSchema(t, edit.InputSchema, map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"path", "old_string", "new_string"},
+		"properties": map[string]any{
+			"path":        map[string]any{"type": "string", "minLength": float64(1), "maxLength": float64(4096)},
+			"old_string":  map[string]any{"type": "string", "minLength": float64(1), "maxLength": float64(32768)},
+			"new_string":  map[string]any{"type": "string", "maxLength": float64(32768)},
+			"replace_all": map[string]any{"type": "boolean"},
+		},
+	})
+	var editObj map[string]any
+	if err := json.Unmarshal(edit.InputSchema, &editObj); err != nil {
+		t.Fatal(err)
+	}
+	if _, requiredHasReplaceAll := asStringSet(editObj["required"])["replace_all"]; requiredHasReplaceAll {
+		t.Fatal("edit_file.replace_all must be optional; omitted means unique-match")
+	}
+	// The model never sees or supplies a version. A version field here would
+	// invite the model to invent one, and an invented guard is no guard.
+	if _, ok := editObj["properties"].(map[string]any)["version"]; ok {
+		t.Fatal("edit_file must not expose a version; Application derives the guard")
+	}
 
 	list := mustSpec(t, byName, NameListDir)
 	if list.Risk != domain.RiskRead || list.Mutates {
@@ -105,7 +133,7 @@ func TestDefaultWorkspaceSpecsLockedContracts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCatalog(DefaultWorkspaceSpecs()) error = %v", err)
 	}
-	if got := catalog.Specs(); len(got) != 4 {
+	if got := catalog.Specs(); len(got) != 5 {
 		t.Fatalf("Specs() len = %d", len(got))
 	}
 	if _, ok := catalog.Spec(NameListDir); !ok {
@@ -185,7 +213,7 @@ func TestCatalogCopiesAreDefensive(t *testing.T) {
 		t.Fatal("catalog mutated through Spec() schema bytes")
 	}
 	schemas := catalog.Schemas()
-	if len(schemas) != 4 || schemas[0].Name != NameReadFile {
+	if len(schemas) != 5 || schemas[0].Name != NameReadFile {
 		t.Fatalf("Schemas() = %#v", schemas)
 	}
 	schemas[0].InputSchema[0] = 'Z'

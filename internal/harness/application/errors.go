@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
+	"github.com/SongYii/open-code-harness/internal/harness/tools"
 )
 
 // ErrorCategory is a stable class of application-facing failure.
@@ -44,6 +45,26 @@ const (
 	CodeExternalToolFailed = "external_tool_failed"
 )
 
+// Filesystem guard codes. Each mirrors a tools.ErrorCode one-for-one, and
+// each carries a different instruction, which is the reason they are not one
+// code.
+//
+// A model reads these and decides what to do next. "You never read this file"
+// and "the file changed since you read it" are both refusals of the same
+// write, but the first is answered by reading and the second by reading
+// again and reconsidering whether the change still makes sense. Collapsing
+// them into a generic failure leaves the model guessing, and a guessing model
+// retries.
+const (
+	CodeFSNotObserved    = "fs_not_observed"
+	CodeFSStaleVersion   = "fs_stale_version"
+	CodeFSEditNotFound   = "fs_edit_not_found"
+	CodeFSAmbiguousEdit  = "fs_ambiguous_edit"
+	CodeFSNotRegularFile = "fs_not_regular_file"
+	CodeFSNotText        = "fs_not_text"
+	CodeFSTooLarge       = "fs_too_large"
+)
+
 // Context Engine failure codes (design §16). The pre-existing
 // "context_overflow" string (request_result.go, turn.go, openaicompat's
 // classify.go) keeps its own meaning and is not redefined here; these are
@@ -73,6 +94,54 @@ const (
 	ToolTextExternalFailed  = "external tool reported a failure"
 	TruncationMarker        = "\n[truncated]"
 )
+
+// Filesystem guard messages.
+//
+// Each says what to do next rather than only what went wrong, because the
+// reader is a model choosing its next tool call. None of them renders a path,
+// a version, or any file content: these strings reach the model verbatim, and
+// the workspace layout is not theirs to learn from a failure message.
+const (
+	ToolTextFSNotObserved    = "read the file before changing it"
+	ToolTextFSStaleVersion   = "file changed since it was read; re-read it and retry"
+	ToolTextFSEditNotFound   = "literal was not found"
+	ToolTextFSAmbiguousEdit  = "literal appears more than once; include more context or use replace_all"
+	ToolTextFSNotRegularFile = "target is not a regular file"
+	ToolTextFSNotText        = "file is not valid UTF-8 text"
+	ToolTextFSTooLarge       = "file exceeds the edit size limit"
+
+	// A successful edit acknowledges itself in a sentence and does not copy
+	// the resulting file back. Returning the file would spend exactly the
+	// context budget an edit tool exists to save, and the model already knows
+	// what it asked for.
+	ToolTextEdited      = "edited file"
+	ToolTextReplacedAll = "replaced all occurrences"
+)
+
+// classifyFilesystemError maps an adapter refusal to the Tool Result a model
+// sees, or reports that this is not a filesystem guard failure at all.
+//
+// Anything unmapped keeps falling through to the caller's existing handling,
+// so a genuine I/O error is never dressed up as a guard refusal.
+func classifyFilesystemError(err error) (code string, text string, ok bool) {
+	switch {
+	case tools.IsCode(err, tools.CodeFSNotObserved):
+		return CodeFSNotObserved, ToolTextFSNotObserved, true
+	case tools.IsCode(err, tools.CodeFSStaleVersion):
+		return CodeFSStaleVersion, ToolTextFSStaleVersion, true
+	case tools.IsCode(err, tools.CodeFSEditNotFound):
+		return CodeFSEditNotFound, ToolTextFSEditNotFound, true
+	case tools.IsCode(err, tools.CodeFSAmbiguousEdit):
+		return CodeFSAmbiguousEdit, ToolTextFSAmbiguousEdit, true
+	case tools.IsCode(err, tools.CodeFSNotRegularFile):
+		return CodeFSNotRegularFile, ToolTextFSNotRegularFile, true
+	case tools.IsCode(err, tools.CodeFSNotText):
+		return CodeFSNotText, ToolTextFSNotText, true
+	case tools.IsCode(err, tools.CodeFSTooLarge):
+		return CodeFSTooLarge, ToolTextFSTooLarge, true
+	}
+	return "", "", false
+}
 
 // Error is a stable application-facing failure. Cause remains available for
 // deliberate programmatic inspection but is never rendered by Error.

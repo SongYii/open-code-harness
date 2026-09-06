@@ -788,6 +788,400 @@ func TestModeAllowWritesExecutesWrite(t *testing.T) {
 	}
 }
 
+// TestWriteFileRefusesToOverwriteAnUnobservedFile pins the fail-closed half of
+// the guarded port while this package still passes a create-if-absent guard.
+//
+// Until Application tracks what a session has actually observed, "write" means
+// "create". An existing target is refused rather than silently replaced, and
+// that direction is deliberate: the placeholder permits less than the eventual
+// behaviour rather than more, so no window exists in which the mechanism is
+// wired but not yet enforcing. Policy allows the write here — the refusal
+// comes from the filesystem's guard, not from authorization.
+func TestWriteFileRefusesToOverwriteAnUnobservedFile(t *testing.T) {
+	fs := testkit.NewMemFS("/workspace")
+	fs.AddFile("out.txt", []byte("existing"))
+	counter := &countingFS{FileSystem: fs}
+	model := newSequenceModel(
+		[]engine.StreamEvent{
+			{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "call-1", Name: tools.NameWriteFile, Arguments: `{"path":"out.txt","content":"clobber"}`}},
+			{Type: engine.StreamEventCompleted},
+		},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "done"}, {Type: engine.StreamEventCompleted}},
+	)
+	config := application.DefaultConfig()
+	config.PolicyMode = policy.ModeAllowWrites
+	service, _ := newToolService(t, model, counter, nil, nil, config)
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+		SessionID: created.SessionID, RequestID: "request-overwrite", Input: "inspect", Sink: &testkit.RecordingSink{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The refusal reaches the model as a failed Tool Result and the Turn
+	// continues, which is how every other tool failure behaves here. The
+	// message says to read the file, not that it changed: this session never
+	// read it, and "re-read and retry" would send the model to re-read a file
+	// it has no memory of.
+	if got := lastToolMessage(model.Calls()[1].Messages).Text; got != application.ToolTextFSNotObserved {
+		t.Fatalf("tool text = %q, want %q", got, application.ToolTextFSNotObserved)
+	}
+	read, readErr := fs.Read(context.Background(), "/workspace/out.txt", 64)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(read.Data) != "existing" {
+		t.Fatalf("content = %q; the refused write changed the file", read.Data)
+	}
+}
+
+// TestReadThenExternalChangeThenStaleThenRereadRecovers is the mechanism's
+// whole reason for existing, walked end to end through the real Service.
+//
+// The agent reads a file, something outside this process rewrites it, and the
+// agent's write is refused rather than silently destroying the other writer's
+// work. The refusal is not a dead end: it says to re-read, the agent does, and
+// the next write goes through. A mechanism that only refused would be a worse
+// agent; a mechanism that only wrote would be a worse neighbour.
+func TestReadThenExternalChangeThenStaleThenRereadRecovers(t *testing.T) {
+	fs := testkit.NewMemFS("/workspace")
+	fs.AddFile("shared.txt", []byte("A"))
+	config := application.DefaultConfig()
+	config.PolicyMode = policy.ModeAllowWrites
+
+	readCall := engine.StreamEvent{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{
+		ID: "call-read", Name: tools.NameReadFile, Arguments: `{"path":"shared.txt"}`,
+	}}
+	writeCall := engine.StreamEvent{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{
+		ID: "call-write", Name: tools.NameWriteFile, Arguments: `{"path":"shared.txt","content":"agent"}`,
+	}}
+	done := []engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "ok"}, {Type: engine.StreamEventCompleted}}
+
+	model := newSequenceModel(
+		[]engine.StreamEvent{readCall, {Type: engine.StreamEventCompleted}}, done,
+		[]engine.StreamEvent{writeCall, {Type: engine.StreamEventCompleted}}, done,
+		[]engine.StreamEvent{readCall, {Type: engine.StreamEventCompleted}}, done,
+		[]engine.StreamEvent{writeCall, {Type: engine.StreamEventCompleted}}, done,
+	)
+	service, _ := newToolService(t, model, fs, nil, nil, config)
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runTurn := func(request domain.RunTurnRequestID) {
+		t.Helper()
+		if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+			SessionID: created.SessionID, RequestID: request, Input: "go", Sink: &testkit.RecordingSink{},
+		}); err != nil {
+			t.Fatalf("%s: %v", request, err)
+		}
+	}
+
+	runTurn("request-read-a")
+
+	// Something this harness does not control rewrites the file.
+	fs.AddFile("shared.txt", []byte("B"))
+
+	runTurn("request-stale-write")
+	if got := lastToolMessage(model.Calls()[3].Messages).Text; got != application.ToolTextFSStaleVersion {
+		t.Fatalf("stale write text = %q, want %q", got, application.ToolTextFSStaleVersion)
+	}
+	if read, _ := fs.Read(context.Background(), "/workspace/shared.txt", 64); string(read.Data) != "B" {
+		t.Fatalf("content = %q; the refused write destroyed the external change", read.Data)
+	}
+
+	runTurn("request-read-b")
+	runTurn("request-guarded-write")
+	if got := lastToolMessage(model.Calls()[7].Messages).Text; got != "wrote 5 bytes" {
+		t.Fatalf("guarded write text = %q, want the write to have succeeded", got)
+	}
+	read, readErr := fs.Read(context.Background(), "/workspace/shared.txt", 64)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(read.Data) != "agent" {
+		t.Fatalf("content = %q, want the re-read write to have landed", read.Data)
+	}
+}
+
+// TestARefusedWriteDoesNotLicenseTheNextOne is the rule that a failed mutation
+// never advances what the session claims to have seen.
+//
+// Without it there is an obvious and well-meaning bug waiting: the write was
+// refused, so refresh the observation and let the retry through. That turns the
+// guard into a speed bump — the agent overwrites the other writer's work on the
+// second attempt, having never looked at what it destroyed. Two writes with no
+// read between them must both be refused.
+func TestARefusedWriteDoesNotLicenseTheNextOne(t *testing.T) {
+	fs := testkit.NewMemFS("/workspace")
+	fs.AddFile("shared.txt", []byte("external"))
+	config := application.DefaultConfig()
+	config.PolicyMode = policy.ModeAllowWrites
+
+	writeCall := engine.StreamEvent{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{
+		ID: "call-write", Name: tools.NameWriteFile, Arguments: `{"path":"shared.txt","content":"agent"}`,
+	}}
+	done := []engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "ok"}, {Type: engine.StreamEventCompleted}}
+
+	model := newSequenceModel(
+		[]engine.StreamEvent{writeCall, {Type: engine.StreamEventCompleted}}, done,
+		[]engine.StreamEvent{writeCall, {Type: engine.StreamEventCompleted}}, done,
+	)
+	service, _ := newToolService(t, model, fs, nil, nil, config)
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, request := range []domain.RunTurnRequestID{"request-write-1", "request-write-2"} {
+		if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+			SessionID: created.SessionID, RequestID: request, Input: "go", Sink: &testkit.RecordingSink{},
+		}); err != nil {
+			t.Fatalf("%s: %v", request, err)
+		}
+	}
+
+	for _, call := range []int{1, 3} {
+		if got := lastToolMessage(model.Calls()[call].Messages).Text; got != application.ToolTextFSNotObserved {
+			t.Fatalf("call %d text = %q, want %q", call, got, application.ToolTextFSNotObserved)
+		}
+	}
+	read, readErr := fs.Read(context.Background(), "/workspace/shared.txt", 64)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(read.Data) != "external" {
+		t.Fatalf("content = %q; a retry overwrote work the agent never looked at", read.Data)
+	}
+}
+
+// TestResumeForgetsWhatTheSessionObserved. A resume can follow an arbitrarily
+// long gap, so what the session saw before it is no longer evidence about what
+// is on disk now.
+func TestResumeForgetsWhatTheSessionObserved(t *testing.T) {
+	fs := testkit.NewMemFS("/workspace")
+	fs.AddFile("shared.txt", []byte("A"))
+	config := application.DefaultConfig()
+	config.PolicyMode = policy.ModeAllowWrites
+
+	readCall := engine.StreamEvent{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{
+		ID: "call-read", Name: tools.NameReadFile, Arguments: `{"path":"shared.txt"}`,
+	}}
+	writeCall := engine.StreamEvent{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{
+		ID: "call-write", Name: tools.NameWriteFile, Arguments: `{"path":"shared.txt","content":"agent"}`,
+	}}
+	done := []engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "ok"}, {Type: engine.StreamEventCompleted}}
+
+	model := newSequenceModel(
+		[]engine.StreamEvent{readCall, {Type: engine.StreamEventCompleted}}, done,
+		[]engine.StreamEvent{writeCall, {Type: engine.StreamEventCompleted}}, done,
+	)
+	service, _ := newToolService(t, model, fs, nil, nil, config)
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+		SessionID: created.SessionID, RequestID: "request-read", Input: "go", Sink: &testkit.RecordingSink{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ResumeSession(context.Background(), application.ResumeSessionRequest{
+		SessionID: created.SessionID, WorkspaceRoot: "/workspace",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+		SessionID: created.SessionID, RequestID: "request-write", Input: "go", Sink: &testkit.RecordingSink{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The file is unchanged on disk, so a surviving observation would have
+	// produced a perfectly valid guard and a successful write. The refusal is
+	// what proves the table was cleared.
+	if got := lastToolMessage(model.Calls()[3].Messages).Text; got != application.ToolTextFSNotObserved {
+		t.Fatalf("write after resume = %q, want %q", got, application.ToolTextFSNotObserved)
+	}
+}
+
+// editTurns builds a model that makes one edit_file call per turn.
+func editCall(args string) engine.StreamEvent {
+	return engine.StreamEvent{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{
+		ID: "call-edit", Name: tools.NameEditFile, Arguments: args,
+	}}
+}
+
+// TestEditFileRequiresAReadFirst. Unlike a write, an edit has no fail-closed
+// fallback: there is no such thing as editing a file you have not read, so the
+// refusal names the missing read rather than inventing a guard.
+func TestEditFileRequiresAReadFirst(t *testing.T) {
+	fs := testkit.NewMemFS("/workspace")
+	fs.AddFile("code.go", []byte("alpha\nbeta\n"))
+	config := application.DefaultConfig()
+	config.PolicyMode = policy.ModeAllowWrites
+
+	done := []engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "ok"}, {Type: engine.StreamEventCompleted}}
+	model := newSequenceModel(
+		[]engine.StreamEvent{editCall(`{"path":"code.go","old_string":"beta","new_string":"BETA"}`), {Type: engine.StreamEventCompleted}}, done,
+	)
+	service, _ := newToolService(t, model, fs, nil, nil, config)
+	created, _ := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+		SessionID: created.SessionID, RequestID: "request-edit", Input: "go", Sink: &testkit.RecordingSink{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := lastToolMessage(model.Calls()[1].Messages).Text; got != application.ToolTextFSNotObserved {
+		t.Fatalf("edit text = %q, want %q", got, application.ToolTextFSNotObserved)
+	}
+	if read, _ := fs.Read(context.Background(), "/workspace/code.go", 64); string(read.Data) != "alpha\nbeta\n" {
+		t.Fatalf("content = %q; an unobserved edit changed the file", read.Data)
+	}
+}
+
+// TestEditFileAfterAReadSucceedsAndAdvancesTheObservation. The acknowledgement
+// is a sentence, not the file: copying the result back would spend the context
+// budget the edit tool exists to save.
+func TestEditFileAfterAReadSucceedsAndAdvancesTheObservation(t *testing.T) {
+	fs := testkit.NewMemFS("/workspace")
+	fs.AddFile("code.go", []byte("alpha\nbeta\ngamma\n"))
+	config := application.DefaultConfig()
+	config.PolicyMode = policy.ModeAllowWrites
+
+	readCall := engine.StreamEvent{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{
+		ID: "call-read", Name: tools.NameReadFile, Arguments: `{"path":"code.go"}`,
+	}}
+	done := []engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "ok"}, {Type: engine.StreamEventCompleted}}
+	model := newSequenceModel(
+		[]engine.StreamEvent{readCall, {Type: engine.StreamEventCompleted}}, done,
+		[]engine.StreamEvent{editCall(`{"path":"code.go","old_string":"beta","new_string":"BETA"}`), {Type: engine.StreamEventCompleted}}, done,
+		[]engine.StreamEvent{editCall(`{"path":"code.go","old_string":"gamma","new_string":"GAMMA"}`), {Type: engine.StreamEventCompleted}}, done,
+	)
+	service, _ := newToolService(t, model, fs, nil, nil, config)
+	created, _ := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	for _, request := range []domain.RunTurnRequestID{"r1", "r2", "r3"} {
+		if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+			SessionID: created.SessionID, RequestID: request, Input: "go", Sink: &testkit.RecordingSink{},
+		}); err != nil {
+			t.Fatalf("%s: %v", request, err)
+		}
+	}
+
+	if got := lastToolMessage(model.Calls()[3].Messages).Text; got != application.ToolTextEdited {
+		t.Fatalf("first edit text = %q, want %q", got, application.ToolTextEdited)
+	}
+	// The second edit follows the first with no intervening read. It can only
+	// succeed if the edit advanced the observation to the version it produced.
+	if got := lastToolMessage(model.Calls()[5].Messages).Text; got != application.ToolTextEdited {
+		t.Fatalf("second edit text = %q; the edit did not advance the observation", got)
+	}
+	read, _ := fs.Read(context.Background(), "/workspace/code.go", 64)
+	if string(read.Data) != "alpha\nBETA\nGAMMA\n" {
+		t.Fatalf("content = %q", read.Data)
+	}
+	// The acknowledgement must not carry the file back into the transcript.
+	for _, call := range []int{3, 5} {
+		if strings.Contains(lastToolMessage(model.Calls()[call].Messages).Text, "alpha") {
+			t.Fatalf("call %d copied file content into the Tool Result", call)
+		}
+	}
+}
+
+// TestEditFileMissingAmbiguousAndReplaceAll walks the three matching outcomes.
+func TestEditFileMissingAmbiguousAndReplaceAll(t *testing.T) {
+	fs := testkit.NewMemFS("/workspace")
+	fs.AddFile("code.go", []byte("dup\ndup\nother\n"))
+	config := application.DefaultConfig()
+	config.PolicyMode = policy.ModeAllowWrites
+
+	readCall := engine.StreamEvent{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{
+		ID: "call-read", Name: tools.NameReadFile, Arguments: `{"path":"code.go"}`,
+	}}
+	done := []engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "ok"}, {Type: engine.StreamEventCompleted}}
+	model := newSequenceModel(
+		[]engine.StreamEvent{readCall, {Type: engine.StreamEventCompleted}}, done,
+		[]engine.StreamEvent{editCall(`{"path":"code.go","old_string":"absent","new_string":"x"}`), {Type: engine.StreamEventCompleted}}, done,
+		[]engine.StreamEvent{editCall(`{"path":"code.go","old_string":"dup","new_string":"x"}`), {Type: engine.StreamEventCompleted}}, done,
+		[]engine.StreamEvent{editCall(`{"path":"code.go","old_string":"dup","new_string":"x","replace_all":true}`), {Type: engine.StreamEventCompleted}}, done,
+	)
+	service, _ := newToolService(t, model, fs, nil, nil, config)
+	created, _ := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	for _, request := range []domain.RunTurnRequestID{"r1", "r2", "r3", "r4"} {
+		if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+			SessionID: created.SessionID, RequestID: request, Input: "go", Sink: &testkit.RecordingSink{},
+		}); err != nil {
+			t.Fatalf("%s: %v", request, err)
+		}
+	}
+
+	if got := lastToolMessage(model.Calls()[3].Messages).Text; got != application.ToolTextFSEditNotFound {
+		t.Fatalf("missing literal text = %q, want %q", got, application.ToolTextFSEditNotFound)
+	}
+	if got := lastToolMessage(model.Calls()[5].Messages).Text; got != application.ToolTextFSAmbiguousEdit {
+		t.Fatalf("ambiguous literal text = %q, want %q", got, application.ToolTextFSAmbiguousEdit)
+	}
+	if got := lastToolMessage(model.Calls()[7].Messages).Text; got != application.ToolTextReplacedAll {
+		t.Fatalf("replace_all text = %q, want %q", got, application.ToolTextReplacedAll)
+	}
+	read, _ := fs.Read(context.Background(), "/workspace/code.go", 64)
+	if string(read.Data) != "x\nx\nother\n" {
+		t.Fatalf("content = %q", read.Data)
+	}
+}
+
+// TestEditFileIsDeniedInReadOnlyMode. It is RiskWrite and mutating, so it
+// inherits the Policy table write_file already sits in rather than needing a
+// rule of its own.
+func TestEditFileIsDeniedInReadOnlyMode(t *testing.T) {
+	fs := testkit.NewMemFS("/workspace")
+	fs.AddFile("code.go", []byte("alpha\n"))
+	config := application.DefaultConfig()
+	config.PolicyMode = policy.ModeReadOnly
+
+	done := []engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "ok"}, {Type: engine.StreamEventCompleted}}
+	model := newSequenceModel(
+		[]engine.StreamEvent{editCall(`{"path":"code.go","old_string":"alpha","new_string":"x"}`), {Type: engine.StreamEventCompleted}}, done,
+	)
+	service, _ := newToolService(t, model, fs, nil, nil, config)
+	created, _ := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+		SessionID: created.SessionID, RequestID: "request-edit", Input: "go", Sink: &testkit.RecordingSink{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := lastToolMessage(model.Calls()[1].Messages).Text; got != application.ToolTextPolicyDenied {
+		t.Fatalf("read-only edit text = %q, want %q", got, application.ToolTextPolicyDenied)
+	}
+}
+
+// TestEditFileRejectsAnIdenticalReplacement. An edit whose old and new strings
+// match is a mutation that cannot change anything, and running it would spend
+// an approval and a publication to produce the file that already exists.
+func TestEditFileRejectsAnIdenticalReplacement(t *testing.T) {
+	fs := testkit.NewMemFS("/workspace")
+	fs.AddFile("code.go", []byte("alpha\n"))
+	config := application.DefaultConfig()
+	config.PolicyMode = policy.ModeAllowWrites
+
+	done := []engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "ok"}, {Type: engine.StreamEventCompleted}}
+	model := newSequenceModel(
+		[]engine.StreamEvent{editCall(`{"path":"code.go","old_string":"alpha","new_string":"alpha"}`), {Type: engine.StreamEventCompleted}}, done,
+	)
+	service, _ := newToolService(t, model, fs, nil, nil, config)
+	created, _ := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+		SessionID: created.SessionID, RequestID: "request-edit", Input: "go", Sink: &testkit.RecordingSink{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := lastToolMessage(model.Calls()[1].Messages).Text; got != application.ToolTextInvalidArgs {
+		t.Fatalf("identical replacement text = %q, want %q", got, application.ToolTextInvalidArgs)
+	}
+}
+
 func TestTableA2UnknownStartedDoesNotExecute(t *testing.T) {
 	fs := testkit.NewMemFS("/workspace")
 	fs.AddFile("README.md", []byte("hello"))
@@ -1188,17 +1582,23 @@ func (fs *countingFS) Resolve(ctx context.Context, workspace, requested string) 
 	fs.mu.Unlock()
 	return fs.FileSystem.Resolve(ctx, workspace, requested)
 }
-func (fs *countingFS) Read(ctx context.Context, abs string, limit int) ([]byte, bool, error) {
+func (fs *countingFS) Read(ctx context.Context, abs string, limit int) (tools.FileRead, error) {
 	fs.mu.Lock()
 	fs.reads++
 	fs.mu.Unlock()
 	return fs.FileSystem.Read(ctx, abs, limit)
 }
-func (fs *countingFS) Write(ctx context.Context, abs string, data []byte) error {
+func (fs *countingFS) Write(ctx context.Context, abs string, data []byte, guard tools.MutationGuard) (tools.MutationResult, error) {
 	fs.mu.Lock()
 	fs.writes++
 	fs.mu.Unlock()
-	return fs.FileSystem.Write(ctx, abs, data)
+	return fs.FileSystem.Write(ctx, abs, data, guard)
+}
+func (fs *countingFS) Edit(ctx context.Context, abs string, oldString, newString []byte, replaceAll bool, guard tools.MutationGuard) (tools.MutationResult, error) {
+	fs.mu.Lock()
+	fs.writes++
+	fs.mu.Unlock()
+	return fs.FileSystem.Edit(ctx, abs, oldString, newString, replaceAll, guard)
 }
 func (fs *countingFS) List(ctx context.Context, abs string, depth, limit int) ([]string, bool, error) {
 	fs.mu.Lock()
@@ -1216,10 +1616,10 @@ type blockingFS struct {
 	once    sync.Once
 }
 
-func (fs *blockingFS) Read(ctx context.Context, abs string, limit int) ([]byte, bool, error) {
+func (fs *blockingFS) Read(ctx context.Context, abs string, limit int) (tools.FileRead, error) {
 	fs.once.Do(func() { close(fs.entered) })
 	<-ctx.Done()
-	return nil, false, ctx.Err()
+	return tools.FileRead{}, ctx.Err()
 }
 
 func scriptedToolIdentity() engine.RequestIdentity {

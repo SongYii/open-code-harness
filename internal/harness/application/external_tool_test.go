@@ -198,7 +198,7 @@ func TestInvokeToolRoutesAnExternalSpecBySourceNotByName(t *testing.T) {
 	service := &Service{external: external}
 
 	text, _, code, _, err := service.invokeTool(
-		context.Background(), externalSpec(), toolArgs{Raw: `{"query":"x"}`}, "")
+		context.Background(), "session-test", externalSpec(), toolArgs{Raw: `{"query":"x"}`}, "")
 	if err != nil {
 		t.Fatalf("invokeTool: %v", err)
 	}
@@ -222,10 +222,15 @@ func TestInvokeToolRoutesAnExternalSpecBySourceNotByName(t *testing.T) {
 type stubFiles struct{}
 
 func (stubFiles) Resolve(context.Context, string, string) (string, error) { return "/abs", nil }
-func (stubFiles) Read(context.Context, string, int) ([]byte, bool, error) {
-	return []byte("builtin"), false, nil
+func (stubFiles) Read(context.Context, string, int) (tools.FileRead, error) {
+	return tools.FileRead{Data: []byte("builtin"), Version: "stub:v1"}, nil
 }
-func (stubFiles) Write(context.Context, string, []byte) error { return nil }
+func (stubFiles) Write(context.Context, string, []byte, tools.MutationGuard) (tools.MutationResult, error) {
+	return tools.MutationResult{Version: "stub:v2", Operation: tools.MutationUpdate}, nil
+}
+func (stubFiles) Edit(context.Context, string, []byte, []byte, bool, tools.MutationGuard) (tools.MutationResult, error) {
+	return tools.MutationResult{Version: "stub:v2", Operation: tools.MutationUpdate}, nil
+}
 func (stubFiles) List(context.Context, string, int, int) ([]string, bool, error) {
 	return nil, false, nil
 }
@@ -234,11 +239,11 @@ func (stubFiles) List(context.Context, string, int, int) ([]string, bool, error)
 // swallowing the four builtins.
 func TestInvokeToolStillRoutesBuiltinsByName(t *testing.T) {
 	external := &recordingExternalTools{result: tools.ExternalToolResult{Text: "must not be used"}}
-	service := &Service{external: external, files: stubFiles{}}
+	service := &Service{external: external, files: stubFiles{}, observations: newFileObservations()}
 
 	builtin := tools.DefaultWorkspaceSpecs()[0] // read_file
 	text, _, code, _, err := service.invokeTool(
-		context.Background(), builtin, toolArgs{Raw: `{"path":"x"}`, Path: "x"}, "/abs")
+		context.Background(), "session-test", builtin, toolArgs{Raw: `{"path":"x"}`, Path: "x"}, "/abs")
 	if err != nil {
 		t.Fatalf("invokeTool: %v", err)
 	}
