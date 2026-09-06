@@ -39,7 +39,7 @@ Pure computation over documents that already exist, plus two new frozen document
 
 Mirrors `judge_config.go` exactly: strict decode rejecting unknown and duplicate keys, a canonical digest over the document's own checked bytes, and no secret-bearing field.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```go
 func TestDecodeVariancePolicyRoundTripAndDigest(t *testing.T)
@@ -55,8 +55,8 @@ func TestVariancePolicyRequiresMinEvaluableRepetitions(t *testing.T)
 func TestVariancePolicyRejectsUnknownFields(t *testing.T)
 ```
 
-- [ ] **Step 2: Implement** — the document, its validation, and its digest.
-- [ ] **Step 3: Mutation check** — supply a default for a missing limit and confirm `TestVariancePolicyRequiresBothLimits` fails; restore.
+- [x] **Step 2: Implement** — the document, its validation, and its digest.
+- [x] **Step 3: Mutation check** — supply a default for a missing limit and confirm `TestVariancePolicyRequiresBothLimits` fails; restore.
 
 ---
 
@@ -69,7 +69,7 @@ func TestVariancePolicyRejectsUnknownFields(t *testing.T)
 
 Pure: no I/O, no store access. `CellDistribution` carries `Repetitions`, `Attempts`, `Verdicts` (a count per verdict, never a derived single verdict), `NumericScores` **in repetition-index order**, `NumericSpread`, `VerdictStability`, and — per design §3.1 and §3.2 — the two separate reliability fields `EvaluableEnough` and `ExceedsDeclaredLimits`, each with its own reason. There is no single `Trustworthy` boolean: a consumer branches on a boolean and never reads the reason beside it, so one flag would merge a structural fact with an uncalibrated threshold judgement.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```go
 func TestDistributionPublishesEveryScoreInRepetitionOrder(t *testing.T)
@@ -91,8 +91,8 @@ func TestTheTwoReliabilityFieldsAreNeverMergedIntoOne(t *testing.T)
     // The type must not grow a Trustworthy bool that ANDs them together.
 ```
 
-- [ ] **Step 2: Implement.** Range, not standard deviation — at N in single digits a standard deviation has no useful sampling behavior, and range is what a reviewer can check by eye against the published sequence.
-- [ ] **Step 3: Mutation check** — swap range for standard deviation and confirm the arithmetic test fails; restore.
+- [x] **Step 2: Implement.** Range, not standard deviation — at N in single digits a standard deviation has no useful sampling behavior, and range is what a reviewer can check by eye against the published sequence.
+- [x] **Step 3: Mutation check** — swap range for standard deviation and confirm the arithmetic test fails; restore.
 
 ---
 
@@ -119,7 +119,7 @@ func TestTheTwoReliabilityFieldsAreNeverMergedIntoOne(t *testing.T)
 
 `indeterminate` is an infrastructure or judgeability signal, not a quality one: a judge that could not be reached, refused malformed output, or was denied evidence has said nothing about the Subject.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```go
 func TestIndeterminateRepetitionsAreCountedAndNamedIndividually(t *testing.T)
@@ -134,8 +134,8 @@ func TestTooFewEvaluableRepetitionsFailsEvaluableEnoughNotTheLimitsField(t *test
     // fields rather than separate reason strings on one shared label.
 ```
 
-- [ ] **Step 2: Implement.**
-- [ ] **Step 3: Mutation check** — count indeterminate as a failure and confirm the exclusion test fails; restore.
+- [x] **Step 2: Implement.**
+- [x] **Step 3: Mutation check** — count indeterminate as a failure and confirm the exclusion test fails; restore.
 
 ---
 
@@ -144,7 +144,7 @@ func TestTooFewEvaluableRepetitionsFailsEvaluableEnoughNotTheLimitsField(t *test
 **Files:**
 - Modify: `internal/harness/eval/evalset.go`, `variance.go`, and their tests
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```go
 func TestEvalSetReferencingAPolicyWithOneRepetitionIsRefusedBeforeAnyWork(t *testing.T)
@@ -158,8 +158,8 @@ func TestScoresDisagreeingOnAnyIdentityDigestAreAHardError(t *testing.T)
     // never pooled.
 ```
 
-- [ ] **Step 2: Implement.**
-- [ ] **Step 3: Mutation check** — allow `repetitionCount: 1` with a policy and confirm the refusal test fails; restore. This is the plan's single most important mutation.
+- [x] **Step 2: Implement.**
+- [x] **Step 3: Mutation check** — allow `repetitionCount: 1` with a policy and confirm the refusal test fails; restore. This is the plan's single most important mutation.
 
 ---
 
@@ -170,7 +170,7 @@ func TestScoresDisagreeingOnAnyIdentityDigestAreAHardError(t *testing.T)
 
 **Interfaces:** `DecodeBaseline`, `BaselineDigest`, `MatchBaseline(baseline, distribution) (BaselineComparison, error)`, `BuildBaseline(attempts, scores) (Baseline, error)`.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```go
 func TestBaselineComparesOnlyToMatchingIdentityDigests(t *testing.T)
@@ -187,8 +187,8 @@ func TestBuildBaselineIsNeverCalledFromARunPath(t *testing.T)
     // regeneration is an explicit command and a reviewed commit.
 ```
 
-- [ ] **Step 2: Implement.**
-- [ ] **Step 3: Mutation check** — let a run path write a baseline back and confirm the last test fails; restore.
+- [x] **Step 2: Implement.**
+- [x] **Step 3: Mutation check** — let a run path write a baseline back and confirm the last test fails; restore.
 
 ---
 
@@ -199,7 +199,7 @@ func TestBuildBaselineIsNeverCalledFromARunPath(t *testing.T)
 
 The existing pairing rule is unchanged. What is new is that the delta is computed **between distributions, not between single Scores**.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```go
 func TestPairedDeltaIsComputedBetweenDistributionsNotSingleScores(t *testing.T)
@@ -210,8 +210,8 @@ func TestWithinNoiseUsesTheWiderArmNotAnAverage(t *testing.T)
 func TestPairingItselfIsUnchanged(t *testing.T)
 ```
 
-- [ ] **Step 2: Implement.**
-- [ ] **Step 3: Mutation check** — compare against the narrower arm's spread and confirm the wider-arm test fails; restore.
+- [x] **Step 2: Implement.**
+- [x] **Step 3: Mutation check** — compare against the narrower arm's spread and confirm the wider-arm test fails; restore.
 
 ---
 
@@ -220,7 +220,7 @@ func TestPairingItselfIsUnchanged(t *testing.T)
 **Files:**
 - Modify: `cmd/och-eval/report.go`, `main.go`, and their tests
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```go
 func TestReportPublishesThePerCellDistributionBlock(t *testing.T)
@@ -241,8 +241,8 @@ func TestReportCarriesBothReliabilityFieldsSeparately(t *testing.T)
 func TestRegenerateBaselineWritesADeterministicDocument(t *testing.T)
 ```
 
-- [ ] **Step 2: Implement** — `och-eval report` gains the block; `och-eval baseline` regenerates. No reducer enum: design §3.5 defers named decision rules until a consumer exists.
-- [ ] **Step 3: Mutation check** — drop the uncalibrated marker and confirm the marking test fails; restore.
+- [x] **Step 2: Implement** — `och-eval report` gains the block; `och-eval baseline` regenerates. No reducer enum: design §3.5 defers named decision rules until a consumer exists.
+- [x] **Step 3: Mutation check** — drop the uncalibrated marker and confirm the marking test fails; restore.
 
 ---
 
@@ -251,10 +251,10 @@ func TestRegenerateBaselineWritesADeterministicDocument(t *testing.T)
 **Files:**
 - Modify: `docs/architecture/evaluation.md` and its Chinese reading copy, `docs/architecture/evaluation-evidence.md`, `docs/README.md`, root `README.md`
 
-- [ ] **Step 1** — extend the Evaluation contract with the variance and baseline rules, in both languages.
-- [ ] **Step 2** — record commits, verification output, every mutation and its observed result, and any design clause the implementation had to correct.
-- [ ] **Step 3** — update the four GA-blocker lists (`README.md`, `docs/README.md`, `docs/architecture/evaluation.md`, `docs/architecture/evaluation-evidence.md`) **together**. Each names "variance policy" as outstanding; leaving one behind would reproduce exactly the drift this repository's executable documentation rules exist to prevent.
-- [ ] **Step 4: Verify** — `internal/docsguard`, full race suite, three-platform vet, cross-builds.
+- [x] **Step 1** — extend the Evaluation contract with the variance and baseline rules, in both languages.
+- [x] **Step 2** — record commits, verification output, every mutation and its observed result, and any design clause the implementation had to correct.
+- [x] **Step 3** — update the four GA-blocker lists (`README.md`, `docs/README.md`, `docs/architecture/evaluation.md`, `docs/architecture/evaluation-evidence.md`) **together**. Each names "variance policy" as outstanding; leaving one behind would reproduce exactly the drift this repository's executable documentation rules exist to prevent.
+- [x] **Step 4: Verify** — `internal/docsguard`, full race suite, three-platform vet, cross-builds.
 
 ---
 

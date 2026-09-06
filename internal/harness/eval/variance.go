@@ -94,16 +94,20 @@ type CellDistribution struct {
 	LimitsCalibration Calibration
 }
 
-// MayBeReportedAsPass applies the one hard reporting rule of design §3.
+// MayBeReadAsAResult applies the one hard rule of design §3: whether this
+// measurement may be read as a result at all — reported as a pass, or pinned
+// as the baseline a later run is compared against.
 //
-// It reads only the structural half deliberately. A limit breach under an
-// uncalibrated policy is a number compared against a guess, and a guess does
-// not get to turn a pass into a non-pass; a Cell nobody could judge is a
-// different matter and blocks unconditionally. This is not the old merged
-// boolean returning under a new name: it is the reporting rule, it never
-// consults ExceedsDeclaredLimits while the limits are uncalibrated, and both
-// fields stay separately published either way.
-func (d CellDistribution) MayBeReportedAsPass() bool {
+// It weighs the two fields differently on purpose. A Cell nobody could judge
+// blocks unconditionally, because that is arithmetic. A limit breach under an
+// uncalibrated policy is a real measurement compared against a guess, and a
+// guess does not get to turn five passes into a non-pass; once the limits are
+// earned from a cited run, the same breach does bite.
+//
+// This is not the old merged boolean returning under a new name. It is a rule
+// applied to the two fields, not a replacement for them: both stay separately
+// published, with their own reasons, whatever this answers.
+func (d CellDistribution) MayBeReadAsAResult() bool {
 	if !d.EvaluableEnough {
 		return false
 	}
@@ -111,6 +115,23 @@ func (d CellDistribution) MayBeReportedAsPass() bool {
 		return false
 	}
 	return true
+}
+
+// unreadableReason names why MayBeReadAsAResult refused, for a caller that
+// has to explain itself.
+//
+// It joins the two reasons only for a message a human reads, never for a
+// field a program branches on — the whole point of the split is that the two
+// answers stay separately inspectable.
+func (d CellDistribution) unreadableReason() string {
+	var reasons []string
+	if !d.EvaluableEnough && d.NotEvaluableEnoughReason != "" {
+		reasons = append(reasons, d.NotEvaluableEnoughReason)
+	}
+	if d.LimitsCalibration == CalibrationCalibrated && d.ExceedsDeclaredLimits {
+		reasons = append(reasons, d.ExceededLimitsReason)
+	}
+	return strings.Join(reasons, "; ")
 }
 
 // ComputeCellDistribution measures one Cell's repetitions against a policy.
@@ -124,6 +145,10 @@ func ComputeCellDistribution(repetitions []CellRepetition, policy VariancePolicy
 	}
 	if err := policy.Validate(); err != nil {
 		return CellDistribution{}, fmt.Errorf("eval: variance: %w", err)
+	}
+
+	if err := requireOneCell(repetitions); err != nil {
+		return CellDistribution{}, err
 	}
 
 	ordered := append([]CellRepetition(nil), repetitions...)
@@ -334,4 +359,37 @@ func hasVerdictField(distribution CellDistribution) bool {
 		}
 	}
 	return false
+}
+
+// requireOneCell refuses a set of repetitions that are not repetitions of one
+// thing.
+//
+// Repetitions are comparable only because every identity input is frozen and
+// digested. Two Attempts differing in Scenario, Subject, or Executor are
+// measurements of different things, and a spread computed across them would
+// be a number with no meaning. Duplicate repetition indexes are refused for a
+// smaller but related reason: the published sequence is ordered by index, so
+// two Attempts claiming one position make it unreproducible.
+func requireOneCell(repetitions []CellRepetition) error {
+	first := repetitions[0].Attempt
+	seen := make(map[int]struct{}, len(repetitions))
+	for _, repetition := range repetitions {
+		attempt := repetition.Attempt
+		switch {
+		case attempt.ScenarioDigest != first.ScenarioDigest:
+			return fmt.Errorf("%w: repetitions disagree on scenarioDigest (%q and %q); they are not repetitions of one Cell",
+				errInvalidDocument, first.ScenarioDigest, attempt.ScenarioDigest)
+		case attempt.SubjectDigest != first.SubjectDigest:
+			return fmt.Errorf("%w: repetitions disagree on subjectDigest (%q and %q); they are not repetitions of one Cell",
+				errInvalidDocument, first.SubjectDigest, attempt.SubjectDigest)
+		case attempt.ExecutorDigest != first.ExecutorDigest:
+			return fmt.Errorf("%w: repetitions disagree on executorDigest (%q and %q); they are not repetitions of one Cell",
+				errInvalidDocument, first.ExecutorDigest, attempt.ExecutorDigest)
+		}
+		if _, duplicate := seen[attempt.RepetitionIndex]; duplicate {
+			return fmt.Errorf("%w: two repetitions claim index %d", errInvalidDocument, attempt.RepetitionIndex)
+		}
+		seen[attempt.RepetitionIndex] = struct{}{}
+	}
+	return nil
 }

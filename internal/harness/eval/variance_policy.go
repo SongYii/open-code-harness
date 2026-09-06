@@ -162,3 +162,25 @@ func requireBoundedFraction(field string, value float64) error {
 	}
 	return nil
 }
+
+// VerifyVariancePolicyBinding checks that a policy document is the one an
+// artifact says it was measured under.
+//
+// An absent binding is refused rather than treated as "no policy applied". A
+// Score naming a policy it cannot be matched to is not evidence of anything,
+// and silently falling back would turn an untrustworthy Cell into an
+// unqualified one — which is the reading this whole mechanism exists to
+// prevent.
+func VerifyVariancePolicyBinding(policy VariancePolicy, bound Digest) error {
+	if bound == "" {
+		return fmt.Errorf("%w: a variance policy binding is required; it cannot be assumed absent", errInvalidDocument)
+	}
+	actual, err := VariancePolicyDigest(policy)
+	if err != nil {
+		return err
+	}
+	if actual != bound {
+		return fmt.Errorf("%w: variance policy digest %q does not match the bound %q", errInvalidDocument, actual, bound)
+	}
+	return nil
+}

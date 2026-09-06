@@ -566,6 +566,122 @@ non-nil error is what makes "before any credential is read" real.
 duplicating the rule. A live run always writes an independent artifact root
 and this repository never uploads evidence anywhere automatically.
 
+## Variance and baselines
+
+Implemented in `internal/harness/eval` (`variance_policy.go`, `variance.go`,
+`baseline.go`, `variance_pairing.go`, `variance_grouping.go`) and published
+by `cmd/och-eval` (`variance_report.go`, `baseline_cmd.go`). The accepted
+contract is the
+[variance and baseline policy design](../superpowers/specs/2026-09-04-evaluation-variance-policy-design.md).
+
+**This mechanism is dormant.** Every checked-in EvalSet declares
+`repetitionCount: 1`, and an EvalSet that references a variance policy while
+declaring one repetition is refused at load time. Nothing in this repository
+reaches this code today, and no configuration was invented so that something
+would. It is a tested library whose first configuration has not arrived; the
+first one that should reference a variance policy is the first live quality
+EvalSet.
+
+### What a Cell publishes
+
+A variance signal is computed over one Cell — the Scenario × Subject ×
+Executor triple — across that Cell's repetitions **within one run**. Grouping
+keys on the frozen identity digests rather than on document ids, so a renamed
+but identical document does not split a group and an edited but same-named
+one does not silently join one. Attempts that disagree on any identity digest
+are a hard error, never a merge.
+
+Per Cell, the report block carries both denominators (all terminal Attempts,
+and the evaluable ones), the count of each verdict, every numeric score in
+repetition-index order, the numeric spread as a **range**, and the verdict
+stability as the modal share of evaluable repetitions.
+
+There is no `cellVerdict` field and no reduction of repetitions into a single
+score. A consumer that wants a yes/no decides its own rule and says so. A
+named **decision rule** may later publish an answer *beside* the distribution;
+it may never publish one *instead of* it. None is built, because no lane yet
+asks whether a Cell passed, and `mean`/`median` are rejected outright for
+erasing the difference between 5/5 and 4/5.
+
+### Two reliability fields, with different powers
+
+Reliability is two fields rather than one boolean, because a consumer
+branches on a boolean and never reads the reason string beside it.
+
+| Field | What it is | What it can do |
+| --- | --- | --- |
+| `evaluableEnough` | A structural fact: arithmetic on counts, certain without calibration. False when evaluable repetitions fall below the policy's declared minimum, or when nothing was judgeable at all. | Hard rule. A Cell that fails it may never be reported as a pass, in any lane, at any maturity level, and may never be pinned as a baseline or used as a paired arm. |
+| `exceedsDeclaredLimits` | A threshold judgement: spread over the declared maximum, or stability under the declared minimum. Carries the policy's `calibration` state with it. | Advisory while the limits are uncalibrated. It is published either way, and it may not rewrite a Cell from a pass into a non-pass until the limits cite the run that produced them. |
+
+No framework in the comparison set — inspect_ai, terminal-bench, evals,
+vitest-evals, Maka — has a gate of the second kind. That is a fact about the
+threshold half; the structural half has ordinary analogues (insufficient `n`,
+an inconclusive A/B test, inspect_ai returning `NaN` for an empty aggregate).
+Where this contract is deliberately stricter than inspect_ai is in refusing
+to report a spread from a single sample at all, rather than returning `0`
+from it — perfect precision claimed where nothing was measured.
+
+`MayBeReadAsAResult` is the one rule both consumers share: it refuses a Cell
+that is not `evaluableEnough` unconditionally, and refuses a limit breach only
+once the limits are calibrated. Under an uncalibrated policy, a wide arm is
+therefore **disclosed rather than discarded** — the baseline records it along
+with its own spread, and the paired comparison returns the delta marked
+`withinNoise`, which is the honest statement that this run cannot distinguish
+the arms.
+
+### Derived reliability readings
+
+At two or more evaluable repetitions the block also publishes the raw pass
+count against the evaluable denominator, whether at least one repetition
+passed, and whether all of them did. These need no calibrated threshold at
+all, which makes them the part of this block a reader can trust today.
+
+They are absent below two evaluable repetitions on purpose: with one
+survivor, "all passed" and "at least one passed" are the same sentence.
+
+A per-Cell "at least one of k passed" is `at_least(1)`. It is **not**
+`pass@k`, which is Chen et al.'s unbiased dataset-level estimator, and the
+published field names may not borrow that name — a test enforces this,
+because the first public comparison would otherwise be dishonest.
+
+### Limits live in a frozen document
+
+Both limits and the evaluable minimum live in an `och.eval.variance-policy`
+document, following the `och.eval.judge-config` precedent: digestible,
+secret-free, referenced by an EvalSet, and bound into the run's evidence, so
+a report's own judgement is reproducible offline from the artifacts rather
+than from whatever the report generator was compiled with.
+
+**No defaults are supplied.** A policy must declare its limits, its
+`calibration` state, and a minimum of at least two evaluable repetitions. No
+run against a live model has ever happened in this repository, so a shipped
+default would be a guess wearing the authority of a specification. An
+uncalibrated policy is marked on **every Cell it governs**, not once at the
+top of a document a reader may scroll past.
+
+### Two baselines, and what may gate
+
+The within-run paired arm and the pinned `och.eval.baseline` document are
+both required; they answer different questions and fail differently. A
+baseline matches only a Cell whose identity digests match exactly — a
+mismatch is reported, never treated as absent or passing, because the usual
+cause is that the Scenario or Subject was edited. Baselines are regenerable
+by an explicit command, record the Attempt ids they came from, and are never
+written back by the lane that reads them. Staleness is disclosed and the
+comparison still shown.
+
+Ordinary pull-request CI gates on deterministic verifiers only. **No variance
+signal ever changes an exit code**, and a test asserts the exit code is
+identical with and without a policy that no Cell could satisfy.
+
+The deterministic lane takes no variance policy. A fixture lane's run-to-run
+difference is a determinism defect rather than noise, and the useful check
+there is Bazel's `--runs_per_test` shape — run it twice, the outcomes must
+match — which needs none of this machinery. Spread could not even serve as
+that check's signal: `NumericScore` is assigned only on judge paths, so on a
+fixture lane the spread is `0` by construction and a rule reading "spread
+must be exactly 0" would pass unconditionally.
+
 ## Platform support
 
 | Platform | `in_process` | `acp_subprocess` |
@@ -589,5 +705,16 @@ satisfied by an earlier refusal than the one they named, and so proved
 nothing about the defense they were written for; both are corrected and now
 assert the refusal reason. Also outstanding: provider breadth beyond
 the one OpenAI-compatible adapter this repository ships, and an accepted
-variance policy for live/quality signals. MCP is a future suite this runner can host, never a runner
+variance policy for live/quality signals.
+
+The variance blocker changed shape on 2026-09-05 without closing, and the
+distinction matters. The **mechanism** is now designed, implemented, and
+verified — see [Variance and baselines](#variance-and-baselines) above. The
+**policy** is not: no calibrated limits exist, because calibrating them
+requires the live run that the first blocker in this list says has never
+happened, and no checked-in EvalSet reaches the code at all. A repository
+that counted an implemented mechanism as an accepted policy would be making
+exactly the claim this contract's own no-defaults rule exists to prevent.
+
+MCP is a future suite this runner can host, never a runner
 prerequisite — its absence does not block anything documented here.

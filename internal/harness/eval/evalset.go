@@ -202,6 +202,11 @@ type EvalSet struct {
 	VerifierConfigDigest Digest `json:"verifierConfigDigest,omitempty"`
 	JudgeConfigDigest    Digest `json:"judgeConfigDigest,omitempty"`
 
+	// VariancePolicyDigest binds this set to the frozen policy its Cells are
+	// measured against. Declaring one requires more than one repetition; see
+	// Validate.
+	VariancePolicyDigest Digest `json:"variancePolicyDigest,omitempty"`
+
 	Limits       EvalSetLimits `json:"limits"`
 	ArtifactRoot string        `json:"artifactRoot"`
 
@@ -296,6 +301,21 @@ func (set EvalSet) Validate() error {
 	}
 	if set.JudgeConfigDigest != "" && !digestStringPattern.MatchString(string(set.JudgeConfigDigest)) {
 		return fmt.Errorf("%w: judgeConfigDigest must be sha256:<64 lowercase hex>", errInvalidDocument)
+	}
+	if set.VariancePolicyDigest != "" {
+		if !digestStringPattern.MatchString(string(set.VariancePolicyDigest)) {
+			return fmt.Errorf("%w: variancePolicyDigest must be sha256:<64 lowercase hex>", errInvalidDocument)
+		}
+		// A variance signal measured from one sample is not a measurement.
+		// A set declaring a policy while running each Cell once would publish
+		// spread=0 and stability=1 everywhere — perfect agreement, measured
+		// never — so the refusal lands here, before any Attempt root exists,
+		// rather than in a report where the misleading numbers already do.
+		if set.RepetitionCount < 2 {
+			return fmt.Errorf(
+				"%w: a set declaring variancePolicyDigest needs repetitionCount of at least 2; a spread cannot be measured from one repetition",
+				errInvalidDocument)
+		}
 	}
 	// Lane decides whether a judge configuration is required or forbidden.
 	// A fixture set naming one would be claiming a judge identity nothing

@@ -59,6 +59,19 @@ repository uses throughout.
 | `efd8ce1` | Context suite 8 | Overflow recovery Scenario |
 | `263f5ae` | Context suite 9 | Mid-turn criterion correction; pruning Scenario |
 | `dbb385f` | Context suite 10 | Usage-anchor Scenario and criterion correction |
+| `edcbab5` | Variance research | Repetition and variance in evaluation frameworks (PR #178) |
+| `bfb3399` | Variance research | Answers to the gate's four questions, with three amendments |
+| `25ca24a` | Variance design | Accept the variance policy design and plan its implementation (PR #173) |
+| `dd1d7c5` | Variance design | Split the reliability gate, defer reducers, say the mechanism ships dormant |
+| `0e972aa` | Variance 1 | Frozen `och.eval.variance-policy` document (PR #174) |
+| `303dfec` | Variance 2/3 | Cell distribution, spread, stability, and indeterminate handling (PR #175) |
+| `18fa46b` | Variance 2 (amended) | Split the reliability gate into a structural fact and a threshold judgement |
+| `bd7fb2c` | Variance 4 | Fail-closed rules (PR #177) |
+| `6c2d530` | Variance 5 | Pinned, regenerable `och.eval.baseline` document |
+| `1e9bd96` | Variance 6 | Paired-arm delta computed between distributions |
+| `4287c7b` | Variance 6b | Attempt/Score grouping into Cells by identity digest |
+| `a04371f` | Variance 4–6 (amended) | Disclosure replaces refusal where the limit is only a guess |
+| `895ee1d` | Variance 7 | Report distribution block, baseline command, derived reliability readings |
 
 ## Post-merge review findings closed
 
@@ -230,6 +243,87 @@ against a file with no such job at all and proved nothing about the intended
 mutation. They were redone against a file-copy baseline, with the unmutated
 baseline confirmed green first. The results above are from the redone runs.
 
+## Variance: the design was written before the research
+
+This is recorded because it is the same class of failure as the scheduled
+lane above — a stated rule and the actual practice diverging — and hiding it
+would make this ledger the sort of document the rules exist to prevent.
+
+The charter gained §12.1, "research first, do not reinvent the wheel", on
+2026-09-03, from this same sequence of work. The variance design was accepted
+on 2026-09-04 and seven implementation tasks were built without that rule
+being applied to the variance mechanism itself, while four dedicated
+evaluation frameworks sat unread in `.reference/`. The
+[repetition and variance gate](../research/architecture-gates/2026-09-05-eval-repetition-and-variance.md)
+is that research, written late and saying so, and the
+[answers to its four questions](../research/architecture-gates/2026-09-05-eval-variance-question-answers.md)
+are what the design was then amended against.
+
+Nothing the research found made the implemented arithmetic wrong. What it
+changed was shape, vocabulary, and one claim about who consumes this.
+
+### Contracts the implementation and the late research corrected
+
+- **One `Trustworthy` bool became two fields.** The design specified a single
+  boolean with a reason string. Two independent probes killed it. A Cell with
+  one evaluable repetition of five reported `trustworthy = true` with perfect
+  stability, because a lone survivor is trivially unanimous — the
+  "perfect stability, measured never" hazard arriving through run time rather
+  than through configuration, where the policy document's own two-repetition
+  floor cannot see it. And a Cell with nothing evaluable reported "stability
+  0.0000 is below 0.8000", telling an operator it was judged inconsistently
+  when it was never judged at all. Both are now separate fields with separate
+  reasons, because a consumer branches on a boolean and does not read the
+  string beside it.
+- **An uncalibrated limit lost the power to change a result.** The design let
+  any declared-limit breach make a Cell unreadable. Since the design also
+  forbids shipping default limits — no live run has ever happened here —
+  that gave a guessed number the authority to rewrite five passes into a
+  non-pass, and to decide what a baseline was allowed to record. The rule is
+  now split by warrant: the structural half blocks unconditionally, the
+  threshold half only once the limits cite the run that produced them.
+  Applying it changed real behaviour at both downstream call sites, and the
+  change is the point rather than a side effect.
+- **"Never collapse" became "publish the distribution, defer the decision
+  rule".** inspect_ai expresses this project's mandatory behaviour as one
+  named reducer among nine (`collect`), so the shared value is that the
+  combination rule is explicit, not that no named answer may exist. The
+  design now records the long-term shape and deliberately builds none of it,
+  because no lane asks whether a Cell passed and the charter forbids
+  pre-building an extension point with no consumer. The vocabulary is
+  deliberate: a *decision rule* sits on top of a distribution it may never
+  delete, where inspect_ai's *reducer* replaces the per-epoch view.
+- **Design open question 3 resolved as "no", on two grounds.** The
+  deterministic lane takes no variance policy, following the design's own
+  reasoning that folding a determinism check in would blur the distinction it
+  rests on. Implementation then found a second, independent reason: a
+  proposal to run the fixture lane at `N = 2` with "spread must be exactly 0"
+  is *vacuous*. `NumericScore` is assigned only at `judge.go:233`,
+  `judge.go:240`, and `judge_attempt.go:159` — all judge paths — so the
+  deterministic scorer never produces one, a fixture lane's `numericScores`
+  is empty, `spread` is `0` by construction, and the rule would pass
+  unconditionally while proving nothing.
+- **A floating-point comparison needed a documented tolerance.** A spread
+  between the perfectly ordinary scores 0.6 and 0.8 computes as
+  0.20000000000000007, which is strictly greater than a declared limit of
+  0.20. Without `limitEpsilon` every policy would have been one notch
+  stricter than it reads.
+
+### What this work does not close, and did not pretend to
+
+No checked-in EvalSet reaches any of this code. All sixteen declare
+`repetitionCount: 1`, and the fail-closed rule refuses a set that references
+a policy at one repetition, so no configuration exists that could exercise
+the mechanism — a fact recorded in the design's own baseline section and then
+built past for seven tasks before the late research named it.
+
+No configuration was invented to fix that. The mutation tests prove the
+computation is correct; calling them "this round's consumer" was considered
+and rejected as a relabelling, because a mutation test is not the real
+consumer the charter means. The mechanism ships **dormant**, the design says
+so in those words, and the first configuration that should reference a
+variance policy is the first live quality EvalSet.
+
 ## Mechanism → test → mutation result
 
 Every row below reflects a mutation check actually performed and observed in
@@ -250,6 +344,11 @@ that a test exists.
 | Consent-before-credential ordering (`EvaluateJudgeAttempt`) | `TestEvaluateJudgeAttemptChecksConsentBeforeCaller` | The test asserts the `JudgeCaller` — the only holder of a credential — is never invoked; moving the `RequireLiveConsent` call after the caller makes it fail (Task 17 completion). |
 | Production HTTPS-only judge endpoint (`newOpenAICompatibleJudgeCaller`) | `TestJudgeCallerRefusesPlaintextEndpointInProduction` | The same constructor that a sibling test drives against an `httptest` loopback server refuses that exact endpoint under production's own `(nil, false)` arguments; passing `true` in the production path makes the test fail (Task 17 completion). |
 | `internal/client/acp` isolation from `internal/harness/eval` (`TestClientPackagesAreIsolatedFromInternalHarness`) | Architecture guard suite | The ACP subprocess executor was built against an independently owned `acp_wire.go` specifically because importing `internal/client/acp` fails this guard — verified by attempting the import and observing the guard fail before building the independent copy instead (Task 12). |
+| Uncalibrated limits may not block a result (`CellDistribution.MayBeReadAsAResult`) | `TestAnUncalibratedLimitBreachDoesNotBlockReportingACellAsAPass` | Making the rule consult `ExceedsDeclaredLimits` regardless of calibration makes the test fail — "an uncalibrated limit rewrote a Cell of five passes into a non-pass" — caught, restored (Variance 2 amended). |
+| The threshold half stays silent for an unmeasured Cell (`judgeDeclaredLimits`) | `TestNoEvaluableRepetitionsIsNamedAsSuchNotAsInstability` | Letting it speak for a Cell with nothing evaluable makes the test fail — "a Cell with nothing evaluable must not be reported as unstable" — caught, restored (Variance 2 amended). |
+| Disclosure over refusal in the baseline and the paired arm (`MayBeReadAsAResult` at both call sites) | `TestBaselineRecordsAWideCellUnderAnUncalibratedLimit`, `TestAWideArmUnderAnUncalibratedLimitIsDisclosedRatherThanRefused` | Making an uncalibrated breach unreadable again makes both tests fail — caught, restored (Variance 4–6 amended). |
+| Derived readings need two evaluable repetitions (`reliabilityOf`) | `TestDerivedReadingsAreAbsentBelowTwoEvaluableRepetitions` | Lowering the floor to one makes the test fail, reporting `AtLeastOnePassed:true AllPassed:true` from a single sample — caught, restored (Variance 7). |
+| A per-Cell count may not borrow a dataset-level estimator's name (`reportCellReliability` JSON tags) | `TestDerivedReadingsAreNotNamedPassAtK` | Renaming `atLeastOnePassed` to `passAtK` makes the test fail — caught, restored (Variance 7). |
 
 ## Real findings this milestone's own work surfaced (not assumed from reading source alone)
 
@@ -397,6 +496,39 @@ Process-leak check: `ps aux | grep -iE "acpchild|/och "` after every full
 test run in this session found nothing — no ACP subprocess or `acpchild`
 test double was ever left running.
 
+### Variance slice, 2026-09-05
+
+Run against the variance stack's own working tree, same Go 1.26.6 host.
+
+```text
+$ go build ./...
+(clean)
+
+$ go vet ./...
+(clean)
+
+$ GOOS=windows GOARCH=amd64 go build ./...
+(clean)
+
+$ GOOS=darwin GOARCH=arm64 go build ./...
+(clean)
+
+$ go mod tidy -diff
+(clean)
+
+$ go test -race ./internal/harness/eval/ ./cmd/och-eval/ ./internal/docsguard/
+ok  	github.com/SongYii/open-code-harness/internal/harness/eval	207.567s
+ok  	github.com/SongYii/open-code-harness/cmd/och-eval	43.521s
+ok  	github.com/SongYii/open-code-harness/internal/docsguard	1.312s
+
+$ go test ./...
+(all packages ok)
+```
+
+CI on the whole five-PR stack (#178, #173, #174, #175, #177) reported
+`cross-build (darwin)`, `cross-build (windows)`, `determinism`, `go`, and
+`vulncheck` all passing.
+
 ## Judge meta-eval: two of the original five fixtures proved nothing
 
 Found on 2026-09-04 while broadening the meta-eval suite, and recorded here
@@ -462,3 +594,11 @@ meta-evaluation breadth beyond the eight adversarial fixtures recorded above,
 provider breadth beyond one OpenAI-compatible adapter, and an accepted
 variance policy for live/quality signals are all explicitly outstanding.
 MCP is a future suite this runner can host, never a runner prerequisite.
+
+The variance blocker changed shape on 2026-09-05 without closing. The
+mechanism is implemented and verified and this ledger records its evidence;
+the policy is not accepted, because no calibrated limits exist and producing
+them requires the live run the first blocker in this list says has never
+happened. The mechanism is also dormant — no checked-in EvalSet reaches it.
+An implemented mechanism counted as an accepted policy would be exactly the
+claim the contract's own no-defaults rule exists to prevent.
