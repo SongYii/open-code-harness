@@ -27,6 +27,11 @@ func TestReadWriteJail(t *testing.T) {
 	porttest.FileSystemReadWriteJail(t, files, root)
 }
 
+func TestLargeGuardedWrites(t *testing.T) {
+	files, root := newTestFS(t)
+	porttest.FileSystemLargeGuardedWrites(t, files, root)
+}
+
 func TestResolveSymlinkEscapeDoesNotReadOrWrite(t *testing.T) {
 	files, root := newTestFS(t)
 	outsideDir := t.TempDir()

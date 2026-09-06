@@ -198,3 +198,65 @@ func FileSystemReadWriteJail(t *testing.T, files tools.FileSystem, workspace str
 		t.Fatalf("missing Read error = %v", err)
 	}
 }
+
+// FileSystemLargeGuardedWrites pins Write's unbounded payload contract above
+// the separate limit that applies only to Edit. Each returned version must
+// both describe the exact published bytes and authorize the next mutation.
+func FileSystemLargeGuardedWrites(t *testing.T, files tools.FileSystem, workspace string) {
+	t.Helper()
+	ctx := context.Background()
+	payloadSize := tools.MaxEditFileBytes + 2
+
+	t.Run("guarded create", func(t *testing.T) {
+		abs, err := files.Resolve(ctx, workspace, "large-create.txt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := bytes.Repeat([]byte("c"), payloadSize)
+		created, err := files.Write(ctx, abs, want, tools.MutationGuard{Kind: tools.GuardCreateIfAbsent})
+		if err != nil || created.Operation != tools.MutationCreate || created.Version == "" {
+			t.Fatalf("large guarded create = %+v, %v", created, err)
+		}
+		assertExactFileRead(t, ctx, files, abs, want, created.Version)
+
+		if _, err := files.Write(ctx, abs, []byte("create version accepted"), tools.MutationGuard{
+			Kind: tools.GuardReplaceIfVersion, Version: created.Version,
+		}); err != nil {
+			t.Fatalf("replacement guarded by large create version = %v", err)
+		}
+	})
+
+	t.Run("guarded replace", func(t *testing.T) {
+		abs, err := files.Resolve(ctx, workspace, "large-replace.txt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		seed, err := files.Write(ctx, abs, []byte("seed"), tools.MutationGuard{Kind: tools.GuardCreateIfAbsent})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := bytes.Repeat([]byte("r"), payloadSize)
+		replaced, err := files.Write(ctx, abs, want, tools.MutationGuard{
+			Kind: tools.GuardReplaceIfVersion, Version: seed.Version,
+		})
+		if err != nil || replaced.Operation != tools.MutationUpdate || replaced.Version == "" {
+			t.Fatalf("large guarded replace = %+v, %v", replaced, err)
+		}
+		assertExactFileRead(t, ctx, files, abs, want, replaced.Version)
+
+		if _, err := files.Write(ctx, abs, []byte("replace version accepted"), tools.MutationGuard{
+			Kind: tools.GuardReplaceIfVersion, Version: replaced.Version,
+		}); err != nil {
+			t.Fatalf("replacement guarded by large replace version = %v", err)
+		}
+	})
+}
+
+func assertExactFileRead(t *testing.T, ctx context.Context, files tools.FileSystem, abs string, want []byte, version tools.FileVersion) {
+	t.Helper()
+	got, err := files.Read(ctx, abs, len(want))
+	if err != nil || got.Truncated || !bytes.Equal(got.Data, want) || got.Version != version {
+		t.Fatalf("Read() = {len:%d truncated:%t version:%q}, err=%v; want len=%d, exact bytes, version=%q",
+			len(got.Data), got.Truncated, got.Version, err, len(want), version)
+	}
+}
