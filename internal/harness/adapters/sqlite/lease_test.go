@@ -195,8 +195,18 @@ func TestExpiredLeaseRefusesAppendUntilReacquired(t *testing.T) {
 	mustAppend(t, store, request)
 }
 
+// TestRenewLeaseExtendsExpiry owns its lease duration rather than inheriting
+// the shared harness's.
+//
+// This test is about the renewal arithmetic, so the number it checks against
+// has to be the number it configured. It previously asserted a hardcoded 31
+// seconds, which silently encoded the production default that tempStoreConfig
+// happened to inherit, and broke the moment the harness stopped running on a
+// wall clock it does not control.
 func TestRenewLeaseExtendsExpiry(t *testing.T) {
-	store := openStore(t, tempStoreConfig(t))
+	config := tempStoreConfig(t)
+	config.LeaseDuration = 30 * time.Second
+	store := openStore(t, config)
 	if err := store.RenewLease(context.Background()); err != nil {
 		t.Fatalf("renew: %v", err)
 	}
@@ -205,8 +215,9 @@ func TestRenewLeaseExtendsExpiry(t *testing.T) {
 		"SELECT lease_expires_at_unix - unixepoch('subsec') FROM runtime_leases WHERE id = 1").Scan(&remaining); err != nil {
 		t.Fatalf("read remaining: %v", err)
 	}
-	if remaining <= 0 || remaining > 31 {
-		t.Fatalf("remaining lease = %f seconds, want within (0, 31]", remaining)
+	upper := config.LeaseDuration.Seconds() + 1
+	if remaining <= 0 || remaining > upper {
+		t.Fatalf("remaining lease = %f seconds, want within (0, %f]", remaining, upper)
 	}
 }
 

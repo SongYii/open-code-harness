@@ -83,3 +83,42 @@ a 100-append database with verification.
 - Long-running soak and corruption fuzzing against the database file.
 - Live `SQLITE_FULL` device-level evidence (classification is unit-proven).
 - Multi-process writer evidence beyond the lease predicate and busy tests.
+
+
+## Update: the conformance harness was on a lease clock it did not control (2026-09-06)
+
+`TestConformance/limits_copies_cancellation_and_corruption` failed once during
+a full parallel `go test -race ./... -count=1`, reporting
+`rejected over-limit request leaked identities: store/writer_fenced`. Issue
+#176 recorded the diagnosis at the time as a heartbeat starved by CPU
+contention. That was wrong in a way worth stating: **there is no heartbeat in
+this package at all.**
+
+`RenewLease` is called from exactly one place, `internal/harness/runtime/heartbeat.go`,
+and no test here runs a Runtime Host. A store opened by `tempStoreConfig`
+therefore held the production default 30-second lease, never renewed it, and
+began refusing its own appends as `writer_fenced` 30 seconds after `Open`. The
+subtest that failed builds several 16 MiB requests and took 32.81 s under a
+full parallel `-race` run. Parallel load did not cause the failure; it made a
+hard wall-clock deadline reachable.
+
+The diagnosis was confirmed by making it deterministic rather than by waiting
+for another flake: setting the harness lease to one second reproduces the same
+subtest failing with the same `writer_fenced` code on demand.
+
+The fix is that `tempStoreConfig` now supplies an explicit one-hour lease.
+An hour is chosen rather than a value tuned to today's slowest test, so a
+later test that grows past some threshold does not quietly reintroduce the
+same failure. Nothing about lease expiry is left untested: `lease_test.go`
+opens its own stores with a one-second lease precisely to watch them expire,
+and `TestRenewLeaseExtendsExpiry` now configures the duration it asserts
+against instead of hardcoding a 31-second bound that silently encoded the
+default it happened to inherit.
+
+`TestTheSharedHarnessNeverRunsOnTheProductionLeaseClock` keeps the rule
+executable, because the failure it prevents is silent and presents as
+flakiness. Two mutations were observed red: restoring the default duration,
+and dropping the override entirely.
+
+Verified with `go test -race ./internal/harness/adapters/sqlite -count=3`
+(199.8 s, ok) and `go test -race ./... -count=1` (390.5 s, all packages ok).
