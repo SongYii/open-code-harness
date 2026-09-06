@@ -37,7 +37,7 @@
 - Produces: `FileVersion`, `GuardKind`, `MutationGuard`, `FileRead`, `MutationOperation`, `MutationResult`, `MaxEditFileBytes`, and seven filesystem error codes.
 - Consumes: existing secret-free `tools.Error` and `tools.IsCode`.
 
-- [ ] **Step 1: Write the failing value tests**
+- [x] **Step 1: Write the failing value tests**
 
 ```go
 func TestMutationGuardValidate(t *testing.T) {
@@ -58,13 +58,13 @@ func TestMutationGuardValidate(t *testing.T) {
 
 Add a second table proving every new code is accepted by `IsCode` and `Error()` contains neither a path nor a version.
 
-- [ ] **Step 2: Prove the tests are red**
+- [x] **Step 2: Prove the tests are red**
 
 Run: `go test ./internal/harness/tools -run 'TestMutationGuard|TestFilesystemErrorCodes' -count=1`
 
 Expected: compile failure because the values and codes do not exist.
 
-- [ ] **Step 3: Implement the exact value contract**
+- [x] **Step 3: Implement the exact value contract**
 
 ```go
 type FileVersion string
@@ -86,7 +86,7 @@ type MutationResult struct { Version FileVersion; Operation MutationOperation }
 
 `Validate` accepts only the four combinations pinned by the test. Add wire values `fs_not_observed`, `fs_stale_version`, `fs_edit_not_found`, `fs_ambiguous_edit`, `fs_not_regular_file`, `fs_not_text`, and `fs_too_large` to `validErrorCode`.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 Run: `go test ./internal/harness/tools -count=1`
 
