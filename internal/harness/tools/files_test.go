@@ -40,23 +40,30 @@ func TestMutationGuardValidate(t *testing.T) {
 // text would leak workspace layout and file content digests through a channel
 // whose whole contract is that it carries a stable code and nothing else.
 func TestFilesystemErrorCodes(t *testing.T) {
-	codes := []ErrorCode{
-		CodeFSNotObserved,
-		CodeFSStaleVersion,
-		CodeFSEditNotFound,
-		CodeFSAmbiguousEdit,
-		CodeFSNotRegularFile,
-		CodeFSNotText,
-		CodeFSTooLarge,
+	codes := []struct {
+		code ErrorCode
+		want string
+	}{
+		{CodeFSNotObserved, "fs_not_observed"},
+		{CodeFSNotFound, "fs_not_found"},
+		{CodeFSStaleVersion, "fs_stale_version"},
+		{CodeFSEditNotFound, "fs_edit_not_found"},
+		{CodeFSAmbiguousEdit, "fs_ambiguous_edit"},
+		{CodeFSNotRegularFile, "fs_not_regular_file"},
+		{CodeFSNotText, "fs_not_text"},
+		{CodeFSTooLarge, "fs_too_large"},
 	}
-	for _, code := range codes {
-		err := &Error{Code: code}
-		if !IsCode(err, code) {
-			t.Fatalf("IsCode(%q) = false; the code is not part of the vocabulary", code)
+	for _, test := range codes {
+		err := &Error{Code: test.code}
+		if !IsCode(err, test.code) {
+			t.Fatalf("IsCode(%q) = false; the code is not part of the vocabulary", test.code)
+		}
+		if got := string(test.code); got != test.want {
+			t.Fatalf("wire code = %q, want %q", got, test.want)
 		}
 		message := err.Error()
-		if !strings.Contains(message, string(code)) {
-			t.Fatalf("Error() = %q, want it to name the code %q", message, code)
+		if !strings.Contains(message, string(test.code)) {
+			t.Fatalf("Error() = %q, want it to name the code %q", message, test.code)
 		}
 		for _, leaked := range []string{"/", `\`, "sha256", "v1"} {
 			if strings.Contains(strings.TrimPrefix(message, "tools/"), leaked) {
@@ -74,7 +81,7 @@ func TestFilesystemErrorCodesAreDistinct(t *testing.T) {
 	seen := map[ErrorCode]bool{}
 	for _, code := range []ErrorCode{
 		CodeInvalidSpec, CodeInvalidArgs, CodeScopeDenied, CodeDuplicateName,
-		CodeFSNotObserved, CodeFSStaleVersion, CodeFSEditNotFound, CodeFSAmbiguousEdit,
+		CodeFSNotObserved, CodeFSNotFound, CodeFSStaleVersion, CodeFSEditNotFound, CodeFSAmbiguousEdit,
 		CodeFSNotRegularFile, CodeFSNotText, CodeFSTooLarge,
 	} {
 		if seen[code] {

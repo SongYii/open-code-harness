@@ -760,6 +760,53 @@ func TestApprovalTimeoutContinuesTurn(t *testing.T) {
 	}
 }
 
+func TestFileToolErrorsUseBoundedRecoveryResults(t *testing.T) {
+	tests := []struct {
+		name    string
+		code    tools.ErrorCode
+		message string
+	}{
+		{name: "not observed", code: tools.CodeFSNotObserved, message: "read the file before changing it"},
+		{name: "not found", code: tools.CodeFSNotFound, message: "file does not exist; create it or re-read after it appears"},
+		{name: "stale version", code: tools.CodeFSStaleVersion, message: "file changed since it was read; re-read it and retry"},
+		{name: "literal absent", code: tools.CodeFSEditNotFound, message: "literal was not found"},
+		{name: "literal ambiguous", code: tools.CodeFSAmbiguousEdit, message: "literal appears more than once; include more context or use replace_all"},
+		{name: "not regular", code: tools.CodeFSNotRegularFile, message: "target is not a regular file"},
+		{name: "not text", code: tools.CodeFSNotText, message: "file is not valid UTF-8 text"},
+		{name: "too large", code: tools.CodeFSTooLarge, message: "file exceeds the edit size limit"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			files := &readErrorFS{
+				FileSystem: testkit.NewMemFS("/workspace"),
+				err:        fmt.Errorf("private adapter detail path=/workspace/private.txt version=secret-v9: %w", &tools.Error{Code: test.code}),
+			}
+			model := newSequenceModel(
+				[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "call-read", Name: tools.NameReadFile, Arguments: `{"path":"private.txt"}`}}, {Type: engine.StreamEventCompleted}},
+				[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "continued"}, {Type: engine.StreamEventCompleted}},
+			)
+			service, _ := newToolService(t, model, files, nil, nil, application.DefaultConfig())
+			created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+				SessionID: created.SessionID, RequestID: domain.RunTurnRequestID("request-error-" + test.name), Input: "inspect", Sink: &testkit.RecordingSink{},
+			})
+			if err != nil || result.Text != "continued" {
+				t.Fatalf("RunTurn() = (%#v, %v)", result, err)
+			}
+			failed := lastToolFailed(result.Records)
+			if failed.Code != string(test.code) || failed.Message != test.message {
+				t.Fatalf("failed result = %#v, want code %q and message %q", failed, test.code, test.message)
+			}
+			if strings.Contains(failed.Message, "private.txt") || strings.Contains(failed.Message, "secret-v9") {
+				t.Fatalf("failed result leaked adapter detail: %#v", failed)
+			}
+		})
+	}
+}
+
 func TestModeAllowWritesExecutesWrite(t *testing.T) {
 	fs := testkit.NewMemFS("/workspace")
 	counter := &countingFS{FileSystem: fs}
@@ -815,9 +862,10 @@ func TestWriteFileRefusesToOverwriteAnUnobservedFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{
 		SessionID: created.SessionID, RequestID: "request-overwrite", Input: "inspect", Sink: &testkit.RecordingSink{},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -828,6 +876,16 @@ func TestWriteFileRefusesToOverwriteAnUnobservedFile(t *testing.T) {
 	// it has no memory of.
 	if got := lastToolMessage(model.Calls()[1].Messages).Text; got != application.ToolTextFSNotObserved {
 		t.Fatalf("tool text = %q, want %q", got, application.ToolTextFSNotObserved)
+	}
+	if failed := lastToolFailed(result.Records); failed.Code != string(tools.CodeFSNotObserved) || failed.Message != application.ToolTextFSNotObserved {
+		t.Fatalf("unseen existing write failure = %#v", failed)
+	}
+	public, err := json.Marshal(result.Records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(public), "mem:") {
+		t.Fatalf("unseen existing write leaked an internal file version: %s", public)
 	}
 	read, readErr := fs.Read(context.Background(), "/workspace/out.txt", 64)
 	if readErr != nil {
@@ -1039,6 +1097,40 @@ func TestEditFileRequiresAReadFirst(t *testing.T) {
 	}
 	if read, _ := fs.Read(context.Background(), "/workspace/code.go", 64); string(read.Data) != "alpha\nbeta\n" {
 		t.Fatalf("content = %q; an unobserved edit changed the file", read.Data)
+	}
+}
+
+func TestEditFileAfterMissingReadReturnsNotFoundWithoutAdvancingObservation(t *testing.T) {
+	mem := testkit.NewMemFS("/workspace")
+	files := &countingFS{FileSystem: mem}
+	model := newSequenceModel(
+		[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "read-missing", Name: tools.NameReadFile, Arguments: `{"path":"missing.txt"}`}}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "edit-missing", Name: tools.NameEditFile, Arguments: `{"path":"missing.txt","old_string":"old","new_string":"new"}`}}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "edit-missing-again", Name: tools.NameEditFile, Arguments: `{"path":"missing.txt","old_string":"old","new_string":"new"}`}}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "continued"}, {Type: engine.StreamEventCompleted}},
+	)
+	config := application.DefaultConfig()
+	config.PolicyMode = policy.ModeAllowWrites
+	service, _ := newToolService(t, model, files, nil, nil, config)
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-edit-missing", Input: "edit", Sink: &testkit.RecordingSink{}})
+	if err != nil || result.Text != "continued" {
+		t.Fatalf("RunTurn() = (%#v, %v)", result, err)
+	}
+	failed := toolFailures(result.Records)
+	if len(failed) < 2 {
+		t.Fatalf("tool failures = %#v, want missing read and two refused edits", failed)
+	}
+	for _, failure := range failed[len(failed)-2:] {
+		if failure.Code != string(tools.CodeFSNotFound) || failure.Message != application.ToolTextFSNotFound {
+			t.Fatalf("observed-absent edit failure = %#v", failure)
+		}
+	}
+	if files.Writes() != 0 {
+		t.Fatalf("observed-absent edits called FileSystem.Edit %d times", files.Writes())
 	}
 }
 
@@ -1567,6 +1659,15 @@ func (stream *waitCancelStream) Next(ctx context.Context) (engine.StreamEvent, e
 
 func (*waitCancelStream) Close() error { return nil }
 
+type readErrorFS struct {
+	tools.FileSystem
+	err error
+}
+
+func (fs *readErrorFS) Read(context.Context, string, int) (tools.FileRead, error) {
+	return tools.FileRead{}, fs.err
+}
+
 type countingFS struct {
 	tools.FileSystem
 	mu       sync.Mutex
@@ -1720,6 +1821,16 @@ func lastToolFailed(records []domain.RecordedEvent) domain.ToolCallFailed {
 		}
 	}
 	return domain.ToolCallFailed{}
+}
+
+func toolFailures(records []domain.RecordedEvent) []domain.ToolCallFailed {
+	var failures []domain.ToolCallFailed
+	for _, record := range records {
+		if failed, ok := record.Event.(domain.ToolCallFailed); ok {
+			failures = append(failures, failed)
+		}
+	}
+	return failures
 }
 
 func jsonMarshalProjection(messages []domain.ModelPromptMessage, toolSchemas []domain.ToolSchema) ([]byte, error) {
