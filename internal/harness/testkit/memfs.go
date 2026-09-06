@@ -216,18 +216,71 @@ func memEdit(current, oldString, newString string, replaceAll bool) (string, err
 	if oldString == "" {
 		return "", &tools.Error{Code: tools.CodeInvalidArgs}
 	}
-	count := strings.Count(current, oldString)
+	restoreCRLF := memCRLFIsDominant(current)
+	normalized := strings.ReplaceAll(current, "\r\n", "\n")
+	wanted := strings.ReplaceAll(oldString, "\r\n", "\n")
+	replacement := strings.ReplaceAll(newString, "\r\n", "\n")
+	count := strings.Count(normalized, wanted)
 	switch {
 	case count == 0:
 		return "", &tools.Error{Code: tools.CodeFSEditNotFound}
 	case count > 1 && !replaceAll:
 		return "", &tools.Error{Code: tools.CodeFSAmbiguousEdit}
 	}
-	limit := 1
+	replacements := 1
 	if replaceAll {
-		limit = -1
+		replacements = count
 	}
-	return strings.Replace(current, oldString, newString, limit), nil
+	if !memEditResultWithinLimit(normalized, wanted, replacement, replacements, restoreCRLF) {
+		return "", &tools.Error{Code: tools.CodeFSTooLarge}
+	}
+	edited := strings.Replace(normalized, wanted, replacement, replacements)
+	if restoreCRLF {
+		edited = strings.ReplaceAll(edited, "\n", "\r\n")
+	}
+	return edited, nil
+}
+
+func memCRLFIsDominant(text string) bool {
+	total := strings.Count(text, "\n")
+	windows := strings.Count(text, "\r\n")
+	return windows > total-windows
+}
+
+func memEditResultWithinLimit(data, old, replacement string, count int, restoreCRLF bool) bool {
+	intermediate, ok := memReplacedSize(len(data), len(old), len(replacement), count, tools.MaxEditFileBytes)
+	if !ok {
+		return false
+	}
+	if !restoreCRLF {
+		return true
+	}
+	newlines, ok := memReplacedSize(
+		strings.Count(data, "\n"),
+		strings.Count(old, "\n"),
+		strings.Count(replacement, "\n"),
+		count,
+		tools.MaxEditFileBytes,
+	)
+	return ok && newlines <= tools.MaxEditFileBytes-intermediate
+}
+
+func memReplacedSize(base, old, replacement, count, limit int) (int, bool) {
+	if base < 0 || old < 0 || replacement < 0 || count < 0 || limit < 0 {
+		return 0, false
+	}
+	if replacement <= old {
+		shrink := old - replacement
+		if shrink > 0 && count > base/shrink {
+			return 0, false
+		}
+		result := base - count*shrink
+		return result, result <= limit
+	}
+	if base > limit || count > (limit-base)/(replacement-old) {
+		return 0, false
+	}
+	return base + count*(replacement-old), true
 }
 
 // trimPartialRune drops an incomplete trailing rune left by a clip, so a cut

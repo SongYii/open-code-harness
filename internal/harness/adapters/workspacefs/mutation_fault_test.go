@@ -11,11 +11,9 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
 )
 
-// This file is in the package rather than beside it, because it drives the
-// private pre-publication hook. The hook exists only to make "a failure before
-// publication is a non-event" testable: without it the window between a synced
-// staged file and the rename is unreachable from outside, and the claim would
-// rest on reading the code rather than on running it.
+// This file is in the package rather than beside it because it replaces the
+// private publisher with production-shaped failure and interference decorators.
+// That keeps the tested commit point identical to production's link/rename path.
 
 func newFaultFS(t *testing.T) (*FileSystem, string) {
 	t.Helper()
@@ -27,7 +25,13 @@ func newFaultFS(t *testing.T) (*FileSystem, string) {
 	return files, root
 }
 
-var errInjected = errors.New("injected pre-publication failure")
+var errPublication = errors.New("injected pre-publication failure")
+
+type failingPublisher struct{}
+
+func (failingPublisher) Publish(staged, destination string, create bool) error {
+	return errPublication
+}
 
 // TestMutationFaultLeavesAnExistingDestinationByteIdentical.
 func TestMutationFaultLeavesAnExistingDestinationByteIdentical(t *testing.T) {
@@ -44,11 +48,11 @@ func TestMutationFaultLeavesAnExistingDestinationByteIdentical(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	files.hooks.beforePublish = func() error { return errInjected }
+	files.publisher = failingPublisher{}
 	_, err = files.Write(ctx, target, []byte("replacement"), tools.MutationGuard{
 		Kind: tools.GuardReplaceIfVersion, Version: read.Version,
 	})
-	if !errors.Is(err, errInjected) {
+	if !errors.Is(err, errPublication) {
 		t.Fatalf("Write = %v, want the injected failure", err)
 	}
 
@@ -70,10 +74,10 @@ func TestMutationFaultLeavesACreateDestinationAbsent(t *testing.T) {
 	ctx := context.Background()
 	target := filepath.Join(root, "new.txt")
 
-	files.hooks.beforePublish = func() error { return errInjected }
+	files.publisher = failingPublisher{}
 	if _, err := files.Write(ctx, target, []byte("never"), tools.MutationGuard{
 		Kind: tools.GuardCreateIfAbsent,
-	}); !errors.Is(err, errInjected) {
+	}); !errors.Is(err, errPublication) {
 		t.Fatalf("Write = %v, want the injected failure", err)
 	}
 
@@ -97,10 +101,10 @@ func TestMutationFaultDuringAnEditLeavesTheFileIntact(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	files.hooks.beforePublish = func() error { return errInjected }
+	files.publisher = failingPublisher{}
 	if _, err := files.Edit(ctx, target, []byte("beta"), []byte("BETA"), false, tools.MutationGuard{
 		Kind: tools.GuardReplaceIfVersion, Version: read.Version,
-	}); !errors.Is(err, errInjected) {
+	}); !errors.Is(err, errPublication) {
 		t.Fatalf("Edit = %v, want the injected failure", err)
 	}
 
@@ -114,12 +118,10 @@ func TestMutationFaultDuringAnEditLeavesTheFileIntact(t *testing.T) {
 	assertNoResidue(t, root, "code.go")
 }
 
-// TestTheHookIsNilInProduction. The seam must not be reachable from anything
-// but a test in this package.
-func TestTheHookIsNilInProduction(t *testing.T) {
+func TestDefaultPublisherIsProductionPublisher(t *testing.T) {
 	files, _ := newFaultFS(t)
-	if files.hooks.beforePublish != nil {
-		t.Fatal("a freshly constructed FileSystem carries a publication hook")
+	if _, ok := files.publisher.(osPublisher); !ok {
+		t.Fatalf("default publisher = %T, want osPublisher", files.publisher)
 	}
 }
 
