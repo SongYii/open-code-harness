@@ -99,7 +99,9 @@ make every guard built on them a false promise.
 It returns at most `limit` bytes, sets `Truncated` when there was more, drops
 an incomplete trailing rune left by the clip, and then refuses content that is
 not valid UTF-8 with `fs_not_text`. The rune trim comes first so a cut in the
-middle of a character is not blamed on the file.
+middle of a character is not blamed on the file. Directories and special files
+are both refused as `fs_not_regular_file` before opening, so FIFO reads do not
+block.
 
 ## Mutating
 
@@ -163,12 +165,14 @@ of what each session has read. Three states, and none may be collapsed:
 | State | `write_file` guard | `edit_file` guard |
 | --- | --- | --- |
 | unseen (no entry) | `create_if_absent` — fails closed | refused, `fs_not_observed` |
-| observed absent | `create_if_absent` | refused, `fs_edit_not_found` |
+| observed absent | `create_if_absent` | refused, `fs_not_found` |
 | observed present | `replace_if_version` at the observed version | the same |
 
-A write to an unseen target is a create, so an existing file is refused rather
-than overwritten. An edit has no such fallback: there is no honest promise to
-make about text the session has never seen.
+A write after unseen or observed-absent state uses `create_if_absent`, so an
+existing file is refused rather than overwritten; Application maps the raw
+`fs.ErrExist` create conflict to `fs_not_observed`. An edit has no such
+fallback: unseen is `fs_not_observed`, while a file already observed absent is
+`fs_not_found`.
 
 The table is **process-local and never persisted**. A version is a fact about a
 file on this machine at this moment; writing one into a Domain event would
@@ -224,13 +228,14 @@ an edit tool exists to save.
 
 ### Failure vocabulary
 
-Seven codes, because each calls for a different next step. They reach the model
+Eight codes, because each calls for a different next step. They reach the model
 as ordinary failed Tool Results inside a Turn; none renders a path, a version,
 or file content.
 
 | Code | Message |
 | --- | --- |
 | `fs_not_observed` | read the file before changing it |
+| `fs_not_found` | file does not exist; create it or re-read after it appears |
 | `fs_stale_version` | file changed since it was read; re-read it and retry |
 | `fs_edit_not_found` | literal was not found |
 | `fs_ambiguous_edit` | literal appears more than once; include more context or use replace_all |
@@ -239,11 +244,9 @@ or file content.
 | `fs_too_large` | file exceeds the edit size limit |
 
 One translation happens in Application because the adapter cannot know better.
-A create-if-absent guard is what an unseen target gets, and the adapter reports
-`fs_stale_version` when something is in fact there — but telling a model the
-file changed since it was read, when this session never read it, sends it to
-re-read a file it has no memory of and calls that a retry. Application knows
-whether it had an observation, and reports `fs_not_observed` there instead.
+A create-if-absent guard reports raw `fs.ErrExist` when something is already
+there. Application maps that create conflict to `fs_not_observed` and the
+read-before-change recovery message; it never exposes adapter detail.
 
 ## Bounds
 

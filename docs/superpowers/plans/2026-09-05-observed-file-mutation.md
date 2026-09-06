@@ -24,6 +24,16 @@
 - Observations are process-local and cleared on explicit Resume, Close, and Delete lifecycle boundaries.
 - English implemented contracts receive synchronized Chinese reading copies.
 
+## Final contract correction (2026-09-06)
+
+The accepted design's observation table is authoritative: an `edit_file` after
+an observed-absent read returns `fs_not_found`. Tasks 1 and 3 accidentally
+enumerated seven codes and omitted that table-mandated eighth internal stable
+wire code. This plan correction does not revise historical accepted-design
+semantics. The eight codes are `fs_not_observed`, `fs_not_found`,
+`fs_stale_version`, `fs_edit_not_found`, `fs_ambiguous_edit`,
+`fs_not_regular_file`, `fs_not_text`, and `fs_too_large`.
+
 ---
 
 ### Task 1: Lock the version, guard, result, and error vocabulary
@@ -34,7 +44,7 @@
 - Modify: `internal/harness/tools/errors.go`
 
 **Interfaces:**
-- Produces: `FileVersion`, `GuardKind`, `MutationGuard`, `FileRead`, `MutationOperation`, `MutationResult`, `MaxEditFileBytes`, and seven filesystem error codes.
+- Produces: `FileVersion`, `GuardKind`, `MutationGuard`, `FileRead`, `MutationOperation`, `MutationResult`, `MaxEditFileBytes`, and eight filesystem error codes.
 - Consumes: existing secret-free `tools.Error` and `tools.IsCode`.
 
 - [x] **Step 1: Write the failing value tests**
@@ -84,7 +94,7 @@ const (
 type MutationResult struct { Version FileVersion; Operation MutationOperation }
 ```
 
-`Validate` accepts only the four combinations pinned by the test. Add wire values `fs_not_observed`, `fs_stale_version`, `fs_edit_not_found`, `fs_ambiguous_edit`, `fs_not_regular_file`, `fs_not_text`, and `fs_too_large` to `validErrorCode`.
+`Validate` accepts only the four combinations pinned by the test. Add wire values `fs_not_observed`, `fs_not_found`, `fs_stale_version`, `fs_edit_not_found`, `fs_ambiguous_edit`, `fs_not_regular_file`, `fs_not_text`, and `fs_too_large` to `validErrorCode`.
 
 - [x] **Step 4: Verify and commit**
 
@@ -236,7 +246,12 @@ An existing `{present:false}` entry means observed absent; a missing entry means
 
 Construct the table in `NewService`. Pass SessionID into `invokeTool`. A successful read records present; authoritative not-found records absent; write derives its guard immediately before the adapter call and records the returned version only after success. Failed mutation never advances state.
 
-Map the seven `tools.ErrorCode` values to identical lower-case Tool Result codes. Use bounded messages: “read the file before changing it”, “file changed since it was read; re-read it and retry”, “literal was not found”, “literal appears more than once; include more context or use replace_all”, “target is not a regular file”, “file is not valid UTF-8 text”, and “file exceeds the edit size limit”. Never render a path or version.
+Map the eight `tools.ErrorCode` values to identical lower-case Tool Result codes. Use bounded messages: “read the file before changing it”, “file does not exist; create it or re-read after it appears”, “file changed since it was read; re-read it and retry”, “literal was not found”, “literal appears more than once; include more context or use replace_all”, “target is not a regular file”, “file is not valid UTF-8 text”, and “file exceeds the edit size limit”. Never render a path or version.
+
+For edits, unseen maps to `fs_not_observed`, observed absent maps to
+`fs_not_found`, and observed present derives `replace_if_version`. Unseen and
+observed-absent writes both derive `create_if_absent`; a resulting `fs.ErrExist`
+maps to `fs_not_observed` with the read-before-change recovery message.
 
 - [x] **Step 5: Wire lifecycle clearing and verify**
 

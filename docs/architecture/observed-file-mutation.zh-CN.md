@@ -64,7 +64,7 @@ const MaxEditFileBytes = 1 << 20
 
 `Read` 打开一个在牢笼内的常规文件，在读取 `limit+1` 字节的前后各从打开的描述符上取一次版本，两者不一致就报 `fs_stale_version`。字节和一个它们并非在其上被读出的版本配对，会让所有基于它的守卫都变成假承诺。
 
-它最多返回 `limit` 字节，还有更多时置 `Truncated`，丢掉裁剪留下的不完整 rune，然后拒绝非法 UTF-8 内容并报 `fs_not_text`。丢 rune 在前，这样在字符中间切一刀就不会被算成这个文件的问题。
+它最多返回 `limit` 字节，还有更多时置 `Truncated`，丢掉裁剪留下的不完整 rune，然后拒绝非法 UTF-8 内容并报 `fs_not_text`。丢 rune 在前，这样在字符中间切一刀就不会被算成这个文件的问题。目录和特殊文件都会在打开前以 `fs_not_regular_file` 拒绝，因此读取 FIFO 不会阻塞。
 
 ## 变更
 
@@ -108,10 +108,10 @@ const MaxEditFileBytes = 1 << 20
 | 状态 | `write_file` 守卫 | `edit_file` 守卫 |
 | --- | --- | --- |
 | 未见过（没有表项） | `create_if_absent`——失败关闭 | 拒绝，`fs_not_observed` |
-| 观测为不存在 | `create_if_absent` | 拒绝，`fs_edit_not_found` |
+| 观测为不存在 | `create_if_absent` | 拒绝，`fs_not_found` |
 | 观测为存在 | 按观测版本 `replace_if_version` | 同左 |
 
-对未见过的目标做写就是 create，所以已存在的文件会被拒绝而不是被覆盖。编辑没有这种兜底：对一个会话从没见过的文本，做不出诚实的承诺。
+未见过或观测为不存在后，写入都使用 `create_if_absent`，所以已存在的文件会被拒绝而不是被覆盖；Application 把原始 `fs.ErrExist` create conflict 映射成 `fs_not_observed`。编辑没有这种兜底：未见过时报 `fs_not_observed`，已经观测为不存在时报 `fs_not_found`。
 
 这张表**只存在于进程内，从不持久化**。版本是关于「这台机器上此刻这个文件」的事实；把它写进 Domain 事件会让它看起来像持久历史，而一个在另一台主机上恢复的会话就会带着描述它从没见过的文件的守卫。这个后果是被明说而不是被藏起来的：重启，或任何持有同一个持久 Session 的第二个进程，都从「什么也没见过」开始。
 
@@ -143,11 +143,12 @@ const MaxEditFileBytes = 1 << 20
 
 ### 失败词汇表
 
-七个码，因为每一个都对应不同的下一步。它们作为 Turn 内普通的失败 Tool Result 抵达模型；没有一个会渲染路径、版本或文件内容。
+八个码，因为每一个都对应不同的下一步。它们作为 Turn 内普通的失败 Tool Result 抵达模型；没有一个会渲染路径、版本或文件内容。
 
 | 码 | 消息 |
 | --- | --- |
 | `fs_not_observed` | read the file before changing it |
+| `fs_not_found` | file does not exist; create it or re-read after it appears |
 | `fs_stale_version` | file changed since it was read; re-read it and retry |
 | `fs_edit_not_found` | literal was not found |
 | `fs_ambiguous_edit` | literal appears more than once; include more context or use replace_all |
@@ -155,7 +156,7 @@ const MaxEditFileBytes = 1 << 20
 | `fs_not_text` | file is not valid UTF-8 text |
 | `fs_too_large` | file exceeds the edit size limit |
 
-有一处翻译发生在 Application，因为适配器不可能知道得更多。未见过的目标拿到的是 create-if-absent 守卫，而目标确实存在时适配器报的是 `fs_stale_version`——但对一个本会话从没读过的文件告诉模型「文件自你读过之后变了」，是在把它打发去重读一个它毫无记忆的东西，还管这叫重试。Application 知道自己有没有观测，于是在那里改报 `fs_not_observed`。
+有一处翻译发生在 Application，因为适配器不可能知道得更多。create-if-absent 守卫在目标已存在时返回原始 `fs.ErrExist`；Application 把这个 create conflict 映射成 `fs_not_observed` 和 read-before-change 恢复消息，不暴露 adapter 细节。
 
 ## 边界值
 

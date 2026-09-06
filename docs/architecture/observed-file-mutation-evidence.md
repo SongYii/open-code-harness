@@ -1,9 +1,10 @@
 # Observed-File-Mutation Completion Evidence
 
 **Status:** Evidence ledger for the
-[Observed-State Safe File Mutation](observed-file-mutation.md) contract. Every
-command below was run in this repository and its result is reported as
-observed, including the ones that went differently than planned.
+[Observed-State Safe File Mutation](observed-file-mutation.md) contract,
+including final-review Fixes A and B. Every command below was run in this
+repository and its result is reported as observed, including the ones that went
+differently than planned.
 
 ## Commits
 
@@ -14,6 +15,36 @@ observed, including the ones that went differently than planned.
 | `f059612` | 3 | Per-session observation table, guard derivation, and the seven Tool Result mappings (`application`) |
 | `0619cf8` | 4 | `edit_file` in the catalog, boolean schema leaf, parse and dispatch |
 | `8ea5d63` | 5 | Pre-publication fault seam, boundary scenarios, race and repetition matrices |
+
+## Final-review source provenance
+
+The final-review fixes were originally reviewed as the following source
+commits. They are provenance only; the next evidence-only commit records the
+actual latest-main integration SHAs.
+
+| Source commit | Role | Finding covered |
+| --- | --- | --- |
+| `4a44822` | Fix A RED | edit-expansion and post-publication interference regressions |
+| `0d98071` | Fix A GREEN | bounded result sizing and verification of the published revision |
+| `86d9dc2` | Fix B RED | recovery/wire-code, observed-absent, create-conflict, and FIFO regressions |
+| `bbaf36f` | Fix B GREEN | eight-code recovery mapping and uniform non-regular target handling |
+| `102d706` | documentation | synchronized plan, English, Chinese, and evidence corrections |
+
+## Final broad-review findings and corrections
+
+The final broad review found four issues: edit expansion could exceed the
+whole-file bound; a returned mutation version could adopt an unobserved
+post-publication change; observed-absent and create-conflict recovery was
+incomplete; and three stable error names plus special-file behavior diverged
+from the accepted plan. Fix A closes the first two findings. Fix B closes the
+last two.
+
+The accepted observation table requires an edit after an observed-absent read
+to return `fs_not_found`; the earlier seven-code lists omitted that eighth
+wire code. The final stable names are `fs_edit_not_found`,
+`fs_ambiguous_edit`, and `fs_not_regular_file`. Directories and special files
+share `fs_not_regular_file`, while raw `fs.ErrExist` from create-if-absent
+maps to the bounded `fs_not_observed` read-before-change recovery result.
 
 ## Mechanism → test → mutation result
 
@@ -67,14 +98,12 @@ code a reader assumes it covers. Both are now listed above.
 
 ## Contracts the implementation corrected
 
-**A message that was wrong the day after it was written.** Task 3's plan mapped
-`fs_stale_version` to "file changed since it was read; re-read it and retry".
-Wiring it revealed that an unseen target produces a create-if-absent guard, and
-the adapter refuses that as stale when something is in fact there — so a model
-was told a file had changed since it read it, about a file it had never read.
-That sends it to re-read something it has no memory of and calls that a retry.
-Application knows whether it had an observation and the adapter does not, so
-the translation lives there and reports `fs_not_observed`.
+**A message corrected at the adapter boundary.** An unseen or observed-absent
+write produces a create-if-absent guard. When something is already there, the
+adapter preserves raw `fs.ErrExist`; Application maps that create conflict to
+`fs_not_observed` and the bounded read-before-change instruction. An edit
+after an authoritative missing read is different: it returns `fs_not_found`
+without calling the filesystem mutation port or advancing the observation.
 
 **An accidental guarantee made explicit.** Adding a boolean leaf to the schema
 compiler broke a pre-existing test that expected `{"type":"boolean"}` to be
