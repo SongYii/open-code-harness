@@ -197,7 +197,7 @@ git commit -m "feat(workspacefs): add guarded atomic file mutation"
 - Consumes: guarded `tools.FileSystem`.
 - Produces: `guardForWrite`, `guardForEdit`, `recordPresent`, `recordAbsent`, `forget`, and stable Tool Result mappings.
 
-- [ ] **Step 1: Write failing state-transition tests**
+- [x] **Step 1: Write failing state-transition tests**
 
 ```go
 func TestFileObservationsTransitions(t *testing.T) {
@@ -214,13 +214,13 @@ func TestFileObservationsTransitions(t *testing.T) {
 
 Add concurrent readers/recorders/forgetters for `-race`.
 
-- [ ] **Step 2: Prove the state test is red**
+- [x] **Step 2: Prove the state test is red**
 
 Run: `go test ./internal/harness/application -run TestFileObservations -count=1`
 
 Expected: compile failure because the table does not exist.
 
-- [ ] **Step 3: Implement the private table**
+- [x] **Step 3: Implement the private table**
 
 ```go
 type fileObservation struct { present bool; version tools.FileVersion }
@@ -232,13 +232,13 @@ type fileObservations struct {
 
 An existing `{present:false}` entry means observed absent; a missing entry means unseen. Never persist the table or put versions in Domain events.
 
-- [ ] **Step 4: Wire read/write and error classification**
+- [x] **Step 4: Wire read/write and error classification**
 
 Construct the table in `NewService`. Pass SessionID into `invokeTool`. A successful read records present; authoritative not-found records absent; write derives its guard immediately before the adapter call and records the returned version only after success. Failed mutation never advances state.
 
 Map the seven `tools.ErrorCode` values to identical lower-case Tool Result codes. Use bounded messages: “read the file before changing it”, “file changed since it was read; re-read it and retry”, “literal was not found”, “literal appears more than once; include more context or use replace_all”, “target is not a regular file”, “file is not valid UTF-8 text”, and “file exceeds the edit size limit”. Never render a path or version.
 
-- [ ] **Step 5: Wire lifecycle clearing and verify**
+- [x] **Step 5: Wire lifecycle clearing and verify**
 
 Call `forget` after successful `ResumeSession` admission and successful `CloseSession`/`DeleteSession`. Never clear from `LoadSession`, because ordinary `RunTurn` loads canonical state and observations must survive turns.
 
@@ -251,7 +251,7 @@ go test -race ./internal/harness/application -run TestFileObservations -count=10
 
 Expected: PASS, including read A → external B → stale rejection → re-read B → guarded success.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/harness/application/file_observations.go internal/harness/application/file_observations_test.go internal/harness/application/service.go internal/harness/application/session.go internal/harness/application/pipeline.go internal/harness/application/errors.go internal/harness/application/loop_test.go

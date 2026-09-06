@@ -198,6 +198,14 @@ func (service *Service) ResumeSession(ctx context.Context, request ResumeSession
 		return domain.Session{}, applicationError(CategoryValidation, "domain_rejected", false, err)
 	}
 	state.WorkspaceRoot = storedRoot
+	// A resume can follow an arbitrarily long gap during which anything could
+	// have edited the workspace. Whatever this session observed before is no
+	// longer evidence about what is on disk now, so it is dropped and the
+	// session has to look again before it may change anything.
+	//
+	// Ordinary LoadSession deliberately does not do this: observations have to
+	// survive turns, or every turn would begin unable to edit.
+	service.observations.forget(request.SessionID)
 	return state.Clone(), nil
 }
 
@@ -261,6 +269,9 @@ func (service *Service) DeleteSession(ctx context.Context, request DeleteSession
 		return err
 	}
 	_, _, err = ApplyCommittedIntent(state, intent, receipt)
+	if err == nil {
+		service.observations.forget(request.SessionID)
+	}
 	return err
 }
 
@@ -290,6 +301,8 @@ func (service *Service) CloseSession(ctx context.Context, request CloseSessionRe
 	if err != nil {
 		return CloseSessionResult{}, err
 	}
+	// Nothing should still be held about a closed session's workspace.
+	service.observations.forget(request.SessionID)
 	return CloseSessionResult{Session: next.Clone(), Records: records}, nil
 }
 

@@ -51,7 +51,15 @@ func (mem *MemFS) AddFile(rel string, data []byte) {
 	defer mem.mu.Unlock()
 	abs := mem.joinLocked(rel)
 	mem.ensureDirLocked(path.Dir(abs))
-	mem.nodes[abs] = &memNode{data: append([]byte(nil), data...), version: 1}
+	// Seeding over an existing file advances its version, so a test can use
+	// AddFile to stand in for a writer this harness does not control. A fixed
+	// version here would make an external change invisible to the guard, and
+	// a test built on that would prove the opposite of what it claimed.
+	next := uint64(1)
+	if existing, ok := mem.nodes[abs]; ok {
+		next = existing.version + 1
+	}
+	mem.nodes[abs] = &memNode{data: append([]byte(nil), data...), version: next}
 }
 
 func (mem *MemFS) AddDir(rel string) {

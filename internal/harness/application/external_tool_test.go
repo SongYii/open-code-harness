@@ -198,7 +198,7 @@ func TestInvokeToolRoutesAnExternalSpecBySourceNotByName(t *testing.T) {
 	service := &Service{external: external}
 
 	text, _, code, _, err := service.invokeTool(
-		context.Background(), externalSpec(), toolArgs{Raw: `{"query":"x"}`}, "")
+		context.Background(), "session-test", externalSpec(), toolArgs{Raw: `{"query":"x"}`}, "")
 	if err != nil {
 		t.Fatalf("invokeTool: %v", err)
 	}
@@ -239,11 +239,11 @@ func (stubFiles) List(context.Context, string, int, int) ([]string, bool, error)
 // swallowing the four builtins.
 func TestInvokeToolStillRoutesBuiltinsByName(t *testing.T) {
 	external := &recordingExternalTools{result: tools.ExternalToolResult{Text: "must not be used"}}
-	service := &Service{external: external, files: stubFiles{}}
+	service := &Service{external: external, files: stubFiles{}, observations: newFileObservations()}
 
 	builtin := tools.DefaultWorkspaceSpecs()[0] // read_file
 	text, _, code, _, err := service.invokeTool(
-		context.Background(), builtin, toolArgs{Raw: `{"path":"x"}`, Path: "x"}, "/abs")
+		context.Background(), "session-test", builtin, toolArgs{Raw: `{"path":"x"}`, Path: "x"}, "/abs")
 	if err != nil {
 		t.Fatalf("invokeTool: %v", err)
 	}
