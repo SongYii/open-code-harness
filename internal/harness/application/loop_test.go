@@ -788,6 +788,55 @@ func TestModeAllowWritesExecutesWrite(t *testing.T) {
 	}
 }
 
+// TestWriteFileRefusesToOverwriteAnUnobservedFile pins the fail-closed half of
+// the guarded port while this package still passes a create-if-absent guard.
+//
+// Until Application tracks what a session has actually observed, "write" means
+// "create". An existing target is refused rather than silently replaced, and
+// that direction is deliberate: the placeholder permits less than the eventual
+// behaviour rather than more, so no window exists in which the mechanism is
+// wired but not yet enforcing. Policy allows the write here — the refusal
+// comes from the filesystem's guard, not from authorization.
+func TestWriteFileRefusesToOverwriteAnUnobservedFile(t *testing.T) {
+	fs := testkit.NewMemFS("/workspace")
+	fs.AddFile("out.txt", []byte("existing"))
+	counter := &countingFS{FileSystem: fs}
+	model := newSequenceModel(
+		[]engine.StreamEvent{
+			{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "call-1", Name: tools.NameWriteFile, Arguments: `{"path":"out.txt","content":"clobber"}`}},
+			{Type: engine.StreamEventCompleted},
+		},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "done"}, {Type: engine.StreamEventCompleted}},
+	)
+	config := application.DefaultConfig()
+	config.PolicyMode = policy.ModeAllowWrites
+	service, _ := newToolService(t, model, counter, nil, nil, config)
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+		SessionID: created.SessionID, RequestID: "request-overwrite", Input: "inspect", Sink: &testkit.RecordingSink{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The refusal reaches the model as a failed Tool Result and the Turn
+	// continues, which is how every other tool failure behaves here. Task 3
+	// replaces the generic code with a specific recovery instruction; what
+	// this test pins is that the file was not touched.
+	if got := lastToolMessage(model.Calls()[1].Messages).Text; got != application.ToolTextInvalidArgs {
+		t.Fatalf("tool text = %q, want the write to have failed", got)
+	}
+	read, readErr := fs.Read(context.Background(), "/workspace/out.txt", 64)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(read.Data) != "existing" {
+		t.Fatalf("content = %q; the refused write changed the file", read.Data)
+	}
+}
+
 func TestTableA2UnknownStartedDoesNotExecute(t *testing.T) {
 	fs := testkit.NewMemFS("/workspace")
 	fs.AddFile("README.md", []byte("hello"))
@@ -1188,17 +1237,23 @@ func (fs *countingFS) Resolve(ctx context.Context, workspace, requested string) 
 	fs.mu.Unlock()
 	return fs.FileSystem.Resolve(ctx, workspace, requested)
 }
-func (fs *countingFS) Read(ctx context.Context, abs string, limit int) ([]byte, bool, error) {
+func (fs *countingFS) Read(ctx context.Context, abs string, limit int) (tools.FileRead, error) {
 	fs.mu.Lock()
 	fs.reads++
 	fs.mu.Unlock()
 	return fs.FileSystem.Read(ctx, abs, limit)
 }
-func (fs *countingFS) Write(ctx context.Context, abs string, data []byte) error {
+func (fs *countingFS) Write(ctx context.Context, abs string, data []byte, guard tools.MutationGuard) (tools.MutationResult, error) {
 	fs.mu.Lock()
 	fs.writes++
 	fs.mu.Unlock()
-	return fs.FileSystem.Write(ctx, abs, data)
+	return fs.FileSystem.Write(ctx, abs, data, guard)
+}
+func (fs *countingFS) Edit(ctx context.Context, abs string, oldString, newString []byte, replaceAll bool, guard tools.MutationGuard) (tools.MutationResult, error) {
+	fs.mu.Lock()
+	fs.writes++
+	fs.mu.Unlock()
+	return fs.FileSystem.Edit(ctx, abs, oldString, newString, replaceAll, guard)
 }
 func (fs *countingFS) List(ctx context.Context, abs string, depth, limit int) ([]string, bool, error) {
 	fs.mu.Lock()
@@ -1216,10 +1271,10 @@ type blockingFS struct {
 	once    sync.Once
 }
 
-func (fs *blockingFS) Read(ctx context.Context, abs string, limit int) ([]byte, bool, error) {
+func (fs *blockingFS) Read(ctx context.Context, abs string, limit int) (tools.FileRead, error) {
 	fs.once.Do(func() { close(fs.entered) })
 	<-ctx.Done()
-	return nil, false, ctx.Err()
+	return tools.FileRead{}, ctx.Err()
 }
 
 func scriptedToolIdentity() engine.RequestIdentity {

@@ -2,12 +2,14 @@ package testkit
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
 )
@@ -16,6 +18,11 @@ type memNode struct {
 	dir     bool
 	data    []byte
 	symlink string
+
+	// version changes on every mutation. A counter rather than a digest keeps
+	// the double honest about the port's contract -- versions are opaque and
+	// only ever compared for equality -- while making "this changed" exact.
+	version uint64
 }
 
 // MemFS is an in-memory FileSystem. It models symlink children so List can
@@ -44,7 +51,7 @@ func (mem *MemFS) AddFile(rel string, data []byte) {
 	defer mem.mu.Unlock()
 	abs := mem.joinLocked(rel)
 	mem.ensureDirLocked(path.Dir(abs))
-	mem.nodes[abs] = &memNode{data: append([]byte(nil), data...)}
+	mem.nodes[abs] = &memNode{data: append([]byte(nil), data...), version: 1}
 }
 
 func (mem *MemFS) AddDir(rel string) {
@@ -71,49 +78,161 @@ func (mem *MemFS) Resolve(_ context.Context, workspace, requested string) (strin
 	return abs, nil
 }
 
-func (mem *MemFS) Read(_ context.Context, abs string, limit int) ([]byte, bool, error) {
+func (mem *MemFS) Read(_ context.Context, abs string, limit int) (tools.FileRead, error) {
 	mem.mu.Lock()
 	defer mem.mu.Unlock()
 	if limit < 0 {
-		return nil, false, fs.ErrInvalid
+		return tools.FileRead{}, fs.ErrInvalid
 	}
 	final, err := mem.followLocked(abs)
 	if err != nil {
-		return nil, false, err
+		return tools.FileRead{}, err
 	}
 	if !mem.insideLocked(final) {
-		return nil, false, tools.ErrOutOfScope
+		return tools.FileRead{}, tools.ErrOutOfScope
 	}
 	node, ok := mem.nodes[final]
 	if !ok {
-		return nil, false, fs.ErrNotExist
+		return tools.FileRead{}, fs.ErrNotExist
 	}
 	if node.dir {
-		return nil, false, fs.ErrInvalid
+		return tools.FileRead{}, fs.ErrInvalid
 	}
+	version := memVersion(node)
 	data := append([]byte(nil), node.data...)
-	if limit == 0 {
-		return []byte{}, len(data) > 0, nil
+	truncated := false
+	switch {
+	case limit == 0:
+		truncated = len(data) > 0
+		data = []byte{}
+	case len(data) > limit:
+		data = data[:limit]
+		truncated = true
 	}
-	if len(data) > limit {
-		return data[:limit], true, nil
+	if truncated {
+		data = trimPartialRune(data)
 	}
-	return data, false, nil
+	if !utf8.Valid(data) {
+		return tools.FileRead{}, &tools.Error{Code: tools.CodeFSNotText}
+	}
+	return tools.FileRead{Data: data, Truncated: truncated, Version: version}, nil
 }
 
-func (mem *MemFS) Write(_ context.Context, abs string, data []byte) error {
+// Write mirrors the real adapter's guard semantics, because a double that
+// permits what the adapter refuses would let a caller's tests pass against a
+// contract the caller does not actually have.
+func (mem *MemFS) Write(_ context.Context, abs string, data []byte, guard tools.MutationGuard) (tools.MutationResult, error) {
 	mem.mu.Lock()
 	defer mem.mu.Unlock()
+	node, abs, err := mem.prepareMutationLocked(abs, guard)
+	if err != nil {
+		return tools.MutationResult{}, err
+	}
+	return mem.publishLocked(abs, node, append([]byte(nil), data...)), nil
+}
+
+// Edit is the same bounded literal replacement the real adapter performs, with
+// the same guard-before-match ordering.
+func (mem *MemFS) Edit(_ context.Context, abs string, oldString, newString []byte, replaceAll bool, guard tools.MutationGuard) (tools.MutationResult, error) {
+	mem.mu.Lock()
+	defer mem.mu.Unlock()
+	node, abs, err := mem.prepareMutationLocked(abs, guard)
+	if err != nil {
+		return tools.MutationResult{}, err
+	}
+	if node == nil {
+		return tools.MutationResult{}, &tools.Error{Code: tools.CodeFSEditNotFound}
+	}
+	if len(node.data) > tools.MaxEditFileBytes {
+		return tools.MutationResult{}, &tools.Error{Code: tools.CodeFSTooLarge}
+	}
+	if !utf8.Valid(node.data) {
+		return tools.MutationResult{}, &tools.Error{Code: tools.CodeFSNotText}
+	}
+	edited, err := memEdit(string(node.data), string(oldString), string(newString), replaceAll)
+	if err != nil {
+		return tools.MutationResult{}, err
+	}
+	return mem.publishLocked(abs, node, []byte(edited)), nil
+}
+
+// prepareMutationLocked validates the guard against current state and returns
+// the existing node, or nil when a create guard held over an absent target.
+func (mem *MemFS) prepareMutationLocked(abs string, guard tools.MutationGuard) (*memNode, string, error) {
+	if err := guard.Validate(); err != nil {
+		return nil, "", err
+	}
 	abs = cleanSlash(abs)
 	if !mem.insideLocked(abs) {
-		return tools.ErrOutOfScope
+		return nil, "", tools.ErrOutOfScope
 	}
 	parent := path.Dir(abs)
 	if parentNode, ok := mem.nodes[parent]; !ok || !parentNode.dir {
-		return fs.ErrNotExist
+		return nil, "", fs.ErrNotExist
 	}
-	mem.nodes[abs] = &memNode{data: append([]byte(nil), data...)}
-	return nil
+	node, exists := mem.nodes[abs]
+	switch {
+	case !exists:
+		if guard.Kind == tools.GuardCreateIfAbsent {
+			return nil, abs, nil
+		}
+		return nil, "", &tools.Error{Code: tools.CodeFSStaleVersion}
+	case node.dir || node.symlink != "":
+		return nil, "", &tools.Error{Code: tools.CodeFSNotRegularFile}
+	case guard.Kind == tools.GuardCreateIfAbsent:
+		return nil, "", &tools.Error{Code: tools.CodeFSStaleVersion}
+	case memVersion(node) != guard.Version:
+		return nil, "", &tools.Error{Code: tools.CodeFSStaleVersion}
+	}
+	return node, abs, nil
+}
+
+func (mem *MemFS) publishLocked(abs string, prior *memNode, data []byte) tools.MutationResult {
+	operation := tools.MutationUpdate
+	next := uint64(1)
+	if prior == nil {
+		operation = tools.MutationCreate
+	} else {
+		next = prior.version + 1
+	}
+	node := &memNode{data: data, version: next}
+	mem.nodes[abs] = node
+	return tools.MutationResult{Version: memVersion(node), Operation: operation}
+}
+
+func memVersion(node *memNode) tools.FileVersion {
+	return tools.FileVersion(fmt.Sprintf("mem:%d:%d", node.version, len(node.data)))
+}
+
+func memEdit(current, oldString, newString string, replaceAll bool) (string, error) {
+	if oldString == "" {
+		return "", &tools.Error{Code: tools.CodeInvalidArgs}
+	}
+	count := strings.Count(current, oldString)
+	switch {
+	case count == 0:
+		return "", &tools.Error{Code: tools.CodeFSEditNotFound}
+	case count > 1 && !replaceAll:
+		return "", &tools.Error{Code: tools.CodeFSAmbiguousEdit}
+	}
+	limit := 1
+	if replaceAll {
+		limit = -1
+	}
+	return strings.Replace(current, oldString, newString, limit), nil
+}
+
+// trimPartialRune drops an incomplete trailing rune left by a clip, so a cut
+// in the middle of a character is not reported as the file not being text.
+func trimPartialRune(data []byte) []byte {
+	for len(data) > 0 {
+		last, size := utf8.DecodeLastRune(data)
+		if last != utf8.RuneError || size > 1 {
+			return data
+		}
+		data = data[:len(data)-1]
+	}
+	return data
 }
 
 func (mem *MemFS) List(_ context.Context, abs string, depth, limit int) ([]string, bool, error) {

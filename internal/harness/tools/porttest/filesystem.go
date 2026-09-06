@@ -77,38 +77,68 @@ func FileSystemReadWriteJail(t *testing.T, files tools.FileSystem, workspace str
 	if err != nil {
 		t.Fatalf("Resolve(note.txt) = %v", err)
 	}
-	if err := files.Write(ctx, abs, []byte("hello")); err != nil {
+	created, err := files.Write(ctx, abs, []byte("hello"), tools.MutationGuard{Kind: tools.GuardCreateIfAbsent})
+	if err != nil {
 		t.Fatal(err)
 	}
-	data, truncated, err := files.Read(ctx, abs, 64)
-	if err != nil || truncated || string(data) != "hello" {
-		t.Fatalf("Read() = %q truncated=%t err=%v", data, truncated, err)
+	if created.Operation != tools.MutationCreate || created.Version == "" {
+		t.Fatalf("create = %+v, want a create carrying a version", created)
 	}
-	data, truncated, err = files.Read(ctx, abs, 2)
-	if err != nil || !truncated || string(data) != "he" {
-		t.Fatalf("Read(limit=2) = %q truncated=%t err=%v", data, truncated, err)
+	read, err := files.Read(ctx, abs, 64)
+	if err != nil || read.Truncated || string(read.Data) != "hello" {
+		t.Fatalf("Read() = %+v err=%v", read, err)
 	}
-	data, truncated, err = files.Read(ctx, abs, 0)
-	if err != nil || !truncated || len(data) != 0 {
-		t.Fatalf("Read(limit=0) = %q truncated=%t err=%v", data, truncated, err)
+	if read.Version == "" {
+		t.Fatal("Read returned no version; every observation must be guardable")
 	}
-	if _, _, err := files.Read(ctx, abs, -1); err == nil {
+	clipped, err := files.Read(ctx, abs, 2)
+	if err != nil || !clipped.Truncated || string(clipped.Data) != "he" {
+		t.Fatalf("Read(limit=2) = %+v err=%v", clipped, err)
+	}
+	empty, err := files.Read(ctx, abs, 0)
+	if err != nil || !empty.Truncated || len(empty.Data) != 0 {
+		t.Fatalf("Read(limit=0) = %+v err=%v", empty, err)
+	}
+	if _, err := files.Read(ctx, abs, -1); err == nil {
 		t.Fatal("Read(limit=-1): expected error")
 	}
 
-	raw := []byte{0xff, 0xfe, 'x'}
-	if err := files.Write(ctx, abs, raw); err != nil {
-		t.Fatal(err)
+	// A guarded overwrite succeeds; replaying the same guard afterwards does
+	// not, which is the lost-update refusal this port exists for.
+	replaced, err := files.Write(ctx, abs, []byte("world"), tools.MutationGuard{
+		Kind: tools.GuardReplaceIfVersion, Version: read.Version,
+	})
+	if err != nil || replaced.Operation != tools.MutationUpdate {
+		t.Fatalf("guarded replace = %+v err=%v", replaced, err)
 	}
-	data, truncated, err = files.Read(ctx, abs, 64)
-	if err != nil || truncated || !reflect.DeepEqual(data, raw) {
-		t.Fatalf("Read(invalid UTF-8) = %q truncated=%t err=%v", data, truncated, err)
+	if _, err := files.Write(ctx, abs, []byte("lost"), tools.MutationGuard{
+		Kind: tools.GuardReplaceIfVersion, Version: read.Version,
+	}); !tools.IsCode(err, tools.CodeFSStaleVersion) {
+		t.Fatalf("replayed guard = %v, want %q", err, tools.CodeFSStaleVersion)
 	}
 
-	if err := files.Write(ctx, "/etc/passwd", []byte("no")); err != tools.ErrOutOfScope && !tools.IsCode(err, tools.CodeScopeDenied) {
+	// Non-text is refused rather than returned. A literal edit over arbitrary
+	// bytes would corrupt the file it claims to be editing, so the refusal
+	// belongs at the read that would otherwise license one.
+	rawPath, err := files.Resolve(ctx, workspace, "raw.bin")
+	if err != nil {
+		t.Fatalf("Resolve(raw.bin) = %v", err)
+	}
+	if _, err := files.Write(ctx, rawPath, []byte{0xff, 0xfe, 'x'}, tools.MutationGuard{
+		Kind: tools.GuardCreateIfAbsent,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.Read(ctx, rawPath, 64); !tools.IsCode(err, tools.CodeFSNotText) {
+		t.Fatalf("Read(invalid UTF-8) = %v, want %q", err, tools.CodeFSNotText)
+	}
+
+	if _, err := files.Write(ctx, "/etc/passwd", []byte("no"), tools.MutationGuard{
+		Kind: tools.GuardCreateIfAbsent,
+	}); err != tools.ErrOutOfScope && !tools.IsCode(err, tools.CodeScopeDenied) {
 		t.Fatalf("Write outside error = %v", err)
 	}
-	if _, _, err := files.Read(ctx, "/etc/passwd", 8); err != tools.ErrOutOfScope && !tools.IsCode(err, tools.CodeScopeDenied) {
+	if _, err := files.Read(ctx, "/etc/passwd", 8); err != tools.ErrOutOfScope && !tools.IsCode(err, tools.CodeScopeDenied) {
 		t.Fatalf("Read outside error = %v", err)
 	}
 
@@ -116,7 +146,7 @@ func FileSystemReadWriteJail(t *testing.T, files tools.FileSystem, workspace str
 	if err != nil {
 		t.Fatalf("Resolve(missing) = %v", err)
 	}
-	if _, _, err := files.Read(ctx, missing, 8); !errors.Is(err, fs.ErrNotExist) {
+	if _, err := files.Read(ctx, missing, 8); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("missing Read error = %v", err)
 	}
 }

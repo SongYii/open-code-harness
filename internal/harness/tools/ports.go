@@ -9,10 +9,18 @@ import (
 
 // FileSystem is the workspace I/O port. Adapters re-check prefix on execute.
 // Resolve is a scope probe and must not create, truncate, or write.
+// FileSystem is the workspace jail, and every destructive entry point on it
+// takes a MutationGuard.
+//
+// There is deliberately no unguarded write. An agent overwriting a file it
+// never read, or read before something else changed it, is the failure this
+// port exists to make impossible rather than merely discouraged, so the guard
+// is a parameter a caller cannot forget to pass.
 type FileSystem interface {
 	Resolve(ctx context.Context, workspace, requested string) (abs string, err error)
-	Read(ctx context.Context, abs string, limit int) (data []byte, truncated bool, err error)
-	Write(ctx context.Context, abs string, data []byte) error
+	Read(ctx context.Context, abs string, limit int) (read FileRead, err error)
+	Write(ctx context.Context, abs string, data []byte, guard MutationGuard) (MutationResult, error)
+	Edit(ctx context.Context, abs string, oldString, newString []byte, replaceAll bool, guard MutationGuard) (MutationResult, error)
 	List(ctx context.Context, abs string, depth, limit int) (names []string, truncated bool, err error)
 }
 

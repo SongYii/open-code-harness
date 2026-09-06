@@ -114,7 +114,7 @@ git commit -m "feat(tools): define guarded file mutation values"
 - Consumes: Task 1 values.
 - Produces: final `tools.FileSystem` signatures and guarded `workspacefs`; Application temporarily uses create-if-absent until Task 3.
 
-- [ ] **Step 1: Write failing port/adapter tests**
+- [x] **Step 1: Write failing port/adapter tests**
 
 ```go
 read, err := files.Read(ctx, abs, 64)
@@ -131,13 +131,13 @@ if !tools.IsCode(err, tools.CodeFSStaleVersion) { t.Fatalf("stale error = %v", e
 
 Add cases for guarded create, concurrent creator preservation, directories, invalid UTF-8, cancellation, jail escape, unique/missing/ambiguous/replace-all edit, guard-before-match, LF/CRLF, and mode preservation.
 
-- [ ] **Step 2: Prove the adapter tests are red**
+- [x] **Step 2: Prove the adapter tests are red**
 
 Run: `go test ./internal/harness/adapters/workspacefs ./internal/harness/tools/porttest -count=1`
 
 Expected: compile failure because the port remains unguarded.
 
-- [ ] **Step 3: Install the final port and migrate callers**
+- [x] **Step 3: Install the final port and migrate callers**
 
 ```go
 type FileSystem interface {
@@ -151,19 +151,19 @@ type FileSystem interface {
 
 Migrate `countingFS`, port tests, and all compile-time callers. Until Task 3, Application passes `MutationGuard{Kind: GuardCreateIfAbsent}` to write, so existing targets fail closed. Do not publish `edit_file` in the catalog yet.
 
-- [ ] **Step 4: Implement versions and stable reads**
+- [x] **Step 4: Implement versions and stable reads**
 
 `versionOf` hashes a canonical binary encoding of device, inode, size, nanosecond mtime, and nanosecond ctime. Linux and Darwin helpers use their `syscall.Stat_t` layouts; `version_other.go` uses size/mode/nanosecond mtime solely so Windows cross-builds without a runtime claim. Tests treat the `sha256:` token as opaque.
 
 `Read` opens a jailed regular file, versions the descriptor before and after reading `limit+1` bytes, rejects a changed descriptor as `fs_stale_version`, returns at most `limit`, and rejects invalid UTF-8 as `fs_not_text`.
 
-- [ ] **Step 5: Implement literal edit and staged publication**
+- [x] **Step 5: Implement literal edit and staged publication**
 
 Add a per-target lock registry to `FileSystem`. Under the lock, re-jail/re-identify, validate the guard, and for edit read at most `MaxEditFileBytes+1`, normalize CRLF for literal matching, enforce cardinality, replace, and restore the dominant newline.
 
 Create a private sibling staging directory with `0700`, an exclusive temp file with `0600`, write all bytes, sync, apply the prior mode (or `0600` for create), and close. Publish create via `os.Link` and replace via `os.Rename`. Best-effort sync the parent and remove staging. Any pre-publication error preserves the destination.
 
-- [ ] **Step 6: Verify focused behavior and cross-builds**
+- [x] **Step 6: Verify focused behavior and cross-builds**
 
 Run:
 
@@ -175,7 +175,7 @@ env GOOS=darwin go test ./internal/harness/adapters/workspacefs -run '^$'
 
 Expected: PASS; Application tests pin that overwrite is refused, while Task 3 adds the specific `fs_not_observed` recovery mapping.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/harness/tools/ports.go internal/harness/tools/porttest/filesystem.go internal/harness/adapters/workspacefs internal/harness/application/pipeline.go internal/harness/application/loop_test.go
