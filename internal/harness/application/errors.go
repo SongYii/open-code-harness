@@ -1,7 +1,9 @@
 package application
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
@@ -57,35 +59,40 @@ const (
 )
 
 const (
-	ToolTextPolicyDenied    = "policy denied this tool"
-	ToolTextApprovalDenied  = "approval denied this tool"
-	ToolTextApprovalTimeout = "approval timed out"
-	ToolTextScopeDenied     = "path is outside the workspace"
-	ToolTextUnknownTool     = "unknown tool"
-	ToolTextInvalidArgs     = "invalid tool arguments"
-	ToolTextOutputLimit     = "tool output exceeded the size limit"
-	ToolTextExecTimeout     = "command timed out"
-	ToolTextResourceLimit   = "command exceeded a resource limit"
-	ToolTextFSNotObserved   = "read the file before changing it"
-	ToolTextFSStaleVersion  = "file changed since it was read; re-read it and retry"
-	ToolTextEditNoMatch     = "literal was not found"
-	ToolTextEditAmbiguous   = "literal appears more than once; include more context or use replace_all"
-	ToolTextFSIsDirectory   = "target is not a regular file"
-	ToolTextFSNotText       = "file is not valid UTF-8 text"
-	ToolTextFSTooLarge      = "file exceeds the edit size limit"
-	TruncationMarker        = "\n[truncated]"
+	ToolTextPolicyDenied     = "policy denied this tool"
+	ToolTextApprovalDenied   = "approval denied this tool"
+	ToolTextApprovalTimeout  = "approval timed out"
+	ToolTextScopeDenied      = "path is outside the workspace"
+	ToolTextUnknownTool      = "unknown tool"
+	ToolTextInvalidArgs      = "invalid tool arguments"
+	ToolTextOutputLimit      = "tool output exceeded the size limit"
+	ToolTextExecTimeout      = "command timed out"
+	ToolTextResourceLimit    = "command exceeded a resource limit"
+	ToolTextFSNotObserved    = "read the file before changing it"
+	ToolTextFSNotFound       = "file does not exist; create it or re-read after it appears"
+	ToolTextFSStaleVersion   = "file changed since it was read; re-read it and retry"
+	ToolTextFSEditNotFound   = "literal was not found"
+	ToolTextFSAmbiguousEdit  = "literal appears more than once; include more context or use replace_all"
+	ToolTextFSNotRegularFile = "target is not a regular file"
+	ToolTextFSNotText        = "file is not valid UTF-8 text"
+	ToolTextFSTooLarge       = "file exceeds the edit size limit"
+	TruncationMarker         = "\n[truncated]"
 )
 
 func fileToolErrorResult(err error) (string, string, bool) {
+	if errors.Is(err, fs.ErrExist) {
+		return string(tools.CodeFilesystemNotObserved), ToolTextFSNotObserved, true
+	}
 	for _, mapping := range []struct {
 		code tools.ErrorCode
 		text string
 	}{
 		{code: tools.CodeFilesystemNotObserved, text: ToolTextFSNotObserved},
+		{code: tools.CodeFilesystemNotFound, text: ToolTextFSNotFound},
 		{code: tools.CodeFilesystemStaleVersion, text: ToolTextFSStaleVersion},
-		{code: tools.CodeEditNoMatch, text: ToolTextEditNoMatch},
-		{code: tools.CodeEditAmbiguous, text: ToolTextEditAmbiguous},
-		{code: tools.CodeFilesystemIsDirectory, text: ToolTextFSIsDirectory},
+		{code: tools.CodeFilesystemEditNotFound, text: ToolTextFSEditNotFound},
+		{code: tools.CodeFilesystemAmbiguousEdit, text: ToolTextFSAmbiguousEdit},
+		{code: tools.CodeFilesystemNotRegularFile, text: ToolTextFSNotRegularFile},
 		{code: tools.CodeFilesystemNotText, text: ToolTextFSNotText},
 		{code: tools.CodeFilesystemTooLarge, text: ToolTextFSTooLarge},
 	} {

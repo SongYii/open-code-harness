@@ -35,8 +35,11 @@ func (observations *fileObservations) guardForEdit(sessionID domain.SessionID, t
 	observations.mu.RLock()
 	observation, ok := observations.bySession[sessionID][target]
 	observations.mu.RUnlock()
-	if !ok || !observation.present {
+	if !ok {
 		return tools.MutationGuard{}, &tools.Error{Code: tools.CodeFilesystemNotObserved}
+	}
+	if !observation.present {
+		return tools.MutationGuard{}, &tools.Error{Code: tools.CodeFilesystemNotFound}
 	}
 	return tools.MutationGuard{Kind: tools.GuardReplaceIfVersion, Version: observation.version}, nil
 }

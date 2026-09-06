@@ -93,10 +93,10 @@ func (files *FileSystem) Edit(ctx context.Context, abs string, old, replacement 
 		replacement = normalizeNewlines(replacement)
 		count := bytes.Count(data, old)
 		if count == 0 {
-			return nil, &tools.Error{Code: tools.CodeEditNoMatch}
+			return nil, &tools.Error{Code: tools.CodeFilesystemEditNotFound}
 		}
 		if count > 1 && !replaceAll {
-			return nil, &tools.Error{Code: tools.CodeEditAmbiguous}
+			return nil, &tools.Error{Code: tools.CodeFilesystemAmbiguousEdit}
 		}
 		replacements := 1
 		if replaceAll {

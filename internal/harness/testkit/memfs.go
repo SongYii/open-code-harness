@@ -97,7 +97,7 @@ func (mem *MemFS) Read(ctx context.Context, abs string, limit int) (tools.FileRe
 		return tools.FileRead{}, fs.ErrNotExist
 	}
 	if node.dir {
-		return tools.FileRead{}, &tools.Error{Code: tools.CodeFilesystemIsDirectory}
+		return tools.FileRead{}, &tools.Error{Code: tools.CodeFilesystemNotRegularFile}
 	}
 	data := node.data
 	truncated := len(data) > limit
@@ -166,10 +166,10 @@ func (mem *MemFS) Edit(ctx context.Context, abs string, old, replacement []byte,
 	replacement = bytes.ReplaceAll(replacement, []byte("\r\n"), []byte("\n"))
 	count := bytes.Count(data, old)
 	if count == 0 {
-		return tools.MutationResult{}, &tools.Error{Code: tools.CodeEditNoMatch}
+		return tools.MutationResult{}, &tools.Error{Code: tools.CodeFilesystemEditNotFound}
 	}
 	if count > 1 && !replaceAll {
-		return tools.MutationResult{}, &tools.Error{Code: tools.CodeEditAmbiguous}
+		return tools.MutationResult{}, &tools.Error{Code: tools.CodeFilesystemAmbiguousEdit}
 	}
 	replacements := 1
 	if replaceAll {
@@ -235,7 +235,7 @@ func (mem *MemFS) mutationTargetLocked(abs string, guard tools.MutationGuard) (s
 	}
 	node := mem.nodes[final]
 	if node != nil && node.dir {
-		return "", nil, &tools.Error{Code: tools.CodeFilesystemIsDirectory}
+		return "", nil, &tools.Error{Code: tools.CodeFilesystemNotRegularFile}
 	}
 	if guard.Kind == tools.GuardCreateIfAbsent {
 		if node != nil {

@@ -127,11 +127,8 @@ func (files *FileSystem) openRegular(abs string) (*os.File, os.FileInfo, error) 
 }
 
 func regularError(info os.FileInfo) error {
-	if info.IsDir() {
-		return &tools.Error{Code: tools.CodeFilesystemIsDirectory}
-	}
 	if !info.Mode().IsRegular() {
-		return fs.ErrInvalid
+		return &tools.Error{Code: tools.CodeFilesystemNotRegularFile}
 	}
 	return nil
 }
