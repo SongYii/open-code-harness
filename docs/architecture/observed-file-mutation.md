@@ -278,11 +278,17 @@ Stated as tests, not as caveats — see the evidence ledger.
   and this mechanism neither knows nor prevents it. What it does promise is
   that the damage is not compounded: the next structured write against a file
   `exec` changed is refused as stale rather than layered on top of it.
+- **External writers between guard validation and rename.** An uncooperative
+  writer can change the target after `checkGuard` but before our `os.Rename`;
+  our rename can overwrite that competing revision. The verifier then sees our
+  staged identity and expected bytes, not the overwritten revision, so it
+  cannot detect that race. Closing it needs a kernel compare-and-swap primitive
+  this project does not have.
 - **External mutation after final verification.** The verifier detects a
   changed staged identity, payload, or version through its final destination
-  check. A writer that changes the file after that final check remains outside
-  the guarantee; closing that last return-time window needs an OS-level
-  exclusive-create-and-swap primitive this project does not have.
+  check. A writer that changes the file after that final stable verification /
+  return boundary remains outside the guarantee; only the next guarded
+  operation can detect it as stale.
 - **Windows runtime.** The package cross-compiles and `version_other.go` gives
   it a version function, but no runtime behaviour is claimed or tested there.
 - **Cross-process observations.** Two `och` processes over one workspace each

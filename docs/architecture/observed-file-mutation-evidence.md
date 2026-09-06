@@ -241,9 +241,14 @@ ledger does not have to infer them from what is absent.
   proves the part that is true — the next structured write against a file
   `exec` changed is refused as stale — and does not claim the part that is
   not.
+- An uncooperative external writer can change the target after `checkGuard`
+  but before our `os.Rename`; our rename can overwrite that competing revision.
+  The verifier then sees our staged identity and expected bytes, not the
+  overwritten revision, so it cannot detect this accepted lack of kernel CAS.
 - A verifier detects staged-identity, expected-byte, and version mismatches
-  through its final destination check. External mutation after that final
-  verification remains outside the guarantee.
+  through its final destination check. External mutation after the final stable
+  verification / return boundary remains outside the guarantee and is detected
+  only by the next guarded operation.
 - Windows cross-compiles and has a version function; no runtime behaviour is
   claimed or tested there.
 - Two `och` processes over one workspace do not share observations. The guard
