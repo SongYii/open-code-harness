@@ -131,6 +131,14 @@ prior file's mode (or `0600` for a create), and closed. Then:
 - a create is published with `os.Link`, which fails if the destination exists;
 - a replace is published with `os.Rename`.
 
+After publication, a verifier held on the staged descriptor checks that the
+destination still names that staged identity and that its version is stable
+while its bytes exactly equal the expected payload. A mismatch returns a zero
+`MutationResult` and `fs_stale_version`; it never returns a version that could
+describe an external writer's bytes. The payload comparison streams through one
+fixed 32 KiB scratch buffer, so verification does not impose the edit size
+limit on `Write`.
+
 The parent directory is synced best-effort and the staging directory removed.
 Every failure before the link or rename leaves the original exactly as it was.
 
@@ -141,8 +149,11 @@ link and a rename only work within one filesystem.
 
 `Edit` is bounded UTF-8 literal replacement with no pattern language of any
 kind. It reads at most `MaxEditFileBytes+1`, refusing anything larger with
-`fs_too_large` — the bound is a memory bound, and a partial edit of a source
-file is worse than a refused one.
+`fs_too_large`. Before allocating either transformed output, it checks that
+both the CRLF-normalized intermediate and the CRLF-restored final result are
+at most 1 MiB; either excess is `fs_too_large`. The bound is a memory bound,
+and a partial edit of a source file is worse than a refused one. `Write` has
+no edit-size limit.
 
 Matching normalizes CRLF to LF, because the caller is matching against text it
 was shown. Publication restores the file's own dominant line ending, because
@@ -252,7 +263,9 @@ read-before-change recovery message; it never exposes adapter detail.
 
 | Bound | Value | Where |
 | --- | --- | --- |
-| `MaxEditFileBytes` | 1 MiB | `tools/files.go` |
+| edit source, normalized intermediate, and CRLF-restored final output | 1 MiB each | `tools/files.go` / `workspacefs` |
+| `Write` payload | no edit-size limit | `workspacefs` |
+| published-write verifier scratch | fixed 32 KiB | `workspacefs` |
 | `old_string` / `new_string` | 32,768 bytes each | `edit_file` schema |
 | `path` | 4,096 bytes | every file tool's schema |
 | read limit | `MaxToolResultBytes` | Application's read path |
@@ -265,11 +278,11 @@ Stated as tests, not as caveats — see the evidence ledger.
   and this mechanism neither knows nor prevents it. What it does promise is
   that the damage is not compounded: the next structured write against a file
   `exec` changed is refused as stale rather than layered on top of it.
-- **External writers between check and publication.** The guard closes the
-  window an agent controls, not the microseconds between `checkGuard` and
-  `os.Rename`. A writer that lands in that window loses its change silently.
-  Closing it would need an OS-level exclusive-create-and-swap this project
-  does not have.
+- **External mutation after final verification.** The verifier detects a
+  changed staged identity, payload, or version through its final destination
+  check. A writer that changes the file after that final check remains outside
+  the guarantee; closing that last return-time window needs an OS-level
+  exclusive-create-and-swap primitive this project does not have.
 - **Windows runtime.** The package cross-compiles and `version_other.go` gives
   it a version function, but no runtime behaviour is claimed or tested there.
 - **Cross-process observations.** Two `och` processes over one workspace each

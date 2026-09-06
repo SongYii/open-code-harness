@@ -87,13 +87,15 @@ const MaxEditFileBytes = 1 << 20
 - create 用 `os.Link` 发布，目标已存在就会失败；
 - replace 用 `os.Rename` 发布。
 
+发布之后，保留在暂存描述符上的 verifier 会确认目标仍然指向该暂存身份，并确认其版本稳定、字节精确等于预期 payload。不匹配时返回零值 `MutationResult` 和 `fs_stale_version`；绝不返回可能描述外部写入者字节的版本。payload 比较通过一个固定的 32 KiB scratch buffer 流式进行，因此验证不会给 `Write` 施加 edit 的大小上限。
+
 父目录尽力 sync，暂存目录随后删除。link 或 rename 之前的任何失败，都让原文件保持原样。
 
 暂存目录必须是同级目录而不是进程临时目录，因为 link 和 rename 只在同一个文件系统内有效。
 
 ### 编辑
 
-`Edit` 是有界的 UTF-8 字面量替换，没有任何形式的模式语言。它最多读 `MaxEditFileBytes+1`，超出就以 `fs_too_large` 拒绝——这个上限是内存上限，而且把源文件编辑一半比拒绝掉更糟。
+`Edit` 是有界的 UTF-8 字面量替换，没有任何形式的模式语言。它最多读 `MaxEditFileBytes+1`，超出就以 `fs_too_large` 拒绝。在分配任一转换后输出之前，它会检查 CRLF 归一化中间结果和 CRLF 恢复后的最终结果都不超过 1 MiB；任一超出均为 `fs_too_large`。这个上限是内存上限，而且把源文件编辑一半比拒绝掉更糟。`Write` 没有 edit 大小上限。
 
 匹配时把 CRLF 归一成 LF，因为调用方是在拿它被展示过的文本做匹配。发布时恢复文件自己占多数的行尾，因为一次从未声称要动行尾的编辑，不该悄悄把 CRLF 文件的每一行都重写一遍。
 
@@ -162,7 +164,9 @@ const MaxEditFileBytes = 1 << 20
 
 | 边界 | 值 | 位置 |
 | --- | --- | --- |
-| `MaxEditFileBytes` | 1 MiB | `tools/files.go` |
+| edit 源文件、归一化中间结果和 CRLF 恢复后的最终输出 | 各 1 MiB | `tools/files.go` / `workspacefs` |
+| `Write` payload | 无 edit 大小上限 | `workspacefs` |
+| 已发布写入的 verifier scratch | 固定 32 KiB | `workspacefs` |
 | `old_string` / `new_string` | 各 32,768 字节 | `edit_file` schema |
 | `path` | 4,096 字节 | 每个文件工具的 schema |
 | 读取上限 | `MaxToolResultBytes` | Application 的读路径 |
@@ -172,7 +176,7 @@ const MaxEditFileBytes = 1 << 20
 这些是以测试而不是以免责声明的形式存在的——见证据台账。
 
 - **`exec` 不受中介。** 一条命令可以重写工作区里的任何东西，这套机制既不知情也不阻止。它承诺的是伤害不会被叠加：针对 `exec` 改过的文件的下一次结构化写入会被判为过期而拒绝，而不是覆盖上去。
-- **检查与发布之间的外部写入者。** 守卫关掉的是 agent 能控制的那个窗口，不是 `checkGuard` 和 `os.Rename` 之间那几微秒。落在那个窗口里的写入者会无声地丢掉自己的改动。关掉它需要一个本项目没有的、OS 级别的独占创建并交换原语。
+- **最终验证后的外部变更。** verifier 会在最终目标检查之前发现暂存身份、payload 或版本的变化。文件若在那次最终检查之后才被外部写入者改动，仍在保证范围之外；要关掉最后这段 return-time 窗口，需要本项目没有的 OS 级独占创建并交换原语。
 - **Windows 运行时。** 这个包能交叉编译，`version_other.go` 也给了它一个版本函数，但那里不声称也没有测试任何运行时行为。
 - **跨进程观测。** 两个 `och` 进程操作同一个工作区，各有各的表，谁也看不见对方读了什么。守卫依然会拒绝第二个进程的盲写，而那才是真正重要的性质。
 - **目录、设备、套接字。** 以 `fs_not_regular_file` 拒绝，而不是去处理。

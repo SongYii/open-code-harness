@@ -352,23 +352,38 @@ git commit -m "feat(tools): add observed literal edit_file"
 
 - [x] **Step 1: Write failing pre-publication fault tests**
 
-Add a private test seam:
+Use the private, production-shaped publication seam:
 
 ```go
-type mutationHooks struct { beforePublish func() error }
+type filePublisher interface {
+    Publish(staged, destination string, create bool) error
+}
+type osPublisher struct{}
 ```
 
-Inject failure after staged sync/close but before link/rename. Assert an existing destination remains byte-identical, a create destination remains absent, and staging residue is removed.
+`FileSystem` defaults to `osPublisher`; tests substitute a private
+`failingPublisher` that returns before link/rename. Assert an existing
+destination remains byte-identical, a create destination remains absent, and
+staging residue is removed. This supersedes the earlier `mutationHooks` /
+`beforePublish` instruction: production has no test-only hook and no nil-hook
+branch.
 
 - [x] **Step 2: Prove fault tests are red**
 
 Run: `go test ./internal/harness/adapters/workspacefs -run TestMutationFault -count=1`
 
-Expected: FAIL because the hook is absent.
+Expected: FAIL because the private publisher seam and failing test double do
+not yet exist.
 
-- [x] **Step 3: Implement the private hook and cleanup**
+- [x] **Step 3: Implement publication seam, cleanup, and post-publication tests**
 
-Invoke it exactly once before publication. Install deferred descriptor close and staging cleanup before writing begins. Keep the hook unexported and nil in production.
+Install the unexported `filePublisher`/`osPublisher` seam; production always
+uses `osPublisher`. Install deferred descriptor close and staging cleanup
+before writing begins. A decorating publisher must publish through
+`osPublisher` and then interfere by rename and by in-place replacement in
+separate tests; each post-publication mismatch returns a zero
+`MutationResult` and `fs_stale_version`. Keep all doubles in tests, with no
+test-only production hook.
 
 - [x] **Step 4: Add concurrency/lifecycle scenarios**
 

@@ -18,8 +18,9 @@ differently than planned.
 
 ## Latest-main integration commits
 
-These are the implementation and documentation commits that exist on this
-branch's `origin/main` lineage:
+These are the reviewed fixes as integrated on the current branch after the
+`origin/main` base. Implementation claims below use these integrated SHAs, not
+the review-source SHAs.
 
 | Review source | Integrated commit | Role |
 | --- | --- | --- |
@@ -28,6 +29,18 @@ branch's `origin/main` lineage:
 | `86d9dc2` | `3367a5b34a7313198fc6082f0ee9f5e69da9dd28` | Fix B RED |
 | `bbaf36f` | `0714c68aea0a16f0b45344f1896402971b2285bd` | Fix B GREEN |
 | `102d706` | `ef27018efda1731aff085d59dd7a8fcfabe9e81d` | synchronized documentation |
+| `c5b893b` | `c5b893bd1d31bad856eadda2aef1f6b12c8f20a3` | RED coverage for guarded writes above the edit limit |
+| `335e273` | `335e273c2cae2f95984d6e41a570ee927bd6cecd` | GREEN streaming published-write verifier |
+
+The historical `f661140` latest-main integration report recorded these
+successful integration gates: focused repeated workspacefs/application race
+tests, `go test ./internal/docsguard ./internal/harness/architecture -count=1`,
+`go test ./... -count=1`, `go vet ./...`, Windows and Darwin builds, the
+ACP-web build, and both `git diff --check` forms. It also recorded that the
+scheduled Context matrix remains gated by
+`OCH_EVAL_SCHEDULED_CONTEXT_MATRIX`. That report artifact was reverted by
+`eb6e48c` and is absent from the net diff; this ledger preserves the relevant
+historical gate record instead of treating the reverted artifact as present.
 
 ## Final-review source provenance
 
@@ -145,10 +158,17 @@ Services share a table, so it is asserted directly and the reason is recorded
 in the test rather than left as a weaker end-to-end test that appears to prove
 more.
 
-## Verification command output
+## Historical source-branch verification output
 
-Go 1.26.6, linux/amd64. Run against this branch's own working tree.
+Go 1.26.6, linux/amd64. Run against the historical source-branch working tree.
 
+This block is historical source-branch evidence, not the current integrated
+code head. Its first exact full-race run failed only in SQLite:
+`TestConformance/limits_copies_cancellation_and_corruption` reported
+`rejected over-limit request leaked identities: store/writer_fenced
+(session=session-request-plus-one expected=0 actual=0 identity_kind=may_have_committed=false)`.
+The focused command once and then at `-count=3` had 4/4 non-reproductions; a
+subsequent historical full-race rerun exited 0 without a SQLite change.
 ```text
 $ go build ./...
 (clean)
@@ -169,7 +189,7 @@ $ go mod tidy -diff
 (clean)
 
 $ go test -race ./... -count=1
-(all packages ok; elapsed 369.95s on the final tree)
+(historical successful source-branch run, elapsed 369.95s; not a final-tree or current-head claim)
 
 $ cd cmd/acp-web-bridge/web && npm ci && npm run build
 (ok)
@@ -198,6 +218,20 @@ The scheduled Context matrix is unaffected by this work and was not run: it is
 gated by `OCH_EVAL_SCHEDULED_CONTEXT_MATRIX`, which only a schedule-triggered
 CI job sets.
 
+## Latest-main code-head controller race pass
+
+At code head `335e273`, the controller ran exactly:
+
+```text
+go test -race ./... -count=1
+```
+
+It exited 0 with no race report. Key package outputs were `cmd/och-eval`
+56.357s, MCP 22.947s, SQLite 72.552s, workspacefs 1.587s, application
+46.776s, and eval 199.642s. Every other package reported `ok` or `[no test
+files]`. This is the latest-main code-head pass; it is distinct from every
+historical source-branch full-race entry above.
+
 ## Known limitations
 
 These are the contract's own exclusions, restated here so a reader of the
@@ -207,8 +241,9 @@ ledger does not have to infer them from what is absent.
   proves the part that is true — the next structured write against a file
   `exec` changed is refused as stale — and does not claim the part that is
   not.
-- The window between `checkGuard` and `os.Rename` is not closed. An external
-  writer landing there loses its change silently.
+- A verifier detects staged-identity, expected-byte, and version mismatches
+  through its final destination check. External mutation after that final
+  verification remains outside the guarantee.
 - Windows cross-compiles and has a version function; no runtime behaviour is
   claimed or tested there.
 - Two `och` processes over one workspace do not share observations. The guard
