@@ -321,9 +321,22 @@ func (service *Service) invokeTool(ctx context.Context, session domain.SessionID
 		if err != nil {
 			// A failed mutation never advances the observation. Recording the
 			// attempt would let a second try succeed on the strength of the
-			// first one having failed. A create conflict remains fs.ErrExist
-			// here so the shared classifier can provide the bounded
-			// read-before-change recovery result.
+			// first one having failed.
+			//
+			// A create conflict is resolved here rather than in the shared
+			// classifier, because the answer depends on what this session
+			// looked at and the adapter has no way to know. Both a session
+			// that never read the target and a session that read it and found
+			// nothing produce a create-if-absent guard, and both arrive back
+			// as fs.ErrExist. Only the first should be told to read: the
+			// second already did, and what it read was that nothing was
+			// there, so its file changed after it looked.
+			if errors.Is(err, fs.ErrExist) {
+				if service.observations.seen(session, resolved) {
+					return "", false, "", "", &tools.Error{Code: tools.CodeFSStaleVersion}
+				}
+				return "", false, "", "", &tools.Error{Code: tools.CodeFSNotObserved}
+			}
 			return "", false, "", "", err
 		}
 		service.observations.recordPresent(session, resolved, result.Version)

@@ -113,7 +113,7 @@ const MaxEditFileBytes = 1 << 20
 | 观测为不存在 | `create_if_absent` | 拒绝，`fs_not_found` |
 | 观测为存在 | 按观测版本 `replace_if_version` | 同左 |
 
-未见过或观测为不存在后，写入都使用 `create_if_absent`，所以已存在的文件会被拒绝而不是被覆盖；Application 把原始 `fs.ErrExist` create conflict 映射成 `fs_not_observed`。编辑没有这种兜底：未见过时报 `fs_not_observed`，已经观测为不存在时报 `fs_not_found`。
+未见过或观测为不存在后，写入都使用 `create_if_absent`，所以已存在的文件会被拒绝而不是被覆盖。两种状态产生同一个守卫、也都以原始 `fs.ErrExist` 返回，但它们得到的答案不一样：从没看过的会话被告知去读，而读过目标、发现什么都没有的会话被告知文件在它看过之后变了。只有观测表分得清这两者，所以解析这个冲突的是写路径而不是共享分类器。编辑没有这种兜底：未见过时报 `fs_not_observed`，已经观测为不存在时报 `fs_not_found`。
 
 这张表**只存在于进程内，从不持久化**。版本是关于「这台机器上此刻这个文件」的事实；把它写进 Domain 事件会让它看起来像持久历史，而一个在另一台主机上恢复的会话就会带着描述它从没见过的文件的守卫。这个后果是被明说而不是被藏起来的：重启，或任何持有同一个持久 Session 的第二个进程，都从「什么也没见过」开始。
 
@@ -158,7 +158,7 @@ const MaxEditFileBytes = 1 << 20
 | `fs_not_text` | file is not valid UTF-8 text |
 | `fs_too_large` | file exceeds the edit size limit |
 
-有一处翻译发生在 Application，因为适配器不可能知道得更多。create-if-absent 守卫在目标已存在时返回原始 `fs.ErrExist`；Application 把这个 create conflict 映射成 `fs_not_observed` 和 read-before-change 恢复消息，不暴露 adapter 细节。
+有一处翻译发生在 Application，因为适配器不可能知道得更多。create-if-absent 守卫在目标已存在时返回原始 `fs.ErrExist`，而这一个适配器答案覆盖了它分不清的两种情况：会话从没读过这个目标，或者会话读过、发现什么都没有、之后有东西出现了。Application 持有观测表，负责判定是哪一种——前者是 `fs_not_observed`，后者是 `fs_stale_version`。对后者说「先读文件」，等于让它把一次它记得做过的读再做一遍，而这正是本机制在 Task 3 里反向修过的同一个毛病。`fs.ErrExist` 刻意不在共享分类器的表里，这样一个没被解析的它会落到通用失败上，而不是无声地声称某个会话从没看过。两条路径都不暴露 adapter 细节。
 
 ## 边界值
 

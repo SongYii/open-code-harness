@@ -253,3 +253,37 @@ ledger does not have to infer them from what is absent.
   claimed or tested there.
 - Two `och` processes over one workspace do not share observations. The guard
   still refuses the second one's blind write.
+
+
+## Update: a create conflict has two answers, not one (2026-09-07)
+
+The hardening pass that bounded edit expansion also moved the create-conflict
+answer into the shared classifier, mapping every raw `fs.ErrExist` to
+`fs_not_observed`. That is right for one of the two situations it covers and
+wrong for the other.
+
+Both a session that never read the target and a session that read it, found
+nothing, and then lost a race to an external creator produce a
+`create_if_absent` guard, and both come back from the adapter as `fs.ErrExist`.
+The adapter cannot distinguish them, because the difference is not on disk —
+it is in the observation table. Telling the second one to "read the file before
+changing it" instructs it to repeat a read it remembers making, which is the
+failure Task 3 corrected once already in the other direction.
+
+The gap was in the tests, not only in the change: nothing covered
+observed-absent-then-created, so the regression passed CI.
+`TestObservedAbsentThenExternallyCreatedSaysReRead` closes that, and it landed
+on `main` first so the classifier change had to answer it rather than be
+argued about in review.
+
+The write path now resolves `fs.ErrExist` where the observation table is
+visible — `fs_not_observed` when the session never looked, `fs_stale_version`
+when it did — and `fs.ErrExist` is deliberately absent from
+`classifyFilesystemError`, so an unresolved one falls through to the generic
+failure rather than silently claiming a session never looked.
+
+Mutations, both observed red:
+  - classify every create conflict as never-observed ->
+    TestObservedAbsentThenExternallyCreatedSaysReRead.
+  - classify every create conflict as stale ->
+    TestWriteFileRefusesToOverwriteAnUnobservedFile.

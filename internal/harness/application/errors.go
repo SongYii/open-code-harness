@@ -1,9 +1,7 @@
 package application
 
 import (
-	"errors"
 	"fmt"
-	"io/fs"
 
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
@@ -127,10 +125,15 @@ const (
 //
 // Anything unmapped keeps falling through to the caller's existing handling,
 // so a genuine I/O error is never dressed up as a guard refusal.
+// A raw fs.ErrExist is deliberately absent from this table. The adapter
+// reports a create conflict as fs.ErrExist and cannot say more, because it
+// does not know what the session looked at: "you never read this" and "you
+// read this, found nothing, and something appeared" reach it identically.
+// Only the observation table can tell them apart, so the write path resolves
+// fs.ErrExist into one of the two codes before an error gets here. Classifying
+// it blindly would tell a session that did read to read again.
 func classifyFilesystemError(err error) (code string, text string, ok bool) {
 	switch {
-	case errors.Is(err, fs.ErrExist):
-		return CodeFSNotObserved, ToolTextFSNotObserved, true
 	case tools.IsCode(err, tools.CodeFSNotObserved):
 		return CodeFSNotObserved, ToolTextFSNotObserved, true
 	case tools.IsCode(err, tools.CodeFSNotFound):

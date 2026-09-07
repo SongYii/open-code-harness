@@ -180,9 +180,13 @@ of what each session has read. Three states, and none may be collapsed:
 | observed present | `replace_if_version` at the observed version | the same |
 
 A write after unseen or observed-absent state uses `create_if_absent`, so an
-existing file is refused rather than overwritten; Application maps the raw
-`fs.ErrExist` create conflict to `fs_not_observed`. An edit has no such
-fallback: unseen is `fs_not_observed`, while a file already observed absent is
+existing file is refused rather than overwritten. Both states produce the same
+guard and both come back as a raw `fs.ErrExist`, but they do not get the same
+answer: a session that never looked is told to read, while a session that read
+the target and found nothing is told the file changed since it looked. Only
+the observation table can tell those apart, so the write path resolves the
+conflict rather than the shared classifier. An edit has no such fallback:
+unseen is `fs_not_observed`, while a file already observed absent is
 `fs_not_found`.
 
 The table is **process-local and never persisted**. A version is a fact about a
@@ -256,8 +260,16 @@ or file content.
 
 One translation happens in Application because the adapter cannot know better.
 A create-if-absent guard reports raw `fs.ErrExist` when something is already
-there. Application maps that create conflict to `fs_not_observed` and the
-read-before-change recovery message; it never exposes adapter detail.
+there, and that single adapter answer covers two situations the adapter cannot
+distinguish: the session never read the target, or it read the target, found
+nothing, and something appeared afterwards. Application holds the observation
+table and resolves which one it is — `fs_not_observed` for the first,
+`fs_stale_version` for the second. Telling the second to read the file would
+be instructing it to repeat a read it remembers making, which is the failure
+this mechanism spent Task 3 correcting in the other direction. `fs.ErrExist`
+is deliberately not in the shared classifier's table, so an unresolved one
+falls through to the generic failure rather than silently claiming a session
+never looked. Adapter detail is never exposed either way.
 
 ## Bounds
 
