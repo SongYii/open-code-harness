@@ -81,3 +81,34 @@ BenchmarkBackup-8             50  2150897 ns/op   13506 B/op    182 allocs/op
 - 对数据库文件的长时间浸泡与损坏模糊测试。
 - 真实 `SQLITE_FULL` 设备级证据（分类已经过单元证明）。
 - 租约谓词与 busy 测试之外的多进程写者证据。
+
+
+## 更新：一致性测试跑在一个它控制不了的租约时钟上（2026-09-06）
+
+`TestConformance/limits_copies_cancellation_and_corruption` 在一次完整并行
+`go test -race ./... -count=1` 中失败过一次，报的是
+`rejected over-limit request leaked identities: store/writer_fenced`。issue #176
+当时把原因记成「心跳被 CPU 争抢饿死」。这个判断错了，而且错得值得写明：
+**这个包里根本没有心跳。**
+
+`RenewLease` 只在一个地方被调用，即 `internal/harness/runtime/heartbeat.go`，
+而这里没有任何测试会跑 Runtime Host。于是 `tempStoreConfig` 打开的 store 持有
+生产默认的 30 秒租约、从不续租，并在 `Open` 之后 30 秒开始把自己的 append 拒成
+`writer_fenced`。失败的那个子测试会构造若干 16 MiB 请求，在完整并行 `-race`
+运行下耗时 32.81 秒。并行负载不是失败的原因，它只是让一个硬性的墙钟期限变得够得着。
+
+这个诊断是靠把它变成确定性复现来确认的，而不是等下一次偶发：把 harness 的租约设成
+一秒，同一个子测试就会以同一个 `writer_fenced` 码按需失败。
+
+修复是让 `tempStoreConfig` 显式给出一小时的租约。选一小时而不是照着今天最慢的测试
+去调一个值，是为了让以后某个变慢的测试不会悄悄把同样的失败带回来。租约到期本身并没有
+失去测试：`lease_test.go` 会用一秒租约打开它自己的 store 专门看它过期，而
+`TestRenewLeaseExtendsExpiry` 现在按它自己配置的时长做断言，不再硬编码那个
+把继承来的默认值悄悄编码进去的 31 秒上界。
+
+`TestTheSharedHarnessNeverRunsOnTheProductionLeaseClock` 让这条规则可执行，因为
+它防的那种失败是无声的、表现为偶发。两个变异都观测到红：把时长改回默认值，以及
+彻底去掉这个覆盖。
+
+验证命令：`go test -race ./internal/harness/adapters/sqlite -count=3`（199.8 秒，ok）
+和 `go test -race ./... -count=1`（390.5 秒，全部通过）。

@@ -21,9 +21,55 @@ func openStore(t *testing.T, config Config) *Store {
 	return store
 }
 
+// testLeaseDuration is the lease every store built by tempStoreConfig holds.
+//
+// It is long on purpose, and the reason is not "tests are slow". Nothing in
+// this package runs a Runtime Host, and the Runtime Host is the only thing
+// that ever calls RenewLease -- so a store opened here holds a lease that is
+// never renewed and simply expires. Under the production default of 30
+// seconds, any test whose wall-clock from Open exceeds that window starts
+// failing its next Append as writer_fenced, which is the store behaving
+// exactly as designed and the test measuring something it never meant to.
+//
+// That is not hypothetical: TestConformance/limits_copies_cancellation_and_corruption
+// builds several 16 MiB requests and took 32.81s under a full parallel -race
+// run, and failed. Setting this to a second reproduces it on demand.
+//
+// An hour is chosen rather than a value tuned to today's slowest test, so a
+// later test that grows past some threshold does not quietly reintroduce the
+// same failure. Expiry itself is not left untested: lease_test.go opens its
+// own stores with a one-second lease precisely to watch them expire.
+const testLeaseDuration = time.Hour
+
 func tempStoreConfig(t *testing.T) Config {
 	t.Helper()
-	return Config{Path: filepath.Join(t.TempDir(), "harness.db"), RuntimeID: "runtime-1"}
+	return Config{
+		Path:          filepath.Join(t.TempDir(), "harness.db"),
+		RuntimeID:     "runtime-1",
+		LeaseDuration: testLeaseDuration,
+	}
+}
+
+// TestTheSharedHarnessNeverRunsOnTheProductionLeaseClock is a guard rather
+// than a behaviour test.
+//
+// The failure it prevents is silent and looks like flakiness: a store with no
+// heartbeat, a lease that expires on a wall clock the test does not control,
+// and a fenced Append reported as whatever assertion happened to come next.
+// Reverting tempStoreConfig to the default would restore that, so the rule is
+// a test instead of a comment.
+func TestTheSharedHarnessNeverRunsOnTheProductionLeaseClock(t *testing.T) {
+	config := tempStoreConfig(t)
+	if config.LeaseDuration == 0 {
+		t.Fatal("the shared harness took the production default lease; nothing here renews it")
+	}
+	if config.LeaseDuration <= defaultLeaseDuration {
+		t.Fatalf("harness lease = %v, want well above the %v production default: no test in this package runs a Runtime Host, so the lease is never renewed",
+			config.LeaseDuration, defaultLeaseDuration)
+	}
+	if config.LeaseDuration > maxLeaseDuration {
+		t.Fatalf("harness lease = %v exceeds the adapter's own maximum %v", config.LeaseDuration, maxLeaseDuration)
+	}
 }
 
 func TestOpenAppliesAndReportsOperatingProfile(t *testing.T) {
