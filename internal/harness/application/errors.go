@@ -57,6 +57,7 @@ const (
 // retries.
 const (
 	CodeFSNotObserved    = "fs_not_observed"
+	CodeFSNotFound       = "fs_not_found"
 	CodeFSStaleVersion   = "fs_stale_version"
 	CodeFSEditNotFound   = "fs_edit_not_found"
 	CodeFSAmbiguousEdit  = "fs_ambiguous_edit"
@@ -103,6 +104,7 @@ const (
 // the workspace layout is not theirs to learn from a failure message.
 const (
 	ToolTextFSNotObserved    = "read the file before changing it"
+	ToolTextFSNotFound       = "file does not exist; create it or re-read after it appears"
 	ToolTextFSStaleVersion   = "file changed since it was read; re-read it and retry"
 	ToolTextFSEditNotFound   = "literal was not found"
 	ToolTextFSAmbiguousEdit  = "literal appears more than once; include more context or use replace_all"
@@ -123,10 +125,19 @@ const (
 //
 // Anything unmapped keeps falling through to the caller's existing handling,
 // so a genuine I/O error is never dressed up as a guard refusal.
+// A raw fs.ErrExist is deliberately absent from this table. The adapter
+// reports a create conflict as fs.ErrExist and cannot say more, because it
+// does not know what the session looked at: "you never read this" and "you
+// read this, found nothing, and something appeared" reach it identically.
+// Only the observation table can tell them apart, so the write path resolves
+// fs.ErrExist into one of the two codes before an error gets here. Classifying
+// it blindly would tell a session that did read to read again.
 func classifyFilesystemError(err error) (code string, text string, ok bool) {
 	switch {
 	case tools.IsCode(err, tools.CodeFSNotObserved):
 		return CodeFSNotObserved, ToolTextFSNotObserved, true
+	case tools.IsCode(err, tools.CodeFSNotFound):
+		return CodeFSNotFound, ToolTextFSNotFound, true
 	case tools.IsCode(err, tools.CodeFSStaleVersion):
 		return CodeFSStaleVersion, ToolTextFSStaleVersion, true
 	case tools.IsCode(err, tools.CodeFSEditNotFound):

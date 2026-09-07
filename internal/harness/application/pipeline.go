@@ -323,16 +323,18 @@ func (service *Service) invokeTool(ctx context.Context, session domain.SessionID
 			// attempt would let a second try succeed on the strength of the
 			// first one having failed.
 			//
-			// The refusal is also re-labelled where the adapter cannot know
-			// better. A create-if-absent guard is what an unseen target gets,
-			// and the adapter reports "stale" when something is in fact
-			// there -- but telling a model the file changed since it was read,
-			// when this session never read it, sends it to re-read a file it
-			// has no memory of and calls that a retry. What actually needs to
-			// happen is the first read.
-			if tools.IsCode(err, tools.CodeFSStaleVersion) &&
-				guard.Kind == tools.GuardCreateIfAbsent &&
-				!service.observations.seen(session, resolved) {
+			// A create conflict is resolved here rather than in the shared
+			// classifier, because the answer depends on what this session
+			// looked at and the adapter has no way to know. Both a session
+			// that never read the target and a session that read it and found
+			// nothing produce a create-if-absent guard, and both arrive back
+			// as fs.ErrExist. Only the first should be told to read: the
+			// second already did, and what it read was that nothing was
+			// there, so its file changed after it looked.
+			if errors.Is(err, fs.ErrExist) {
+				if service.observations.seen(session, resolved) {
+					return "", false, "", "", &tools.Error{Code: tools.CodeFSStaleVersion}
+				}
 				return "", false, "", "", &tools.Error{Code: tools.CodeFSNotObserved}
 			}
 			return "", false, "", "", err

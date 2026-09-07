@@ -64,7 +64,7 @@ const MaxEditFileBytes = 1 << 20
 
 `Read` 打开一个在牢笼内的常规文件，在读取 `limit+1` 字节的前后各从打开的描述符上取一次版本，两者不一致就报 `fs_stale_version`。字节和一个它们并非在其上被读出的版本配对，会让所有基于它的守卫都变成假承诺。
 
-它最多返回 `limit` 字节，还有更多时置 `Truncated`，丢掉裁剪留下的不完整 rune，然后拒绝非法 UTF-8 内容并报 `fs_not_text`。丢 rune 在前，这样在字符中间切一刀就不会被算成这个文件的问题。
+它最多返回 `limit` 字节，还有更多时置 `Truncated`，丢掉裁剪留下的不完整 rune，然后拒绝非法 UTF-8 内容并报 `fs_not_text`。丢 rune 在前，这样在字符中间切一刀就不会被算成这个文件的问题。目录和特殊文件都会在打开前以 `fs_not_regular_file` 拒绝，因此读取 FIFO 不会阻塞。
 
 ## 变更
 
@@ -87,13 +87,15 @@ const MaxEditFileBytes = 1 << 20
 - create 用 `os.Link` 发布，目标已存在就会失败；
 - replace 用 `os.Rename` 发布。
 
+发布之后，保留在暂存描述符上的 verifier 会确认目标仍然指向该暂存身份，并确认其版本稳定、字节精确等于预期 payload。不匹配时返回零值 `MutationResult` 和 `fs_stale_version`；绝不返回可能描述外部写入者字节的版本。payload 比较通过一个固定的 32 KiB scratch buffer 流式进行，因此验证不会给 `Write` 施加 edit 的大小上限。
+
 父目录尽力 sync，暂存目录随后删除。link 或 rename 之前的任何失败，都让原文件保持原样。
 
 暂存目录必须是同级目录而不是进程临时目录，因为 link 和 rename 只在同一个文件系统内有效。
 
 ### 编辑
 
-`Edit` 是有界的 UTF-8 字面量替换，没有任何形式的模式语言。它最多读 `MaxEditFileBytes+1`，超出就以 `fs_too_large` 拒绝——这个上限是内存上限，而且把源文件编辑一半比拒绝掉更糟。
+`Edit` 是有界的 UTF-8 字面量替换，没有任何形式的模式语言。它最多读 `MaxEditFileBytes+1`，超出就以 `fs_too_large` 拒绝。在分配任一转换后输出之前，它会检查 CRLF 归一化中间结果和 CRLF 恢复后的最终结果都不超过 1 MiB；任一超出均为 `fs_too_large`。这个上限是内存上限，而且把源文件编辑一半比拒绝掉更糟。`Write` 没有 edit 大小上限。
 
 匹配时把 CRLF 归一成 LF，因为调用方是在拿它被展示过的文本做匹配。发布时恢复文件自己占多数的行尾，因为一次从未声称要动行尾的编辑，不该悄悄把 CRLF 文件的每一行都重写一遍。
 
@@ -108,10 +110,10 @@ const MaxEditFileBytes = 1 << 20
 | 状态 | `write_file` 守卫 | `edit_file` 守卫 |
 | --- | --- | --- |
 | 未见过（没有表项） | `create_if_absent`——失败关闭 | 拒绝，`fs_not_observed` |
-| 观测为不存在 | `create_if_absent` | 拒绝，`fs_edit_not_found` |
+| 观测为不存在 | `create_if_absent` | 拒绝，`fs_not_found` |
 | 观测为存在 | 按观测版本 `replace_if_version` | 同左 |
 
-对未见过的目标做写就是 create，所以已存在的文件会被拒绝而不是被覆盖。编辑没有这种兜底：对一个会话从没见过的文本，做不出诚实的承诺。
+未见过或观测为不存在后，写入都使用 `create_if_absent`，所以已存在的文件会被拒绝而不是被覆盖。两种状态产生同一个守卫、也都以原始 `fs.ErrExist` 返回，但它们得到的答案不一样：从没看过的会话被告知去读，而读过目标、发现什么都没有的会话被告知文件在它看过之后变了。只有观测表分得清这两者，所以解析这个冲突的是写路径而不是共享分类器。编辑没有这种兜底：未见过时报 `fs_not_observed`，已经观测为不存在时报 `fs_not_found`。
 
 这张表**只存在于进程内，从不持久化**。版本是关于「这台机器上此刻这个文件」的事实；把它写进 Domain 事件会让它看起来像持久历史，而一个在另一台主机上恢复的会话就会带着描述它从没见过的文件的守卫。这个后果是被明说而不是被藏起来的：重启，或任何持有同一个持久 Session 的第二个进程，都从「什么也没见过」开始。
 
@@ -143,11 +145,12 @@ const MaxEditFileBytes = 1 << 20
 
 ### 失败词汇表
 
-七个码，因为每一个都对应不同的下一步。它们作为 Turn 内普通的失败 Tool Result 抵达模型；没有一个会渲染路径、版本或文件内容。
+八个码，因为每一个都对应不同的下一步。它们作为 Turn 内普通的失败 Tool Result 抵达模型；没有一个会渲染路径、版本或文件内容。
 
 | 码 | 消息 |
 | --- | --- |
 | `fs_not_observed` | read the file before changing it |
+| `fs_not_found` | file does not exist; create it or re-read after it appears |
 | `fs_stale_version` | file changed since it was read; re-read it and retry |
 | `fs_edit_not_found` | literal was not found |
 | `fs_ambiguous_edit` | literal appears more than once; include more context or use replace_all |
@@ -155,13 +158,15 @@ const MaxEditFileBytes = 1 << 20
 | `fs_not_text` | file is not valid UTF-8 text |
 | `fs_too_large` | file exceeds the edit size limit |
 
-有一处翻译发生在 Application，因为适配器不可能知道得更多。未见过的目标拿到的是 create-if-absent 守卫，而目标确实存在时适配器报的是 `fs_stale_version`——但对一个本会话从没读过的文件告诉模型「文件自你读过之后变了」，是在把它打发去重读一个它毫无记忆的东西，还管这叫重试。Application 知道自己有没有观测，于是在那里改报 `fs_not_observed`。
+有一处翻译发生在 Application，因为适配器不可能知道得更多。create-if-absent 守卫在目标已存在时返回原始 `fs.ErrExist`，而这一个适配器答案覆盖了它分不清的两种情况：会话从没读过这个目标，或者会话读过、发现什么都没有、之后有东西出现了。Application 持有观测表，负责判定是哪一种——前者是 `fs_not_observed`，后者是 `fs_stale_version`。对后者说「先读文件」，等于让它把一次它记得做过的读再做一遍，而这正是本机制在 Task 3 里反向修过的同一个毛病。`fs.ErrExist` 刻意不在共享分类器的表里，这样一个没被解析的它会落到通用失败上，而不是无声地声称某个会话从没看过。两条路径都不暴露 adapter 细节。
 
 ## 边界值
 
 | 边界 | 值 | 位置 |
 | --- | --- | --- |
-| `MaxEditFileBytes` | 1 MiB | `tools/files.go` |
+| edit 源文件、归一化中间结果和 CRLF 恢复后的最终输出 | 各 1 MiB | `tools/files.go` / `workspacefs` |
+| `Write` payload | 无 edit 大小上限 | `workspacefs` |
+| 已发布写入的 verifier scratch | 固定 32 KiB | `workspacefs` |
 | `old_string` / `new_string` | 各 32,768 字节 | `edit_file` schema |
 | `path` | 4,096 字节 | 每个文件工具的 schema |
 | 读取上限 | `MaxToolResultBytes` | Application 的读路径 |
@@ -171,7 +176,8 @@ const MaxEditFileBytes = 1 << 20
 这些是以测试而不是以免责声明的形式存在的——见证据台账。
 
 - **`exec` 不受中介。** 一条命令可以重写工作区里的任何东西，这套机制既不知情也不阻止。它承诺的是伤害不会被叠加：针对 `exec` 改过的文件的下一次结构化写入会被判为过期而拒绝，而不是覆盖上去。
-- **检查与发布之间的外部写入者。** 守卫关掉的是 agent 能控制的那个窗口，不是 `checkGuard` 和 `os.Rename` 之间那几微秒。落在那个窗口里的写入者会无声地丢掉自己的改动。关掉它需要一个本项目没有的、OS 级别的独占创建并交换原语。
+- **守卫验证与 rename 之间的外部写入者。** 不合作的外部写入者可在 `checkGuard` 之后、我们的 `os.Rename` 之前改动目标；我们的 rename 可能覆盖该竞争版本。verifier 随后看到的是我们的暂存身份和预期字节，而不是被覆盖的版本，因此无法发现这场竞争。要关掉它，需要本项目没有的内核级 compare-and-swap 原语。
+- **最终验证后的外部变更。** verifier 会在最终目标检查之前发现暂存身份、payload 或版本的变化。文件若在最终稳定验证 / return 边界之后才被外部写入者改动，仍在保证范围之外；只有下一次带守卫的操作能把它发现为 stale。
 - **Windows 运行时。** 这个包能交叉编译，`version_other.go` 也给了它一个版本函数，但那里不声称也没有测试任何运行时行为。
 - **跨进程观测。** 两个 `och` 进程操作同一个工作区，各有各的表，谁也看不见对方读了什么。守卫依然会拒绝第二个进程的盲写，而那才是真正重要的性质。
 - **目录、设备、套接字。** 以 `fs_not_regular_file` 拒绝，而不是去处理。

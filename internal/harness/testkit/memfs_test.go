@@ -52,3 +52,8 @@ func TestMemFSReadWriteResolve(t *testing.T) {
 		t.Fatalf("missing Read error = %v", err)
 	}
 }
+
+func TestMemFSLargeGuardedWrites(t *testing.T) {
+	mem := testkit.NewMemFS("/workspace")
+	porttest.FileSystemLargeGuardedWrites(t, mem, "/workspace")
+}

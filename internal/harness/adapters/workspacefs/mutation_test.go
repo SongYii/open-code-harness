@@ -79,8 +79,8 @@ func TestGuardedCreate(t *testing.T) {
 		t.Fatal("a successful create returned no version")
 	}
 
-	if _, err := files.Write(ctx, abs, []byte("second"), createGuard); !tools.IsCode(err, tools.CodeFSStaleVersion) {
-		t.Fatalf("second create = %v, want %q", err, tools.CodeFSStaleVersion)
+	if _, err := files.Write(ctx, abs, []byte("second"), createGuard); !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("second create = %v, want fs.ErrExist", err)
 	}
 	if got := readRel(t, root, "new.txt"); got != "first" {
 		t.Fatalf("a refused create changed the file: %q", got)
@@ -121,7 +121,7 @@ func TestConcurrentCreatorsThroughOneFileSystemAreSerialized(t *testing.T) {
 		switch {
 		case err == nil:
 			winners++
-		case tools.IsCode(err, tools.CodeFSStaleVersion):
+		case errors.Is(err, fs.ErrExist):
 		default:
 			t.Fatalf("writer %d failed with an unexpected error: %v", i, err)
 		}
@@ -177,7 +177,7 @@ func TestConcurrentCreatorsAcrossFileSystemsLeaveExactlyOneWinner(t *testing.T) 
 		switch {
 		case err == nil:
 			winners++
-		case tools.IsCode(err, tools.CodeFSStaleVersion):
+		case errors.Is(err, fs.ErrExist):
 		default:
 			t.Fatalf("writer %d failed with an unexpected error: %v", i, err)
 		}

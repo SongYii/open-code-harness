@@ -27,16 +27,9 @@ type FileSystem struct {
 	locksMu   sync.Mutex
 	locks     map[string]*pathLock
 
-	// hooks is a test-only seam, nil in production. See mutation_fault_test.go:
-	// the window between a synced staged replacement and the rename that
-	// publishes it is not otherwise reachable, and "a failure there is a
-	// non-event" is the central claim of this adapter.
-	hooks mutationHooks
-}
-
-// mutationHooks is the private fault-injection seam.
-type mutationHooks struct {
-	beforePublish func() error
+	// publisher owns the real link/rename commit point and is replaceable only
+	// inside this package so fault tests exercise the production-shaped path.
+	publisher filePublisher
 }
 
 var errInvalidRoot = errors.New("workspacefs: invalid workspace root")
@@ -57,7 +50,7 @@ func New(root string) (*FileSystem, error) {
 	if err != nil || !info.IsDir() {
 		return nil, errInvalidRoot
 	}
-	return &FileSystem{root: real}, nil
+	return &FileSystem{root: real, publisher: osPublisher{}}, nil
 }
 
 func (files *FileSystem) Resolve(ctx context.Context, workspace, requested string) (string, error) {
@@ -109,7 +102,7 @@ func (files *FileSystem) Read(ctx context.Context, abs string, limit int) (tools
 		return tools.FileRead{}, err
 	}
 	if info.IsDir() {
-		return tools.FileRead{}, fs.ErrInvalid
+		return tools.FileRead{}, fsError(tools.CodeFSNotRegularFile)
 	}
 	if !info.Mode().IsRegular() {
 		return tools.FileRead{}, fsError(tools.CodeFSNotRegularFile)

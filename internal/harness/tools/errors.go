@@ -23,6 +23,10 @@ const (
 	// precondition: an agent may not overwrite what it has not looked at.
 	CodeFSNotObserved ErrorCode = "fs_not_observed"
 
+	// CodeFSNotFound: an edit targeted a file this session read and observed
+	// absent. Reading again cannot reveal text to edit unless it first appears.
+	CodeFSNotFound ErrorCode = "fs_not_found"
+
 	// CodeFSStaleVersion: the target no longer carries the version the guard
 	// named. Something else wrote in between, and the change is refused
 	// rather than applied over the other writer.
@@ -83,7 +87,7 @@ func IsCode(err error, wanted ErrorCode) bool {
 func validErrorCode(code ErrorCode) bool {
 	switch code {
 	case CodeInvalidSpec, CodeInvalidArgs, CodeScopeDenied, CodeDuplicateName,
-		CodeFSNotObserved, CodeFSStaleVersion, CodeFSEditNotFound, CodeFSAmbiguousEdit,
+		CodeFSNotObserved, CodeFSNotFound, CodeFSStaleVersion, CodeFSEditNotFound, CodeFSAmbiguousEdit,
 		CodeFSNotRegularFile, CodeFSNotText, CodeFSTooLarge:
 		return true
 	default:

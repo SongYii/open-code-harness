@@ -1,6 +1,7 @@
 package workspacefs
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -25,6 +26,20 @@ import (
 // never a durable thing an agent's own list_dir or a user's version control
 // would trip over.
 const stagingDirName = ".och-stage"
+
+// filePublisher owns the final atomic namespace operation after staging closes.
+type filePublisher interface {
+	Publish(staged, destination string, create bool) error
+}
+
+type osPublisher struct{}
+
+func (osPublisher) Publish(staged, destination string, create bool) error {
+	if create {
+		return os.Link(staged, destination)
+	}
+	return os.Rename(staged, destination)
+}
 
 // fallbackIdentityFields is what every platform can report portably.
 //
@@ -108,7 +123,7 @@ func (files *FileSystem) Write(ctx context.Context, abs string, data []byte, gua
 	if err != nil {
 		return tools.MutationResult{}, err
 	}
-	return files.publish(target, data, info)
+	return files.publish(ctx, target, data, info)
 }
 
 // Edit applies one bounded literal replacement under the same guard.
@@ -143,7 +158,7 @@ func (files *FileSystem) Edit(ctx context.Context, abs string, oldString, newStr
 	if err != nil {
 		return tools.MutationResult{}, err
 	}
-	return files.publish(target, []byte(edited), info)
+	return files.publish(ctx, target, []byte(edited), info)
 }
 
 // beginMutation performs the checks every mutation shares, in the order that
@@ -192,10 +207,9 @@ func (files *FileSystem) checkGuard(target string, guard tools.MutationGuard) (o
 		return nil, fsError(tools.CodeFSNotRegularFile)
 	}
 	if guard.Kind == tools.GuardCreateIfAbsent {
-		// Something is already there, so the promise "nothing is here" is
-		// false. This is the same class of answer as a stale version: the
-		// state the caller expected is not the state that exists.
-		return nil, fsError(tools.CodeFSStaleVersion)
+		// Keep the filesystem-level create conflict intact. Application maps it
+		// to the bounded read-before-change recovery result.
+		return nil, fs.ErrExist
 	}
 	if versionOf(info) != guard.Version {
 		return nil, fsError(tools.CodeFSStaleVersion)
@@ -208,7 +222,7 @@ func (files *FileSystem) checkGuard(target string, guard tools.MutationGuard) (o
 // The destination is never opened for truncation. Every failure before the
 // final link or rename leaves the original exactly as it was, which is what
 // makes a failed write a non-event rather than a half-written file.
-func (files *FileSystem) publish(target string, data []byte, prior os.FileInfo) (tools.MutationResult, error) {
+func (files *FileSystem) publish(ctx context.Context, target string, data []byte, prior os.FileInfo) (tools.MutationResult, error) {
 	dir := filepath.Dir(target)
 	staging := filepath.Join(dir, stagingDirName)
 	if err := os.MkdirAll(staging, 0o700); err != nil {
@@ -221,76 +235,153 @@ func (files *FileSystem) publish(target string, data []byte, prior os.FileInfo) 
 		mode = prior.Mode().Perm()
 	}
 
-	staged, err := stageBytes(staging, data, mode)
+	staged, verifier, stagedInfo, err := stageBytes(staging, data, mode)
 	if err != nil {
 		return tools.MutationResult{}, err
 	}
 	defer os.Remove(staged)
+	defer verifier.Close()
 
-	// Everything above is reversible; everything below is not. The hook fires
-	// exactly here, on that boundary.
-	if files.hooks.beforePublish != nil {
-		if err := files.hooks.beforePublish(); err != nil {
-			return tools.MutationResult{}, err
-		}
-	}
-
-	if prior == nil {
-		// Link fails if the destination exists, so two creators racing past
-		// the in-process lock still cannot both win.
-		if err := os.Link(staged, target); err != nil {
-			if errors.Is(err, fs.ErrExist) {
-				return tools.MutationResult{}, fsError(tools.CodeFSStaleVersion)
-			}
-			return tools.MutationResult{}, err
-		}
-	} else if err := os.Rename(staged, target); err != nil {
+	if err := ctx.Err(); err != nil {
 		return tools.MutationResult{}, err
 	}
-
+	create := prior == nil
+	if err := files.publisher.Publish(staged, target, create); err != nil {
+		return tools.MutationResult{}, err
+	}
+	// Removing the create staging link changes ctime, so verify only after the
+	// extra link has gone. Replacement publication already consumed its path.
+	if create {
+		_ = os.Remove(staged)
+	}
 	syncDir(dir)
 
-	info, err := os.Lstat(target)
+	version, err := verifyPublished(ctx, verifier, stagedInfo, target, data)
 	if err != nil {
 		return tools.MutationResult{}, err
 	}
 	operation := tools.MutationUpdate
-	if prior == nil {
+	if create {
 		operation = tools.MutationCreate
 	}
-	return tools.MutationResult{Version: versionOf(info), Operation: operation}, nil
+	return tools.MutationResult{Version: version, Operation: operation}, nil
+}
+
+// verifyPublished binds the returned version to the staged inode and expected
+// bytes. It can detect interference before and during this bounded check, but
+// cannot make the subsequent return atomic with external filesystem writers.
+func verifyPublished(ctx context.Context, verifier *os.File, stagedInfo os.FileInfo, destination string, expected []byte) (tools.FileVersion, error) {
+	before, err := verifier.Stat()
+	if err != nil || !os.SameFile(stagedInfo, before) || !sameStagedContentMetadata(stagedInfo, before) {
+		return "", fsError(tools.CodeFSStaleVersion)
+	}
+	destinationBefore, err := os.Lstat(destination)
+	if err != nil || !destinationBefore.Mode().IsRegular() || !os.SameFile(before, destinationBefore) || versionOf(before) != versionOf(destinationBefore) {
+		return "", fsError(tools.CodeFSStaleVersion)
+	}
+	if _, err := verifier.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	matches, err := publishedContentMatches(verifier, expected)
+	if err != nil {
+		return "", err
+	}
+	after, err := verifier.Stat()
+	if err != nil {
+		return "", fsError(tools.CodeFSStaleVersion)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if versionOf(before) != versionOf(after) || !matches {
+		return "", fsError(tools.CodeFSStaleVersion)
+	}
+	destinationAfter, err := os.Lstat(destination)
+	if err != nil || !destinationAfter.Mode().IsRegular() || !os.SameFile(after, destinationAfter) || versionOf(after) != versionOf(destinationAfter) {
+		return "", fsError(tools.CodeFSStaleVersion)
+	}
+	return versionOf(after), nil
+}
+
+// publishedContentMatches compares the staged descriptor with the caller's
+// existing payload using bounded scratch space. The final one-byte probe is
+// load-bearing: matching expected as a prefix is not enough to verify what was
+// published.
+func publishedContentMatches(verifier *os.File, expected []byte) (bool, error) {
+	var chunk [32 * 1024]byte
+	for offset := 0; offset < len(expected); {
+		remaining := len(expected) - offset
+		if remaining > len(chunk) {
+			remaining = len(chunk)
+		}
+		n, err := io.ReadFull(verifier, chunk[:remaining])
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				return false, nil
+			}
+			return false, err
+		}
+		if !bytes.Equal(chunk[:n], expected[offset:offset+n]) {
+			return false, nil
+		}
+		offset += n
+	}
+
+	var extra [1]byte
+	n, err := verifier.Read(extra[:])
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	return n == 0 && errors.Is(err, io.EOF), nil
+}
+
+func sameStagedContentMetadata(staged, published os.FileInfo) bool {
+	return staged.Size() == published.Size() &&
+		staged.Mode() == published.Mode() &&
+		staged.ModTime().Equal(published.ModTime())
 }
 
 // stageBytes writes a complete, synced, correctly-permissioned replacement
 // and returns its path. Syncing before publication is what makes the rename a
 // promise about durable bytes rather than about a name.
-func stageBytes(staging string, data []byte, mode fs.FileMode) (string, error) {
+func stageBytes(staging string, data []byte, mode fs.FileMode) (string, *os.File, os.FileInfo, error) {
 	file, err := os.CreateTemp(staging, "stage-")
 	if err != nil {
-		return "", err
+		return "", nil, nil, err
 	}
 	name := file.Name()
 
-	if _, err := file.Write(data); err != nil {
-		file.Close()
-		os.Remove(name)
-		return "", err
+	var verifier *os.File
+	if _, err = file.Write(data); err == nil {
+		err = file.Sync()
 	}
-	if err := file.Sync(); err != nil {
-		file.Close()
-		os.Remove(name)
-		return "", err
+	if err == nil {
+		// Open while the staged file is still owner-readable. The intended
+		// mode may remove read permission, but this descriptor can still bind
+		// the published inode, bytes, and returned version.
+		verifier, err = os.Open(name)
 	}
-	if err := file.Chmod(mode); err != nil {
-		file.Close()
-		os.Remove(name)
-		return "", err
+	if err == nil {
+		err = file.Chmod(mode)
 	}
-	if err := file.Close(); err != nil {
-		os.Remove(name)
-		return "", err
+	closeErr := file.Close()
+	if err == nil {
+		err = closeErr
 	}
-	return name, nil
+	if err != nil {
+		if verifier != nil {
+			_ = verifier.Close()
+		}
+		_ = os.Remove(name)
+		return "", nil, nil, err
+	}
+	stagedInfo, err := verifier.Stat()
+	if err != nil {
+		_ = verifier.Close()
+		_ = os.Remove(name)
+		return "", nil, nil, err
+	}
+	return name, verifier, stagedInfo, nil
 }
 
 // syncDir is best effort: the rename already happened, and a directory that
@@ -342,7 +433,7 @@ func applyLiteralEdit(current, oldString, newString string, replaceAll bool) (st
 		return "", &tools.Error{Code: tools.CodeInvalidArgs}
 	}
 
-	crlf := crlfIsDominant(current)
+	restoreCRLF := crlfIsDominant(current)
 	normalized := normalizeNewlines(current)
 	wanted := normalizeNewlines(oldString)
 	replacement := normalizeNewlines(newString)
@@ -355,15 +446,58 @@ func applyLiteralEdit(current, oldString, newString string, replaceAll bool) (st
 		return "", fsError(tools.CodeFSAmbiguousEdit)
 	}
 
-	limit := 1
+	replacements := 1
 	if replaceAll {
-		limit = -1
+		replacements = count
 	}
-	edited := strings.Replace(normalized, wanted, replacement, limit)
-	if crlf {
+	if !editResultWithinLimit(normalized, wanted, replacement, replacements, restoreCRLF) {
+		return "", fsError(tools.CodeFSTooLarge)
+	}
+	edited := strings.Replace(normalized, wanted, replacement, replacements)
+	if restoreCRLF {
 		edited = strings.ReplaceAll(edited, "\n", "\r\n")
 	}
 	return edited, nil
+}
+
+func editResultWithinLimit(data, old, replacement string, count int, restoreCRLF bool) bool {
+	intermediate, ok := replacedSize(len(data), len(old), len(replacement), count, tools.MaxEditFileBytes)
+	if !ok {
+		return false
+	}
+	if !restoreCRLF {
+		return true
+	}
+	newlines, ok := replacedSize(
+		strings.Count(data, "\n"),
+		strings.Count(old, "\n"),
+		strings.Count(replacement, "\n"),
+		count,
+		tools.MaxEditFileBytes,
+	)
+	return ok && newlines <= tools.MaxEditFileBytes-intermediate
+}
+
+// replacedSize computes base-count*old+count*replacement without overflowing.
+// For shrinking replacements, every counted non-overlapping match proves the
+// subtraction is bounded by base. For expanding replacements, division checks
+// the remaining budget before multiplication.
+func replacedSize(base, old, replacement, count, limit int) (int, bool) {
+	if base < 0 || old < 0 || replacement < 0 || count < 0 || limit < 0 {
+		return 0, false
+	}
+	if replacement <= old {
+		shrink := old - replacement
+		if shrink > 0 && count > base/shrink {
+			return 0, false
+		}
+		result := base - count*shrink
+		return result, result <= limit
+	}
+	if base > limit || count > (limit-base)/(replacement-old) {
+		return 0, false
+	}
+	return base + count*(replacement-old), true
 }
 
 // crlfIsDominant reports whether more of this file's lines end in CRLF than

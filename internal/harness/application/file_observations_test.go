@@ -44,8 +44,8 @@ func TestFileObservationsTransitions(t *testing.T) {
 	if got := observations.guardForWrite(session, target); got.Kind != tools.GuardCreateIfAbsent || got.Version != "" {
 		t.Fatalf("absent write guard = %#v, want a bare create-if-absent", got)
 	}
-	if _, err := observations.guardForEdit(session, target); !tools.IsCode(err, tools.CodeFSEditNotFound) {
-		t.Fatalf("absent edit guard = %v, want %q", err, tools.CodeFSEditNotFound)
+	if _, err := observations.guardForEdit(session, target); !tools.IsCode(err, tools.CodeFSNotFound) {
+		t.Fatalf("absent edit guard = %v, want %q", err, tools.CodeFSNotFound)
 	}
 
 	observations.forget(session)

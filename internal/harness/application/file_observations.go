@@ -65,7 +65,7 @@ func (observations *fileObservations) guardForEdit(session domain.SessionID, tar
 	case !ok:
 		return tools.MutationGuard{}, &tools.Error{Code: tools.CodeFSNotObserved}
 	case !observed.present:
-		return tools.MutationGuard{}, &tools.Error{Code: tools.CodeFSEditNotFound}
+		return tools.MutationGuard{}, &tools.Error{Code: tools.CodeFSNotFound}
 	}
 	return tools.MutationGuard{Kind: tools.GuardReplaceIfVersion, Version: observed.version}, nil
 }

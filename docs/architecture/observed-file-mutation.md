@@ -99,7 +99,9 @@ make every guard built on them a false promise.
 It returns at most `limit` bytes, sets `Truncated` when there was more, drops
 an incomplete trailing rune left by the clip, and then refuses content that is
 not valid UTF-8 with `fs_not_text`. The rune trim comes first so a cut in the
-middle of a character is not blamed on the file.
+middle of a character is not blamed on the file. Directories and special files
+are both refused as `fs_not_regular_file` before opening, so FIFO reads do not
+block.
 
 ## Mutating
 
@@ -129,6 +131,14 @@ prior file's mode (or `0600` for a create), and closed. Then:
 - a create is published with `os.Link`, which fails if the destination exists;
 - a replace is published with `os.Rename`.
 
+After publication, a verifier held on the staged descriptor checks that the
+destination still names that staged identity and that its version is stable
+while its bytes exactly equal the expected payload. A mismatch returns a zero
+`MutationResult` and `fs_stale_version`; it never returns a version that could
+describe an external writer's bytes. The payload comparison streams through one
+fixed 32 KiB scratch buffer, so verification does not impose the edit size
+limit on `Write`.
+
 The parent directory is synced best-effort and the staging directory removed.
 Every failure before the link or rename leaves the original exactly as it was.
 
@@ -139,8 +149,11 @@ link and a rename only work within one filesystem.
 
 `Edit` is bounded UTF-8 literal replacement with no pattern language of any
 kind. It reads at most `MaxEditFileBytes+1`, refusing anything larger with
-`fs_too_large` — the bound is a memory bound, and a partial edit of a source
-file is worse than a refused one.
+`fs_too_large`. Before allocating either transformed output, it checks that
+both the CRLF-normalized intermediate and the CRLF-restored final result are
+at most 1 MiB; either excess is `fs_too_large`. The bound is a memory bound,
+and a partial edit of a source file is worse than a refused one. `Write` has
+no edit-size limit.
 
 Matching normalizes CRLF to LF, because the caller is matching against text it
 was shown. Publication restores the file's own dominant line ending, because
@@ -163,12 +176,18 @@ of what each session has read. Three states, and none may be collapsed:
 | State | `write_file` guard | `edit_file` guard |
 | --- | --- | --- |
 | unseen (no entry) | `create_if_absent` — fails closed | refused, `fs_not_observed` |
-| observed absent | `create_if_absent` | refused, `fs_edit_not_found` |
+| observed absent | `create_if_absent` | refused, `fs_not_found` |
 | observed present | `replace_if_version` at the observed version | the same |
 
-A write to an unseen target is a create, so an existing file is refused rather
-than overwritten. An edit has no such fallback: there is no honest promise to
-make about text the session has never seen.
+A write after unseen or observed-absent state uses `create_if_absent`, so an
+existing file is refused rather than overwritten. Both states produce the same
+guard and both come back as a raw `fs.ErrExist`, but they do not get the same
+answer: a session that never looked is told to read, while a session that read
+the target and found nothing is told the file changed since it looked. Only
+the observation table can tell those apart, so the write path resolves the
+conflict rather than the shared classifier. An edit has no such fallback:
+unseen is `fs_not_observed`, while a file already observed absent is
+`fs_not_found`.
 
 The table is **process-local and never persisted**. A version is a fact about a
 file on this machine at this moment; writing one into a Domain event would
@@ -224,13 +243,14 @@ an edit tool exists to save.
 
 ### Failure vocabulary
 
-Seven codes, because each calls for a different next step. They reach the model
+Eight codes, because each calls for a different next step. They reach the model
 as ordinary failed Tool Results inside a Turn; none renders a path, a version,
 or file content.
 
 | Code | Message |
 | --- | --- |
 | `fs_not_observed` | read the file before changing it |
+| `fs_not_found` | file does not exist; create it or re-read after it appears |
 | `fs_stale_version` | file changed since it was read; re-read it and retry |
 | `fs_edit_not_found` | literal was not found |
 | `fs_ambiguous_edit` | literal appears more than once; include more context or use replace_all |
@@ -239,17 +259,25 @@ or file content.
 | `fs_too_large` | file exceeds the edit size limit |
 
 One translation happens in Application because the adapter cannot know better.
-A create-if-absent guard is what an unseen target gets, and the adapter reports
-`fs_stale_version` when something is in fact there — but telling a model the
-file changed since it was read, when this session never read it, sends it to
-re-read a file it has no memory of and calls that a retry. Application knows
-whether it had an observation, and reports `fs_not_observed` there instead.
+A create-if-absent guard reports raw `fs.ErrExist` when something is already
+there, and that single adapter answer covers two situations the adapter cannot
+distinguish: the session never read the target, or it read the target, found
+nothing, and something appeared afterwards. Application holds the observation
+table and resolves which one it is — `fs_not_observed` for the first,
+`fs_stale_version` for the second. Telling the second to read the file would
+be instructing it to repeat a read it remembers making, which is the failure
+this mechanism spent Task 3 correcting in the other direction. `fs.ErrExist`
+is deliberately not in the shared classifier's table, so an unresolved one
+falls through to the generic failure rather than silently claiming a session
+never looked. Adapter detail is never exposed either way.
 
 ## Bounds
 
 | Bound | Value | Where |
 | --- | --- | --- |
-| `MaxEditFileBytes` | 1 MiB | `tools/files.go` |
+| edit source, normalized intermediate, and CRLF-restored final output | 1 MiB each | `tools/files.go` / `workspacefs` |
+| `Write` payload | no edit-size limit | `workspacefs` |
+| published-write verifier scratch | fixed 32 KiB | `workspacefs` |
 | `old_string` / `new_string` | 32,768 bytes each | `edit_file` schema |
 | `path` | 4,096 bytes | every file tool's schema |
 | read limit | `MaxToolResultBytes` | Application's read path |
@@ -262,11 +290,17 @@ Stated as tests, not as caveats — see the evidence ledger.
   and this mechanism neither knows nor prevents it. What it does promise is
   that the damage is not compounded: the next structured write against a file
   `exec` changed is refused as stale rather than layered on top of it.
-- **External writers between check and publication.** The guard closes the
-  window an agent controls, not the microseconds between `checkGuard` and
-  `os.Rename`. A writer that lands in that window loses its change silently.
-  Closing it would need an OS-level exclusive-create-and-swap this project
-  does not have.
+- **External writers between guard validation and rename.** An uncooperative
+  writer can change the target after `checkGuard` but before our `os.Rename`;
+  our rename can overwrite that competing revision. The verifier then sees our
+  staged identity and expected bytes, not the overwritten revision, so it
+  cannot detect that race. Closing it needs a kernel compare-and-swap primitive
+  this project does not have.
+- **External mutation after final verification.** The verifier detects a
+  changed staged identity, payload, or version through its final destination
+  check. A writer that changes the file after that final stable verification /
+  return boundary remains outside the guarantee; only the next guarded
+  operation can detect it as stale.
 - **Windows runtime.** The package cross-compiles and `version_other.go` gives
   it a version function, but no runtime behaviour is claimed or tested there.
 - **Cross-process observations.** Two `och` processes over one workspace each
