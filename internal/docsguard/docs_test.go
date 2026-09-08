@@ -296,8 +296,16 @@ func TestWorkspaceInstructionsImplementedContractIsPublishedAsOneUnit(t *testing
 	if !strings.Contains(read(t, readingPath), "system-prompt-workspace-instructions.md") {
 		t.Error("Chinese reading copy does not name its normative English source")
 	}
-	if !strings.Contains(read(t, evidencePath), "not run") {
-		t.Error("evidence ledger does not state the live-validation status")
+	evidence := read(t, evidencePath)
+	for _, required := range []string{
+		"## Live DeepSeek validation",
+		"Status: **partial**",
+		"Subject provider calls: **completed**",
+		"Judge provider call: **not attempted**",
+	} {
+		if !strings.Contains(evidence, required) {
+			t.Errorf("evidence ledger does not contain live-validation marker %q", required)
+		}
 	}
 	wantRows := map[string]string{
 		"docs/architecture/system-prompt-workspace-instructions.md":          "Implemented contract",
