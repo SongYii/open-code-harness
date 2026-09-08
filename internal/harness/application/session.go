@@ -206,6 +206,7 @@ func (service *Service) ResumeSession(ctx context.Context, request ResumeSession
 	// Ordinary LoadSession deliberately does not do this: observations have to
 	// survive turns, or every turn would begin unable to edit.
 	service.observations.forget(request.SessionID)
+	service.instructions.forget(request.SessionID)
 	return state.Clone(), nil
 }
 
@@ -260,6 +261,10 @@ func (service *Service) DeleteSession(ctx context.Context, request DeleteSession
 	}
 	_, _, err = CommitAppendIntent(ctx, service.store, state, intent)
 	if !isAppendOutcomeUnknown(err) {
+		if err == nil {
+			service.observations.forget(request.SessionID)
+			service.instructions.forget(request.SessionID)
+		}
 		return err
 	}
 	resolveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), service.config.AppendResolutionTimeout)
@@ -271,6 +276,7 @@ func (service *Service) DeleteSession(ctx context.Context, request DeleteSession
 	_, _, err = ApplyCommittedIntent(state, intent, receipt)
 	if err == nil {
 		service.observations.forget(request.SessionID)
+		service.instructions.forget(request.SessionID)
 	}
 	return err
 }
@@ -303,6 +309,7 @@ func (service *Service) CloseSession(ctx context.Context, request CloseSessionRe
 	}
 	// Nothing should still be held about a closed session's workspace.
 	service.observations.forget(request.SessionID)
+	service.instructions.forget(request.SessionID)
 	return CloseSessionResult{Session: next.Clone(), Records: records}, nil
 }
 
