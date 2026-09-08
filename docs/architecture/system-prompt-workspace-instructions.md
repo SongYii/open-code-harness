@@ -139,4 +139,3 @@ of converting uncertainty into removal.
   unchanged.
 - A live-model quality or prompt-injection-resistance claim requires separate
   evaluation. Keyless deterministic tests do not make that claim.
-

@@ -76,4 +76,3 @@ content-bearing transcript 中，但不会进入 summarizer。
 非法 UTF-8、路径、大小、数量、digest chain、快照或 prompt 身份都会 fail closed。
 Windows 专属运行时保证、由 `exec`/MCP 驱动的发现、provider 缓存命中率保证、
 真实模型的抗 prompt-injection 结论均不在本合同内。
-
