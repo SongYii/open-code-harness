@@ -49,10 +49,15 @@ v1 action types:
   so it is never expanded against an Executor that cannot honor it.
 - `collect` — exactly one of `workspacePath` (a file to stage as evidence
   from the Attempt's own workspace) or `verifierFact` (a marker consumed by
-  a specific verifier, not a real file). Declaring `collect` does not by
-  itself require anything — pair it with a `deterministicVerifierIds` entry
-  that actually checks for the collected content, or the collection is
-  inert.
+  a specific verifier, not a real file). A workspace collection may set
+  `expectedState: "absent"`; the collector then publishes a bounded JSON
+  observation instead of treating the missing target as a collection error,
+  and `workspace-paths-absent-v1` deterministically fails if the path was
+  present. Omitted `expectedState` (or explicit `"present"`) retains the
+  ordinary file-copy behavior. A required `workspace` evidence role is
+  invalid without at least one workspace collection action. Declaring
+  `collect` does not by itself require anything — pair it with a
+  `deterministicVerifierIds` entry that checks the collected content.
 
 `fixtureDigest` must exactly match `DigestFixtureTree`'s own SHA-256 of your
 `fixture/` directory's real content. An empty fixture directory (just a
