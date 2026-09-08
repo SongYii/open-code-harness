@@ -135,6 +135,46 @@ func TestWorkspaceInstructionsReconcileRetainsStateAndDeduplicatesFailureEpisode
 	}
 }
 
+func TestWorkspaceInstructionsRestartReplaysStateAndRechecksDisk(t *testing.T) {
+	mem := newVersionedInstructionFS()
+	mem.AddFile("AGENTS.md", []byte("root\n"))
+	files := &instructionReadSpy{FileSystem: mem}
+	store, state := newInstructionStore(t)
+	firstService := newInstructionServiceForTest(store, files)
+	state, err := firstService.reconcileWorkspaceInstructions(context.Background(), state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files.takeLimits()
+
+	// A fresh Service owns a fresh observation table. It must replay the
+	// durable instruction state, then read the file again rather than trust
+	// the previous process's FileVersion hint.
+	secondService := newInstructionServiceForTest(store, files)
+	unchanged, err := secondService.reconcileWorkspaceInstructions(context.Background(), state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unchanged.Version != state.Version || len(store.snapshot()) != int(state.Version) {
+		t.Fatalf("unchanged restart appended an event: version=%d records=%d", unchanged.Version, len(store.snapshot()))
+	}
+	assertReadLimits(t, files.takeLimits(), []int{0, agentinstructions.MaxSourceBytes})
+
+	mem.AddFile("AGENTS.md", []byte("changed after restart\n"))
+	thirdService := newInstructionServiceForTest(store, files)
+	changed, err := thirdService.reconcileWorkspaceInstructions(context.Background(), unchanged, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.Version != unchanged.Version+1 {
+		t.Fatalf("changed restart version = %d, want %d", changed.Version, unchanged.Version+1)
+	}
+	event := store.snapshot()[len(store.snapshot())-1].Event.(domain.WorkspaceInstructionsRecorded)
+	if len(event.Changes) != 1 || event.Changes[0].Action != domain.InstructionActionReplace || event.Changes[0].Content != "changed after restart\n" {
+		t.Fatalf("restart replacement = %#v", event)
+	}
+}
+
 type instructionReadSpy struct {
 	tools.FileSystem
 	mu      sync.Mutex
