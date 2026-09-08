@@ -157,12 +157,15 @@ func jsonString(value string) string {
 func TestRunAttemptHappyPathCompletesAllActions(t *testing.T) {
 	server := newEchoProvider(t)
 	subject := testSubject(t, server.Server)
+	subject.Provider.ContextWindow = 4096
+	subject.Provider.MaxOutput = 512
 	attemptID := testAttemptID(t)
 	directories := testDirectories(t, attemptID)
 
 	scenario := validScenario()
 	scenario.Actions = []ScenarioAction{
 		newEchoScenarioAction("prompt-1", "hello"),
+		newEchoScenarioAction("prompt-2", strings.Repeat("neutral padding ", 350)),
 		{ID: "compact-1", Type: ActionCompact, Compact: &CompactAction{Strategy: "reset"}},
 		{ID: "collect-1", Type: ActionCollect, Collect: &CollectAction{WorkspacePath: "output.txt"}},
 	}
@@ -179,14 +182,42 @@ func TestRunAttemptHappyPathCompletesAllActions(t *testing.T) {
 	if !result.WriterStopped {
 		t.Fatal("WriterStopped = false, want true after a normal completion")
 	}
-	if result.Outcome.TerminalSession == nil || result.Outcome.TerminalSession.TurnCount != 1 {
-		t.Fatalf("TerminalSession = %+v, want TurnCount 1", result.Outcome.TerminalSession)
+	if result.Outcome.TerminalSession == nil || result.Outcome.TerminalSession.TurnCount != 2 {
+		t.Fatalf("TerminalSession = %+v, want TurnCount 2", result.Outcome.TerminalSession)
 	}
 	if result.Outcome.TerminalSession.Open != true || result.Outcome.TerminalSession.Running {
 		t.Fatalf("TerminalSession = %+v, want an open, non-running session", result.Outcome.TerminalSession)
 	}
-	if server.calls.Load() != 1 {
-		t.Fatalf("provider calls = %d, want 1", server.calls.Load())
+	if server.calls.Load() != 2 {
+		t.Fatalf("provider calls = %d, want 2", server.calls.Load())
+	}
+}
+
+func TestRunAttemptCompactNoOpIsIndeterminate(t *testing.T) {
+	server := newEchoProvider(t)
+	subject := testSubject(t, server.Server)
+	attemptID := testAttemptID(t)
+	directories := testDirectories(t, attemptID)
+
+	scenario := validScenario()
+	scenario.Actions = []ScenarioAction{
+		{ID: "compact-1", Type: ActionCompact, Compact: &CompactAction{Strategy: "reset"}},
+	}
+	scenario.ApprovalScript = nil
+	scenario.RequiredCapabilities = []string{"compact"}
+
+	result, err := RunAttempt(context.Background(), attemptID, subject, directories, scenario, NewApprovalMatcher(nil))
+	if err != nil {
+		t.Fatalf("RunAttempt() error = %v", err)
+	}
+	if result.Outcome.Status != OutcomeIndeterminate || result.Outcome.Code != "compact_not_run" {
+		t.Fatalf("Outcome = %+v, want indeterminate/compact_not_run", result.Outcome)
+	}
+	if !result.WriterStopped {
+		t.Fatal("WriterStopped = false, want true after terminal compact no-op")
+	}
+	if server.calls.Load() != 0 {
+		t.Fatalf("provider calls = %d, want 0", server.calls.Load())
 	}
 }
 

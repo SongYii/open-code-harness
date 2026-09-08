@@ -154,6 +154,9 @@ func runACPActionCompact(ctx context.Context, state *acpExecutionState, action S
 
 	state.process = process
 	state.conn = conn
+	if !result.Ran {
+		return compactNotRunOutcome(attemptID, started), true
+	}
 	return Outcome{}, false
 }
 

@@ -330,6 +330,10 @@ func collectWorkspaceArtifacts(directories AttemptRootDirectories, scenario Scen
 			continue
 		}
 		relative := action.Collect.WorkspacePath
+		if action.Collect.ExpectedState == WorkspaceExpectedAbsent {
+			collectWorkspaceAbsenceObservation(directories, action, required, budget)
+			continue
+		}
 		entryPath := path.Join("workspace", relative)
 		sourcePath := filepath.Join(directories.Workspace, filepath.FromSlash(relative))
 		if !pathWithin(sourcePath, directories.Workspace) {
@@ -363,6 +367,63 @@ func collectWorkspaceArtifacts(directories AttemptRootDirectories, scenario Scen
 			budget.track(missingEntry(entryPath, "workspace", "application/octet-stream", required, "workspace_file_read_failed", err))
 		}
 	}
+}
+
+const schemaWorkspacePathObservation = "och.eval.workspace-path-observation"
+
+type workspacePathObservation struct {
+	FormatVersion int                    `json:"formatVersion"`
+	Schema        string                 `json:"schema"`
+	ActionID      ActionID               `json:"actionId"`
+	WorkspacePath string                 `json:"workspacePath"`
+	State         WorkspaceExpectedState `json:"state"`
+}
+
+func collectWorkspaceAbsenceObservation(directories AttemptRootDirectories, action ScenarioAction, required bool, budget *collectionBudget) {
+	relative := action.Collect.WorkspacePath
+	entryPath := path.Join("workspace", "observations", string(action.ID)+".json")
+	sourcePath := filepath.Join(directories.Workspace, filepath.FromSlash(relative))
+	if !pathWithin(sourcePath, directories.Workspace) {
+		budget.track(rejectedEntry(entryPath, "workspace", required, "workspace_path_escapes_root", nil))
+		return
+	}
+
+	actual := WorkspaceExpectedPresent
+	if _, err := os.Lstat(sourcePath); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			actual = WorkspaceExpectedAbsent
+		} else {
+			budget.track(missingEntry(entryPath, "workspace", "application/json", required, "workspace_observation_failed", err))
+			return
+		}
+	}
+	observation := workspacePathObservation{
+		FormatVersion: FormatVersion,
+		Schema:        schemaWorkspacePathObservation,
+		ActionID:      action.ID,
+		WorkspacePath: relative,
+		State:         actual,
+	}
+	destinationPath := filepath.Join(directories.Evidence, filepath.FromSlash(entryPath))
+	if err := os.MkdirAll(filepath.Dir(destinationPath), 0o700); err != nil {
+		budget.track(missingEntry(entryPath, "workspace", "application/json", required, "workspace_evidence_dir_create_failed", err))
+		return
+	}
+	if err := publishDocument(filepath.Dir(destinationPath), filepath.Base(destinationPath), observation); err != nil {
+		budget.track(missingEntry(entryPath, "workspace", "application/json", required, "workspace_observation_publish_failed", err))
+		return
+	}
+	staged, err := digestFile(destinationPath)
+	if err != nil {
+		_ = os.Remove(destinationPath)
+		budget.track(missingEntry(entryPath, "workspace", "application/json", required, "workspace_observation_digest_failed", err))
+		return
+	}
+	budget.track(ManifestEntry{
+		Path: entryPath, Role: "workspace", MediaType: "application/json",
+		Required: required, State: EntryCollected, SHA256: staged.sha256,
+		ByteLength: staged.byteLength, ProducedBy: string(action.ID),
+	})
 }
 
 func missingEntry(entryPath, role, mediaType string, required bool, reasonCode string, err error) ManifestEntry {
