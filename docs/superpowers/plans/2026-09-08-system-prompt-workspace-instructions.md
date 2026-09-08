@@ -228,8 +228,8 @@ Expected: FAIL because state reconciliation is absent.
 type Observation struct {
     Path, Scope string
     Present     bool
-    Version     tools.FileVersion
     Content     []byte
+    FailureClass string
 }
 
 type Source struct {
@@ -256,7 +256,7 @@ type Snapshot struct {
 }
 ```
 
-Sort by scope depth then normalized path. Digest exact bytes with SHA-256. Persist no `FileVersion`; keep it in Application's runtime cache only.
+Sort by scope depth then normalized path. Digest exact bytes with SHA-256. Persist no `FileVersion` and do not expose it to the pure state machine; keep it in Application's runtime cache only, where it remains a read-avoidance hint rather than content identity.
 
 - [ ] **Step 4: Write failing rendering and bound tests**
 
