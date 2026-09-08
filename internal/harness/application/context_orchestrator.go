@@ -242,12 +242,13 @@ func (deps ContextOrchestratorDeps) summarizeTimeout() time.Duration {
 // admitted yet — they are reserved identifiers here, not yet-committed
 // ones.
 type PrepareContextInput struct {
-	SessionID    domain.SessionID
-	TurnID       domain.TurnID
-	ItemID       domain.ItemID
-	Trigger      string
-	CurrentInput domain.ModelPromptMessage
-	Tools        []domain.ToolSchema
+	SessionID      domain.SessionID
+	TurnID         domain.TurnID
+	ItemID         domain.ItemID
+	Trigger        string
+	PrefixMessages []domain.ModelPromptMessage
+	CurrentInput   domain.ModelPromptMessage
+	Tools          []domain.ToolSchema
 	// Force skips the Budget.Trigger comparison and always attempts a
 	// cut (contextengine.PlanInput.Force). Provider overflow recovery
 	// (implementation plan Task 10, design §15.3) sets this: a Provider
@@ -315,7 +316,7 @@ func PrepareContext(ctx context.Context, deps ContextOrchestratorDeps, state dom
 	}
 
 	plan, err := contextengine.SelectCutPoint(contextengine.PlanInput{
-		Units: scan.Units, Budget: deps.Budget, Meter: deps.Meter, Tools: input.Tools, CurrentInput: input.CurrentInput, Force: input.Force,
+		PrefixMessages: input.PrefixMessages, Units: scan.Units, Budget: deps.Budget, Meter: deps.Meter, Tools: input.Tools, CurrentInput: input.CurrentInput, Force: input.Force,
 	})
 	if err != nil {
 		return PrepareContextResult{}, mapContextEngineScanError(err)
@@ -344,7 +345,7 @@ func PrepareContext(ctx context.Context, deps ContextOrchestratorDeps, state dom
 				return PrepareContextResult{}, mapContextEngineScanError(err)
 			}
 			plan, err = contextengine.SelectCutPoint(contextengine.PlanInput{
-				Units: scan.Units, Budget: deps.Budget, Meter: deps.Meter, Tools: input.Tools, CurrentInput: input.CurrentInput, Force: input.Force,
+				PrefixMessages: input.PrefixMessages, Units: scan.Units, Budget: deps.Budget, Meter: deps.Meter, Tools: input.Tools, CurrentInput: input.CurrentInput, Force: input.Force,
 			})
 			if err != nil {
 				return PrepareContextResult{}, mapContextEngineScanError(err)
@@ -375,13 +376,13 @@ func PrepareContext(ctx context.Context, deps ContextOrchestratorDeps, state dom
 				checkpointArg = previous
 			}
 			currentMessages := contextengine.Materialize(contextengine.MaterializeInput{
-				Checkpoint: checkpointArg, RetainedTail: plan.RetainedUnits, CurrentInput: input.CurrentInput, Tools: input.Tools, Meter: deps.Meter,
+				PrefixMessages: input.PrefixMessages, Checkpoint: checkpointArg, RetainedTail: plan.RetainedUnits, CurrentInput: input.CurrentInput, Tools: input.Tools, Meter: deps.Meter,
 			}).Envelope.Messages
 			anchorEstimate := contextengine.EvaluateUsageAnchor(anchor, deps.Meter,
 				deps.Identity.AdapterFamily, deps.Identity.ModelID, deps.Identity.EndpointID, deps.Meter.ID(), input.Tools, currentMessages)
 			if anchorEstimate.Eligible && anchorEstimate.Tokens > deps.Budget.Trigger {
 				plan, err = contextengine.SelectCutPoint(contextengine.PlanInput{
-					Units: scan.Units, Budget: deps.Budget, Meter: deps.Meter, Tools: input.Tools, CurrentInput: input.CurrentInput, Force: true,
+					PrefixMessages: input.PrefixMessages, Units: scan.Units, Budget: deps.Budget, Meter: deps.Meter, Tools: input.Tools, CurrentInput: input.CurrentInput, Force: true,
 				})
 				if err != nil {
 					return PrepareContextResult{}, mapContextEngineScanError(err)
@@ -429,7 +430,7 @@ func PrepareContext(ctx context.Context, deps ContextOrchestratorDeps, state dom
 		checkpointArg = activeCheckpoint
 	}
 	result.Prepared = contextengine.Materialize(contextengine.MaterializeInput{
-		Checkpoint: checkpointArg, RetainedTail: retainedUnits, CurrentInput: input.CurrentInput, Tools: input.Tools, Meter: deps.Meter,
+		PrefixMessages: input.PrefixMessages, Checkpoint: checkpointArg, RetainedTail: retainedUnits, CurrentInput: input.CurrentInput, Tools: input.Tools, Meter: deps.Meter,
 		ProtectedTail: deps.Budget.ProtectedTail, MaxPrunedToolResults: deps.MaxPrunedToolResultsPerRequest, HardInput: deps.Budget.HardInput,
 	})
 	return result, nil

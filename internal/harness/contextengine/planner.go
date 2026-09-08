@@ -145,6 +145,10 @@ func Scan(ctx context.Context, source PageSource, sessionID domain.SessionID, pa
 // PlanInput is everything SelectCutPoint needs to choose a safe covered
 // prefix (design §9.2).
 type PlanInput struct {
+	// PrefixMessages contribute to every budget decision but are never
+	// candidates for compaction.
+	PrefixMessages []domain.ModelPromptMessage
+
 	// Units is every source ContextUnit in ascending sequence order
 	// (Scan's own output, or a fixture in this package's own tests). The
 	// currently open assistant item (§9.2 priority 5) is never itself a
@@ -232,7 +236,7 @@ type PlanResult struct {
 //     note above), so there is no separate "open item" case this
 //     function needs to special-case.
 func SelectCutPoint(input PlanInput) (PlanResult, error) {
-	var allMessages []domain.ModelPromptMessage
+	allMessages := append([]domain.ModelPromptMessage(nil), input.PrefixMessages...)
 	for _, unit := range input.Units {
 		allMessages = append(allMessages, unit.Messages...)
 	}
@@ -249,7 +253,9 @@ func SelectCutPoint(input PlanInput) (PlanResult, error) {
 
 	// Walk backward from the newest unit, accumulating tokens until
 	// ProtectedTail is met.
-	tailTokens := input.Meter.EstimateMessages(currentInputMessages(input.CurrentInput))
+	tailMessages := append([]domain.ModelPromptMessage(nil), input.PrefixMessages...)
+	tailMessages = append(tailMessages, currentInputMessages(input.CurrentInput)...)
+	tailTokens := input.Meter.EstimateMessages(tailMessages)
 	retainFrom := len(input.Units)
 	for retainFrom > 0 && tailTokens < input.Budget.ProtectedTail {
 		retainFrom--
@@ -273,7 +279,7 @@ func SelectCutPoint(input PlanInput) (PlanResult, error) {
 
 	covered := input.Units[:retainFrom]
 	retained := input.Units[retainFrom:]
-	retainedMessages := make([]domain.ModelPromptMessage, 0, len(allMessages))
+	retainedMessages := append([]domain.ModelPromptMessage(nil), input.PrefixMessages...)
 	for _, unit := range retained {
 		retainedMessages = append(retainedMessages, unit.Messages...)
 	}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
@@ -258,7 +259,27 @@ func (service *Service) runToolBody(ctx context.Context, owned *ownedTurn, spec 
 		}
 		return service.failToolAndContinue(ctx, owned, call, CodeInvalidArgs, ToolTextInvalidArgs)
 	}
-	return service.completeToolAndContinue(ctx, owned, call, content, truncated)
+	done, result, completeErr := service.completeToolAndContinue(ctx, owned, call, content, truncated)
+	if !done && completeErr == nil {
+		if target := workspaceInstructionTarget(spec.Name, resolved); target != "" {
+			owned.instructionTargets = append(owned.instructionTargets, target)
+		}
+	}
+	return done, result, completeErr
+}
+
+func workspaceInstructionTarget(toolName, resolved string) string {
+	if resolved == "" {
+		return ""
+	}
+	switch toolName {
+	case tools.NameReadFile, tools.NameWriteFile, tools.NameEditFile:
+		return filepath.Dir(resolved)
+	case tools.NameListDir:
+		return resolved
+	default:
+		return ""
+	}
 }
 
 func (service *Service) invokeTool(ctx context.Context, session domain.SessionID, spec domain.ToolSpec, args toolArgs, resolved string) (string, bool, string, string, error) {

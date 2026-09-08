@@ -71,6 +71,7 @@ func TestMidTurnPreparationAppendsContextPreparedBetweenToolResultAndSecondReque
 	}
 	wantTypes := []string{
 		domain.EventSessionCreated,
+		domain.EventWorkspaceInstructionsRecorded,
 		domain.EventTurnStarted,
 		domain.EventAssistantMessageStarted,
 		domain.EventContextPreparedRecorded,

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/memory"
+	"github.com/SongYii/open-code-harness/internal/harness/agentinstructions"
 	"github.com/SongYii/open-code-harness/internal/harness/application"
 	"github.com/SongYii/open-code-harness/internal/harness/contextengine"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
@@ -122,7 +123,7 @@ func TestRunTurnWithContextEngineAdmissionBatchAndDispatchedEnvelopeMatch(t *tes
 	if !reflect.DeepEqual(calls[0].Tools, recordedRequest.Tools) {
 		t.Fatalf("dispatched Tools = %#v, want exactly the recorded Tools %#v", calls[0].Tools, recordedRequest.Tools)
 	}
-	wantMessages := []domain.ModelPromptMessage{{Role: domain.PromptRoleUser, Text: "hi"}}
+	wantMessages := []domain.ModelPromptMessage{agentinstructions.SystemPromptMessage(), {Role: domain.PromptRoleUser, Text: "hi"}}
 	if !reflect.DeepEqual(recordedRequest.Messages, wantMessages) {
 		t.Fatalf("recorded Messages = %#v, want %#v", recordedRequest.Messages, wantMessages)
 	}
@@ -162,6 +163,7 @@ func TestRunTurnWithContextEngineSecondTurnCarriesPriorHistoryRegardlessOfCatalo
 	// true when catalogEnabled() happens to be true, as loop.go's old
 	// runSingleAttempt path required.
 	wantSecondMessages := []domain.ModelPromptMessage{
+		agentinstructions.SystemPromptMessage(),
 		{Role: domain.PromptRoleUser, Text: "first"},
 		{Role: domain.PromptRoleAssistant, Text: "second reply"},
 		{Role: domain.PromptRoleUser, Text: "second"},
