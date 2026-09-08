@@ -267,6 +267,53 @@ func TestDocumentationRulesStateWhichAreExecutable(t *testing.T) {
 	}
 }
 
+func TestWorkspaceInstructionsImplementedContractIsPublishedAsOneUnit(t *testing.T) {
+	root := repoRoot(t)
+	contractPath := filepath.Join(root, "docs/architecture/system-prompt-workspace-instructions.md")
+	readingPath := filepath.Join(root, "docs/architecture/system-prompt-workspace-instructions.zh-CN.md")
+	evidencePath := filepath.Join(root, "docs/architecture/system-prompt-workspace-instructions-evidence.md")
+	for _, path := range []string{contractPath, readingPath, evidencePath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("workspace-instructions documentation unit is incomplete: %s: %v", path, err)
+		}
+	}
+	contract := read(t, contractPath)
+	for _, required := range []string{
+		"set/replace/remove",
+		"internal/harness/agentinstructions/prompts/och_coding_agent_v1.md",
+		"PromptVersion",
+		"PromptDigest",
+		"internal/harness/agentinstructions/prompt_test.go",
+		"prompt-change procedure",
+	} {
+		if !strings.Contains(contract, required) {
+			t.Errorf("implemented contract does not contain %q", required)
+		}
+	}
+	if strings.Contains(contract, "add/replace/remove") {
+		t.Error("implemented contract uses stale add/replace/remove wording; the canonical action is set")
+	}
+	if !strings.Contains(read(t, readingPath), "system-prompt-workspace-instructions.md") {
+		t.Error("Chinese reading copy does not name its normative English source")
+	}
+	if !strings.Contains(read(t, evidencePath), "not run") {
+		t.Error("evidence ledger does not state the live-validation status")
+	}
+	wantRows := map[string]string{
+		"docs/architecture/system-prompt-workspace-instructions.md":          "Implemented contract",
+		"docs/architecture/system-prompt-workspace-instructions.zh-CN.md":    "Reading copy",
+		"docs/architecture/system-prompt-workspace-instructions-evidence.md": "Evidence ledger",
+	}
+	for _, row := range authorityRows(t, root) {
+		if want, ok := wantRows[row.target]; ok && row.authority == want {
+			delete(wantRows, row.target)
+		}
+	}
+	for target, authority := range wantRows {
+		t.Errorf("authority table does not publish %s as %s", target, authority)
+	}
+}
+
 func init() {
 	// Fail loudly rather than silently passing if the layout assumption breaks.
 	if _, err := os.Stat("docs_test.go"); err != nil {

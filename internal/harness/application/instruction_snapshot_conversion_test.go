@@ -2,6 +2,7 @@ package application
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/SongYii/open-code-harness/internal/harness/agentinstructions"
@@ -54,6 +55,9 @@ func TestInstructionSnapshotCheckpointConversionRejectsSemanticDrift(t *testing.
 	for _, mutate := range []func(*domain.InstructionSnapshotRecord){
 		func(snapshot *domain.InstructionSnapshotRecord) { snapshot.PromptID = "other" },
 		func(snapshot *domain.InstructionSnapshotRecord) { snapshot.RenderedMessage += "tampered" },
+		func(snapshot *domain.InstructionSnapshotRecord) {
+			snapshot.Digest = "sha256:" + strings.Repeat("0", 64)
+		},
 	} {
 		record := base
 		snapshot := *base.InstructionSnapshot

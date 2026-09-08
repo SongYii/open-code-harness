@@ -132,6 +132,19 @@ The numbered milestone list lives in
   [Context Engine contract](docs/architecture/context-engine.md) and its
   [evidence ledger](docs/architecture/context-engine-evidence.md).
 
+- Versioned system prompt and workspace instructions
+  (`internal/harness/agentinstructions`, wired through `application`,
+  checkpoints, transcript, and both executors): implemented and verified;
+  not GA. Every Context-enabled request starts with one frozen harness prompt.
+  Hierarchical `AGENTS.md` state is discovered through structured workspace
+  tools and recorded as bounded append-only `set/replace/remove` deltas before
+  the next provider request; unchanged state leaves the earlier request bytes
+  untouched. Summary/reset checkpoints carry a validated effective-set
+  snapshot, restart rechecks disk rather than trusting stale metadata, and
+  repository instructions never grant authority or enter the summarizer. See
+  the [implemented contract](docs/architecture/system-prompt-workspace-instructions.md)
+  and its [evidence ledger](docs/architecture/system-prompt-workspace-instructions-evidence.md).
+
 - MCP client adapter (`internal/harness/adapters/mcp`, wired through
   `composition` and `application`): implemented and verified; not GA.
   External tools discovered from configured stdio MCP servers are projected

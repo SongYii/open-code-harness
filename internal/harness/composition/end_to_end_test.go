@@ -120,7 +120,7 @@ func TestAssemblyRunsAToolCallingTurnEndToEnd(t *testing.T) {
 			t.Fatalf("durable stream = %v, missing %q", types, wanted)
 		}
 	}
-	assertDurableInstructionRequestFacts(t, records, instructionText)
+	assertDurableInstructionRequestFacts(t, records, instructionText, "what is in "+fileName+"?")
 
 	// Replay is the state authority: the persisted events must reconstruct a
 	// session with no turn still running.
@@ -214,7 +214,7 @@ func TestAssemblyServesACPTurnEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertDurableInstructionRequestFacts(t, records, instructionText)
+	assertDurableInstructionRequestFacts(t, records, instructionText, "what is in "+fileName+"?")
 
 	writeACP(t, clientOut, fmt.Sprintf(`{"jsonrpc":"2.0","id":4,"method":"session/load","params":{"sessionId":%q}}`, sessionID))
 	sawLoadToolCall := false
@@ -344,7 +344,7 @@ func TestAssemblyServesACPTurnEndToEnd(t *testing.T) {
 	}
 }
 
-func assertDurableInstructionRequestFacts(t *testing.T, records []domain.RecordedEvent, instructionText string) {
+func assertDurableInstructionRequestFacts(t *testing.T, records []domain.RecordedEvent, instructionText, input string) {
 	t.Helper()
 	wantSystem := agentinstructions.SystemPromptMessage()
 	wantInstructionFragment := strings.TrimSpace(instructionText)
@@ -367,6 +367,16 @@ func assertDurableInstructionRequestFacts(t *testing.T, records []domain.Recorde
 		}
 		if !found {
 			t.Fatalf("request %d omitted workspace instruction %q: %#v", requestCount, instructionText, request.Messages)
+		}
+		foundInput := false
+		for _, message := range request.Messages {
+			if message.Role == domain.PromptRoleUser && message.Text == input {
+				foundInput = true
+				break
+			}
+		}
+		if !foundInput {
+			t.Fatalf("request %d changed executor input %q: %#v", requestCount, input, request.Messages)
 		}
 	}
 	if requestCount != 2 {
