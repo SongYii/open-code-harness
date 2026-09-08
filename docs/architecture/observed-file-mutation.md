@@ -22,8 +22,12 @@ opened the destination with `O_TRUNC` and wrote.
 
 Two things changed. Every destructive filesystem operation now carries a
 **guard** — an explicit promise about the state it expects to find — and
-publication is **atomic**, so a write that fails partway through is a
-non-event rather than a truncated file.
+publication is **atomic**, so the destination is never left half-written.
+
+"Atomic" is not the same as "a reported failure means nothing happened", and
+the difference is stated here rather than buried: verification runs *after*
+the rename, so a `Write` can return an error over a destination that has
+already changed. See [Failure after publication](#failure-after-publication).
 
 ## The port
 
@@ -141,6 +145,25 @@ limit on `Write`.
 
 The parent directory is synced best-effort and the staging directory removed.
 Every failure before the link or rename leaves the original exactly as it was.
+
+#### Failure after publication
+
+Verification runs after the rename, so this is a reachable and deliberate
+outcome: `Write` returns `fs_stale_version` while the destination has already
+been replaced. It happens when another writer touches the target between our
+rename and our verification.
+
+Returning an error there is the right answer — the version we would otherwise
+return does not describe bytes we can vouch for, and an observation built on it
+would license a later blind overwrite. But it means **a reported failure does
+not promise the destination is unchanged.** What is promised is narrower and
+still useful: the destination is never half-written, and the version this
+session records is never one it cannot vouch for.
+
+A caller that needs to know what is actually on disk after such a failure has
+exactly one honest move, and it is the one the failure message already asks
+for: read the file again. `TestAFailureAfterPublicationIsNotANonEvent` pins
+this so it is a recorded fact rather than a surprise.
 
 Staging has to be a sibling rather than a process temp directory because a
 link and a rename only work within one filesystem.
