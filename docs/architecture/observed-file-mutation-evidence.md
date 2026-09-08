@@ -287,3 +287,49 @@ Mutations, both observed red:
     TestObservedAbsentThenExternallyCreatedSaysReRead.
   - classify every create conflict as stale ->
     TestWriteFileRefusesToOverwriteAnUnobservedFile.
+
+
+## Update: "atomic" was overclaimed as "a failure is a non-event" (2026-09-08)
+
+Re-checking the merged state found a claim that had stopped being true rather
+than a defect in the code.
+
+The contract's opening said publication is atomic, "so a write that fails
+partway through is a non-event rather than a truncated file". That was written
+when every failure preceded the rename. Post-publication verification changed
+it: verification runs *after* the rename, so `Write` can return
+`fs_stale_version` over a destination that has already been replaced.
+
+Demonstrated rather than reasoned about. A publisher that performs the real
+rename and then lets another writer land before the verifier looks produces
+`Write = tools/fs_stale_version` with the destination holding
+`"someone-else"` where it held `"original"`.
+
+The behaviour is right and stays: a version we cannot vouch for must not
+become an observation, because a later guarded write built on it would be a
+blind overwrite wearing a guard. What was wrong was the promise. The contract
+now says the narrower true thing — the destination is never half-written, and
+the version a session records is never one it cannot vouch for — and states
+plainly that a reported failure does not promise the destination is unchanged,
+with the only honest recovery being the re-read the message already asks for.
+
+`TestAFailureAfterPublicationIsNotANonEvent` pins it, including a guard that
+fires if the destination ever comes back unchanged, which would mean the test
+no longer describes the code and the narrowed promise should be revisited.
+
+Mutation, observed red: swallow the verification error and return whatever
+version is on disk -> the test fails with `Write = <nil>`.
+
+## Re-verification of the earlier findings (2026-09-08)
+
+Each earlier defect was re-probed against merged `main` rather than assumed
+closed by its fix having landed.
+
+| Finding | Probe | Result |
+| --- | --- | --- |
+| Unbounded edit expansion | 10 KB input, `replace_all`, 32 KiB replacement | refused `fs_too_large`, file unchanged at 10,000 bytes (was 327 MB) |
+| Observed-absent folded into never-observed | read-missing, external create, write | `fs_stale_version`, not `fs_not_observed` |
+| Create conflict for an unseen target | write without any read | `fs_not_observed` |
+| Conformance suite on a 30-second lease | harness lease guard | passes; the suite no longer runs on a clock it does not control |
+| `exec` outside the guarantee | exec rewrites, next write | refused as stale, exec's change intact |
+| Variance mechanism dormant | all checked-in EvalSets | 16 sets, all `repetitionCount: 1`, none references a policy, `eval/policies/` absent |

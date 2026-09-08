@@ -206,3 +206,64 @@ func TestMutationPostPublicationChangeReturnsStale(t *testing.T) {
 		})
 	}
 }
+
+// interferingPublisher publishes for real and then lets another writer land
+// before the verifier looks, which is the window a competing process occupies.
+type interferingPublisher struct{ after func(destination string) }
+
+func (p interferingPublisher) Publish(staged, destination string, create bool) error {
+	if err := (osPublisher{}).Publish(staged, destination, create); err != nil {
+		return err
+	}
+	p.after(destination)
+	return nil
+}
+
+// TestAFailureAfterPublicationIsNotANonEvent records the one place where a
+// reported failure does not mean the destination is unchanged.
+//
+// Every failure before the rename leaves the original byte-identical, which is
+// what the fault tests above prove. Verification runs after the rename, so a
+// writer that lands in that window produces an error over a destination that
+// has already been replaced. Returning the error is right — the version we
+// would otherwise return does not describe bytes we can vouch for, and an
+// observation built on it would license a later blind overwrite — but the
+// narrower promise has to be written down, or a caller will read "failed" as
+// "nothing happened" and be wrong.
+func TestAFailureAfterPublicationIsNotANonEvent(t *testing.T) {
+	files, root := newFaultFS(t)
+	ctx := context.Background()
+	target := filepath.Join(root, "notes.txt")
+	if err := os.WriteFile(target, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	read, err := files.Read(ctx, target, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	files.publisher = interferingPublisher{after: func(destination string) {
+		if err := os.WriteFile(destination, []byte("someone-else"), 0o644); err != nil {
+			t.Errorf("interfering write: %v", err)
+		}
+	}}
+	_, writeErr := files.Write(ctx, target, []byte("ours"), tools.MutationGuard{
+		Kind: tools.GuardReplaceIfVersion, Version: read.Version,
+	})
+
+	if !tools.IsCode(writeErr, tools.CodeFSStaleVersion) {
+		t.Fatalf("Write = %v, want %q", writeErr, tools.CodeFSStaleVersion)
+	}
+	after, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(after) == "original" {
+		t.Fatal("the destination was unchanged; this test no longer describes the code and the contract's narrower promise should be revisited")
+	}
+	// The point is not which writer won. It is that "failed" here does not
+	// mean "nothing happened", and the only honest recovery is to re-read.
+	if string(after) != "someone-else" {
+		t.Fatalf("destination = %q, want the interfering writer's bytes", after)
+	}
+}
