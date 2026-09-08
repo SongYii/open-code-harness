@@ -169,6 +169,43 @@ This is pre-commit evidence. A separate final section will record the exact
 post-commit rerun before PR creation; this ledger does not substitute the
 earlier output for that required final check.
 
+## Post-commit verification
+
+Commit `e1ea342` (`docs: publish workspace instructions contract`) contains
+the completed implementation contract, reading copy, evidence unit,
+authority/root-README wiring, docsguard rule, and the two test-strengthening
+changes found by mutation. With that commit checked out and a clean tracked
+tree, the complete command set was rerun on 2026-09-08:
+
+```text
+$ go test -race ./... -count=1 -timeout=20m
+PASS (all packages)
+internal/harness/eval             205.297s
+internal/harness/adapters/sqlite   73.521s
+internal/harness/application       49.241s
+internal/harness/composition       11.127s
+
+$ go vet ./...
+PASS
+$ go mod tidy -diff
+PASS (no diff)
+$ gofmt -l .
+PASS (no output)
+$ git diff --check HEAD
+PASS
+$ npm run typecheck
+PASS
+$ npm test
+4 files and 18 tests passed in 5.83s
+$ npm run build
+PASS; Vite built 7 modules in 70ms
+```
+
+The evidence-only commit that adds this section necessarily follows the commit
+whose output it records. Before PR creation it is checked with docsguard,
+format/diff cleanliness, and the same final branch verification; this ledger
+does not pretend a Git commit can contain its own not-yet-created object ID.
+
 ## Exclusions
 
 - Windows-specific runtime behavior is outside this module.
