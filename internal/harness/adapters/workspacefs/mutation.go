@@ -219,9 +219,16 @@ func (files *FileSystem) checkGuard(target string, guard tools.MutationGuard) (o
 
 // publish stages the new bytes beside the target and moves them into place.
 //
-// The destination is never opened for truncation. Every failure before the
-// final link or rename leaves the original exactly as it was, which is what
-// makes a failed write a non-event rather than a half-written file.
+// The destination is never opened for truncation, so it is never left
+// half-written. Every failure before the final link or rename leaves the
+// original exactly as it was.
+//
+// A failure after that point is a different thing and is not a non-event:
+// verification runs after the rename, so this can return an error over a
+// destination that has already been replaced. That is deliberate -- a version
+// we cannot vouch for must not become an observation -- and it is recorded in
+// the contract and pinned by TestAFailureAfterPublicationIsNotANonEvent rather
+// than left for a reader to discover.
 func (files *FileSystem) publish(ctx context.Context, target string, data []byte, prior os.FileInfo) (tools.MutationResult, error) {
 	dir := filepath.Dir(target)
 	staging := filepath.Join(dir, stagingDirName)
