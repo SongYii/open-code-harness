@@ -34,10 +34,11 @@ const (
 	InterruptionDeliveryFailed      = "runtime_delivery_failed"
 	InterruptionRequestAbandoned    = "request_abandoned"
 
-	CommandStartContextCompaction    = "context.compaction.start"
-	CommandCompleteContextCompaction = "context.compaction.complete"
-	CommandFailContextCompaction     = "context.compaction.fail"
-	CommandRecordContextPreparation  = "context.preparation.record"
+	CommandStartContextCompaction      = "context.compaction.start"
+	CommandCompleteContextCompaction   = "context.compaction.complete"
+	CommandFailContextCompaction       = "context.compaction.fail"
+	CommandRecordContextPreparation    = "context.preparation.record"
+	CommandRecordWorkspaceInstructions = "workspace.instructions.record"
 )
 
 type CreateSession struct {
@@ -190,6 +191,17 @@ type RecordModelRequest struct {
 	SessionID SessionID
 	ModelRequestRecorded
 }
+
+type RecordWorkspaceInstructions struct {
+	SessionID SessionID
+	WorkspaceInstructionsRecorded
+}
+
+func (RecordWorkspaceInstructions) CommandType() string {
+	return CommandRecordWorkspaceInstructions
+}
+
+func (c RecordWorkspaceInstructions) TargetSessionID() SessionID { return c.SessionID }
 
 func (RecordModelRequest) CommandType() string          { return CommandRecordModelRequest }
 func (c RecordModelRequest) TargetSessionID() SessionID { return c.SessionID }

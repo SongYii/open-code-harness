@@ -71,9 +71,19 @@ func CloneEvent(event Event) (Event, error) {
 		return event, nil
 	case ContextPreparedRecorded:
 		return event, nil
+	case WorkspaceInstructionsRecorded:
+		return cloneWorkspaceInstructionsRecorded(event), nil
 	default:
 		return nil, domainError(CodeInvalidEvent, "event type cannot be cloned")
 	}
+}
+
+func cloneWorkspaceInstructionsRecorded(event WorkspaceInstructionsRecorded) WorkspaceInstructionsRecorded {
+	cloned := event
+	cloned.Discovered = append([]InstructionScope(nil), event.Discovered...)
+	cloned.Changes = append([]InstructionChange(nil), event.Changes...)
+	cloned.Diagnostics = append([]InstructionDiagnostic(nil), event.Diagnostics...)
+	return cloned
 }
 
 func cloneModelPromptMessages(messages []ModelPromptMessage) []ModelPromptMessage {

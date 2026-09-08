@@ -243,6 +243,11 @@ func marshalEvent(event Event) (json.RawMessage, string, error) {
 			return nil, "", err
 		}
 		return marshalEventData(event, EventContextPreparedRecorded)
+	case WorkspaceInstructionsRecorded:
+		if err := validateWorkspaceInstructionsPayload(event, CodeInvalidEvent); err != nil {
+			return nil, "", err
+		}
+		return marshalEventData(event, EventWorkspaceInstructionsRecorded)
 	default:
 		return nil, "", invalidEventError("unsupported event type")
 	}
@@ -346,6 +351,10 @@ func unmarshalEvent(eventType string, data json.RawMessage) (Event, error) {
 			"checkpointID", "checkpointKind", "rawTailFromSequence", "rawTailThroughSequence",
 			"usageAnchorApplied", "usageAnchorTokens", "prunedToolResultCount",
 		}
+	case EventWorkspaceInstructionsRecorded:
+		event = WorkspaceInstructionsRecorded{}
+		required = []string{"formatVersion", "promptID", "promptDigest", "epoch", "effectiveSetDigest"}
+		optional = []string{"discovered", "changes", "diagnostics", "renderedMessage"}
 	default:
 		return nil, invalidEventError("unsupported event type")
 	}
@@ -484,6 +493,14 @@ func unmarshalEvent(eventType string, data json.RawMessage) (Event, error) {
 		}
 		event = target
 	case ContextPreparedRecorded:
+		if err := decoder.Decode(&target); err != nil {
+			return nil, invalidEventError("invalid event data")
+		}
+		event = target
+	case WorkspaceInstructionsRecorded:
+		if err := validateWorkspaceInstructionsJSON(data); err != nil {
+			return nil, err
+		}
 		if err := decoder.Decode(&target); err != nil {
 			return nil, invalidEventError("invalid event data")
 		}

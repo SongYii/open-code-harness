@@ -28,10 +28,11 @@ const (
 	EventApprovalRequested           = "approval.requested"
 	EventApprovalResolved            = "approval.resolved"
 
-	EventContextCompactionStarted   = "context.compaction.started"
-	EventContextCompactionCompleted = "context.compaction.completed"
-	EventContextCompactionFailed    = "context.compaction.failed"
-	EventContextPreparedRecorded    = "context.prepared"
+	EventContextCompactionStarted      = "context.compaction.started"
+	EventContextCompactionCompleted    = "context.compaction.completed"
+	EventContextCompactionFailed       = "context.compaction.failed"
+	EventContextPreparedRecorded       = "context.prepared"
+	EventWorkspaceInstructionsRecorded = "workspace.instructions.recorded"
 )
 
 const (
@@ -77,6 +78,11 @@ const (
 	// every ModelRequestRecorded constructed before this field existed.
 	ModelRequestPurposeConversation = "conversation"
 	ModelRequestPurposeCompaction   = "compaction"
+
+	WorkspaceInstructionsFormatV1 = "workspace_instructions_v1"
+	InstructionActionSet          = "set"
+	InstructionActionReplace      = "replace"
+	InstructionActionRemove       = "remove"
 )
 
 type SessionCreated struct {
@@ -191,6 +197,48 @@ type ModelPromptMessage struct {
 	ToolCalls  []ToolCallOffer `json:"toolCalls,omitempty"`
 	ToolCallID string          `json:"toolCallID,omitempty"`
 	Name       string          `json:"name,omitempty"`
+}
+
+type InstructionScope struct {
+	Path  string `json:"path"`
+	Scope string `json:"scope"`
+}
+
+type InstructionSource struct {
+	Path    string `json:"path"`
+	Scope   string `json:"scope"`
+	Digest  string `json:"digest"`
+	Content string `json:"content"`
+}
+
+type InstructionChange struct {
+	Action      string `json:"action"`
+	Path        string `json:"path"`
+	Scope       string `json:"scope"`
+	PriorDigest string `json:"priorDigest,omitempty"`
+	Digest      string `json:"digest,omitempty"`
+	Content     string `json:"content,omitempty"`
+}
+
+type InstructionDiagnostic struct {
+	Path  string `json:"path"`
+	Class string `json:"class"`
+}
+
+type WorkspaceInstructionsRecorded struct {
+	FormatVersion      string                  `json:"formatVersion"`
+	PromptID           string                  `json:"promptID"`
+	PromptDigest       string                  `json:"promptDigest"`
+	Epoch              uint64                  `json:"epoch"`
+	Discovered         []InstructionScope      `json:"discovered,omitempty"`
+	Changes            []InstructionChange     `json:"changes,omitempty"`
+	Diagnostics        []InstructionDiagnostic `json:"diagnostics,omitempty"`
+	RenderedMessage    string                  `json:"renderedMessage,omitempty"`
+	EffectiveSetDigest string                  `json:"effectiveSetDigest"`
+}
+
+func (WorkspaceInstructionsRecorded) EventType() string {
+	return EventWorkspaceInstructionsRecorded
 }
 
 type ModelRequestRecorded struct {
