@@ -2,6 +2,8 @@ package domain
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"strings"
@@ -1251,7 +1253,54 @@ func validateContextCheckpointRecord(checkpoint ContextCheckpointRecord, code Er
 			return domainError(code, "checkpoint field must be valid UTF-8")
 		}
 	}
+	if checkpoint.InstructionSnapshot != nil {
+		if err := validateInstructionSnapshotRecord(*checkpoint.InstructionSnapshot, checkpoint.ThroughSequence, code); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func validateInstructionSnapshotRecord(snapshot InstructionSnapshotRecord, checkpointThrough uint64, code ErrorCode) error {
+	if !hasRequiredText(snapshot.PromptID) || !utf8.ValidString(snapshot.PromptID) || !validSHA256Digest(snapshot.PromptDigest) ||
+		snapshot.Epoch == 0 || snapshot.ThroughSequence != checkpointThrough || !utf8.ValidString(snapshot.RenderedMessage) || snapshot.RenderedMessage == "" ||
+		!validSHA256Digest(snapshot.Digest) {
+		return domainError(code, "instruction snapshot metadata is invalid")
+	}
+	previousDepth := -1
+	previousPath := ""
+	for _, source := range snapshot.Sources {
+		if err := validateInstructionPathScope(source.Path, source.Scope, code); err != nil {
+			return err
+		}
+		depth := 0
+		if source.Scope != "." {
+			depth = strings.Count(source.Scope, "/") + 1
+		}
+		if previousDepth > depth || (previousDepth == depth && source.Path <= previousPath) {
+			return domainError(code, "instruction snapshot sources are not strictly sorted")
+		}
+		previousDepth = depth
+		previousPath = source.Path
+		if !utf8.ValidString(source.Content) || instructionContentDigest(source.Content) != source.Digest {
+			return domainError(code, "instruction snapshot source digest is invalid")
+		}
+	}
+	sources := snapshot.Sources
+	if sources == nil {
+		sources = []InstructionSource{}
+	}
+	encoded, err := json.Marshal(sources)
+	if err != nil || instructionBytesDigest(encoded) != snapshot.Digest {
+		return domainError(code, "instruction snapshot digest is invalid")
+	}
+	return nil
+}
+
+func instructionContentDigest(content string) string { return instructionBytesDigest([]byte(content)) }
+func instructionBytesDigest(content []byte) string {
+	digest := sha256.Sum256(content)
+	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
 func validateContextCompactionCompletedPayload(event ContextCompactionCompleted, code ErrorCode) error {
@@ -1331,6 +1380,6 @@ func validateContextCheckpointRecordJSON(data json.RawMessage) error {
 	}
 	return validateJSONObjectKeys(checkpoint,
 		[]string{"id", "kind", "sourceSchema", "coveredEventCount", "coveredTurnCount", "throughSequence", "sourceDigestHex", "tokensBefore", "checkpointTokens", "retainedTailTokens", "estimatedRequestTokens"},
-		[]string{"summaryFormat", "promptVersion", "previousCheckpointID", "summary", "limitations", "summarizerRoute", "summarizerUsage", "summaryChunks", "prunedToolResultCount"},
+		[]string{"summaryFormat", "promptVersion", "previousCheckpointID", "summary", "limitations", "summarizerRoute", "summarizerUsage", "summaryChunks", "prunedToolResultCount", "instructionSnapshot"},
 	)
 }

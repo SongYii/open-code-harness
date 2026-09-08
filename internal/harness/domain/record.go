@@ -66,7 +66,9 @@ func CloneEvent(event Event) (Event, error) {
 	case ContextCompactionStarted:
 		return event, nil
 	case ContextCompactionCompleted:
-		return event, nil
+		cloned := event
+		cloned.Checkpoint = cloneContextCheckpointRecord(event.Checkpoint)
+		return cloned, nil
 	case ContextCompactionFailed:
 		return event, nil
 	case ContextPreparedRecorded:
@@ -76,6 +78,16 @@ func CloneEvent(event Event) (Event, error) {
 	default:
 		return nil, domainError(CodeInvalidEvent, "event type cannot be cloned")
 	}
+}
+
+func cloneContextCheckpointRecord(record ContextCheckpointRecord) ContextCheckpointRecord {
+	cloned := record
+	if record.InstructionSnapshot != nil {
+		snapshot := *record.InstructionSnapshot
+		snapshot.Sources = append([]InstructionSource(nil), record.InstructionSnapshot.Sources...)
+		cloned.InstructionSnapshot = &snapshot
+	}
+	return cloned
 }
 
 func cloneWorkspaceInstructionsRecorded(event WorkspaceInstructionsRecorded) WorkspaceInstructionsRecorded {

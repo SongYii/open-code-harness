@@ -49,6 +49,15 @@ func memoryValidCheckpoint(t *testing.T, id string, records []domain.RecordedEve
 	}
 }
 
+func memoryInstructionSnapshot(through uint64) *domain.InstructionSnapshotRecord {
+	return &domain.InstructionSnapshotRecord{
+		PromptID: "och_coding_agent_v1", PromptDigest: "sha256:8060287d0ddc132ebce66e955b8749804a06d1d1b494f77b23afbe49c2f0fd2d",
+		Epoch: 1, ThroughSequence: through,
+		Sources:         []domain.InstructionSource{{Path: "AGENTS.md", Scope: ".", Digest: "sha256:ac44a12762c7417f2ee0a247618913c1448edde6193125c1d4579fd42596a9d5", Content: "Run tests.\n"}},
+		RenderedMessage: "rendered snapshot", Digest: "sha256:24a603faa166c8a7ecf88887ec8895c75c80c5091c21cd57943ef287f0aa8106",
+	}
+}
+
 // TestLoadLatestContextCheckpointFindsVerifiedCompletion covers the happy
 // path: a genuinely correct ContextCompactionCompleted event is found and
 // its independently-recomputed digest agrees.
@@ -65,6 +74,7 @@ func TestLoadLatestContextCheckpointFindsVerifiedCompletion(t *testing.T) {
 	records := memoryRecords(t, store, sessionID)
 	through := records[len(records)-1].Sequence
 	completed := memoryValidCheckpoint(t, "checkpoint-1", records, through)
+	completed.Checkpoint.InstructionSnapshot = memoryInstructionSnapshot(through)
 
 	appendMemoryEvent(t, store, authority, ids, sessionID, 3, checkpointTestTime, domain.ContextCompactionStarted{
 		ID: completed.ID, Trigger: domain.ContextTriggerManual, Strategy: domain.ContextStrategySummary,
@@ -81,6 +91,17 @@ func TestLoadLatestContextCheckpointFindsVerifiedCompletion(t *testing.T) {
 	}
 	if lookup.Checkpoint.ID != "checkpoint-1" || lookup.Checkpoint.ThroughSequence != through {
 		t.Fatalf("lookup checkpoint = %+v", lookup.Checkpoint)
+	}
+	if lookup.Checkpoint.InstructionSnapshot == nil || lookup.Checkpoint.InstructionSnapshot.Sources[0].Content != "Run tests.\n" {
+		t.Fatalf("lookup instruction snapshot = %#v", lookup.Checkpoint.InstructionSnapshot)
+	}
+	lookup.Checkpoint.InstructionSnapshot.Sources[0].Content = "caller mutation"
+	again, err := store.LoadLatestContextCheckpoint(context.Background(), sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Checkpoint.InstructionSnapshot.Sources[0].Content != "Run tests.\n" {
+		t.Fatal("Memory checkpoint lookup returned snapshot storage shared with its event stream")
 	}
 }
 

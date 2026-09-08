@@ -375,26 +375,37 @@ func (ApprovalResolved) EventType() string { return EventApprovalResolved }
 // responsible for translating between the two. SourceDigest is hex-encoded
 // (contextengine's own [32]byte does not marshal usefully to JSON).
 type ContextCheckpointRecord struct {
-	ID                     string `json:"id"`
-	Kind                   string `json:"kind"`
-	SourceSchema           string `json:"sourceSchema"`
-	SummaryFormat          string `json:"summaryFormat,omitempty"`
-	PromptVersion          string `json:"promptVersion,omitempty"`
-	CoveredEventCount      uint64 `json:"coveredEventCount"`
-	CoveredTurnCount       uint64 `json:"coveredTurnCount"`
-	ThroughSequence        uint64 `json:"throughSequence"`
-	SourceDigestHex        string `json:"sourceDigestHex"`
-	PreviousCheckpointID   string `json:"previousCheckpointID,omitempty"`
-	Summary                string `json:"summary,omitempty"`
-	Limitations            string `json:"limitations,omitempty"`
-	TokensBefore           uint64 `json:"tokensBefore"`
-	CheckpointTokens       uint64 `json:"checkpointTokens"`
-	RetainedTailTokens     uint64 `json:"retainedTailTokens"`
-	EstimatedRequestTokens uint64 `json:"estimatedRequestTokens"`
-	SummarizerRoute        string `json:"summarizerRoute,omitempty"`
-	SummarizerUsage        uint64 `json:"summarizerUsage,omitempty"`
-	SummaryChunks          uint32 `json:"summaryChunks,omitempty"`
-	PrunedToolResultCount  uint32 `json:"prunedToolResultCount,omitempty"`
+	ID                     string                     `json:"id"`
+	Kind                   string                     `json:"kind"`
+	SourceSchema           string                     `json:"sourceSchema"`
+	SummaryFormat          string                     `json:"summaryFormat,omitempty"`
+	PromptVersion          string                     `json:"promptVersion,omitempty"`
+	CoveredEventCount      uint64                     `json:"coveredEventCount"`
+	CoveredTurnCount       uint64                     `json:"coveredTurnCount"`
+	ThroughSequence        uint64                     `json:"throughSequence"`
+	SourceDigestHex        string                     `json:"sourceDigestHex"`
+	PreviousCheckpointID   string                     `json:"previousCheckpointID,omitempty"`
+	Summary                string                     `json:"summary,omitempty"`
+	Limitations            string                     `json:"limitations,omitempty"`
+	TokensBefore           uint64                     `json:"tokensBefore"`
+	CheckpointTokens       uint64                     `json:"checkpointTokens"`
+	RetainedTailTokens     uint64                     `json:"retainedTailTokens"`
+	EstimatedRequestTokens uint64                     `json:"estimatedRequestTokens"`
+	SummarizerRoute        string                     `json:"summarizerRoute,omitempty"`
+	SummarizerUsage        uint64                     `json:"summarizerUsage,omitempty"`
+	SummaryChunks          uint32                     `json:"summaryChunks,omitempty"`
+	PrunedToolResultCount  uint32                     `json:"prunedToolResultCount,omitempty"`
+	InstructionSnapshot    *InstructionSnapshotRecord `json:"instructionSnapshot,omitempty"`
+}
+
+type InstructionSnapshotRecord struct {
+	PromptID        string              `json:"promptID"`
+	PromptDigest    string              `json:"promptDigest"`
+	Epoch           uint64              `json:"epoch"`
+	ThroughSequence uint64              `json:"throughSequence"`
+	Sources         []InstructionSource `json:"sources,omitempty"`
+	RenderedMessage string              `json:"renderedMessage,omitempty"`
+	Digest          string              `json:"digest"`
 }
 
 // ContextCompactionStarted opens design §13.3's bounded ContextCompaction

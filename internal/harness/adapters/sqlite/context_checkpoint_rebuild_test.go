@@ -14,6 +14,7 @@ func appendValidCheckpoint(t *testing.T, store *Store, sessionID domain.SessionI
 	records := readEvents(t, store, string(sessionID))
 	through := records[len(records)-1].Sequence
 	completed := validCheckpoint(t, checkpointID, records, through)
+	completed.Checkpoint.InstructionSnapshot = sqliteInstructionSnapshot(through)
 	mustAppend(t, store, appendRequest(domain.AppendID("append-"+checkpointID), sessionID, uint64(len(records)), domain.CommandID("command-"+checkpointID),
 		domain.ContextCompactionStarted{
 			ID: completed.ID, Trigger: domain.ContextTriggerManual, Strategy: domain.ContextStrategySummary,

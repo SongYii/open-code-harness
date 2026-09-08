@@ -89,6 +89,9 @@ func Materialize(input MaterializeInput) PreparedContext {
 		case CheckpointKindSourceTailReset:
 			messages = append(messages, domain.ModelPromptMessage{Role: domain.PromptRoleUser, Text: BuildResetMarker(input.Checkpoint.ID, input.Checkpoint.Coverage.ThroughSequence)})
 		}
+		if input.Checkpoint.InstructionSnapshot != nil && input.Checkpoint.InstructionSnapshot.RenderedMessage != "" {
+			messages = append(messages, domain.ModelPromptMessage{Role: domain.PromptRoleUser, Text: input.Checkpoint.InstructionSnapshot.RenderedMessage})
+		}
 	}
 	if len(input.RetainedTail) > 0 {
 		result.RetainedTailFromSequence = input.RetainedTail[0].FirstSequence

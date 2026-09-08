@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SongYii/open-code-harness/internal/harness/agentinstructions"
 	"github.com/SongYii/open-code-harness/internal/harness/contextengine"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
@@ -576,6 +577,16 @@ func unitMessages(units []contextengine.ContextUnit) []domain.ModelPromptMessage
 	return messages
 }
 
+func conversationUnits(units []contextengine.ContextUnit) []contextengine.ContextUnit {
+	filtered := make([]contextengine.ContextUnit, 0, len(units))
+	for _, unit := range units {
+		if unit.Kind != contextengine.UnitKindInstruction {
+			filtered = append(filtered, unit)
+		}
+	}
+	return filtered
+}
+
 func countTurnUnits(units []contextengine.ContextUnit) uint64 {
 	var count uint64
 	for _, unit := range units {
@@ -639,9 +650,10 @@ func runCompactionBracket(ctx context.Context, deps ContextOrchestratorDeps, sta
 		return state, nil, false, nil
 	}
 
-	uncompactedEstimate := deps.Meter.Estimate(contextengine.Envelope{
-		Messages: append(unitMessages(mergeUnits(previous, plan)), currentInputMessage(input.CurrentInput)...), Tools: input.Tools,
-	}).Tokens
+	uncompactedMessages := append(append([]domain.ModelPromptMessage(nil), input.PrefixMessages...), checkpointMessages(previous)...)
+	uncompactedMessages = append(uncompactedMessages, unitMessages(mergeUnits(previous, plan))...)
+	uncompactedMessages = append(uncompactedMessages, currentInputMessage(input.CurrentInput)...)
+	uncompactedEstimate := deps.Meter.Estimate(contextengine.Envelope{Messages: uncompactedMessages, Tools: input.Tools}).Tokens
 	if uncompactedEstimate <= deps.Budget.HardInput {
 		// Below hard budget: log-and-proceed, per design §16.
 		return state, nil, false, nil
@@ -697,7 +709,8 @@ func resetEligible(deps ContextOrchestratorDeps, input PrepareContextInput, prev
 		return false
 	}
 	marker := contextengine.BuildResetMarker("pending", plan.CoveredThroughSequence)
-	resetMessages := append([]domain.ModelPromptMessage{{Role: domain.PromptRoleUser, Text: marker}}, unitMessages(plan.RetainedUnits)...)
+	resetMessages := append(append([]domain.ModelPromptMessage(nil), input.PrefixMessages...), domain.ModelPromptMessage{Role: domain.PromptRoleUser, Text: marker})
+	resetMessages = append(resetMessages, unitMessages(plan.RetainedUnits)...)
 	resetMessages = append(resetMessages, currentInputMessage(input.CurrentInput)...)
 	resetEstimate := deps.Meter.Estimate(contextengine.Envelope{Messages: resetMessages, Tools: input.Tools}).Tokens
 	return contextengine.ResetEligible(contextengine.ResetEligibility{
@@ -829,13 +842,21 @@ func buildSummaryCheckpointWithFocus(ctx context.Context, deps ContextOrchestrat
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", CodeContextCheckpointInvalid, err)
 	}
+	instructionSnapshot, err := buildInstructionSnapshot(ctx, deps.Store, sessionID, headVersion, coveredThroughSequence)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", CodeContextCheckpointInvalid, err)
+	}
 
 	retainedTailTokens := deps.Meter.EstimateMessages(unitMessages(plan.RetainedUnits))
-	coveredSourceTokens := deps.Meter.EstimateMessages(unitMessages(plan.CoveredUnits))
-	prePassMessages := append(unitMessages(mergeUnits(previous, plan)), currentInputMessage(input.CurrentInput)...)
+	coveredSourceTokens := deps.Meter.EstimateMessages(unitMessages(conversationUnits(plan.CoveredUnits)))
+	prePassMessages := append(append([]domain.ModelPromptMessage(nil), input.PrefixMessages...), checkpointMessages(previous)...)
+	prePassMessages = append(prePassMessages, unitMessages(mergeUnits(previous, plan))...)
+	prePassMessages = append(prePassMessages, currentInputMessage(input.CurrentInput)...)
 	prePassTokens := deps.Meter.Estimate(contextengine.Envelope{Messages: prePassMessages, Tools: input.Tools}).Tokens
 
-	postPassMessages := append([]domain.ModelPromptMessage{{Role: domain.PromptRoleUser, Text: summarizeResultText}}, unitMessages(plan.RetainedUnits)...)
+	postPassMessages := append(append([]domain.ModelPromptMessage(nil), input.PrefixMessages...), domain.ModelPromptMessage{Role: domain.PromptRoleUser, Text: summarizeResultText})
+	postPassMessages = appendInstructionSnapshotMessage(postPassMessages, instructionSnapshot)
+	postPassMessages = append(postPassMessages, unitMessages(plan.RetainedUnits)...)
 	postPassMessages = append(postPassMessages, currentInputMessage(input.CurrentInput)...)
 	postPassTokens := deps.Meter.Estimate(contextengine.Envelope{Messages: postPassMessages, Tools: input.Tools}).Tokens
 
@@ -853,7 +874,9 @@ func buildSummaryCheckpointWithFocus(ctx context.Context, deps ContextOrchestrat
 	if err != nil {
 		return nil, err
 	}
-	checkpointTokens := deps.Meter.EstimateMessages([]domain.ModelPromptMessage{{Role: domain.PromptRoleUser, Text: validation.RedactedText}})
+	checkpointMessages := []domain.ModelPromptMessage{{Role: domain.PromptRoleUser, Text: validation.RedactedText}}
+	checkpointMessages = appendInstructionSnapshotMessage(checkpointMessages, instructionSnapshot)
+	checkpointTokens := deps.Meter.EstimateMessages(checkpointMessages)
 	checkpoint := contextengine.ContextCheckpoint{
 		ID: checkpointID, SessionID: sessionID, Kind: contextengine.CheckpointKindRollingSummary,
 		SourceSchema: contextengine.SourceSchemaVersion, SummaryFormat: contextengine.SummaryFormatVersion, PromptVersion: contextengine.SummaryPromptVersion,
@@ -863,7 +886,7 @@ func buildSummaryCheckpointWithFocus(ctx context.Context, deps ContextOrchestrat
 			ThroughSequence:   coveredThroughSequence,
 			SourceDigest:      digest,
 		},
-		PreviousCheckpointID: previousID, Summary: validation.RedactedText,
+		PreviousCheckpointID: previousID, Summary: validation.RedactedText, InstructionSnapshot: instructionSnapshot,
 		TokensBefore: prePassTokens, CheckpointTokens: checkpointTokens, RetainedTailTokens: retainedTailTokens,
 		EstimatedRequestTokens: postPassTokens, SummarizerUsage: totalOutputTokens, SummaryChunks: chunkCount,
 	}
@@ -910,14 +933,26 @@ func buildResetCheckpoint(ctx context.Context, deps ContextOrchestratorDeps, hea
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", CodeContextCheckpointInvalid, err)
 	}
+	instructionSnapshot, err := buildInstructionSnapshot(ctx, deps.Store, input.SessionID, headVersion, plan.CoveredThroughSequence)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", CodeContextCheckpointInvalid, err)
+	}
 
 	retainedTailTokens := deps.Meter.EstimateMessages(unitMessages(plan.RetainedUnits))
-	prePassMessages := append(unitMessages(mergeUnits(previous, plan)), currentInputMessage(input.CurrentInput)...)
+	prePassMessages := append(append([]domain.ModelPromptMessage(nil), input.PrefixMessages...), checkpointMessages(previous)...)
+	prePassMessages = append(prePassMessages, unitMessages(mergeUnits(previous, plan))...)
+	prePassMessages = append(prePassMessages, currentInputMessage(input.CurrentInput)...)
 	prePassTokens := deps.Meter.Estimate(contextengine.Envelope{Messages: prePassMessages, Tools: input.Tools}).Tokens
-	markerTokens := deps.Meter.EstimateMessages([]domain.ModelPromptMessage{{Role: domain.PromptRoleUser, Text: marker}})
-	postPassMessages := append([]domain.ModelPromptMessage{{Role: domain.PromptRoleUser, Text: marker}}, unitMessages(plan.RetainedUnits)...)
+	checkpointMessages := []domain.ModelPromptMessage{{Role: domain.PromptRoleUser, Text: marker}}
+	checkpointMessages = appendInstructionSnapshotMessage(checkpointMessages, instructionSnapshot)
+	markerTokens := deps.Meter.EstimateMessages(checkpointMessages)
+	postPassMessages := append(append([]domain.ModelPromptMessage(nil), input.PrefixMessages...), checkpointMessages...)
+	postPassMessages = append(postPassMessages, unitMessages(plan.RetainedUnits)...)
 	postPassMessages = append(postPassMessages, currentInputMessage(input.CurrentInput)...)
 	postPassTokens := deps.Meter.Estimate(contextengine.Envelope{Messages: postPassMessages, Tools: input.Tools}).Tokens
+	if postPassTokens > deps.Budget.HardInput {
+		return nil, fmt.Errorf("%s: rebased reset checkpoint exceeds hard input budget", CodeContextCompactionLimit)
+	}
 
 	checkpoint := contextengine.ContextCheckpoint{
 		ID: checkpointID, SessionID: input.SessionID, Kind: contextengine.CheckpointKindSourceTailReset,
@@ -928,7 +963,7 @@ func buildResetCheckpoint(ctx context.Context, deps ContextOrchestratorDeps, hea
 			ThroughSequence:   plan.CoveredThroughSequence,
 			SourceDigest:      digest,
 		},
-		PreviousCheckpointID: previousID, Limitations: "deterministic reset: no summary of the omitted history was produced",
+		PreviousCheckpointID: previousID, Limitations: "deterministic reset: no summary of the omitted history was produced", InstructionSnapshot: instructionSnapshot,
 		TokensBefore: prePassTokens, CheckpointTokens: markerTokens, RetainedTailTokens: retainedTailTokens,
 		EstimatedRequestTokens: postPassTokens, SummaryChunks: 0,
 	}
@@ -1078,7 +1113,10 @@ func summarizeChunks(ctx context.Context, deps ContextOrchestratorDeps, sessionI
 		fitBudget = chunkBudget - focusTokens
 	}
 
-	remaining := plan.CoveredUnits
+	remaining := conversationUnits(plan.CoveredUnits)
+	if len(remaining) == 0 {
+		return "", 0, 0, fmt.Errorf("%s: no conversational source units to summarize", CodeContextCompactionLimit)
+	}
 	previousText := rollingSummaryText(previous)
 	for len(remaining) > 0 {
 		chunkCount++
@@ -1142,6 +1180,51 @@ func summarizeChunks(ctx context.Context, deps ContextOrchestratorDeps, sessionI
 	return "", 0, 0, fmt.Errorf("%s: no source units to summarize", CodeContextCompactionLimit)
 }
 
+func appendInstructionSnapshotMessage(messages []domain.ModelPromptMessage, snapshot *contextengine.InstructionSnapshot) []domain.ModelPromptMessage {
+	if snapshot == nil || snapshot.RenderedMessage == "" {
+		return messages
+	}
+	return append(messages, domain.ModelPromptMessage{Role: domain.PromptRoleUser, Text: snapshot.RenderedMessage})
+}
+
+func checkpointMessages(checkpoint *contextengine.ContextCheckpoint) []domain.ModelPromptMessage {
+	if checkpoint == nil {
+		return nil
+	}
+	var messages []domain.ModelPromptMessage
+	switch checkpoint.Kind {
+	case contextengine.CheckpointKindRollingSummary:
+		messages = append(messages, domain.ModelPromptMessage{Role: domain.PromptRoleUser, Text: checkpoint.Summary})
+	case contextengine.CheckpointKindSourceTailReset:
+		messages = append(messages, domain.ModelPromptMessage{Role: domain.PromptRoleUser, Text: contextengine.BuildResetMarker(checkpoint.ID, checkpoint.Coverage.ThroughSequence)})
+	}
+	return appendInstructionSnapshotMessage(messages, checkpoint.InstructionSnapshot)
+}
+
+func buildInstructionSnapshot(ctx context.Context, store EventStore, sessionID domain.SessionID, headVersion, throughSequence uint64) (*contextengine.InstructionSnapshot, error) {
+	records, err := readSourceRecordsRange(ctx, store, sessionID, headVersion, 0, throughSequence)
+	if err != nil {
+		return nil, err
+	}
+	state, err := agentinstructions.Replay(records)
+	if err != nil {
+		return nil, err
+	}
+	if state.Epoch == 0 {
+		return nil, nil
+	}
+	rendered := agentinstructions.RenderSnapshot(state)
+	sources := make([]domain.InstructionSource, len(rendered.Sources))
+	for index, source := range rendered.Sources {
+		sources[index] = domain.InstructionSource{Path: source.Path, Scope: source.Scope, Digest: source.Digest, Content: source.Content}
+	}
+	return &contextengine.InstructionSnapshot{
+		PromptID: agentinstructions.PromptID, PromptDigest: agentinstructions.PromptDigest,
+		Epoch: rendered.Epoch, ThroughSequence: throughSequence, Sources: sources,
+		RenderedMessage: rendered.RenderedMessage, Digest: rendered.Digest,
+	}, nil
+}
+
 func renderUnits(b *strings.Builder, units []contextengine.ContextUnit) {
 	for _, unit := range units {
 		for _, message := range unit.Messages {
@@ -1195,7 +1278,7 @@ func checkpointFromRecord(sessionID domain.SessionID, record domain.ContextCheck
 	if err != nil {
 		return contextengine.ContextCheckpoint{}, err
 	}
-	return contextengine.ContextCheckpoint{
+	checkpoint := contextengine.ContextCheckpoint{
 		ID: record.ID, SessionID: sessionID, Kind: contextengine.CheckpointKind(record.Kind),
 		SourceSchema: record.SourceSchema, SummaryFormat: record.SummaryFormat, PromptVersion: record.PromptVersion,
 		Coverage: contextengine.Coverage{
@@ -1206,11 +1289,30 @@ func checkpointFromRecord(sessionID domain.SessionID, record domain.ContextCheck
 		TokensBefore: record.TokensBefore, CheckpointTokens: record.CheckpointTokens, RetainedTailTokens: record.RetainedTailTokens,
 		EstimatedRequestTokens: record.EstimatedRequestTokens, SummarizerRoute: record.SummarizerRoute, SummarizerUsage: record.SummarizerUsage,
 		SummaryChunks: record.SummaryChunks, PrunedToolResultCount: record.PrunedToolResultCount,
-	}, nil
+	}
+	if record.InstructionSnapshot != nil {
+		snapshot := record.InstructionSnapshot
+		state := agentinstructions.State{Epoch: snapshot.Epoch, Sources: make(map[string]agentinstructions.Source, len(snapshot.Sources))}
+		for _, source := range snapshot.Sources {
+			state.Sources[source.Path] = agentinstructions.Source{Path: source.Path, Scope: source.Scope, Digest: source.Digest, Content: source.Content}
+		}
+		expected := agentinstructions.RenderSnapshot(state)
+		if snapshot.PromptID != agentinstructions.PromptID || snapshot.PromptDigest != agentinstructions.PromptDigest ||
+			snapshot.ThroughSequence != record.ThroughSequence || snapshot.Epoch == 0 ||
+			snapshot.Digest != expected.Digest || snapshot.RenderedMessage != expected.RenderedMessage {
+			return contextengine.ContextCheckpoint{}, fmt.Errorf("invalid instruction snapshot")
+		}
+		checkpoint.InstructionSnapshot = &contextengine.InstructionSnapshot{
+			PromptID: snapshot.PromptID, PromptDigest: snapshot.PromptDigest, Epoch: snapshot.Epoch,
+			ThroughSequence: snapshot.ThroughSequence, Sources: append([]domain.InstructionSource(nil), snapshot.Sources...),
+			RenderedMessage: snapshot.RenderedMessage, Digest: snapshot.Digest,
+		}
+	}
+	return checkpoint, nil
 }
 
 func recordFromCheckpoint(checkpoint contextengine.ContextCheckpoint) domain.ContextCheckpointRecord {
-	return domain.ContextCheckpointRecord{
+	record := domain.ContextCheckpointRecord{
 		ID: checkpoint.ID, Kind: string(checkpoint.Kind), SourceSchema: checkpoint.SourceSchema,
 		SummaryFormat: checkpoint.SummaryFormat, PromptVersion: checkpoint.PromptVersion,
 		CoveredEventCount: checkpoint.Coverage.CoveredEventCount, CoveredTurnCount: checkpoint.Coverage.CoveredTurnCount,
@@ -1220,6 +1322,15 @@ func recordFromCheckpoint(checkpoint contextengine.ContextCheckpoint) domain.Con
 		EstimatedRequestTokens: checkpoint.EstimatedRequestTokens, SummarizerRoute: checkpoint.SummarizerRoute, SummarizerUsage: checkpoint.SummarizerUsage,
 		SummaryChunks: checkpoint.SummaryChunks, PrunedToolResultCount: checkpoint.PrunedToolResultCount,
 	}
+	if checkpoint.InstructionSnapshot != nil {
+		snapshot := checkpoint.InstructionSnapshot
+		record.InstructionSnapshot = &domain.InstructionSnapshotRecord{
+			PromptID: snapshot.PromptID, PromptDigest: snapshot.PromptDigest, Epoch: snapshot.Epoch,
+			ThroughSequence: snapshot.ThroughSequence, Sources: append([]domain.InstructionSource(nil), snapshot.Sources...),
+			RenderedMessage: snapshot.RenderedMessage, Digest: snapshot.Digest,
+		}
+	}
+	return record
 }
 
 func decodeDigestHex(value string) ([32]byte, error) {
