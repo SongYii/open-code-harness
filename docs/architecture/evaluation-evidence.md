@@ -633,3 +633,26 @@ them requires the live run the first blocker in this list says has never
 happened. The mechanism is also dormant — no checked-in EvalSet reaches it.
 An implemented mechanism counted as an accepted policy would be exactly the
 claim the contract's own no-defaults rule exists to prevent.
+
+
+## Update: the absence verifier could have passed having checked nothing (2026-09-09)
+
+Reviewing the live-context-quality fail-closed slice found the code correct and
+one test missing, which is a fact about the tests rather than about the change.
+
+`verifyWorkspacePathsAbsent` returns `Indeterminate` when a Scenario names it
+but declares no absence expectation. That is the right answer — a criterion
+announcing success over an examination it never performed is worth less than no
+criterion, because a reader counts it as evidence — but nothing exercised it.
+Turning that branch into `Pass` left the whole suite green.
+
+The gap is reachable the ordinary way: someone deletes a `collect` action and
+leaves the verifier named in the Scenario's list.
+
+`TestTheAbsenceVerifierRefusesToPassHavingCheckedNothing` closes it, and the
+re-aimed mutation now fails with "the absence verifier passed a Scenario that
+declares no absence expectation".
+
+The slice's own mutation stands as well: recording every observation as absent
+regardless of what is on disk fails
+`TestExpectedWorkspaceAbsenceIsCollectedAndVerified/present`.
