@@ -178,7 +178,8 @@ design-verified executor parity, a four-Cell ordinary-PR lane, and a
 consent-gated live quality judge (`och-eval judge`, with its frozen
 JudgeConfig bound into an Attempt's own evidence so a Score's judge
 identity is provable offline) are all real and tested. Real-model live
-sample size — no run against an actual live model has happened here — judge
+sample size — one live Subject run happened on 2026-09-08 and no live judge
+call ever has, so the sample is one partial attempt — judge
 meta-evaluation breadth, provider breadth, and an accepted variance policy
 are still outstanding before a GA claim. The variance *mechanism* is now
 implemented and verified (distribution over repetitions, a structural
