@@ -1,0 +1,34 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.subject",
+  "id": "mcp-live-deepseek-example",
+  "repositoryRevision": "dev",
+  "repositoryDirty": false,
+  "provider": {
+    "adapterKind": "openaicompat",
+    "normalizedEndpoint": "https://api.deepseek.com/v1",
+    "modelId": "deepseek-chat",
+    "contextWindow": 65536,
+    "maxOutput": 2048,
+    "credentialEnvVar": "DEEPSEEK_API_KEY",
+    "lane": "live"
+  },
+  "context": {
+    "triggerPercent": 90,
+    "targetPercent": 50,
+    "tailPercent": 10,
+    "maxSummaryChunks": 8,
+    "maxOverflowCompactionsPerTurn": 2,
+    "maxPrunedToolResultsPerRequest": 64,
+    "compactionTimeout": 120000000000
+  },
+  "policy": {
+    "mode": "default",
+    "toolCatalogIdentity": "catalog-v1+mcp-fixture-v1",
+    "limits": {},
+    "sandboxPolicy": "unsandboxed_allowed"
+  },
+  "mcpServers": [
+    {"name": "fixture", "command": "sh", "args": ["mcp-fixture.sh"]}
+  ]
+}

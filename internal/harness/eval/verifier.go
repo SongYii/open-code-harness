@@ -24,6 +24,10 @@ var verifierCatalog = map[string]Verifier{
 	"expected-tool-failure-observed-v1": verifyExpectedToolFailureObserved,
 	"containment-refused-v1":            verifyContainmentRefused,
 	VerifierWorkspacePathsAbsent:        verifyWorkspacePathsAbsent,
+	VerifierMCPToolSurface:              verifyMCPToolSurface,
+	VerifierMCPApprovalDenied:           verifyMCPApprovalDenied,
+	VerifierMCPResultRedaction:          verifyMCPResultRedaction,
+	VerifierNoToolCallObserved:          verifyNoToolCallObserved,
 
 	// Context mechanism suite. context-compaction-observed-v1 above remains
 	// a compatibility alias for the old smoke Scenario; its semantics are

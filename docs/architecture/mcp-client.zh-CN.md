@@ -97,5 +97,5 @@ MCP 服务器是本 harness 通过 stdio 启动的外部程序。它提供的每
 - **没有按会话的配置。** 服务器只在 `Open` 时命名一次。
 - **`MaxToolsPerServer = 256` 是继承来的，不是测出来的。**
 - **两个上限因继承而非决策而不一致。** 发现阶段允许定义 64 KiB，注册阶段允许 schema 32 KiB，夹在中间的 schema 会通过前者、在后者被丢弃。结果是安全的，且有测试钉住这个不对称。
-- **没有 MCP 评测套件。**
-- **没有证明能抵御提示注入。** 工具描述与结果来自不可信服务器并会到达模型。脱敏在既有 Application 路径上生效，每个 MCP 工具也都需要审批，但这里没有任何自动化测试能证明真实模型会抵抗被注入的指令。
+- **MCP 机制套件是显式运行项，不进入普通 PR CI。** 两个 fixture Scenario 会让真实 stdio server 穿过 Composition，并从已提交审计证据证明工具表面暴露、共享审批拒绝与结果脱敏。运行命令为 `OCH_EVAL_EXPLICIT_MCP_SUITE=1 go test ./cmd/och-eval -run TestCheckedInMCPSetProvesApprovalAndRedaction`。
+- **尚未用真实模型证明提示注入抵抗。** 仓库已有受双重同意门保护、兼容 DeepSeek 的示例，并以确定性前置条件区分“策略成功拦截”与“模型主动抵抗”；在真实付费运行发生前，不作后一种声明。

@@ -188,3 +188,20 @@ func TestExpandAttemptsRejectsMissingDerivedCapability(t *testing.T) {
 		t.Fatal("ExpandAttempts accepted a Scenario whose derived restart_interrupt capability the Executor does not advertise")
 	}
 }
+
+func TestExpandAttemptsRejectsMCPScenarioWithoutFrozenServerConfig(t *testing.T) {
+	set, scenarios, subjects, executors := expansionFixtures(t)
+	for id, scenario := range scenarios {
+		scenario.RequiredCapabilities = append(scenario.RequiredCapabilities, CapabilityMCPStdio)
+		scenarios[id] = scenario
+		set.Scenarios[0].Digest, _ = ScenarioDigest(scenario)
+	}
+	for id, executor := range executors {
+		executor.Capabilities = append(executor.Capabilities, CapabilityMCPStdio)
+		executors[id] = executor
+		set.Executors[0].Digest, _ = ExecutorDigest(executor)
+	}
+	if _, err := ExpandAttempts(set, scenarios, subjects, executors); err == nil {
+		t.Fatal("ExpandAttempts accepted an MCP Scenario paired with a Subject that freezes no MCP server")
+	}
+}

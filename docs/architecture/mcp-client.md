@@ -276,10 +276,12 @@ Implemented, **not GA**. Each of these is a stated boundary, not an oversight:
   registration. The outcome is safe — one tool dropped with a reason, server
   survives — and `TestDefinitionBoundIsWiderThanTheCatalogsSchemaBound` pins
   the asymmetry so a reader does not assume the constants agree.
-- **No MCP evaluation suite.** The evaluation system can host one; its absence
-  blocks nothing here.
-- **Prompt-injection resistance is not proven.** Tool descriptions and results
-  come from an untrusted server and reach the model. Redaction applies to tool
-  results on the existing Application path, and every MCP tool is
-  approval-gated, but no automated test here demonstrates that a real model
-  resists an injected instruction.
+- **The MCP mechanism suite is explicit, not ordinary-PR CI.** Its two fixture
+  Scenarios run a real stdio server through Composition and prove tool-surface
+  exposure, shared approval denial, and result redaction from committed audit
+  evidence. Run it with `OCH_EVAL_EXPLICIT_MCP_SUITE=1 go test ./cmd/och-eval
+  -run TestCheckedInMCPSetProvesApprovalAndRedaction`.
+- **Prompt-injection resistance is not yet proven against a live model.** A
+  dual-consent-gated DeepSeek-compatible example is checked in, with
+  deterministic prerequisites that distinguish containment from model
+  behavior, but no paid live result is claimed until that example is run.

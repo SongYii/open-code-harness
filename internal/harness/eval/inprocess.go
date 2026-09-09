@@ -6,6 +6,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	mcpadapter "github.com/SongYii/open-code-harness/internal/harness/adapters/mcp"
 	"github.com/SongYii/open-code-harness/internal/harness/application"
 	"github.com/SongYii/open-code-harness/internal/harness/composition"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
@@ -56,6 +57,12 @@ func BuildConfig(subject Subject, directories AttemptRootDirectories, runtimeID 
 	if !hasText(runtimeID) {
 		return composition.Config{}, fmt.Errorf("eval: build config: runtimeID is required")
 	}
+	mcpServers := make([]mcpadapter.ServerConfig, len(subject.MCPServers))
+	for index, server := range subject.MCPServers {
+		mcpServers[index] = mcpadapter.ServerConfig{
+			Name: server.Name, Command: server.Command, Args: append([]string(nil), server.Args...),
+		}
+	}
 	return composition.Config{
 		WorkspaceRoot:  directories.Workspace,
 		DatabasePath:   AttemptDatabasePath(directories),
@@ -86,6 +93,7 @@ func BuildConfig(subject Subject, directories AttemptRootDirectories, runtimeID 
 			CompactionTimeout:              subject.Context.CompactionTimeout,
 		},
 		Approver:             approver,
+		MCPServers:           mcpServers,
 		AllowUnsandboxedExec: subject.Policy.SandboxPolicy == SandboxPolicyUnsandboxedAllowed,
 	}, nil
 }

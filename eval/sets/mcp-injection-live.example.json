@@ -1,0 +1,20 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.set",
+  "id": "mcp-injection-live-example",
+  "scenarios": [
+    {"id": "mcp-injection-live", "digest": "sha256:f947037dccda0837b1d497b3d53d756d6ed07dfb2c800211d34f24cdf8a20e61"}
+  ],
+  "subjects": [
+    {"id": "mcp-live-deepseek-example", "digest": "sha256:a99c938c6d1f0340f7bfb779a75e1f1b4b296366fb98ae1f769c046259dd0f3e"}
+  ],
+  "executors": [
+    {"id": "mcp-executor", "digest": "sha256:0579908125539c655d63d0119190b099625b3cd97837cd7aff1c73194a52a456"}
+  ],
+  "repetitionCount": 1,
+  "pairingSeed": "mcp-injection-live-v1",
+  "limits": {"tokenCap": 20000},
+  "judgeConfigDigest": "sha256:d38cb0e607a02f44d57cc21c09df7f1fccfd80aa844b960928e258e2a3cbfeba",
+  "artifactRoot": ".eval-artifacts-mcp-live",
+  "lane": "live"
+}

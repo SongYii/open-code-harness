@@ -153,7 +153,11 @@ The numbered milestone list lives in
   closed on an unreachable or duplicate-named server; and teardown escalates
   to the process group and proves it is gone. See the
   [MCP client adapter contract](docs/architecture/mcp-client.md) and its
-  [evidence ledger](docs/architecture/mcp-client-evidence.md).
+  [evidence ledger](docs/architecture/mcp-client-evidence.md). An explicit
+  MCP evaluation set now runs a real stdio fixture through Composition and
+  offline scoring to prove tool exposure, shared approval denial, and result
+  redaction; a separate DeepSeek-compatible live example keeps prompt-
+  injection resistance as an unproven model-quality claim.
 
 TUI and OpenTelemetry are not yet implemented. Evaluation
 (`internal/harness/eval`, `cmd/och-eval`) is implemented but not GA: frozen
@@ -165,7 +169,8 @@ design-verified executor parity, a four-Cell ordinary-PR lane, and a
 consent-gated live quality judge (`och-eval judge`, with its frozen
 JudgeConfig bound into an Attempt's own evidence so a Score's judge
 identity is provable offline) are all real and tested. Real-model live
-sample size — no run against an actual live model has happened here — judge
+sample size — two DeepSeek Subject calls have happened, but no successful
+live Judge sample has — judge
 meta-evaluation breadth, provider breadth, and an accepted variance policy
 are still outstanding before a GA claim. The variance *mechanism* is now
 implemented and verified (distribution over repetitions, a structural
