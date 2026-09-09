@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/SongYii/open-code-harness/internal/harness/agentinstructions"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
 )
@@ -166,9 +167,14 @@ func (service *Service) runTurnOwned(ctx context.Context, request RunTurnRequest
 // service.contextEnabled(), so every existing caller that does not
 // configure Config.Context is completely unaffected.
 func (service *Service) runTurnOwnedWithContextEngine(ctx context.Context, request RunTurnRequest, requestDigest Digest, lease *executionLease, state domain.Session, turnID domain.TurnID, itemID domain.ItemID, commandID domain.CommandID, emitter *engine.Emitter, schemas []domain.ToolSchema) (RunTurnResult, error) {
+	state, err := service.reconcileWorkspaceInstructions(ctx, state, nil)
+	if err != nil {
+		return RunTurnResult{}, err
+	}
 	prepared, err := PrepareContext(ctx, service.contextOrchestratorDeps(), state, PrepareContextInput{
 		SessionID: request.SessionID, TurnID: turnID, ItemID: itemID, Trigger: domain.ContextTriggerPreTurn,
-		CurrentInput: domain.ModelPromptMessage{Role: domain.PromptRoleUser, Text: request.Input}, Tools: schemas,
+		PrefixMessages: conversationPrefixMessages(),
+		CurrentInput:   domain.ModelPromptMessage{Role: domain.PromptRoleUser, Text: request.Input}, Tools: schemas,
 	})
 	if err != nil {
 		return RunTurnResult{}, err
@@ -679,6 +685,10 @@ func modelRequestSpec(identity *engine.RequestIdentity, input string, toolSchema
 		Messages:            []domain.ModelPromptMessage{{Role: domain.PromptRoleUser, Text: input}},
 		Tools:               toolSchemas,
 	}
+}
+
+func conversationPrefixMessages() []domain.ModelPromptMessage {
+	return []domain.ModelPromptMessage{agentinstructions.SystemPromptMessage()}
 }
 
 func itemTerminalEvent(records []domain.RecordedEvent) domain.Event {

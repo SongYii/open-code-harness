@@ -40,6 +40,15 @@ func validCheckpoint(t *testing.T, id string, records []domain.RecordedEvent, th
 	}
 }
 
+func sqliteInstructionSnapshot(through uint64) *domain.InstructionSnapshotRecord {
+	return &domain.InstructionSnapshotRecord{
+		PromptID: "och_coding_agent_v1", PromptDigest: "sha256:8060287d0ddc132ebce66e955b8749804a06d1d1b494f77b23afbe49c2f0fd2d",
+		Epoch: 1, ThroughSequence: through,
+		Sources:         []domain.InstructionSource{{Path: "AGENTS.md", Scope: ".", Digest: "sha256:ac44a12762c7417f2ee0a247618913c1448edde6193125c1d4579fd42596a9d5", Content: "Run tests.\n"}},
+		RenderedMessage: "rendered snapshot", Digest: "sha256:24a603faa166c8a7ecf88887ec8895c75c80c5091c21cd57943ef287f0aa8106",
+	}
+}
+
 func readEvents(t *testing.T, store *Store, sessionID string) []domain.RecordedEvent {
 	t.Helper()
 	rows, err := store.db.QueryContext(context.Background(),
@@ -123,6 +132,7 @@ func TestUpdateContextCheckpointHeadAcceptsVerifiedCompletion(t *testing.T) {
 	records := readEvents(t, store, string(sessionID))
 	through := records[len(records)-1].Sequence
 	completed := validCheckpoint(t, "checkpoint-1", records, through)
+	completed.Checkpoint.InstructionSnapshot = sqliteInstructionSnapshot(through)
 
 	receipt := mustAppend(t, store, appendRequest("append-checkpoint", sessionID, uint64(len(records)), "command-checkpoint",
 		domain.ContextCompactionStarted{ID: completed.ID, Trigger: "manual", Strategy: domain.ContextStrategySummary, MeterID: "och_wire_estimate_v1", SourceSchema: "och_source_v1"},
@@ -152,6 +162,9 @@ func TestUpdateContextCheckpointHeadAcceptsVerifiedCompletion(t *testing.T) {
 	}
 	if lookup.Checkpoint.ID != "checkpoint-1" || lookup.Checkpoint.ThroughSequence != through {
 		t.Fatalf("lookup checkpoint = %+v", lookup.Checkpoint)
+	}
+	if lookup.Checkpoint.InstructionSnapshot == nil || lookup.Checkpoint.InstructionSnapshot.Sources[0].Content != "Run tests.\n" {
+		t.Fatalf("lookup instruction snapshot = %#v", lookup.Checkpoint.InstructionSnapshot)
 	}
 }
 

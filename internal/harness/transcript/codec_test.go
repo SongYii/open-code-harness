@@ -147,6 +147,11 @@ func TestProjectRecordFrozenPayloads(t *testing.T) {
 				Summary: "the session inspected a README and ran two commands", Limitations: "tool output truncated",
 				TokensBefore: 4000, CheckpointTokens: 500, RetainedTailTokens: 200, EstimatedRequestTokens: 700,
 				SummarizerRoute: "gpt-5", SummarizerUsage: 480, SummaryChunks: 1, PrunedToolResultCount: 2,
+				InstructionSnapshot: &domain.InstructionSnapshotRecord{
+					PromptID: "och_coding_agent_v1", PromptDigest: "sha256:" + strings.Repeat("a", 64), Epoch: 1, ThroughSequence: 18,
+					Sources:         []domain.InstructionSource{{Path: "AGENTS.md", Scope: ".", Digest: "sha256:ac44a12762c7417f2ee0a247618913c1448edde6193125c1d4579fd42596a9d5", Content: "Run tests.\n"}},
+					RenderedMessage: "rendered snapshot", Digest: "sha256:24a603faa166c8a7ecf88887ec8895c75c80c5091c21cd57943ef287f0aa8106",
+				},
 			},
 		}},
 		{name: "context compaction failed", seq: 21, event: domain.ContextCompactionFailed{
@@ -160,6 +165,12 @@ func TestProjectRecordFrozenPayloads(t *testing.T) {
 			EstimatedMessageTokens: 900, EstimatedToolSchemaTokens: 100, EstimatedTotalTokens: 1000,
 			MeterID: "och_wire_estimate_v1", UsageAnchorApplied: true, UsageAnchorTokens: 50,
 			SerializedEnvelopeBytes: 3200,
+		}},
+		{name: "workspace instructions", seq: 23, event: domain.WorkspaceInstructionsRecorded{
+			FormatVersion: domain.WorkspaceInstructionsFormatV1, PromptID: "och_coding_agent_v1", PromptDigest: "sha256:" + strings.Repeat("a", 64), Epoch: 1,
+			Discovered:      []domain.InstructionScope{{Path: "AGENTS.md", Scope: "."}},
+			Changes:         []domain.InstructionChange{{Action: domain.InstructionActionSet, Path: "AGENTS.md", Scope: ".", Digest: "sha256:ac44a12762c7417f2ee0a247618913c1448edde6193125c1d4579fd42596a9d5", Content: "Run tests.\n"}},
+			RenderedMessage: "rendered delta", EffectiveSetDigest: "sha256:24a603faa166c8a7ecf88887ec8895c75c80c5091c21cd57943ef287f0aa8106",
 		}},
 	}
 
@@ -190,6 +201,38 @@ func TestProjectRecordFrozenPayloads(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestProjectRecordCarriesWorkspaceInstructionsAndCheckpointSnapshot(t *testing.T) {
+	t.Parallel()
+	occurred := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	instruction := domain.WorkspaceInstructionsRecorded{
+		FormatVersion: domain.WorkspaceInstructionsFormatV1, PromptID: "och_coding_agent_v1", PromptDigest: strings.Repeat("a", 71), Epoch: 2,
+		Discovered:      []domain.InstructionScope{{Path: "pkg/AGENTS.md", Scope: "pkg"}},
+		Changes:         []domain.InstructionChange{{Action: domain.InstructionActionSet, Path: "pkg/AGENTS.md", Scope: "pkg", Digest: strings.Repeat("b", 71), Content: "Run tests.\n"}},
+		Diagnostics:     []domain.InstructionDiagnostic{{Path: "pkg/AGENTS.md", Class: "read_failed"}},
+		RenderedMessage: "rendered delta", EffectiveSetDigest: strings.Repeat("c", 71),
+	}
+	line, ok, err := ProjectRecord(fixtureRecord(23, occurred, instruction), map[domain.TurnID]uint32{})
+	if err != nil || !ok {
+		t.Fatalf("ProjectRecord(workspace instructions) ok=%t error=%v", ok, err)
+	}
+	assertPayload(t, line, `"formatVersion":"workspace_instructions_v1"`, `"action":"set"`, `"path":"pkg/AGENTS.md"`, `"class":"read_failed"`, `"renderedMessage":"rendered delta"`)
+
+	checkpoint := domain.ContextCompactionCompleted{ID: "compaction-1", Checkpoint: domain.ContextCheckpointRecord{
+		ID: "checkpoint-1", Kind: domain.ContextCheckpointKindRollingSummary, SourceSchema: "och_source_v1", ThroughSequence: 23,
+		SourceDigestHex: strings.Repeat("0", 64), Summary: "summary",
+		InstructionSnapshot: &domain.InstructionSnapshotRecord{
+			PromptID: "och_coding_agent_v1", PromptDigest: strings.Repeat("a", 71), Epoch: 2, ThroughSequence: 23,
+			Sources:         []domain.InstructionSource{{Path: "pkg/AGENTS.md", Scope: "pkg", Digest: strings.Repeat("b", 71), Content: "Run tests.\n"}},
+			RenderedMessage: "rendered snapshot", Digest: strings.Repeat("c", 71),
+		},
+	}}
+	line, ok, err = ProjectRecord(fixtureRecord(24, occurred, checkpoint), map[domain.TurnID]uint32{})
+	if err != nil || !ok {
+		t.Fatalf("ProjectRecord(checkpoint snapshot) ok=%t error=%v", ok, err)
+	}
+	assertPayload(t, line, `"instructionSnapshot"`, `"throughSequence":23`, `"renderedMessage":"rendered snapshot"`, `"path":"pkg/AGENTS.md"`)
 }
 
 func TestProjectRecordOmitsRequestAndPolicy(t *testing.T) {

@@ -138,6 +138,7 @@ type Service struct {
 	// "write this file" into a guarded promise, and it is process-local by
 	// design -- see file_observations.go.
 	observations *fileObservations
+	instructions *workspaceInstructionRegistry
 }
 
 func NewService(store EventStore, ids IDGenerator, clock Clock, runner *engine.TurnRunner, authority AuthoritySource, config Config) (*Service, error) {
@@ -201,12 +202,12 @@ func NewService(store EventStore, ids IDGenerator, clock Clock, runner *engine.T
 	service := &Service{
 		store: store, ids: ids, clock: clock, runner: runner, authority: authority,
 		config: config, executions: newExecutionRegistry(), policy: policyEngine,
-		approver: approver, observations: newFileObservations(),
+		approver: approver, files: config.Files, observations: newFileObservations(),
+		instructions: newWorkspaceInstructionRegistry(),
 	}
 	if catalogEnabled {
 		service.catalog = config.Catalog
 		service.external = config.ExternalTools
-		service.files = config.Files
 		service.commands = config.Commands
 	}
 	return service, nil

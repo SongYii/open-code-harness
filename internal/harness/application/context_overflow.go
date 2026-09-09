@@ -87,7 +87,7 @@ func (service *Service) recoverFromOverflow(ctx context.Context, owned *ownedTur
 
 	prepared, err := PrepareContext(ctx, service.contextOrchestratorDeps(), owned.state, PrepareContextInput{
 		SessionID: owned.result.SessionID, TurnID: owned.result.TurnID, ItemID: owned.assistantItem,
-		Trigger: domain.ContextTriggerOverflowRetry, Tools: failedRequest.Tools, Force: true,
+		Trigger: domain.ContextTriggerOverflowRetry, PrefixMessages: conversationPrefixMessages(), Tools: failedRequest.Tools, Force: true,
 	})
 	if err != nil {
 		return engine.RunRequest{}, false, err

@@ -45,6 +45,9 @@ type ownedTurn struct {
 	// Config.Context.MaxOverflowRecoveriesPerTurn.
 	attemptIndex       uint32
 	overflowRecoveries uint32
+	// instructionTargets contains directories reached by successfully
+	// committed structured filesystem Tool Results in the current Step.
+	instructionTargets []string
 }
 
 type turnProjection struct {
@@ -308,6 +311,14 @@ func (service *Service) runStepLoop(ctx context.Context, owned *ownedTurn) (RunT
 			return service.failOwnedTurn(ctx, owned, CodeStepLimit, displayFailureSentence(CodeStepLimit))
 		}
 		if service.contextEnabled() {
+			if len(owned.instructionTargets) > 0 {
+				nextState, reconcileErr := service.reconcileWorkspaceInstructions(ctx, owned.state, owned.instructionTargets)
+				if reconcileErr != nil {
+					return cloneRunTurnResult(owned.result), reconcileErr
+				}
+				owned.state = nextState
+				owned.instructionTargets = nil
+			}
 			done, result, err := service.startNextStepWithContextEngine(ctx, owned)
 			if done {
 				return result, err
@@ -406,7 +417,7 @@ func (service *Service) startNextStepWithContextEngine(ctx context.Context, owne
 
 	prepared, err := PrepareContext(ctx, service.contextOrchestratorDeps(), owned.state, PrepareContextInput{
 		SessionID: owned.result.SessionID, TurnID: owned.result.TurnID, ItemID: itemID,
-		Trigger: domain.ContextTriggerMidTurn, Tools: service.catalog.Schemas(),
+		Trigger: domain.ContextTriggerMidTurn, PrefixMessages: conversationPrefixMessages(), Tools: service.catalog.Schemas(),
 	})
 	if err != nil {
 		return true, cloneRunTurnResult(owned.result), err

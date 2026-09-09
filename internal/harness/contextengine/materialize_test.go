@@ -59,6 +59,28 @@ func TestMaterializeWithRollingSummaryCheckpointAndTail(t *testing.T) {
 	}
 }
 
+func TestMaterializePlacesInstructionSnapshotAfterCheckpointAndBeforeTail(t *testing.T) {
+	checkpoint := &ContextCheckpoint{
+		ID: "ckpt_snapshot", Kind: CheckpointKindRollingSummary, Summary: "summary",
+		InstructionSnapshot: &InstructionSnapshot{RenderedMessage: "instruction snapshot"},
+	}
+	result := Materialize(MaterializeInput{
+		PrefixMessages: []domain.ModelPromptMessage{{Role: domain.PromptRoleSystem, Text: "system"}},
+		Checkpoint:     checkpoint,
+		RetainedTail:   []ContextUnit{{Kind: UnitKindTurn, FirstSequence: 51, LastSequence: 51, Messages: []domain.ModelPromptMessage{{Role: domain.PromptRoleUser, Text: "tail"}}}},
+		CurrentInput:   domain.ModelPromptMessage{Role: domain.PromptRoleUser, Text: "current"}, Meter: WireEstimateMeter{},
+	})
+	want := []string{"system", "summary", "instruction snapshot", "tail", "current"}
+	if len(result.Envelope.Messages) != len(want) {
+		t.Fatalf("messages = %#v, want %d", result.Envelope.Messages, len(want))
+	}
+	for index, text := range want {
+		if result.Envelope.Messages[index].Text != text {
+			t.Fatalf("Messages[%d].Text = %q, want %q", index, result.Envelope.Messages[index].Text, text)
+		}
+	}
+}
+
 func TestMaterializeWithSourceTailResetCheckpoint(t *testing.T) {
 	checkpoint := &ContextCheckpoint{
 		ID:       "ckpt_reset",

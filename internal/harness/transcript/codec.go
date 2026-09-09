@@ -210,6 +210,18 @@ type approvalResolvedPayload struct {
 	Decision   string `json:"decision"`
 }
 
+type workspaceInstructionsPayload struct {
+	FormatVersion      string                         `json:"formatVersion"`
+	PromptID           string                         `json:"promptID"`
+	PromptDigest       string                         `json:"promptDigest"`
+	Epoch              uint64                         `json:"epoch"`
+	Discovered         []domain.InstructionScope      `json:"discovered,omitempty"`
+	Changes            []domain.InstructionChange     `json:"changes,omitempty"`
+	Diagnostics        []domain.InstructionDiagnostic `json:"diagnostics,omitempty"`
+	RenderedMessage    string                         `json:"renderedMessage,omitempty"`
+	EffectiveSetDigest string                         `json:"effectiveSetDigest"`
+}
+
 type contextCompactionStartedPayload struct {
 	ID                string `json:"id"`
 	Trigger           string `json:"trigger"`
@@ -227,26 +239,27 @@ type contextCompactionStartedPayload struct {
 // §20.3, distinct from ACP's canonical-only projection), so the summary
 // text and every checkpoint metric are included here, not omitted.
 type contextCheckpointPayload struct {
-	ID                     string `json:"id"`
-	Kind                   string `json:"kind"`
-	SourceSchema           string `json:"sourceSchema"`
-	SummaryFormat          string `json:"summaryFormat,omitempty"`
-	PromptVersion          string `json:"promptVersion,omitempty"`
-	CoveredEventCount      uint64 `json:"coveredEventCount"`
-	CoveredTurnCount       uint64 `json:"coveredTurnCount"`
-	ThroughSequence        uint64 `json:"throughSequence"`
-	SourceDigestHex        string `json:"sourceDigestHex"`
-	PreviousCheckpointID   string `json:"previousCheckpointID,omitempty"`
-	Summary                string `json:"summary,omitempty"`
-	Limitations            string `json:"limitations,omitempty"`
-	TokensBefore           uint64 `json:"tokensBefore"`
-	CheckpointTokens       uint64 `json:"checkpointTokens"`
-	RetainedTailTokens     uint64 `json:"retainedTailTokens"`
-	EstimatedRequestTokens uint64 `json:"estimatedRequestTokens"`
-	SummarizerRoute        string `json:"summarizerRoute,omitempty"`
-	SummarizerUsage        uint64 `json:"summarizerUsage,omitempty"`
-	SummaryChunks          uint32 `json:"summaryChunks,omitempty"`
-	PrunedToolResultCount  uint32 `json:"prunedToolResultCount,omitempty"`
+	ID                     string                            `json:"id"`
+	Kind                   string                            `json:"kind"`
+	SourceSchema           string                            `json:"sourceSchema"`
+	SummaryFormat          string                            `json:"summaryFormat,omitempty"`
+	PromptVersion          string                            `json:"promptVersion,omitempty"`
+	CoveredEventCount      uint64                            `json:"coveredEventCount"`
+	CoveredTurnCount       uint64                            `json:"coveredTurnCount"`
+	ThroughSequence        uint64                            `json:"throughSequence"`
+	SourceDigestHex        string                            `json:"sourceDigestHex"`
+	PreviousCheckpointID   string                            `json:"previousCheckpointID,omitempty"`
+	Summary                string                            `json:"summary,omitempty"`
+	Limitations            string                            `json:"limitations,omitempty"`
+	TokensBefore           uint64                            `json:"tokensBefore"`
+	CheckpointTokens       uint64                            `json:"checkpointTokens"`
+	RetainedTailTokens     uint64                            `json:"retainedTailTokens"`
+	EstimatedRequestTokens uint64                            `json:"estimatedRequestTokens"`
+	SummarizerRoute        string                            `json:"summarizerRoute,omitempty"`
+	SummarizerUsage        uint64                            `json:"summarizerUsage,omitempty"`
+	SummaryChunks          uint32                            `json:"summaryChunks,omitempty"`
+	PrunedToolResultCount  uint32                            `json:"prunedToolResultCount,omitempty"`
+	InstructionSnapshot    *domain.InstructionSnapshotRecord `json:"instructionSnapshot,omitempty"`
 }
 
 type contextCompactionCompletedPayload struct {
@@ -476,6 +489,12 @@ func ProjectRecord(record domain.RecordedEvent, steps map[domain.TurnID]uint32) 
 			ApprovalID: string(event.ApprovalID),
 			Decision:   event.Decision,
 		})
+	case domain.WorkspaceInstructionsRecorded:
+		return makeLine(record, domain.EventWorkspaceInstructionsRecorded, workspaceInstructionsPayload{
+			FormatVersion: event.FormatVersion, PromptID: event.PromptID, PromptDigest: event.PromptDigest, Epoch: event.Epoch,
+			Discovered: event.Discovered, Changes: event.Changes, Diagnostics: event.Diagnostics,
+			RenderedMessage: event.RenderedMessage, EffectiveSetDigest: event.EffectiveSetDigest,
+		})
 	case domain.ModelRequestRecorded, domain.PolicyDecisionRecorded:
 		return Line{}, false, nil
 	case domain.ContextCompactionStarted:
@@ -498,7 +517,7 @@ func ProjectRecord(record domain.RecordedEvent, steps map[domain.TurnID]uint32) 
 				CheckpointTokens: checkpoint.CheckpointTokens, RetainedTailTokens: checkpoint.RetainedTailTokens,
 				EstimatedRequestTokens: checkpoint.EstimatedRequestTokens, SummarizerRoute: checkpoint.SummarizerRoute,
 				SummarizerUsage: checkpoint.SummarizerUsage, SummaryChunks: checkpoint.SummaryChunks,
-				PrunedToolResultCount: checkpoint.PrunedToolResultCount,
+				PrunedToolResultCount: checkpoint.PrunedToolResultCount, InstructionSnapshot: checkpoint.InstructionSnapshot,
 			},
 		})
 	case domain.ContextCompactionFailed:
@@ -798,6 +817,9 @@ func factPayloadKeys(typ string) (required, optional []string, ok bool) {
 		return []string{"turnID", "itemID", "approvalID", "callID", "name", "reason"}, nil, true
 	case domain.EventApprovalResolved:
 		return []string{"turnID", "itemID", "approvalID", "decision"}, nil, true
+	case domain.EventWorkspaceInstructionsRecorded:
+		return []string{"formatVersion", "promptID", "promptDigest", "epoch", "effectiveSetDigest"},
+			[]string{"discovered", "changes", "diagnostics", "renderedMessage"}, true
 	case domain.EventContextCompactionStarted:
 		return []string{"id", "trigger", "strategy", "baseSourceHead", "sourceSchema", "meterID"},
 			[]string{"priorCheckpointID", "promptVersion", "plannedRoute"}, true

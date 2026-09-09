@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/memory"
+	"github.com/SongYii/open-code-harness/internal/harness/agentinstructions"
 	"github.com/SongYii/open-code-harness/internal/harness/application"
 	"github.com/SongYii/open-code-harness/internal/harness/contextengine"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
@@ -61,6 +62,12 @@ func (summarizer *scriptedSummarizer) callCount() int {
 	summarizer.mu.Lock()
 	defer summarizer.mu.Unlock()
 	return len(summarizer.calls)
+}
+
+func (summarizer *scriptedSummarizer) requests() []application.ContextSummarizeRequest {
+	summarizer.mu.Lock()
+	defer summarizer.mu.Unlock()
+	return append([]application.ContextSummarizeRequest(nil), summarizer.calls...)
 }
 
 // validSummaryText renders a minimal but structurally valid
@@ -247,6 +254,200 @@ func TestPrepareContextAboveTriggerBuildsAndCommitsARollingSummaryCheckpoint(t *
 	}
 	if !sawStarted || !sawCompleted {
 		t.Fatalf("sawStarted=%t sawCompleted=%t, want both", sawStarted, sawCompleted)
+	}
+}
+
+func appendInstructionTransitions(t *testing.T, store application.EventStore, state domain.Session, ids *testkit.SequenceIDs) (domain.Session, agentinstructions.State, []string) {
+	t.Helper()
+	uniqueProse := []string{
+		"UNIQUE-INSTRUCTION-SET: initial root rule.\n",
+		"UNIQUE-INSTRUCTION-REPLACE: replacement root rule.\n",
+		"UNIQUE-INSTRUCTION-NESTED: final nested rule.\n",
+	}
+	instructionState := agentinstructions.State{}
+	transitions := [][]agentinstructions.Observation{
+		{{Path: "AGENTS.md", Scope: ".", Present: true, Content: []byte(uniqueProse[0])}},
+		{
+			{Path: "AGENTS.md", Scope: ".", Present: true, Content: []byte(uniqueProse[1])},
+			{Path: "pkg/AGENTS.md", Scope: "pkg", Present: true, Content: []byte(uniqueProse[2])},
+		},
+		{{Path: "AGENTS.md", Scope: ".", Present: false}},
+	}
+	for _, observations := range transitions {
+		batch, next, err := agentinstructions.Reconcile(instructionState, observations)
+		if err != nil {
+			t.Fatal(err)
+		}
+		renderedDelta, err := agentinstructions.RenderBatch(batch, next)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload := domain.WorkspaceInstructionsRecorded{
+			FormatVersion: domain.WorkspaceInstructionsFormatV1, PromptID: agentinstructions.PromptID, PromptDigest: agentinstructions.PromptDigest,
+			Epoch: batch.Epoch, Discovered: batch.Discovered, Changes: batch.Changes, Diagnostics: batch.Diagnostics,
+			RenderedMessage: renderedDelta, EffectiveSetDigest: agentinstructions.EffectiveSetDigest(next),
+		}
+		decided, err := domain.Decide(state, domain.RecordWorkspaceInstructions{SessionID: state.ID, WorkspaceInstructionsRecorded: payload})
+		if err != nil {
+			t.Fatal(err)
+		}
+		commandID, err := ids.NewCommandID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		intent, err := application.BuildAppendIntent(testkit.FixedClock{Time: acceptanceTime}, ids,
+			application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1}, state.ID, state.Version, commandID, nil, decided)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state, _, err = application.CommitAppendIntent(context.Background(), store, state, intent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		instructionState = next
+	}
+	return state, instructionState, uniqueProse
+}
+
+func TestPrepareContextRebasesInstructionsWithoutSendingThemToSummarizer(t *testing.T) {
+	store, state, _, ids := buildHistorySession(t, 2)
+	state, instructionState, uniqueProse := appendInstructionTransitions(t, store, state, ids)
+
+	service := newAcceptanceService(t, store, ids, &acceptanceSuccessModel{text: strings.Repeat("later assistant history. ", 8)})
+	for index := 0; index < 6; index++ {
+		_, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+			SessionID: state.ID, RequestID: domain.RunTurnRequestID(fmt.Sprintf("post-instruction-%d", index)),
+			Input: strings.Repeat("later user history. ", 8), Sink: &testkit.RecordingSink{},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	records, err := application.ReadWholeStreamPinned(context.Background(), store, state.ID, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err = domain.Replay(records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scan, err := contextengine.Scan(context.Background(), testPageSource{store: store}, state.ID, 256, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fullEstimate := contextengine.WireEstimateMeter{}.EstimateMessages(flattenScanMessages(scan))
+	summarizer := &scriptedSummarizer{text: validSummaryText()}
+	deps := application.ContextOrchestratorDeps{
+		Store: store, IDs: ids, Clock: testkit.FixedClock{Time: acceptanceTime},
+		Authority:       application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1},
+		CheckpointStore: &fakeCheckpointStore{}, Summarizer: summarizer, Meter: contextengine.WireEstimateMeter{},
+		Budget: contextengine.Budget{HardInput: fullEstimate * 10, Trigger: fullEstimate / 4, Target: fullEstimate / 8, ProtectedTail: 1, SummaryOutputCap: 400},
+	}
+	beforeCompactionVersion := state.Version
+	result, err := application.PrepareContext(context.Background(), deps, state, application.PrepareContextInput{
+		SessionID: state.ID, TurnID: "turn-pending", ItemID: "item-pending", Trigger: domain.ContextTriggerPreTurn,
+		PrefixMessages: []domain.ModelPromptMessage{agentinstructions.SystemPromptMessage()},
+		CurrentInput:   domain.ModelPromptMessage{Role: domain.PromptRoleUser, Text: "next"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.CompactionRan {
+		t.Fatal("compaction did not run")
+	}
+	var snapshot *domain.InstructionSnapshotRecord
+	completedRecords, err := application.ReadWholeStreamPinned(context.Background(), store, state.ID, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range completedRecords {
+		if record.Sequence <= beforeCompactionVersion {
+			continue
+		}
+		if completed, ok := record.Event.(domain.ContextCompactionCompleted); ok {
+			snapshot = completed.Checkpoint.InstructionSnapshot
+		}
+	}
+	if snapshot == nil {
+		t.Fatal("completed checkpoint has no instruction snapshot")
+	}
+	wantSnapshot := agentinstructions.RenderSnapshot(instructionState)
+	if snapshot.RenderedMessage != wantSnapshot.RenderedMessage || snapshot.Digest != wantSnapshot.Digest || snapshot.Epoch != wantSnapshot.Epoch {
+		t.Fatalf("snapshot = %#v, want rendered/digest/epoch from RenderSnapshot", snapshot)
+	}
+	for _, request := range summarizer.requests() {
+		containsProse := false
+		for _, prose := range uniqueProse {
+			containsProse = containsProse || strings.Contains(request.Content, prose)
+		}
+		if containsProse || strings.Contains(request.Content, "<workspace_instructions") {
+			t.Fatalf("summarizer received repository instructions: %q", request.Content)
+		}
+	}
+}
+
+func TestPrepareContextResetRebasesTheSameEffectiveInstructionSnapshot(t *testing.T) {
+	store, state, _, ids := buildHistorySession(t, 2)
+	state, instructionState, _ := appendInstructionTransitions(t, store, state, ids)
+	service := newAcceptanceService(t, store, ids, &acceptanceSuccessModel{text: strings.Repeat("later assistant history. ", 8)})
+	for index := 0; index < 6; index++ {
+		if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{
+			SessionID: state.ID, RequestID: domain.RunTurnRequestID(fmt.Sprintf("post-reset-instruction-%d", index)),
+			Input: strings.Repeat("later user history. ", 8), Sink: &testkit.RecordingSink{},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	records, err := application.ReadWholeStreamPinned(context.Background(), store, state.ID, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err = domain.Replay(records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scan, err := contextengine.Scan(context.Background(), testPageSource{store: store}, state.ID, 256, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fullEstimate := contextengine.WireEstimateMeter{}.EstimateMessages(flattenScanMessages(scan))
+	deps := application.ContextOrchestratorDeps{
+		Store: store, IDs: ids, Clock: testkit.FixedClock{Time: acceptanceTime},
+		Authority:       application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1},
+		CheckpointStore: &fakeCheckpointStore{}, Summarizer: &scriptedSummarizer{err: fmt.Errorf("provider unavailable")}, Meter: contextengine.WireEstimateMeter{},
+		Budget: contextengine.Budget{HardInput: fullEstimate * 3 / 4, Trigger: fullEstimate / 4, Target: fullEstimate / 8, ProtectedTail: 1, SummaryOutputCap: 400},
+	}
+	beforeCompactionVersion := state.Version
+	result, err := application.PrepareContext(context.Background(), deps, state, application.PrepareContextInput{
+		SessionID: state.ID, TurnID: "turn-pending", ItemID: "item-pending", Trigger: domain.ContextTriggerPreTurn,
+		PrefixMessages: []domain.ModelPromptMessage{agentinstructions.SystemPromptMessage()},
+		CurrentInput:   domain.ModelPromptMessage{Role: domain.PromptRoleUser, Text: "next"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.CompactionRan || result.Prepared.CheckpointKind != contextengine.CheckpointKindSourceTailReset {
+		t.Fatalf("result = %#v, want completed deterministic reset", result)
+	}
+	if result.Prepared.EstimatedTotalTokens > deps.Budget.HardInput {
+		t.Fatalf("reset request tokens = %d, hard input = %d", result.Prepared.EstimatedTotalTokens, deps.Budget.HardInput)
+	}
+	completedRecords, err := application.ReadWholeStreamPinned(context.Background(), store, state.ID, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot *domain.InstructionSnapshotRecord
+	for _, record := range completedRecords {
+		if record.Sequence <= beforeCompactionVersion {
+			continue
+		}
+		if completed, ok := record.Event.(domain.ContextCompactionCompleted); ok {
+			snapshot = completed.Checkpoint.InstructionSnapshot
+		}
+	}
+	want := agentinstructions.RenderSnapshot(instructionState)
+	if snapshot == nil || snapshot.RenderedMessage != want.RenderedMessage || snapshot.Digest != want.Digest || snapshot.Epoch != want.Epoch {
+		t.Fatalf("reset snapshot = %#v, want %#v", snapshot, want)
 	}
 }
 

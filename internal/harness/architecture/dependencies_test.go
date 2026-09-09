@@ -65,6 +65,8 @@ func TestClassifyProductionDirectory(t *testing.T) {
 		{name: "transcript production subpackage", directory: "internal/harness/transcript/internal", want: ownerTranscript, inspect: true, hasOwner: true},
 		{name: "eval root", directory: "internal/harness/eval", want: ownerEval, inspect: true, hasOwner: true},
 		{name: "eval production subpackage", directory: "internal/harness/eval/internal", want: ownerEval, inspect: true, hasOwner: true},
+		{name: "agent instructions root", directory: "internal/harness/agentinstructions", want: ownerAgentInstructions, inspect: true, hasOwner: true},
+		{name: "agent instructions production subpackage", directory: "internal/harness/agentinstructions/render", want: ownerAgentInstructions, inspect: true, hasOwner: true},
 		{name: "unowned adapter still inspected", directory: "internal/harness/adapters/other", inspect: true},
 		{name: "unowned nested adapter still inspected", directory: "internal/harness/adapters/other/internal", inspect: true},
 		{name: "harness root still inspected", directory: "internal/harness", inspect: true},
@@ -292,6 +294,10 @@ func TestForbiddenImport(t *testing.T) {
 		{name: "eval cannot import adapters", owner: ownerEval, importPath: modulePath + "/internal/harness/adapters/sqlite", forbidden: true},
 		{name: "eval cannot import adapters root", owner: ownerEval, importPath: modulePath + "/internal/harness/adapters", forbidden: true},
 		{name: "eval cannot import testkit", owner: ownerEval, importPath: modulePath + "/internal/harness/testkit", forbidden: true},
+		{name: "agent instructions may import domain", owner: ownerAgentInstructions, importPath: modulePath + "/internal/harness/domain", forbidden: false},
+		{name: "agent instructions cannot import application", owner: ownerAgentInstructions, importPath: modulePath + "/internal/harness/application", forbidden: true},
+		{name: "agent instructions cannot import adapters", owner: ownerAgentInstructions, importPath: modulePath + "/internal/harness/adapters/workspacefs", forbidden: true},
+		{name: "agent instructions cannot import host filesystem", owner: ownerAgentInstructions, importPath: "os", forbidden: true},
 		{name: "domain cannot import eval", owner: ownerDomain, importPath: modulePath + "/internal/harness/eval", forbidden: true},
 		{name: "engine cannot import eval", owner: ownerEngine, importPath: modulePath + "/internal/harness/eval", forbidden: true},
 		{name: "application cannot import eval", owner: ownerApplication, importPath: modulePath + "/internal/harness/eval", forbidden: true},
@@ -400,23 +406,24 @@ const modulePath = "github.com/SongYii/open-code-harness"
 type packageOwner string
 
 const (
-	ownerDomain       packageOwner = "domain"
-	ownerEngine       packageOwner = "engine"
-	ownerApplication  packageOwner = "application"
-	ownerMemory       packageOwner = "memory"
-	ownerOpenAICompat packageOwner = "openaicompat"
-	ownerSQLite       packageOwner = "sqlite"
-	ownerRuntime      packageOwner = "runtime"
-	ownerPolicy       packageOwner = "policy"
-	ownerTools        packageOwner = "tools"
-	ownerWorkspaceFS  packageOwner = "workspacefs"
-	ownerLocalExec    packageOwner = "localexec"
-	ownerMCP          packageOwner = "mcp"
-	ownerSystem       packageOwner = "system"
-	ownerACP          packageOwner = "acp"
-	ownerComposition  packageOwner = "composition"
-	ownerTranscript   packageOwner = "transcript"
-	ownerEval         packageOwner = "eval"
+	ownerDomain            packageOwner = "domain"
+	ownerEngine            packageOwner = "engine"
+	ownerApplication       packageOwner = "application"
+	ownerMemory            packageOwner = "memory"
+	ownerOpenAICompat      packageOwner = "openaicompat"
+	ownerSQLite            packageOwner = "sqlite"
+	ownerRuntime           packageOwner = "runtime"
+	ownerPolicy            packageOwner = "policy"
+	ownerTools             packageOwner = "tools"
+	ownerWorkspaceFS       packageOwner = "workspacefs"
+	ownerLocalExec         packageOwner = "localexec"
+	ownerMCP               packageOwner = "mcp"
+	ownerSystem            packageOwner = "system"
+	ownerACP               packageOwner = "acp"
+	ownerComposition       packageOwner = "composition"
+	ownerTranscript        packageOwner = "transcript"
+	ownerEval              packageOwner = "eval"
+	ownerAgentInstructions packageOwner = "agentinstructions"
 )
 
 var excludedTestSupportDirectories = []string{
@@ -459,6 +466,7 @@ func packageOwnership(directory string) (packageOwner, bool) {
 		{root: "internal/harness/transcript", owner: ownerTranscript},
 		{root: "internal/harness/tools", owner: ownerTools},
 		{root: "internal/harness/eval", owner: ownerEval},
+		{root: "internal/harness/agentinstructions", owner: ownerAgentInstructions},
 	} {
 		if directoryWithin(directory, candidate.root) {
 			return candidate.owner, true
@@ -638,6 +646,19 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/adapters",
 			modulePath+"/internal/harness/testkit",
 		)
+	case ownerAgentInstructions:
+		forbidden = append(forbidden,
+			modulePath+"/internal/harness/application",
+			modulePath+"/internal/harness/engine",
+			modulePath+"/internal/harness/adapters",
+			modulePath+"/internal/harness/testkit",
+			modulePath+"/internal/harness/tools",
+			modulePath+"/internal/harness/policy",
+			modulePath+"/internal/harness/transcript",
+			modulePath+"/internal/harness/eval",
+			modulePath+"/internal/harness/runtime",
+			modulePath+"/internal/harness/composition",
+		)
 	case ownerMCP:
 		// The MCP adapter projects external tools into the same ports the
 		// builtins use, so it may import domain and tools — and nothing
@@ -677,7 +698,7 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			}
 		}
 	}
-	if owner == ownerDomain || owner == ownerApplication || owner == ownerEngine || owner == ownerMemory || owner == ownerPolicy || owner == ownerTools || owner == ownerTranscript {
+	if owner == ownerDomain || owner == ownerApplication || owner == ownerEngine || owner == ownerMemory || owner == ownerPolicy || owner == ownerTools || owner == ownerTranscript || owner == ownerAgentInstructions {
 		switch importPath {
 		case "os", "os/exec", "net", "net/http":
 			return "forbidden host/network dependency"
@@ -954,6 +975,7 @@ func TestOnlyCompositionAndRuntimeMayNameAnAdapter(t *testing.T) {
 		ownerRuntime, ownerMemory, ownerOpenAICompat, ownerSQLite,
 		ownerWorkspaceFS, ownerLocalExec, ownerSystem, ownerACP,
 		ownerTranscript, ownerEval, ownerMCP,
+		ownerAgentInstructions,
 	}
 	permitted := func(owner packageOwner, adapter string) bool {
 		if selfRoot, ok := adapterOwnerRoot(owner); ok && adapter == selfRoot {
