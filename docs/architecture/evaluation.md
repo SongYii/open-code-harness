@@ -562,17 +562,22 @@ the `go`, `determinism`, and `soak` jobs do not set it, so the whole-suite
 runs at `-count=1`, `-count=3`, and `-count=10` never expand it.
 
 This boundary is enforced, not merely stated. `TestFullContextMatrixSkipsWithoutTheOptIn`
-re-invokes the test binary with the variable removed and requires a SKIP;
-`TestCIEnablesTheFullContextMatrixOnlyInAScheduledJob` and
-`TestBroadSuiteJobsNeverEnableTheFullContextMatrix` (both `cmd/och-eval`)
-parse `.github/workflows/ci.yml` and require that exactly one job sets the
-variable, that it is schedule-gated, that its command is focused and
-`-count=1`, and that no whole-suite job carries it. Between 2026-09-04's
-`10190a2` and this change, that boundary existed only in prose — the lane's
-gate was `testing.Short()`, which no CI job passes — so the full matrix ran
-on every pull request, once in `go` and three more times under `determinism`,
-while this section said it never did. What the paragraph above claims is now
-a test.
+re-invokes the test binary with the variable removed and requires a SKIP.
+`TestCIEnablesTheFullContextMatrixOnlyInAScheduledJob` scans the entire
+workflow and its job blocks: the file must contain exactly one assignment,
+its literal value must reach the process as `1`, and that assignment must
+belong to the schedule-gated job whose command is focused and `-count=1`.
+`TestBroadSuiteJobsNeverEnableTheFullContextMatrix` keeps the whole-suite
+jobs free of the opt-in. Dedicated regressions reject a non-enabling value and
+a workflow-level assignment inherited by every job. The pairing guard also
+works in both directions: every in-process Context arm needs its identical ACP
+twin, and no ACP-only arm is allowed except `context-recovery-acp`.
+
+Between 2026-09-04's `10190a2` and this change, that boundary existed only in
+prose — the lane's gate was `testing.Short()`, which no CI job passes — so the
+full matrix ran on every pull request, once in `go` and three more times under
+`determinism`, while this section said it never did. What the paragraph above
+claims is now a test.
 
 ## Live lane
 
