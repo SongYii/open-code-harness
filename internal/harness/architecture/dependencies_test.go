@@ -30,6 +30,10 @@ func TestClassifyProductionDirectory(t *testing.T) {
 		{name: "engine production subpackage", directory: "internal/harness/engine/streaming", want: ownerEngine, inspect: true, hasOwner: true},
 		{name: "application root", directory: "internal/harness/application", want: ownerApplication, inspect: true, hasOwner: true},
 		{name: "application production subpackage", directory: "internal/harness/application/orchestration", want: ownerApplication, inspect: true, hasOwner: true},
+		{name: "context engine root", directory: "internal/harness/contextengine", want: ownerContextEngine, inspect: true, hasOwner: true},
+		{name: "context engine production subpackage", directory: "internal/harness/contextengine/planning", want: ownerContextEngine, inspect: true, hasOwner: true},
+		{name: "redact root", directory: "internal/harness/redact", want: ownerRedact, inspect: true, hasOwner: true},
+		{name: "redact production subpackage", directory: "internal/harness/redact/patterns", want: ownerRedact, inspect: true, hasOwner: true},
 		{name: "memory root", directory: "internal/harness/adapters/memory", want: ownerMemory, inspect: true, hasOwner: true},
 		{name: "memory production subpackage", directory: "internal/harness/adapters/memory/index", want: ownerMemory, inspect: true, hasOwner: true},
 		{name: "openaicompat root", directory: "internal/harness/adapters/openaicompat", want: ownerOpenAICompat, inspect: true, hasOwner: true},
@@ -70,6 +74,7 @@ func TestClassifyProductionDirectory(t *testing.T) {
 		{name: "unowned adapter still inspected", directory: "internal/harness/adapters/other", inspect: true},
 		{name: "unowned nested adapter still inspected", directory: "internal/harness/adapters/other/internal", inspect: true},
 		{name: "harness root still inspected", directory: "internal/harness", inspect: true},
+		{name: "testkit is explicit test support", directory: "internal/harness/testkit", inspect: false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -81,6 +86,18 @@ func TestClassifyProductionDirectory(t *testing.T) {
 				t.Errorf("packageOwnership(%q) = (%q, %t), want (%q, %t)", test.directory, got, hasOwner, test.want, test.hasOwner)
 			}
 		})
+	}
+}
+
+func TestUnknownProductionDirectoryIsRejected(t *testing.T) {
+	if reason := productionOwnershipViolation("internal/harness/future"); reason == "" {
+		t.Fatal("unknown production directory was accepted; package ownership must fail closed")
+	}
+	if reason := productionOwnershipViolation("internal/harness/contextengine/internal"); reason != "" {
+		t.Fatalf("owned production subpackage was rejected: %s", reason)
+	}
+	if reason := productionOwnershipViolation("internal/harness/testkit/internal"); reason != "" {
+		t.Fatalf("test support was treated as production: %s", reason)
 	}
 }
 
@@ -298,6 +315,13 @@ func TestForbiddenImport(t *testing.T) {
 		{name: "agent instructions cannot import application", owner: ownerAgentInstructions, importPath: modulePath + "/internal/harness/application", forbidden: true},
 		{name: "agent instructions cannot import adapters", owner: ownerAgentInstructions, importPath: modulePath + "/internal/harness/adapters/workspacefs", forbidden: true},
 		{name: "agent instructions cannot import host filesystem", owner: ownerAgentInstructions, importPath: "os", forbidden: true},
+		{name: "context engine may import domain", owner: ownerContextEngine, importPath: modulePath + "/internal/harness/domain", forbidden: false},
+		{name: "context engine may import redaction", owner: ownerContextEngine, importPath: modulePath + "/internal/harness/redact", forbidden: false},
+		{name: "context engine cannot import application", owner: ownerContextEngine, importPath: modulePath + "/internal/harness/application", forbidden: true},
+		{name: "context engine cannot import adapters", owner: ownerContextEngine, importPath: modulePath + "/internal/harness/adapters/sqlite", forbidden: true},
+		{name: "redaction cannot import domain", owner: ownerRedact, importPath: modulePath + "/internal/harness/domain", forbidden: true},
+		{name: "redaction cannot import application", owner: ownerRedact, importPath: modulePath + "/internal/harness/application", forbidden: true},
+		{name: "redaction may import standard library", owner: ownerRedact, importPath: "regexp", forbidden: false},
 		{name: "domain cannot import eval", owner: ownerDomain, importPath: modulePath + "/internal/harness/eval", forbidden: true},
 		{name: "engine cannot import eval", owner: ownerEngine, importPath: modulePath + "/internal/harness/eval", forbidden: true},
 		{name: "application cannot import eval", owner: ownerApplication, importPath: modulePath + "/internal/harness/eval", forbidden: true},
@@ -351,6 +375,10 @@ func assertProductionDependencyBoundaries(t *testing.T) {
 			return nil
 		}
 		owner, hasOwner := packageOwnership(directory)
+		if !hasOwner {
+			violations = append(violations, directory+": "+productionOwnershipViolation(directory))
+			return nil
+		}
 		parsed, err := parser.ParseFile(fileSet, path, nil, 0)
 		if err != nil {
 			return err
@@ -360,14 +388,7 @@ func assertProductionDependencyBoundaries(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			// A directory with no declared owner is checked against the
-			// unowned rules, not skipped. Skipping would make "no owner"
-			// mean "unrestricted", so a new package could inherit the
-			// composition exception simply by not being listed.
-			reason := unownedImport(importPath)
-			if hasOwner {
-				reason = forbiddenImport(owner, importPath)
-			}
+			reason := forbiddenImport(owner, importPath)
 			if reason != "" {
 				position := fileSet.Position(spec.Pos())
 				violations = append(violations, position.String()+": "+reason+" "+strconv.Quote(importPath))
@@ -424,13 +445,42 @@ const (
 	ownerTranscript        packageOwner = "transcript"
 	ownerEval              packageOwner = "eval"
 	ownerAgentInstructions packageOwner = "agentinstructions"
+	ownerContextEngine     packageOwner = "contextengine"
+	ownerRedact            packageOwner = "redact"
 )
 
 var excludedTestSupportDirectories = []string{
+	"internal/harness/testkit",
 	"internal/harness/application/enginescenariotest",
 	"internal/harness/application/eventstoretest",
 	"internal/harness/engine/modeltest",
 	"internal/harness/tools/porttest",
+}
+
+var ownedPackageRoots = []struct {
+	root  string
+	owner packageOwner
+}{
+	{root: "internal/harness/domain", owner: ownerDomain},
+	{root: "internal/harness/engine", owner: ownerEngine},
+	{root: "internal/harness/application", owner: ownerApplication},
+	{root: "internal/harness/contextengine", owner: ownerContextEngine},
+	{root: "internal/harness/agentinstructions", owner: ownerAgentInstructions},
+	{root: "internal/harness/policy", owner: ownerPolicy},
+	{root: "internal/harness/tools", owner: ownerTools},
+	{root: "internal/harness/redact", owner: ownerRedact},
+	{root: "internal/harness/adapters/memory", owner: ownerMemory},
+	{root: "internal/harness/adapters/openaicompat", owner: ownerOpenAICompat},
+	{root: "internal/harness/adapters/sqlite", owner: ownerSQLite},
+	{root: "internal/harness/adapters/workspacefs", owner: ownerWorkspaceFS},
+	{root: "internal/harness/adapters/localexec", owner: ownerLocalExec},
+	{root: "internal/harness/adapters/mcp", owner: ownerMCP},
+	{root: "internal/harness/adapters/system", owner: ownerSystem},
+	{root: "internal/harness/adapters/acp", owner: ownerACP},
+	{root: "internal/harness/runtime", owner: ownerRuntime},
+	{root: "internal/harness/composition", owner: ownerComposition},
+	{root: "internal/harness/transcript", owner: ownerTranscript},
+	{root: "internal/harness/eval", owner: ownerEval},
 }
 
 func shouldInspectProductionDirectory(directory string) bool {
@@ -445,31 +495,66 @@ func shouldInspectProductionDirectory(directory string) bool {
 
 func packageOwnership(directory string) (packageOwner, bool) {
 	directory = filepath.ToSlash(filepath.Clean(directory))
-	for _, candidate := range []struct {
-		root  string
-		owner packageOwner
-	}{
-		{root: "internal/harness/domain", owner: ownerDomain},
-		{root: "internal/harness/engine", owner: ownerEngine},
-		{root: "internal/harness/application", owner: ownerApplication},
-		{root: "internal/harness/adapters/memory", owner: ownerMemory},
-		{root: "internal/harness/adapters/openaicompat", owner: ownerOpenAICompat},
-		{root: "internal/harness/adapters/sqlite", owner: ownerSQLite},
-		{root: "internal/harness/runtime", owner: ownerRuntime},
-		{root: "internal/harness/policy", owner: ownerPolicy},
-		{root: "internal/harness/adapters/workspacefs", owner: ownerWorkspaceFS},
-		{root: "internal/harness/adapters/localexec", owner: ownerLocalExec},
-		{root: "internal/harness/adapters/mcp", owner: ownerMCP},
-		{root: "internal/harness/adapters/system", owner: ownerSystem},
-		{root: "internal/harness/adapters/acp", owner: ownerACP},
-		{root: "internal/harness/composition", owner: ownerComposition},
-		{root: "internal/harness/transcript", owner: ownerTranscript},
-		{root: "internal/harness/tools", owner: ownerTools},
-		{root: "internal/harness/eval", owner: ownerEval},
-		{root: "internal/harness/agentinstructions", owner: ownerAgentInstructions},
-	} {
+	for _, candidate := range ownedPackageRoots {
 		if directoryWithin(directory, candidate.root) {
 			return candidate.owner, true
+		}
+	}
+	return "", false
+}
+
+func productionOwnershipViolation(directory string) string {
+	if !shouldInspectProductionDirectory(directory) {
+		return ""
+	}
+	if _, ok := packageOwnership(directory); ok {
+		return ""
+	}
+	return "unclassified production package; add it to the architecture ownership registry"
+}
+
+// allowedHarnessImports is the executable dependency matrix. Entries name
+// package roots, so an owner may also import a subpackage below a named root.
+// An owner's own root is always allowed to support internal subpackages.
+var allowedHarnessImports = map[packageOwner][]string{
+	ownerDomain:            {},
+	ownerEngine:            {modulePath + "/internal/harness/domain"},
+	ownerApplication:       {modulePath + "/internal/harness/agentinstructions", modulePath + "/internal/harness/contextengine", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/engine", modulePath + "/internal/harness/policy", modulePath + "/internal/harness/redact", modulePath + "/internal/harness/tools"},
+	ownerContextEngine:     {modulePath + "/internal/harness/domain", modulePath + "/internal/harness/redact"},
+	ownerAgentInstructions: {modulePath + "/internal/harness/domain"},
+	ownerPolicy:            {modulePath + "/internal/harness/domain"},
+	ownerTools:             {modulePath + "/internal/harness/domain"},
+	ownerRedact:            {},
+	ownerMemory:            {modulePath + "/internal/harness/application", modulePath + "/internal/harness/contextengine", modulePath + "/internal/harness/domain"},
+	ownerOpenAICompat:      {modulePath + "/internal/harness/domain", modulePath + "/internal/harness/engine", modulePath + "/internal/harness/redact"},
+	ownerSQLite:            {modulePath + "/internal/harness/application", modulePath + "/internal/harness/contextengine", modulePath + "/internal/harness/domain"},
+	ownerWorkspaceFS:       {modulePath + "/internal/harness/domain", modulePath + "/internal/harness/tools"},
+	ownerLocalExec:         {modulePath + "/internal/harness/domain", modulePath + "/internal/harness/tools"},
+	ownerMCP:               {modulePath + "/internal/harness/domain", modulePath + "/internal/harness/tools"},
+	ownerSystem:            {modulePath + "/internal/harness/application", modulePath + "/internal/harness/domain"},
+	ownerACP:               {modulePath + "/internal/harness/application", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/engine", modulePath + "/internal/harness/tools"},
+	ownerRuntime:           {modulePath + "/internal/harness/adapters/sqlite", modulePath + "/internal/harness/application", modulePath + "/internal/harness/domain"},
+	ownerComposition:       {modulePath + "/internal/harness/adapters", modulePath + "/internal/harness/application", modulePath + "/internal/harness/contextengine", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/engine", modulePath + "/internal/harness/policy", modulePath + "/internal/harness/runtime", modulePath + "/internal/harness/tools", modulePath + "/internal/harness/transcript"},
+	ownerTranscript:        {modulePath + "/internal/harness/application", modulePath + "/internal/harness/domain"},
+	ownerEval:              {modulePath + "/internal/harness/application", modulePath + "/internal/harness/composition", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/engine", modulePath + "/internal/harness/policy", modulePath + "/internal/harness/redact", modulePath + "/internal/harness/tools", modulePath + "/internal/harness/transcript"},
+}
+
+func allowedHarnessImport(owner packageOwner, importPath string) bool {
+	if root, ok := ownerPackageRoot(owner); ok && withinPackage(importPath, modulePath+"/"+root) {
+		return true
+	}
+	for _, allowed := range allowedHarnessImports[owner] {
+		if withinPackage(importPath, allowed) {
+			return true
+		}
+	}
+	return false
+}
+
+func ownerPackageRoot(owner packageOwner) (string, bool) {
+	for _, candidate := range ownedPackageRoots {
+		if candidate.owner == owner {
+			return candidate.root, true
 		}
 	}
 	return "", false
@@ -479,30 +564,14 @@ func directoryWithin(directory, root string) bool {
 	return directory == root || strings.HasPrefix(directory, root+"/")
 }
 
-// unownedImport applies to a production directory under internal/harness
-// that no owner claims. Only the composition root may name an adapter, and
-// only a test may name testkit; a package nobody has classified may do
-// neither. Adding a package therefore requires either staying inside those
-// bounds or declaring an owner deliberately.
 func withinPackage(importPath, prefix string) bool {
 	return importPath == prefix || strings.HasPrefix(importPath, prefix+"/")
 }
 
-func unownedImport(importPath string) string {
-	for _, prefix := range []string{
-		modulePath + "/internal/harness/adapters",
-		modulePath + "/internal/harness/testkit",
-		modulePath + "/internal/harness/transcript",
-		modulePath + "/internal/harness/eval",
-	} {
-		if withinPackage(importPath, prefix) {
-			return "forbidden package dependency from an unowned package"
-		}
-	}
-	return ""
-}
-
 func forbiddenImport(owner packageOwner, importPath string) string {
+	if withinPackage(importPath, modulePath+"/internal/harness") && !allowedHarnessImport(owner, importPath) {
+		return "forbidden package dependency outside the owner's allowlist"
+	}
 
 	forbidden := make([]string, 0, 8)
 	switch owner {
@@ -698,7 +767,7 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			}
 		}
 	}
-	if owner == ownerDomain || owner == ownerApplication || owner == ownerEngine || owner == ownerMemory || owner == ownerPolicy || owner == ownerTools || owner == ownerTranscript || owner == ownerAgentInstructions {
+	if owner == ownerDomain || owner == ownerApplication || owner == ownerEngine || owner == ownerMemory || owner == ownerPolicy || owner == ownerTools || owner == ownerTranscript || owner == ownerAgentInstructions || owner == ownerContextEngine || owner == ownerRedact {
 		switch importPath {
 		case "os", "os/exec", "net", "net/http":
 			return "forbidden host/network dependency"
@@ -918,39 +987,6 @@ func containsScriptedModel(node ast.Node) bool {
 	return found
 }
 
-// TestUnownedPackagesCannotImportAdapters pins the property that makes the
-// composition exception safe: adding a package under internal/harness without
-// declaring an owner does not grant it the right to name an adapter.
-//
-// Before this rule the walk skipped unowned directories entirely, so "no
-// owner" meant "unrestricted" rather than "forbidden".
-func TestUnownedPackagesCannotImportAdapters(t *testing.T) {
-	tests := []struct {
-		name       string
-		importPath string
-		forbidden  bool
-	}{
-		{name: "adapter root", importPath: modulePath + "/internal/harness/adapters/sqlite", forbidden: true},
-		{name: "adapter subpackage", importPath: modulePath + "/internal/harness/adapters/sqlite/internal", forbidden: true},
-		{name: "adapters parent", importPath: modulePath + "/internal/harness/adapters", forbidden: true},
-		{name: "test support", importPath: modulePath + "/internal/harness/testkit", forbidden: true},
-		{name: "transcript", importPath: modulePath + "/internal/harness/transcript", forbidden: true},
-		{name: "transcript subpackage", importPath: modulePath + "/internal/harness/transcript/internal", forbidden: true},
-		{name: "eval", importPath: modulePath + "/internal/harness/eval", forbidden: true},
-		{name: "eval subpackage", importPath: modulePath + "/internal/harness/eval/internal", forbidden: true},
-		{name: "similarly named package is not an adapter", importPath: modulePath + "/internal/harness/adaptersx", forbidden: false},
-		{name: "domain stays permitted", importPath: modulePath + "/internal/harness/domain", forbidden: false},
-		{name: "standard library stays permitted", importPath: "time", forbidden: false},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if got := unownedImport(test.importPath) != ""; got != test.forbidden {
-				t.Fatalf("unownedImport(%q) forbidden = %t, want %t", test.importPath, got, test.forbidden)
-			}
-		})
-	}
-}
-
 // TestOnlyCompositionAndRuntimeMayNameAnAdapter states the exception as an
 // exhaustive claim rather than a comment, so widening it fails here.
 //
@@ -967,6 +1003,7 @@ func TestOnlyCompositionAndRuntimeMayNameAnAdapter(t *testing.T) {
 		modulePath + "/internal/harness/adapters/memory",
 		modulePath + "/internal/harness/adapters/workspacefs",
 		modulePath + "/internal/harness/adapters/localexec",
+		modulePath + "/internal/harness/adapters/mcp",
 		modulePath + "/internal/harness/adapters/system",
 		modulePath + "/internal/harness/adapters/acp",
 	}
@@ -975,7 +1012,7 @@ func TestOnlyCompositionAndRuntimeMayNameAnAdapter(t *testing.T) {
 		ownerRuntime, ownerMemory, ownerOpenAICompat, ownerSQLite,
 		ownerWorkspaceFS, ownerLocalExec, ownerSystem, ownerACP,
 		ownerTranscript, ownerEval, ownerMCP,
-		ownerAgentInstructions,
+		ownerAgentInstructions, ownerContextEngine, ownerRedact,
 	}
 	permitted := func(owner packageOwner, adapter string) bool {
 		if selfRoot, ok := adapterOwnerRoot(owner); ok && adapter == selfRoot {
@@ -998,11 +1035,10 @@ func TestOnlyCompositionAndRuntimeMayNameAnAdapter(t *testing.T) {
 	}
 }
 
-// TestClientPackagesAreIsolatedFromInternalHarness pins the ACP-native
-// client's package boundary (docs/superpowers/specs/
-// 2026-08-30-acp-native-client-design.md §3): it is a consumer of the ACP
-// wire protocol, not a harness adapter, and must never be coupled to
-// internal/harness/ in either direction.
+// TestClientPackagesAreIsolatedFromInternalHarness pins the whole independent
+// client tree's process boundary (current-system architecture §4): clients
+// consume ACP on the wire, are not harness adapters, and must never be coupled
+// to internal/harness/ in either direction.
 func TestClientPackagesAreIsolatedFromInternalHarness(t *testing.T) {
 	_, sourceFile, _, ok := runtime.Caller(0)
 	if !ok {
@@ -1011,21 +1047,24 @@ func TestClientPackagesAreIsolatedFromInternalHarness(t *testing.T) {
 	repositoryRoot := filepath.Clean(filepath.Join(filepath.Dir(sourceFile), "..", "..", ".."))
 	harnessRoot := filepath.Join(repositoryRoot, "internal", "harness")
 	harnessImportPrefix := modulePath + "/internal/harness"
-	clientRoot := filepath.Join(repositoryRoot, "internal", "client", "acp")
-	clientImportPrefix := modulePath + "/internal/client/acp"
-	acpClientCmdRoot := filepath.Join(repositoryRoot, "cmd", "acp-client")
+	clientRoot := filepath.Join(repositoryRoot, "internal", "client")
+	clientImportPrefix := modulePath + "/internal/client"
+	clientCommandRoots := []string{
+		filepath.Join(repositoryRoot, "cmd", "acp-client"),
+		filepath.Join(repositoryRoot, "cmd", "acp-web-bridge"),
+	}
 
 	fileSet := token.NewFileSet()
 
-	for _, root := range []string{clientRoot, acpClientCmdRoot} {
+	for _, root := range append([]string{clientRoot}, clientCommandRoots...) {
 		assertNoFileUnderImports(t, fileSet, root, func(importPath string) bool {
 			return importPath == harnessImportPrefix || strings.HasPrefix(importPath, harnessImportPrefix+"/")
 		}, "internal/harness")
 	}
 
-	// cmd/acp-client is a main package nothing under internal/harness/
-	// could import even by mistake, so only the library package needs
-	// checking in this direction.
+	// Client commands have their own focused entrypoint tests. This direction
+	// is rooted at the whole client tree so acpweb and future clients cannot be
+	// coupled back into the harness unnoticed.
 	assertNoFileUnderImports(t, fileSet, harnessRoot, func(importPath string) bool {
 		return importPath == clientImportPrefix || strings.HasPrefix(importPath, clientImportPrefix+"/")
 	}, "internal/client/acp")
