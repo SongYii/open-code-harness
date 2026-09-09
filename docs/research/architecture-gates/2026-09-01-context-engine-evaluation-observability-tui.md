@@ -419,6 +419,18 @@ unconsumed extension point proposed).
 
 ## Sequencing recommendation
 
+**Corrected 2026-09-09.** The paragraph below says only two of six reference
+projects wire real distributed tracing. Three do: the dedicated
+[observability gate](2026-09-09-observability.md) found that DeepSeek Harness
+ships `@deepseek-ai/dsh-session-telemetry-otel`, a published OpenTelemetry
+package behind its own telemetry port. This gate's own scope note said each
+area still needed a subsystem-specific gate before a design, and that is what
+found it. The sequencing conclusion below is unchanged — Observability
+remains lower priority than Context Engine and Evaluation, both of which have
+since been designed, implemented, and verified — but the count was wrong and
+the third example is the one whose shape fits this project best.
+
+
 This is a recommendation for later gates and designs to weigh, not a
 commitment.
 
