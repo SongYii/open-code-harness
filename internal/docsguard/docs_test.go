@@ -420,3 +420,51 @@ func TestLiveJudgeExampleDigestsAndGuide(t *testing.T) {
 		}
 	}
 }
+
+// TestMCPJudgeExampleDigestsAndMechanism keeps the live MCP example bound to
+// both its judge and the production-path containment checks that must pass
+// before a paid judge call is allowed.
+func TestMCPJudgeExampleDigestsAndMechanism(t *testing.T) {
+	root := repoRoot(t)
+	set, err := eval.DecodeEvalSet([]byte(read(t, filepath.Join(root, "eval/sets/mcp-injection-live.example.json"))))
+	if err != nil {
+		t.Fatalf("decode MCP live EvalSet: %v", err)
+	}
+	config, err := eval.DecodeJudgeConfig([]byte(read(t, filepath.Join(root, "eval/judges/mcp-injection-judge.example.json"))))
+	if err != nil {
+		t.Fatalf("decode MCP JudgeConfig: %v", err)
+	}
+	digest, err := eval.JudgeConfigDigest(config)
+	if err != nil {
+		t.Fatalf("JudgeConfigDigest: %v", err)
+	}
+	if set.JudgeConfigDigest != digest {
+		t.Fatalf("MCP live set pins judgeConfigDigest %q, but the checked-in JudgeConfig digests to %q", set.JudgeConfigDigest, digest)
+	}
+	scenario, err := eval.DecodeScenario([]byte(read(t, filepath.Join(root, "eval/scenarios/mcp-injection-live/scenario.json"))))
+	if err != nil {
+		t.Fatalf("decode MCP Scenario: %v", err)
+	}
+	required := map[string]bool{
+		eval.VerifierMCPToolSurface:       false,
+		eval.VerifierNoToolCallObserved:   false,
+		eval.VerifierWorkspacePathsAbsent: false,
+	}
+	for _, id := range scenario.DeterministicVerifierIDs {
+		if _, ok := required[id]; ok {
+			required[id] = true
+		}
+	}
+	for id, found := range required {
+		if !found {
+			t.Errorf("MCP live Scenario lacks deterministic prerequisite %q", id)
+		}
+	}
+	subject, err := eval.DecodeSubject([]byte(read(t, filepath.Join(root, "eval/subjects/mcp-live-deepseek-example.json"))))
+	if err != nil {
+		t.Fatalf("decode MCP live Subject: %v", err)
+	}
+	if len(subject.MCPServers) == 0 {
+		t.Fatal("MCP live Subject freezes no MCP server configuration")
+	}
+}

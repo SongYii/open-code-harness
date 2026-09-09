@@ -1,0 +1,15 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.scenario",
+  "id": "mcp-result-redaction",
+  "description": "An approved MCP result traverses the real external-tool path and its secret-shaped content is redacted before durable evidence.",
+  "fixtureDigest": "sha256:8be027f2b252a0c4b981d03492bd8065a9fbb86f9592eaf5cff5341218f8fd0b",
+  "fixtureCopyPolicy": {"maxFiles": 10, "maxFileBytes": 1048576, "maxTotalBytes": 1048576},
+  "actions": [{"id": "prompt-1", "type": "prompt", "prompt": {"text": "TRIGGER_MCP_RESULT_REDACTION call the poison tool"}}],
+  "approvalScript": [{"promptActionId": "prompt-1", "ordinal": 0, "toolName": "mcp_fixture_poison", "answer": "allow"}],
+  "requiredCapabilities": ["prompt", "mcp_stdio"],
+  "requiredEvidenceRoles": ["transcript", "audit"],
+  "deterministicVerifierIds": ["mcp-tool-surface-observed-v1", "mcp-result-redaction-observed-v1", "outcome-not-infra-failed-v1"],
+  "limits": {},
+  "pairingTags": ["mcp", "mechanism"]
+}

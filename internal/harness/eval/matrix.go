@@ -122,6 +122,14 @@ func ExpandAttempts(set EvalSet, scenarios map[ScenarioID]Scenario, subjects map
 	for _, scenarioRef := range set.Scenarios {
 		scenario := scenarios[scenarioRef.ID]
 		required := append(append([]string{}, scenario.RequiredCapabilities...), scenario.DerivedRequiredCapabilities()...)
+		if containsString(required, CapabilityMCPStdio) {
+			for _, subjectRef := range set.Subjects {
+				if len(subjects[subjectRef.ID].MCPServers) == 0 {
+					return nil, fmt.Errorf("eval: expand attempts: subject %q has no mcpServers required by scenario %q",
+						subjectRef.ID, scenarioRef.ID)
+				}
+			}
+		}
 		for _, executorRef := range set.Executors {
 			executor := executors[executorRef.ID]
 			if missing := missingCapability(required, executor.Capabilities); missing != "" {

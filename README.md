@@ -166,7 +166,11 @@ The numbered milestone list lives in
   closed on an unreachable or duplicate-named server; and teardown escalates
   to the process group and proves it is gone. See the
   [MCP client adapter contract](docs/architecture/mcp-client.md) and its
-  [evidence ledger](docs/architecture/mcp-client-evidence.md).
+  [evidence ledger](docs/architecture/mcp-client-evidence.md). An explicit
+  MCP evaluation set now runs a real stdio fixture through Composition and
+  offline scoring to prove tool exposure, shared approval denial, and result
+  redaction; a separate DeepSeek-compatible live example keeps prompt-
+  injection resistance as an unproven model-quality claim.
 
 TUI and OpenTelemetry are not yet implemented. Evaluation
 (`internal/harness/eval`, `cmd/och-eval`) is implemented but not GA: frozen

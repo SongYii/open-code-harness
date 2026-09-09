@@ -7,6 +7,34 @@ import "github.com/SongYii/open-code-harness/internal/harness/eval"
 // a data file" discipline internal/harness/eval's own verifier catalog
 // follows (implementation plan Task 9).
 var scorerCatalog = map[string]eval.Scorer{
+	"mcp-approval-denied-scorer-v1": {
+		ID:      "mcp-approval-denied-scorer-v1",
+		Version: "v1",
+		VerifierIDs: []string{
+			eval.VerifierMCPToolSurface,
+			eval.VerifierMCPApprovalDenied,
+			"outcome-not-infra-failed-v1",
+		},
+	},
+	"mcp-result-redaction-scorer-v1": {
+		ID:      "mcp-result-redaction-scorer-v1",
+		Version: "v1",
+		VerifierIDs: []string{
+			eval.VerifierMCPToolSurface,
+			eval.VerifierMCPResultRedaction,
+			"outcome-not-infra-failed-v1",
+		},
+	},
+	"mcp-injection-live-scorer-v1": {
+		ID:      "mcp-injection-live-scorer-v1",
+		Version: "v1",
+		VerifierIDs: []string{
+			eval.VerifierMCPToolSurface,
+			eval.VerifierNoToolCallObserved,
+			eval.VerifierWorkspacePathsAbsent,
+			"outcome-not-infra-failed-v1",
+		},
+	},
 	// One scorer per Context Scenario, because RunScorer requires every
 	// verifier a scorer names to be declared by the Scenario it runs
 	// against. A single broad Context scorer would therefore refuse every

@@ -473,6 +473,37 @@ func TestSubjectValidateRejectsUnknownSandboxPolicy(t *testing.T) {
 	}
 }
 
+func TestDecodeSubjectRoundTripsMCPServers(t *testing.T) {
+	want := validSubject()
+	want.MCPServers = []SubjectMCPServer{{Name: "fixture", Command: "sh", Args: []string{"mcp-fixture.sh", "--mode=test"}}}
+	got, err := DecodeSubject(marshal(t, want))
+	if err != nil {
+		t.Fatalf("DecodeSubject: %v", err)
+	}
+	if !reflect.DeepEqual(got.MCPServers, want.MCPServers) {
+		t.Fatalf("MCPServers = %#v, want %#v", got.MCPServers, want.MCPServers)
+	}
+}
+
+func TestSubjectValidateRejectsUnsafeMCPServerShapes(t *testing.T) {
+	tests := map[string][]SubjectMCPServer{
+		"duplicate name":   {{Name: "same", Command: "sh"}, {Name: "same", Command: "sh"}},
+		"absolute command": {{Name: "fixture", Command: "/bin/sh"}},
+		"relative command": {{Name: "fixture", Command: "./server"}},
+		"empty argument":   {{Name: "fixture", Command: "sh", Args: []string{""}}},
+		"newline argument": {{Name: "fixture", Command: "sh", Args: []string{"bad\narg"}}},
+	}
+	for name, servers := range tests {
+		t.Run(name, func(t *testing.T) {
+			subject := validSubject()
+			subject.MCPServers = servers
+			if err := subject.Validate(); err == nil {
+				t.Fatal("Validate accepted an unsafe MCP server shape")
+			}
+		})
+	}
+}
+
 // --- Executor ---
 
 func TestDecodeExecutorRoundTripInProcess(t *testing.T) {
@@ -532,6 +563,14 @@ func TestExecutorValidateRejectsDuplicateCapabilities(t *testing.T) {
 	executor.Capabilities = []string{"prompt", "prompt"}
 	if err := executor.Validate(); err == nil {
 		t.Fatal("Validate() accepted duplicate capabilities")
+	}
+}
+
+func TestExecutorValidateRejectsMCPStdioOnACPSubprocess(t *testing.T) {
+	executor := validExecutorACPSubprocess()
+	executor.Capabilities = append(executor.Capabilities, CapabilityMCPStdio)
+	if err := executor.Validate(); err == nil {
+		t.Fatal("Validate() accepted the in-process-only MCP capability on an ACP executor")
 	}
 }
 

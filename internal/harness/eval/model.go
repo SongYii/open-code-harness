@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -547,10 +548,24 @@ type Subject struct {
 	Context  SubjectContext  `json:"context"`
 	Policy   SubjectPolicy   `json:"policy"`
 
+	// MCPServers freezes the static stdio MCP configuration that changes
+	// this Subject's model-visible tool catalog. Commands are PATH-resolved
+	// basenames; machine-local absolute paths remain Attempt execution facts.
+	MCPServers []SubjectMCPServer `json:"mcpServers,omitempty"`
+
 	// PriceTableDigest is an optional frozen price-table digest used for
 	// cost reporting (design §10, §19). Empty means cost reporting is
 	// unavailable for this Subject, never zero cost.
 	PriceTableDigest string `json:"priceTableDigest,omitempty"`
+}
+
+// SubjectMCPServer is one secret-free, portable stdio launch shape. The
+// server program used by checked-in fixture Subjects lives in the Scenario
+// fixture, so its bytes are independently covered by FixtureDigest.
+type SubjectMCPServer struct {
+	Name    string   `json:"name"`
+	Command string   `json:"command"`
+	Args    []string `json:"args,omitempty"`
 }
 
 // SubjectProvider identifies the model endpoint without any credential
@@ -645,8 +660,39 @@ func (subject Subject) Validate() error {
 	if err := subject.Policy.validate(); err != nil {
 		return err
 	}
+	seenMCPNames := make(map[string]struct{}, len(subject.MCPServers))
+	for index, server := range subject.MCPServers {
+		if err := server.validate(); err != nil {
+			return fmt.Errorf("%w: mcpServers[%d]: %w", errInvalidDocument, index, err)
+		}
+		if _, exists := seenMCPNames[server.Name]; exists {
+			return fmt.Errorf("%w: mcpServers contains duplicate name %q", errInvalidDocument, server.Name)
+		}
+		seenMCPNames[server.Name] = struct{}{}
+	}
 	if subject.PriceTableDigest != "" && !digestStringPattern.MatchString(subject.PriceTableDigest) {
 		return fmt.Errorf("%w: priceTableDigest must be sha256:<64 lowercase hex>", errInvalidDocument)
+	}
+	return nil
+}
+
+func (server SubjectMCPServer) validate() error {
+	if !hasText(server.Name) || server.Name != strings.TrimSpace(server.Name) {
+		return errors.New("name is required without surrounding whitespace")
+	}
+	if !hasText(server.Command) || server.Command != strings.TrimSpace(server.Command) {
+		return errors.New("command is required without surrounding whitespace")
+	}
+	if server.Command == "." || server.Command == ".." || strings.ContainsAny(server.Command, `/\\`) {
+		return errors.New("command must be a PATH-resolved basename, not a path")
+	}
+	for index, arg := range server.Args {
+		if arg == "" {
+			return fmt.Errorf("args[%d] must not be empty", index)
+		}
+		if strings.ContainsAny(arg, "\x00\r\n") {
+			return fmt.Errorf("args[%d] contains a control character", index)
+		}
 	}
 	return nil
 }
@@ -758,6 +804,7 @@ type ExecutorKind string
 const (
 	ExecutorInProcess     ExecutorKind = "in_process"
 	ExecutorACPSubprocess ExecutorKind = "acp_subprocess"
+	CapabilityMCPStdio                 = "mcp_stdio"
 )
 
 // Executor is the frozen `och.eval.executor` document (design §11).
@@ -847,6 +894,9 @@ func (executor Executor) Validate() error {
 	}
 	if dup := firstDuplicate(executor.Capabilities); dup != "" {
 		return fmt.Errorf("%w: capabilities contains duplicate %q", errInvalidDocument, dup)
+	}
+	if executor.Kind != ExecutorInProcess && containsString(executor.Capabilities, CapabilityMCPStdio) {
+		return fmt.Errorf("%w: capability %q is supported only by the in-process executor", errInvalidDocument, CapabilityMCPStdio)
 	}
 	return nil
 }

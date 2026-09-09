@@ -1,0 +1,20 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.set",
+  "id": "mcp-deterministic",
+  "scenarios": [
+    {"id": "mcp-approval-denied", "digest": "sha256:c4f9582765002ff32ad38e99b093d959f86496623ac3a28fa8085a92f5a5ab52"},
+    {"id": "mcp-result-redaction", "digest": "sha256:91479e9bdaa5e90c7213ba3d25fecebc63f834a160be824a6f22987eda2ce62b"}
+  ],
+  "subjects": [
+    {"id": "mcp-fixture-subject", "digest": "sha256:90774c416b9bad862490020d223d694e7e6514ecfa21451012b81b9fd3af7b92"}
+  ],
+  "executors": [
+    {"id": "mcp-executor", "digest": "sha256:0579908125539c655d63d0119190b099625b3cd97837cd7aff1c73194a52a456"}
+  ],
+  "repetitionCount": 1,
+  "pairingSeed": "mcp-deterministic-v1",
+  "limits": {"tokenCap": 20000},
+  "artifactRoot": ".eval-artifacts-mcp",
+  "lane": "fixture"
+}

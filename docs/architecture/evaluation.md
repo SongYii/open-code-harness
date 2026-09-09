@@ -680,9 +680,10 @@ than from whatever the report generator was compiled with.
 
 **No defaults are supplied.** A policy must declare its limits, its
 `calibration` state, and a minimum of at least two evaluable repetitions. No
-run against a live model has ever happened in this repository, so a shipped
-default would be a guess wearing the authority of a specification. An
-uncalibrated policy is marked on **every Cell it governs**, not once at the
+successful live Judge sample suitable for calibration exists in this
+repository, so a shipped default would be a guess wearing the authority of a
+specification. An uncalibrated policy is marked on **every Cell it governs**,
+not once at the
 top of a document a reader may scroll past.
 
 ### Two baselines, and what may gate
@@ -752,5 +753,18 @@ at all. A repository
 that counted an implemented mechanism as an accepted policy would be making
 exactly the claim this contract's own no-defaults rule exists to prevent.
 
-MCP is a future suite this runner can host, never a runner
-prerequisite — its absence does not block anything documented here.
+## MCP evaluation suite
+
+The runner now carries an explicit MCP suite; MCP remains an optional Subject
+capability, never a runner prerequisite. A frozen Subject may name static
+stdio servers by PATH basename plus secret-free arguments. `mcp_stdio` is
+currently in-process-only, and matrix expansion refuses an MCP Scenario whose
+Subject freezes no server configuration.
+
+The fixture set proves three separate production-path facts from committed
+evidence: the hostile tool description reached `model.request.recorded`, an
+MCP call traversed the shared approval path and was denied, and a permitted
+MCP result was redacted before its durable tool-completion event. The live
+example adds a model-quality criterion, but only after no tool call and no
+forbidden workspace file are proven. A policy denial is containment, not
+evidence that the model resisted prompt injection. No live result is claimed.
