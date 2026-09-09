@@ -308,7 +308,8 @@ changed was shape, vocabulary, and one claim about who consumes this.
   string beside it.
 - **An uncalibrated limit lost the power to change a result.** The design let
   any declared-limit breach make a Cell unreadable. Since the design also
-  forbids shipping default limits — no live run has ever happened here —
+  forbids shipping default limits — calibration needs live judge scores and
+  no live judge call has been made here —
   that gave a guessed number the authority to rewrite five passes into a
   non-pass, and to decide what a baseline was allowed to record. The rule is
   now split by warrant: the structural half blocks unconditionally, the
@@ -629,8 +630,8 @@ MCP is a future suite this runner can host, never a runner prerequisite.
 The variance blocker changed shape on 2026-09-05 without closing. The
 mechanism is implemented and verified and this ledger records its evidence;
 the policy is not accepted, because no calibrated limits exist and producing
-them requires the live run the first blocker in this list says has never
-happened. The mechanism is also dormant — no checked-in EvalSet reaches it.
+them requires live judge scores. The one live Subject run of 2026-09-08
+produced none: its Score was indeterminate before any model request. The mechanism is also dormant — no checked-in EvalSet reaches it.
 An implemented mechanism counted as an accepted policy would be exactly the
 claim the contract's own no-defaults rule exists to prevent.
 
@@ -656,3 +657,36 @@ declares no absence expectation".
 The slice's own mutation stands as well: recording every observation as absent
 regardless of what is on disk fails
 `TestExpectedWorkspaceAbsenceIsCollectedAndVerified/present`.
+
+
+## Update: a live Subject run happened, and five documents still said none had (2026-09-09)
+
+Reviewing the merged state found a contradiction between two documents in
+this repository about a checkable fact, which is the failure this repository's
+executable-documentation rules exist to prevent and which none of those rules
+can catch, because no gate reads prose for agreement.
+
+The workspace-instructions evidence records an explicitly authorized run
+against an OpenAI-compatible DeepSeek endpoint on 2026-09-08: Attempt
+`30f1d1728e0e1e21572c80c697a30360`, two turns, 93.9% of the second request's
+input tokens reported as cached. Meanwhile the root README, `docs/README.md`,
+this contract, its Chinese reading copy, the variance policy design, and this
+ledger all still said no run against a live model had ever happened here.
+
+Both halves were written honestly; they were written at different times and
+nothing required them to agree.
+
+**The blocker narrowed rather than closed, and the corrected wording says
+which half moved.** The Subject side now has a live sample of exactly one
+partial attempt. The judge side still has none: that run's Score came back
+`indeterminate` before any model request, because `manifest-complete-v1` was
+itself indeterminate. Every claim that depends specifically on judge scores —
+the variance policy's refusal to ship default limits above all — survives
+unchanged, because calibration needs judge scores and there are none.
+
+The two defects that run surfaced are already closed, and were closed before
+this correction rather than because of it: the `context-quality` Scenario
+required a `workspace` evidence role while declaring no `collect` action, and
+a requested compaction that found no safe cut point was reported as a
+successful action. The Scenario now carries `collect-secrets-absence`, and a
+no-op compaction now reports `compact_not_run` as an indeterminate Outcome.

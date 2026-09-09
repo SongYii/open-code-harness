@@ -721,8 +721,16 @@ must be exactly 0" would pass unconditionally.
 Evaluation is **implemented, not GA**. Explicitly outstanding before a GA
 claim: real-model sample size for live judging — `och-eval judge` is wired
 end to end and proven against a fixture SSE stream through the real
-adapter, but no run against an actual live model has ever happened in this
-repository — judge meta-evaluation against a broader fixture set than the
+adapter, but **no live judge call has ever been made in this repository**.
+One live *Subject* run did happen, on 2026-09-08 against an
+OpenAI-compatible DeepSeek endpoint, and it is recorded in the
+[workspace-instructions evidence](system-prompt-workspace-instructions-evidence.md#live-deepseek-validation).
+It reached the judge's prerequisites and stopped there: the Score came back
+`indeterminate` before any model request because `manifest-complete-v1` was
+itself indeterminate. So the blocker narrowed rather than closed — the
+Subject side has a live sample of exactly one attempt, the judge side has
+none — and a single partial run is not the sample size a GA claim needs.
+Also outstanding: judge meta-evaluation against a broader fixture set than the
 eight adversarial fixtures this repository now carries (injection,
 missing-evidence, contradiction, unsupported-claim, known-pass/fail, an
 invented reference, a real-but-unshown reference, and a determinate verdict
@@ -737,8 +745,10 @@ The variance blocker changed shape on 2026-09-05 without closing, and the
 distinction matters. The **mechanism** is now designed, implemented, and
 verified — see [Variance and baselines](#variance-and-baselines) above. The
 **policy** is not: no calibrated limits exist, because calibrating them
-requires the live run that the first blocker in this list says has never
-happened, and no checked-in EvalSet reaches the code at all. A repository
+requires live *judge* scores, and the first blocker in this list records
+that no live judge call has been made. The one live Subject run of
+2026-09-08 produced no judge score. No checked-in EvalSet reaches the code
+at all. A repository
 that counted an implemented mechanism as an accepted policy would be making
 exactly the claim this contract's own no-defaults rule exists to prevent.
 
