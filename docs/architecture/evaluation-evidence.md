@@ -60,6 +60,7 @@ repository uses throughout.
 | `263f5ae` | Context suite 9 | Mid-turn criterion correction; pruning Scenario |
 | `dbb385f` | Context suite 10 | Usage-anchor Scenario and criterion correction |
 | `65dcd87` | MCP suite follow-on | Frozen MCP Subject configuration, real-stdio mechanism Scenarios and scorers, plus the consent-gated live example |
+| `d2da7e1` | MCP suite architecture correction | Route frozen MCP configuration through Composition's public spelling; remove Eval's forbidden direct adapter dependency |
 | `edcbab5` | Variance research | Repetition and variance in evaluation frameworks (PR #178) |
 | `bfb3399` | Variance research | Answers to the gate's four questions, with three amendments |
 | `25ca24a` | Variance design | Accept the variance policy design and plan its implementation (PR #173) |
@@ -620,6 +621,13 @@ the modern `server/discover` probe, while the handwritten fixture waited only
 for legacy `initialize`, causing a silent handshake timeout. The fixture now
 returns JSON-RPC method-not-found for that probe and thereby tests the SDK's
 documented legacy fallback before `tools/list` and `tools/call`.
+
+The first full-repository race run exposed a separate architecture error:
+`eval.BuildConfig` imported the MCP adapter directly. The focused eval tests
+were green, but `TestProductionDependencyBoundaries` correctly failed. Commit
+`d2da7e1` makes Composition expose the configuration spelling it already
+owns, leaving Composition as the only package that joins Eval configuration
+to the concrete adapter.
 
 The checked-in live example is DeepSeek-compatible and dual-consent gated.
 Its deterministic prerequisites require the hostile MCP description to have

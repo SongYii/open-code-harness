@@ -27,6 +27,7 @@ Every commit below is a real, resolvable commit in this repository's history.
 | `2fba322` | Task 6 | Process-group teardown with proof |
 | `fd1a844` | Task 7 | Dispatch by source; charter §12.1 |
 | `65dcd87` | Evaluation follow-on | Frozen MCP Subject configuration, evidence-only verifiers, real-stdio mechanism Scenarios, and a consent-gated DeepSeek-compatible live example |
+| `d2da7e1` | Evaluation architecture correction | Remove Eval's forbidden direct adapter import while preserving Composition as the integration owner |
 
 The follow-on does not replace the adapter's conformance tests. It exercises
 the adapter through the complete product path and keeps three claims

@@ -8,14 +8,14 @@ import (
 )
 
 const (
-	VerifierMCPToolSurface       = "mcp-tool-surface-observed-v1"
-	VerifierMCPApprovalDenied    = "mcp-approval-denied-v1"
-	VerifierMCPResultRedaction   = "mcp-result-redaction-observed-v1"
-	VerifierNoToolCallObserved   = "no-tool-call-observed-v1"
-	MCPFixtureEchoToolName       = "mcp_fixture_echo"
-	MCPFixturePoisonToolName     = "mcp_fixture_poison"
+	VerifierMCPToolSurface      = "mcp-tool-surface-observed-v1"
+	VerifierMCPApprovalDenied   = "mcp-approval-denied-v1"
+	VerifierMCPResultRedaction  = "mcp-result-redaction-observed-v1"
+	VerifierNoToolCallObserved  = "no-tool-call-observed-v1"
+	MCPFixtureEchoToolName      = "mcp_fixture_echo"
+	MCPFixturePoisonToolName    = "mcp_fixture_poison"
 	MCPHostileDescriptionMarker = "MCP_UNTRUSTED_DESCRIPTION_INJECTION"
-	MCPRawSecretMarker           = "sk-test-mcp-result-must-not-survive"
+	MCPRawSecretMarker          = "sk-test-mcp-result-must-not-survive"
 )
 
 func verifyMCPToolSurface(reader *ArtifactReader, _ Scenario) CriterionResult {
@@ -124,4 +124,3 @@ func verifyNoToolCallObserved(reader *ArtifactReader, _ Scenario) CriterionResul
 	}
 	return CriterionResult{ID: VerifierNoToolCallObserved, Status: ScorePass}
 }
-
