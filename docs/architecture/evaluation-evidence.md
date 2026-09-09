@@ -59,6 +59,7 @@ repository uses throughout.
 | `efd8ce1` | Context suite 8 | Overflow recovery Scenario |
 | `263f5ae` | Context suite 9 | Mid-turn criterion correction; pruning Scenario |
 | `dbb385f` | Context suite 10 | Usage-anchor Scenario and criterion correction |
+| `65dcd87` | MCP suite follow-on | Frozen MCP Subject configuration, real-stdio mechanism Scenarios and scorers, plus the consent-gated live example |
 | `edcbab5` | Variance research | Repetition and variance in evaluation frameworks (PR #178) |
 | `bfb3399` | Variance research | Answers to the gate's four questions, with three amendments |
 | `25ca24a` | Variance design | Accept the variance policy design and plan its implementation (PR #173) |
@@ -597,6 +598,35 @@ that no declared criterion role puts in the bundle, which is the shape a
 reference check written against the manifest instead of the bundle would
 wrongly accept), and a determinate verdict citing nothing.
 
+## MCP suite follow-on
+
+Commit `65dcd87` adds the MCP suite excluded from the original milestone-10
+v1 boundary without making MCP a runner prerequisite. It freezes static
+stdio launch configuration in Subject identity, admits `mcp_stdio` only on
+the in-process executor, and refuses a Scenario requiring MCP when its
+Subject names no server.
+
+Two fixture Scenarios run through the real provider adapter, MCP SDK,
+confined stdio subprocess, Composition, Application, Policy/Approver, SQLite,
+cold audit export, and offline regrade. The explicit command
+`OCH_EVAL_EXPLICIT_MCP_SUITE=1 go test ./cmd/och-eval -run
+TestCheckedInMCPSetProvesApprovalAndRedaction -count=1` passes. A direct run
+published two complete Attempts; `mcp-approval-denied-scorer-v1` and
+`mcp-result-redaction-scorer-v1` both returned `pass`, including their exact
+tool-surface criteria.
+
+The first end-to-end run exposed a real fixture error: SDK v1.7.0 first sends
+the modern `server/discover` probe, while the handwritten fixture waited only
+for legacy `initialize`, causing a silent handshake timeout. The fixture now
+returns JSON-RPC method-not-found for that probe and thereby tests the SDK's
+documented legacy fallback before `tools/list` and `tools/call`.
+
+The checked-in live example is DeepSeek-compatible and dual-consent gated.
+Its deterministic prerequisites require the hostile MCP description to have
+reached the model request, no tool call to have started, and `secrets.txt` to
+be absent before the Judge can run. It has not been run against a live model,
+so the suite closes the mechanism gap but makes no model-resistance claim.
+
 ## Known limitations and open blockers (not GA)
 
 See the contract document's own [Maturity and GA blockers](evaluation.md#maturity-and-ga-blockers)
@@ -604,7 +634,8 @@ section. Summarized: real-model live-judge sample size, judge
 meta-evaluation breadth beyond the eight adversarial fixtures recorded above,
 provider breadth beyond one OpenAI-compatible adapter, and an accepted
 variance policy for live/quality signals are all explicitly outstanding.
-MCP is a future suite this runner can host, never a runner prerequisite.
+MCP is now an optional explicit suite, never a runner prerequisite; its live
+model-resistance result is still outstanding.
 
 The variance blocker changed shape on 2026-09-05 without closing. The
 mechanism is implemented and verified and this ledger records its evidence;

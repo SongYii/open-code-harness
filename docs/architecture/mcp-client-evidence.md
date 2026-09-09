@@ -26,6 +26,14 @@ Every commit below is a real, resolvable commit in this repository's history.
 | `929580b` | Task 5 | Composition wiring into the one tool catalog |
 | `2fba322` | Task 6 | Process-group teardown with proof |
 | `fd1a844` | Task 7 | Dispatch by source; charter §12.1 |
+| `65dcd87` | Evaluation follow-on | Frozen MCP Subject configuration, evidence-only verifiers, real-stdio mechanism Scenarios, and a consent-gated DeepSeek-compatible live example |
+
+The follow-on does not replace the adapter's conformance tests. It exercises
+the adapter through the complete product path and keeps three claims
+separate: server/protocol operation, deterministic policy containment, and
+live model resistance. The first two now have checked-in executable evidence;
+the third has a runnable example but no result. Full details and commands are
+in the [Evaluation completion evidence](evaluation-evidence.md#mcp-suite-follow-on).
 
 Design amendments landed alongside: four on 2026-09-04 (§3's sibling-import
 contradiction, §3's stale dependency count, §5's false collision claim, §6's
