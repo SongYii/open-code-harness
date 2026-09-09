@@ -40,6 +40,11 @@ type Limits struct {
 	ApprovalTimeout     time.Duration
 }
 
+// MCPServerConfig is the composition-owned spelling of the adapter's static
+// server configuration. Callers configure the assembly without importing a
+// concrete adapter; composition remains the only package that joins them.
+type MCPServerConfig = mcp.ServerConfig
+
 // Context tunes the Context Engine (design §21), which Open always
 // constructs from Provider.ContextWindow/MaxOutput -- there is no Enabled
 // switch here, since a working Context Engine is this milestone's baseline
@@ -202,7 +207,7 @@ type Config struct {
 	// there is deliberately no AllowUnsandboxedExec-style escape hatch,
 	// because starting without tools an operator asked for, while reporting
 	// success, is the more dangerous outcome.
-	MCPServers []mcp.ServerConfig
+	MCPServers []MCPServerConfig
 
 	// ShutdownTimeout bounds Close. Default 10s. This is the only bound this
 	// package introduces rather than forwards.
