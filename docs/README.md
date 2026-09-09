@@ -27,6 +27,8 @@ test-only production branches for the capabilities it does deliver.
 | Status | Authority | Document | Purpose |
 | --- | --- | --- | --- |
 | Accepted | Normative charter | [Foundational architecture](superpowers/specs/2026-08-11-open-code-harness-architecture-design.md) | Product positioning, system boundaries, protocol choices, quality attributes, and milestone order |
+| Accepted | Normative design | [Current system architecture and boundary closure](superpowers/specs/2026-09-09-current-system-architecture-design.md) | As-built architecture map, fail-closed production-package ownership, whole-client-tree isolation, authority boundaries, and mechanically coupled documentation |
+| Accepted | Reading copy | [当前系统架构与边界收口设计](superpowers/specs/2026-09-09-current-system-architecture-design.zh-CN.md) | 与当前系统架构与边界收口英文规范同步的中文阅读版 |
 | Implemented | Implemented contract | [Domain events and state machine](architecture/domain-events.md) | Current Session/Turn commands, events, errors, invariants, codec, and replay rules |
 | Implemented | Implemented contract | [Engine vertical slice](architecture/engine-vertical-slice.md) | Current Application/Engine ports, bounded stream execution, atomic durability, cancellation, errors, adapters, evidence, and exclusions |
 | Implemented | Reading copy | [已实现 Engine 纵切](architecture/engine-vertical-slice.zh-CN.md) | 与已实现 Engine 合同同步的中文语义阅读版 |
