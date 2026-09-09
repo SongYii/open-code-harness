@@ -103,17 +103,19 @@ description at the time:
   budget. That deferral has since been closed: the suite landed with ten
   Scenarios, each paired with the ACP executor. This bullet records the state
   at the time of Task 16, not the current one.
-- **Task 17** is now complete through `och-eval judge`: the frozen
+- **Task 17** is complete through `och-eval judge`: the frozen
   `och.eval.judge-config` document, its EvalSet/manifest binding,
   consent-before-credential ordering, deterministic prerequisites, the real
   OpenAI-compatible caller, explicit cost availability, and append-only live
-  Scores are all shipped and tested. What remains outstanding is genuinely
-  outstanding, not deferred wiring: no run against a real live model has ever
-  happened here (no live credentials exist in this environment — a fixture
-  SSE stream reaching an appended Score through the real adapter is what is
-  actually proven), and the `context-quality` Scenario's own live
-  meta-evaluation run has never been executed (it is an example, deliberately
-  never run by CI).
+  Scores are all shipped and tested. A manually authorized DeepSeek run on
+  2026-09-08 completed two real Subject calls (attempt
+  `30f1d1728e0e1e21572c80c697a30360`); the second request reported 1,024
+  cached input tokens out of 1,090. It did not become a live judge sample:
+  deterministic prerequisites stopped the Judge before its provider call
+  because the Scenario required a workspace role it never collected. The
+  same run also proved its requested compact action was a no-op. Those two
+  findings are corrected below; a fresh paid run is still required for a
+  post-compaction live-model claim and live Judge verdict.
 - Design §25.2's `list_dir` tool and MCP suites are out of scope for this
   milestone entirely (design §3's own stated non-goals / §25.4's own "MCP
   absence does not block the eval system").
@@ -142,11 +144,20 @@ with real evidence. Each was amended rather than silently worked around.
   cancelled, so SIGINT reaps an idle agent (25s without reaping, then 1.4s
   complete). `context-checkpoint-interrupt-restart` is part of the suite.
 
-Two Scenario-shaped facts were also found only by running:
+Three Scenario-shaped facts were also found only by running:
 
-- A Scenario that declares the `workspace` evidence role without a `collect`
-  action collects nothing, and the pruning criterion correctly refuses — it
-  has no file to resolve the projected frame's digest against.
+- The live `context-quality` Scenario declared the `workspace` evidence role
+  without a workspace `collect` action. Scenario validation now rejects that
+  contradiction. The repaired Scenario collects `secrets.txt` with
+  `expectedState: "absent"`; collection publishes a hashed observation and
+  `workspace-paths-absent-v1` fails if the path was actually present.
+- A compact action used to discard `CompactSessionResult.Ran`, so a no-op
+  passed as completed. Both executor surfaces now terminate it as
+  `indeterminate/compact_not_run`. The repaired live Scenario uses two
+  padded, complete Turns, a 4,096-token evaluation budget, and manual summary
+  focus; `TestContextQualityExampleReachesRealCompactionAndAbsenceVerificationWithFixtureProvider`
+  proves the checked-in document reaches a real completed compaction and
+  passes absence verification without credentials.
 - The overflow Scenario sits between two walls: too little history and the
   compaction fails `context_summary_invalid` because the summary is not
   smaller than the source it replaces; too much and the local pre-turn
@@ -199,8 +210,9 @@ subprocess matrix ten times as if it were a flakiness sample.
 The fix is an opt-in named `OCH_EVAL_SCHEDULED_CONTEXT_MATRIX`, following the
 `DOCSGUARD_CHECK_EXTERNAL_LINKS` precedent already in
 `internal/docsguard/citations_test.go`: only `"1"` enables the lane, anything
-else fails closed. Exactly one CI job sets it — `context-matrix`, gated on
-`if: github.event_name == 'schedule'`, running one focused command
+else fails closed. The workflow contains exactly one assignment, with the
+literal value `1`, in the `context-matrix` job. That job is gated on
+`if: github.event_name == 'schedule'` and runs one focused command
 (`go test -race ./cmd/och-eval -run '^TestContextScheduledLane' -count=1`).
 `-short` was deliberately not used: it would have silently changed which other
 tests run.
@@ -212,18 +224,22 @@ comment was already correct and the wiring was not.
 | Guard | What it asserts |
 | --- | --- |
 | `TestFullContextMatrixSkipsWithoutTheOptIn` | Re-invokes this test binary (`os.Args[0]`) with the variable stripped from the environment and requires `--- SKIP` from the matrix test. Proves default-off by running it, not by reading it. |
-| `TestCIEnablesTheFullContextMatrixOnlyInAScheduledJob` | Parses `.github/workflows/ci.yml`: exactly one job may set the variable, it must carry `if: github.event_name == 'schedule'`, and its single `go test` invocation must be focused on `./cmd/och-eval`, name `^TestContextScheduledLane`, and use `-count=1`. |
+| `TestCIEnablesTheFullContextMatrixOnlyInAScheduledJob` | Scans the entire `.github/workflows/ci.yml`, not only job blocks: there must be exactly one assignment, its value must be the literal `1`, it must belong to the schedule-gated job, and that job's single `go test` invocation must be focused on `./cmd/och-eval`, name `^TestContextScheduledLane`, and use `-count=1`. |
+| `TestScheduledContextWorkflowRejectsAnOptInThatWillNotEnableTheTest` | A synthetic workflow using `"0"` is rejected, so the guard cannot confuse key presence with an opt-in that the test binary will honor. |
+| `TestScheduledContextWorkflowRejectsAWorkflowWideOptIn` | A synthetic workflow with an inherited top-level assignment is rejected, so broad jobs cannot be opted in outside the job parser's former field of view. |
 | `TestBroadSuiteJobsNeverEnableTheFullContextMatrix` | The same file's whole-suite jobs — `go`, `determinism`, `soak` — must all still exist and none may set the variable. |
 | `TestScheduledContextMatrixOptInFailsClosed` | `""`, `"0"`, `"true"`, `"yes"`, `"2"`, `" 1"` all leave the matrix off; only `"1"` enables it. |
 | `TestScheduledLaneCoversEveryCheckedInContextSet` | `contextScheduledSets` is maintained by hand, so a tenth set added later would simply never run while the lane still passed. Membership is decided by two independent facts — the set's own declared `fixture` lane and the `context-` id prefix that separates it from the PR lane's `pr-context` — not by a filename convention alone. |
-| `TestEveryInProcessContextSetHasAnIdenticalACPArm` | The suite design's pairing claim as a structural fact: every `context-X-inprocess` set has a `context-X-acp` twin carrying the identical Scenario list, the first declaring an `in_process` executor and the second an `acp_subprocess` one. `context-recovery-acp` has no in-process arm by design, since restart recovery is only meaningful against a real subprocess. |
+| `TestEveryInProcessContextSetHasAnIdenticalACPArm` | The suite design's pairing claim as a bidirectional structural fact: every `context-X-inprocess` set has an identical `context-X-acp` twin, and every ACP arm has an in-process twin except `context-recovery-acp`, whose restart recovery is only meaningful against a real subprocess. |
+| `TestOnlyRecoveryMayBeAnACPOnlyContextSet` | A synthetic orphan ACP arm is reported while the recovery exception is accepted. |
 
-The workflow file is parsed line-wise into job blocks rather than with a YAML
-library, because the repository pins its dependency graph (`go mod tidy -diff`,
-govulncheck) and a new module is not worth four assertions over a file this
-project writes itself.
+The opt-in assignment is scanned over the raw workflow, while command and
+schedule rules are parsed line-wise into job blocks. This avoids hiding an
+inherited top-level `env` assignment without adding a YAML dependency; the
+repository pins its dependency graph (`go mod tidy -diff`, govulncheck), and
+a new module is not worth these assertions over a file this project writes.
 
-Five mutations were performed and observed, then restored:
+Seven mutations were performed and observed, then restored:
 
 | Mutation | Result |
 | --- | --- |
@@ -242,6 +258,21 @@ workflow with `git checkout`, which reverted the not-yet-staged
 against a file with no such job at all and proved nothing about the intended
 mutation. They were redone against a file-copy baseline, with the unmutated
 baseline confirmed green first. The results above are from the redone runs.
+
+### Follow-up wiring-guard audit (2026-09-07)
+
+The first guard implementation still had three blind spots: it treated any
+assignment as enabled without checking for the exact value `1`; it began
+scanning at `jobs:`, so a workflow-level `env` assignment was invisible; and
+its set-pairing rule ran only from in-process to ACP, so a new ACP-only set was
+accepted.
+
+The tests were first added with their new helpers returning no diagnostics; all
+three focused regression inputs were observed red: a scheduled value of `"0"`, a workflow-level assignment inherited
+by broad jobs, and an orphan `context-orphan-acp.json` set. After implementation,
+`go test ./cmd/och-eval -run 'TestScheduledContextWorkflowRejects|TestOnlyRecoveryMayBe|TestCIEnablesTheFullContextMatrixOnlyInAScheduledJob|TestEveryInProcessContextSetHasAnIdenticalACPArm' -count=1`
+passed. These are synthetic inputs, not additions to the historical mutation
+table above.
 
 ## Variance: the design was written before the research
 
@@ -602,3 +633,26 @@ them requires the live run the first blocker in this list says has never
 happened. The mechanism is also dormant — no checked-in EvalSet reaches it.
 An implemented mechanism counted as an accepted policy would be exactly the
 claim the contract's own no-defaults rule exists to prevent.
+
+
+## Update: the absence verifier could have passed having checked nothing (2026-09-09)
+
+Reviewing the live-context-quality fail-closed slice found the code correct and
+one test missing, which is a fact about the tests rather than about the change.
+
+`verifyWorkspacePathsAbsent` returns `Indeterminate` when a Scenario names it
+but declares no absence expectation. That is the right answer — a criterion
+announcing success over an examination it never performed is worth less than no
+criterion, because a reader counts it as evidence — but nothing exercised it.
+Turning that branch into `Pass` left the whole suite green.
+
+The gap is reachable the ordinary way: someone deletes a `collect` action and
+leaves the verifier named in the Scenario's list.
+
+`TestTheAbsenceVerifierRefusesToPassHavingCheckedNothing` closes it, and the
+re-aimed mutation now fails with "the absence verifier passed a Scenario that
+declares no absence expectation".
+
+The slice's own mutation stands as well: recording every observation as absent
+regardless of what is on disk fails
+`TestExpectedWorkspaceAbsenceIsCollectedAndVerified/present`.

@@ -124,12 +124,15 @@ code a reader assumes it covers. Both are now listed above.
 
 ## Contracts the implementation corrected
 
-**A message corrected at the adapter boundary.** An unseen or observed-absent
-write produces a create-if-absent guard. When something is already there, the
-adapter preserves raw `fs.ErrExist`; Application maps that create conflict to
-`fs_not_observed` and the bounded read-before-change instruction. An edit
-after an authoritative missing read is different: it returns `fs_not_found`
-without calling the filesystem mutation port or advancing the observation.
+**A message corrected at the observation boundary.** Both an unseen and an
+observed-absent write produce a create-if-absent guard. When something is
+already there, the adapter preserves raw `fs.ErrExist`; Application resolves
+that conflict where the observation table is visible. An unseen target maps to
+`fs_not_observed` and the bounded read-before-change instruction, while an
+observed-absent target maps to `fs_stale_version` and a re-read instruction.
+An edit after an authoritative missing read is different: it returns
+`fs_not_found` without calling the filesystem mutation port or advancing the
+observation.
 
 **An accidental guarantee made explicit.** Adding a boolean leaf to the schema
 compiler broke a pre-existing test that expected `{"type":"boolean"}` to be

@@ -8,8 +8,8 @@
     "adapterKind": "openaicompat",
     "normalizedEndpoint": "https://api.example-provider.invalid/v1",
     "modelId": "replace-with-a-real-model-id",
-    "contextWindow": 128000,
-    "maxOutput": 4096,
+    "contextWindow": 4096,
+    "maxOutput": 512,
     "credentialEnvVar": "OCH_EVAL_LIVE_PROVIDER_API_KEY",
     "lane": "live"
   },

@@ -287,12 +287,16 @@ func runAction(ctx context.Context, state *executionState, action ScenarioAction
 	case ActionCancel:
 		return runCancel(state, action, attemptID, started)
 	case ActionCompact:
-		if _, err := state.service.CompactSession(ctx, application.CompactSessionRequest{
+		result, err := state.service.CompactSession(ctx, application.CompactSessionRequest{
 			SessionID: state.sessionID,
 			Strategy:  action.Compact.Strategy,
 			Focus:     action.Compact.Focus,
-		}); err != nil {
+		})
+		if err != nil {
 			return infraFailedOutcome(attemptID, started, "compact_session_failed", err), true
+		}
+		if !result.Ran {
+			return compactNotRunOutcome(attemptID, started), true
 		}
 		return Outcome{}, false
 	case ActionCollect:

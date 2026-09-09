@@ -5,6 +5,7 @@ package eval
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -17,13 +18,16 @@ func TestRunACPActionCompactRunsFullLeaseTransactionAgainstRealOchBinary(t *test
 	}
 	server := newEchoProvider(t)
 	subject := testSubject(t, server.Server)
+	subject.Provider.ContextWindow = 4096
+	subject.Provider.MaxOutput = 512
 	attemptID, directories := acpTestDirectories(t)
 
 	scenario := runnerScenario("acp-compact-transaction")
 	scenario.Actions = []ScenarioAction{
 		newEchoScenarioAction("prompt-1", "before compaction"),
+		newEchoScenarioAction("prompt-2", strings.Repeat("neutral padding ", 350)),
 		{ID: "compact-1", Type: ActionCompact, Compact: &CompactAction{Strategy: "reset"}},
-		newEchoScenarioAction("prompt-2", "after compaction"),
+		newEchoScenarioAction("prompt-3", "after compaction"),
 	}
 	scenario.ApprovalScript = nil
 	scenario.RequiredCapabilities = []string{"prompt", "compact"}
@@ -44,8 +48,42 @@ func TestRunACPActionCompactRunsFullLeaseTransactionAgainstRealOchBinary(t *test
 	if execution.SessionID == "" {
 		t.Fatal("SessionID is empty")
 	}
-	if server.calls.Load() != 2 {
-		t.Fatalf("provider calls = %d, want 2: one before compaction, one after (compact-session itself never calls the provider)", server.calls.Load())
+	if server.calls.Load() != 3 {
+		t.Fatalf("provider calls = %d, want 3: two before compaction and one after (compact-session itself never calls the provider)", server.calls.Load())
+	}
+}
+
+func TestRunACPActionCompactNoOpIsIndeterminate(t *testing.T) {
+	ochBin := buildOchBinary(t)
+	binary, err := ResolveACPBinary(ochBin)
+	if err != nil {
+		t.Fatalf("ResolveACPBinary: %v", err)
+	}
+	server := newEchoProvider(t)
+	subject := testSubject(t, server.Server)
+	attemptID, directories := acpTestDirectories(t)
+
+	scenario := runnerScenario("acp-compact-no-op")
+	scenario.Actions = []ScenarioAction{
+		{ID: "compact-1", Type: ActionCompact, Compact: &CompactAction{Strategy: "reset"}},
+	}
+	scenario.ApprovalScript = nil
+	scenario.RequiredCapabilities = []string{"compact"}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	execution, err := RunACPAttempt(ctx, attemptID, subject, directories, scenario, ACPLaunchConfig{Binary: binary}, NewApprovalMatcher(nil))
+	if err != nil {
+		t.Fatalf("RunACPAttempt() error = %v", err)
+	}
+	if execution.Outcome.Status != OutcomeIndeterminate || execution.Outcome.Code != "compact_not_run" {
+		t.Fatalf("Outcome = %+v, want indeterminate/compact_not_run", execution.Outcome)
+	}
+	if !execution.WriterStopped {
+		t.Fatal("WriterStopped = false, want true after terminal compact no-op")
+	}
+	if server.calls.Load() != 0 {
+		t.Fatalf("provider calls = %d, want 0", server.calls.Load())
 	}
 }
 

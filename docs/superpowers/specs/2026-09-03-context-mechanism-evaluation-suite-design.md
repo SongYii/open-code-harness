@@ -556,9 +556,9 @@ and the first implementation did not give it one: the lane's only gate was
 job on every pull request and three more times under `determinism` — the
 opposite of what this section and the section above require. The lane is now
 opted in to by `OCH_EVAL_SCHEDULED_CONTEXT_MATRIX=1`, set by exactly one
-schedule-gated CI job running one focused `-count=1` command, and three tests
-in `cmd/och-eval` enforce that against `.github/workflows/ci.yml` and against
-the test binary's own default-off behavior rather than against any comment.
+schedule-gated CI job running one focused `-count=1` command, and executable
+guards in `cmd/och-eval` enforce that against `.github/workflows/ci.yml` and
+against the test binary's own default-off behavior rather than against any comment.
 
 The steady-state scan-cost fix is not observable from an artifact-only verifier
 without adding forbidden store instrumentation to eval. The scheduled lane must
