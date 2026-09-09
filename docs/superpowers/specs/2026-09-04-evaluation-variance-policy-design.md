@@ -213,7 +213,9 @@ precision reported where nothing was measured. That refusal stays.
 
 This field is only ever as good as the limits it compares against, and no
 limit in this repository has been calibrated — §3's own rule is that no
-default may be supplied, because no live run has ever happened here. The
+default may be supplied, because calibration needs live judge scores and no
+live judge call has ever been made here. (One live Subject run happened on
+2026-09-08 and produced no judge score, so it calibrates nothing.) The
 field therefore carries the policy's calibration state with it, and while
 that state is `uncalibrated`:
 

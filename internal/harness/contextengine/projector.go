@@ -16,6 +16,9 @@ import (
 type ContextUnitKind string
 
 const (
+	// UnitKindInstruction is one durable workspace instruction delta.
+	// It remains a user-role message at the event's canonical sequence.
+	UnitKindInstruction ContextUnitKind = "instruction"
 	// UnitKindTurn is one TurnStarted's own user message, standalone.
 	UnitKindTurn ContextUnitKind = "turn"
 	// UnitKindAssistant is one AssistantMessageCompleted with no Tool
@@ -110,9 +113,22 @@ func ProjectSourceEvents(records []domain.RecordedEvent) ([]ContextUnit, error) 
 	var units []ContextUnit
 	offeredCallIDs := make(map[string]bool)
 	openSteps := make(map[string]*openStep) // keyed by CallID; every CallID of one Step points to the same *openStep
-
 	for _, record := range records {
 		switch event := record.Event.(type) {
+		case domain.WorkspaceInstructionsRecorded:
+			if event.RenderedMessage == "" {
+				continue
+			}
+			units = append(units, ContextUnit{
+				Kind:          UnitKindInstruction,
+				FirstSequence: record.Sequence,
+				LastSequence:  record.Sequence,
+				Messages: []domain.ModelPromptMessage{{
+					Role: domain.PromptRoleUser,
+					Text: event.RenderedMessage,
+				}},
+			})
+
 		case domain.TurnStarted:
 			if event.Input == "" {
 				continue

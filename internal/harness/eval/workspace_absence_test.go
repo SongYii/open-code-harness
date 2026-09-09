@@ -93,3 +93,60 @@ func TestExpectedWorkspaceAbsenceIsCollectedAndVerified(t *testing.T) {
 		})
 	}
 }
+
+// TestTheAbsenceVerifierRefusesToPassHavingCheckedNothing closes the vacuous
+// pass.
+//
+// A Scenario can name this verifier and carry no absence expectation at all —
+// most easily by someone deleting the collect action and leaving the
+// verifier list alone. Reporting a pass there would be a criterion announcing
+// success over an examination it never performed, which is worth less than no
+// criterion: a reader counts it as evidence.
+//
+// Indeterminate is the honest answer. It is also the fail-closed one, because
+// the parent design's scoring rules never let an indeterminate criterion stand
+// in for a pass.
+func TestTheAbsenceVerifierRefusesToPassHavingCheckedNothing(t *testing.T) {
+	server := newEchoProvider(t)
+	subject := testSubject(t, server.Server)
+	attemptID := testAttemptID(t)
+	directories := testDirectories(t, attemptID)
+
+	scenario := validScenario()
+	// Every action except the collect: the verifier is named, and there is
+	// nothing for it to look at.
+	scenario.Actions = []ScenarioAction{newEchoScenarioAction("prompt-1", "hello")}
+	scenario.ApprovalScript = nil
+	scenario.RequiredEvidenceRoles = []string{"transcript", "audit"}
+	scenario.OptionalEvidenceRoles = nil
+	scenario.DeterministicVerifierIDs = []string{"workspace-paths-absent-v1"}
+	documents := publishTestEvidenceDocuments(t, directories, attemptID, scenario, subject)
+
+	execution, err := RunAttempt(context.Background(), attemptID, subject, directories, scenario, NewApprovalMatcher(nil))
+	if err != nil {
+		t.Fatalf("RunAttempt: %v", err)
+	}
+	if _, _, err := CollectEvidence(context.Background(), directories, execution, execution.Outcome, documents, CollectionLimits{}); err != nil {
+		t.Fatalf("CollectEvidence: %v", err)
+	}
+
+	reader, err := NewArtifactReader(directories)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verdict, results, err := RunScorer(reader, scenario, Scorer{
+		ID: "scorer-1", Version: "v1",
+		VerifierIDs: []string{"workspace-paths-absent-v1"},
+	})
+	if err != nil {
+		t.Fatalf("RunScorer: %v", err)
+	}
+	for _, result := range results {
+		if result.ID == VerifierWorkspacePathsAbsent && result.Status == ScorePass {
+			t.Fatal("the absence verifier passed a Scenario that declares no absence expectation")
+		}
+	}
+	if verdict == ScorePass {
+		t.Fatalf("verdict = %q; a Scenario with nothing to check must not score a pass on this criterion", verdict)
+	}
+}

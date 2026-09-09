@@ -47,7 +47,11 @@ type MaterializeInput struct {
 	RetainedTail []ContextUnit
 	CurrentInput domain.ModelPromptMessage
 	Tools        []domain.ToolSchema
-	Meter        Meter
+	// PrefixMessages are immutable request prefixes such as the versioned
+	// system prompt. They are emitted first and never checkpoint-covered.
+	PrefixMessages []domain.ModelPromptMessage
+
+	Meter Meter
 	// ProtectedTail, MaxPrunedToolResults, and HardInput together enable
 	// design §10's Tool Result projection over RetainedTail: a retained
 	// Tool Result message whose own meter estimate exceeds
@@ -74,7 +78,7 @@ type MaterializeInput struct {
 // CheckpointKindSourceTailReset) first, then every retained unit's
 // messages in order, then the current input last.
 func Materialize(input MaterializeInput) PreparedContext {
-	var messages []domain.ModelPromptMessage
+	messages := append([]domain.ModelPromptMessage(nil), input.PrefixMessages...)
 	result := PreparedContext{}
 	if input.Checkpoint != nil {
 		result.CheckpointID = input.Checkpoint.ID
@@ -84,6 +88,9 @@ func Materialize(input MaterializeInput) PreparedContext {
 			messages = append(messages, domain.ModelPromptMessage{Role: domain.PromptRoleUser, Text: input.Checkpoint.Summary})
 		case CheckpointKindSourceTailReset:
 			messages = append(messages, domain.ModelPromptMessage{Role: domain.PromptRoleUser, Text: BuildResetMarker(input.Checkpoint.ID, input.Checkpoint.Coverage.ThroughSequence)})
+		}
+		if input.Checkpoint.InstructionSnapshot != nil && input.Checkpoint.InstructionSnapshot.RenderedMessage != "" {
+			messages = append(messages, domain.ModelPromptMessage{Role: domain.PromptRoleUser, Text: input.Checkpoint.InstructionSnapshot.RenderedMessage})
 		}
 	}
 	if len(input.RetainedTail) > 0 {

@@ -40,7 +40,11 @@ func (store *EventStore) LoadLatestContextCheckpoint(ctx context.Context, sessio
 	var latest *domain.ContextCheckpointRecord
 	for _, record := range records {
 		if event, ok := record.Event.(domain.ContextCompactionCompleted); ok {
-			checkpoint := event.Checkpoint
+			clonedEvent, err := domain.CloneEvent(event)
+			if err != nil {
+				return application.ContextCheckpointLookup{}, storeError(application.StoreCodeCorrupt, sessionID, 0, 0, "", err)
+			}
+			checkpoint := clonedEvent.(domain.ContextCompactionCompleted).Checkpoint
 			latest = &checkpoint
 		}
 	}

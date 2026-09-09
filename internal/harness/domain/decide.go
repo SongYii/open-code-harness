@@ -159,6 +159,9 @@ func resolveApprovalEvents(event ApprovalResolved) []UncommittedEvent {
 func recordModelRequestEvents(event ModelRequestRecorded) []UncommittedEvent {
 	return []UncommittedEvent{{Event: event}}
 }
+func recordWorkspaceInstructionsEvents(event WorkspaceInstructionsRecorded) []UncommittedEvent {
+	return []UncommittedEvent{{Event: event}}
+}
 
 func failAssistantTurnEvents(turnID TurnID, itemID ItemID, code, message string) []UncommittedEvent {
 	return []UncommittedEvent{
@@ -255,9 +258,21 @@ func Decide(state Session, command Command) ([]UncommittedEvent, error) {
 		return decideFailContextCompaction(state, command)
 	case RecordContextPreparation:
 		return decideRecordContextPreparation(state, command)
+	case RecordWorkspaceInstructions:
+		return decideRecordWorkspaceInstructions(state, command)
 	default:
 		return nil, domainError(CodeInvalidCommand, "command type cannot be decided")
 	}
+}
+
+func decideRecordWorkspaceInstructions(state Session, command RecordWorkspaceInstructions) ([]UncommittedEvent, error) {
+	if err := requireSessionForCommand(state, command.SessionID); err != nil {
+		return nil, err
+	}
+	if err := validateWorkspaceInstructionsPayload(command.WorkspaceInstructionsRecorded, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	return recordWorkspaceInstructionsEvents(command.WorkspaceInstructionsRecorded), nil
 }
 
 // CheckStartAssistantTurnEligibility reports whether a new atomic

@@ -117,6 +117,16 @@ func Apply(state Session, record RecordedEvent) (Session, error) {
 			return Session{}, err
 		}
 		return applyVersionOnlyRunningItemKind(state, record, event.TurnID, event.ItemID, ItemKindAssistantMessage, "context preparation timestamp precedes item start")
+	case WorkspaceInstructionsRecorded:
+		if err := validateWorkspaceInstructionsPayload(event, CodeInvalidEvent); err != nil {
+			return Session{}, err
+		}
+		if err := requireActiveSession(state, record.SessionID); err != nil {
+			return Session{}, err
+		}
+		next := state.Clone()
+		next.Version = record.Sequence
+		return next, nil
 	default:
 		return Session{}, domainError(CodeInvalidEvent, "event type cannot be applied")
 	}

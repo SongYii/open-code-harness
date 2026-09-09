@@ -562,17 +562,22 @@ the `go`, `determinism`, and `soak` jobs do not set it, so the whole-suite
 runs at `-count=1`, `-count=3`, and `-count=10` never expand it.
 
 This boundary is enforced, not merely stated. `TestFullContextMatrixSkipsWithoutTheOptIn`
-re-invokes the test binary with the variable removed and requires a SKIP;
-`TestCIEnablesTheFullContextMatrixOnlyInAScheduledJob` and
-`TestBroadSuiteJobsNeverEnableTheFullContextMatrix` (both `cmd/och-eval`)
-parse `.github/workflows/ci.yml` and require that exactly one job sets the
-variable, that it is schedule-gated, that its command is focused and
-`-count=1`, and that no whole-suite job carries it. Between 2026-09-04's
-`10190a2` and this change, that boundary existed only in prose — the lane's
-gate was `testing.Short()`, which no CI job passes — so the full matrix ran
-on every pull request, once in `go` and three more times under `determinism`,
-while this section said it never did. What the paragraph above claims is now
-a test.
+re-invokes the test binary with the variable removed and requires a SKIP.
+`TestCIEnablesTheFullContextMatrixOnlyInAScheduledJob` scans the entire
+workflow and its job blocks: the file must contain exactly one assignment,
+its literal value must reach the process as `1`, and that assignment must
+belong to the schedule-gated job whose command is focused and `-count=1`.
+`TestBroadSuiteJobsNeverEnableTheFullContextMatrix` keeps the whole-suite
+jobs free of the opt-in. Dedicated regressions reject a non-enabling value and
+a workflow-level assignment inherited by every job. The pairing guard also
+works in both directions: every in-process Context arm needs its identical ACP
+twin, and no ACP-only arm is allowed except `context-recovery-acp`.
+
+Between 2026-09-04's `10190a2` and this change, that boundary existed only in
+prose — the lane's gate was `testing.Short()`, which no CI job passes — so the
+full matrix ran on every pull request, once in `go` and three more times under
+`determinism`, while this section said it never did. What the paragraph above
+claims is now a test.
 
 ## Live lane
 
@@ -677,8 +682,8 @@ than from whatever the report generator was compiled with.
 `calibration` state, and a minimum of at least two evaluable repetitions. No
 successful live Judge sample suitable for calibration exists in this
 repository, so a shipped default would be a guess wearing the authority of a
-specification. An
-uncalibrated policy is marked on **every Cell it governs**, not once at the
+specification. An uncalibrated policy is marked on **every Cell it governs**,
+not once at the
 top of a document a reader may scroll past.
 
 ### Two baselines, and what may gate
@@ -716,10 +721,17 @@ must be exactly 0" would pass unconditionally.
 
 Evaluation is **implemented, not GA**. Explicitly outstanding before a GA
 claim: real-model sample size for live judging — `och-eval judge` is wired
-end to end and proven against a fixture SSE stream through the real adapter;
-two DeepSeek Subject calls have happened, but deterministic prerequisites
-stopped the Judge, so no successful live Judge sample exists — judge
-meta-evaluation against a broader fixture set than the
+end to end and proven against a fixture SSE stream through the real
+adapter, but **no live judge call has ever been made in this repository**.
+One live *Subject* run did happen, on 2026-09-08 against an
+OpenAI-compatible DeepSeek endpoint, and it is recorded in the
+[workspace-instructions evidence](system-prompt-workspace-instructions-evidence.md#live-deepseek-validation).
+It reached the judge's prerequisites and stopped there: the Score came back
+`indeterminate` before any model request because `manifest-complete-v1` was
+itself indeterminate. So the blocker narrowed rather than closed — the
+Subject side has a live sample of exactly one attempt, the judge side has
+none — and a single partial run is not the sample size a GA claim needs.
+Also outstanding: judge meta-evaluation against a broader fixture set than the
 eight adversarial fixtures this repository now carries (injection,
 missing-evidence, contradiction, unsupported-claim, known-pass/fail, an
 invented reference, a real-but-unshown reference, and a determinate verdict
@@ -734,8 +746,10 @@ The variance blocker changed shape on 2026-09-05 without closing, and the
 distinction matters. The **mechanism** is now designed, implemented, and
 verified — see [Variance and baselines](#variance-and-baselines) above. The
 **policy** is not: no calibrated limits exist, because calibrating them
-requires the live run that the first blocker in this list says has never
-happened, and no checked-in EvalSet reaches the code at all. A repository
+requires live *judge* scores, and the first blocker in this list records
+that no live judge call has been made. The one live Subject run of
+2026-09-08 produced no judge score. No checked-in EvalSet reaches the code
+at all. A repository
 that counted an implemented mechanism as an accepted policy would be making
 exactly the claim this contract's own no-defaults rule exists to prevent.
 

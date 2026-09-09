@@ -162,7 +162,9 @@ action ID；`workspace-paths-absent-v1` 经由 `ArtifactReader` 重新读取它�
 
 完整的 Context 机制矩阵 —— 九个 EvalSet，其中五个会拉起真实的 `och -acp` 子进程 —— 通过 `OCH_EVAL_SCHEDULED_CONTEXT_MATRIX=1` 按名称显式启用。未设置该变量时，`TestContextScheduledLaneRunsEveryPairedSet` 会跳过。CI 中唯一设置该变量的任务是 `context-matrix`，它以 `if: github.event_name == 'schedule'` 为条件，并且只运行一条聚焦命令一次（`go test -race ./cmd/och-eval -run '^TestContextScheduledLane' -count=1`）；`go`、`determinism` 与 `soak` 任务都不设置该变量，因此 `-count=1`、`-count=3` 与 `-count=10` 的全量套件运行都不会把它展开。
 
-这条边界是被强制执行的，而不只是被声明的。`TestFullContextMatrixSkipsWithoutTheOptIn` 会在剥离该环境变量后重新调用测试二进制，并要求出现 SKIP；`TestCIEnablesTheFullContextMatrixOnlyInAScheduledJob` 与 `TestBroadSuiteJobsNeverEnableTheFullContextMatrix`（均在 `cmd/och-eval`）会解析 `.github/workflows/ci.yml`，要求恰好一个任务设置该变量、该任务以 schedule 为门禁、其命令是聚焦且 `-count=1` 的，并且没有任何全量套件任务携带它。在 2026-09-04 的 `10190a2` 与本次修改之间，这条边界只存在于文字之中 —— 该车道的门禁是 `testing.Short()`，而没有任何 CI 任务传入 `-short` —— 因此完整矩阵实际在每个 PR 上都会运行，`go` 任务一次、`determinism` 再三次，而本节当时却声称它从不运行。上一段所声明的内容，现在是一个测试。
+这条边界是被强制执行的，而不只是被声明的。`TestFullContextMatrixSkipsWithoutTheOptIn` 会在剥离该环境变量后重新调用测试二进制，并要求出现 SKIP；`TestCIEnablesTheFullContextMatrixOnlyInAScheduledJob` 会扫描整个 workflow 及其任务块，要求全文件恰好一次赋值、该字面量传入进程后必须精确为 `1`，并且赋值只能属于 schedule 门禁下那条聚焦且 `-count=1` 的命令。`TestBroadSuiteJobsNeverEnableTheFullContextMatrix` 继续保证所有全量套件任务不携带该变量；专门的回归测试拒绝不能真正启用测试的值，以及会被每个任务继承的 workflow 顶层赋值。配对守卫也改为双向：每个进程内 Context arm 都必须有相同的 ACP twin，除 `context-recovery-acp` 外不允许 ACP-only arm。
+
+在 2026-09-04 的 `10190a2` 与本次修改之间，这条边界只存在于文字之中 —— 该车道的门禁是 `testing.Short()`，而没有任何 CI 任务传入 `-short` —— 因此完整矩阵实际在每个 PR 上都会运行，`go` 任务一次、`determinism` 再三次，而本节当时却声称它从不运行。上一段所声明的内容，现在是一个测试。
 
 ## 实时车道
 
@@ -207,7 +209,7 @@ action ID；`workspace-paths-absent-v1` 经由 `ArtifactReader` 重新读取它�
 
 两个限值和可评估下限都住在一份 `och.eval.variance-policy` 文档里，沿用 `och.eval.judge-config` 的先例：可摘要、无秘密、被 EvalSet 引用、并绑定进运行自身的证据，使得报告自己的判断可以离线地从产物复现，而不是取决于报告生成器是用什么编译的。
 
-**不提供任何默认值。** 一份策略必须声明它的限值、它的 `calibration` 状态，以及一个至少为二的可评估下限。本仓库还没有可用于校准的成功真实 Judge 样本，所以任何随附的默认值都会是一个披着规范权威外衣的猜测。未校准的策略会标注在**它所治理的每一个 Cell 上**，而不是只在文档顶部标一次、让读者可能划过去。
+**不提供任何默认值。** 一份策略必须声明它的限值、它的 `calibration` 状态，以及一个至少为二的可评估下限。校准需要真实评审器给出的分数，而本仓库从未发起过任何一次真实评审器调用（2026-09-08 那次真实 Subject 运行没有产出评审分数，因此校准不了任何东西），所以任何随附的默认值都会是一个披着规范权威外衣的猜测。未校准的策略会标注在**它所治理的每一个 Cell 上**，而不是只在文档顶部标一次、让读者可能划过去。
 
 ### 两条基线，以及什么可以卡门禁
 
@@ -227,7 +229,7 @@ action ID；`workspace-paths-absent-v1` 经由 `ArtifactReader` 重新读取它�
 
 ## 成熟度与 GA 阻碍项
 
-评估系统**已实现，但尚未 GA**。在做出 GA 声明之前明确悬而未决的事项包括：实时评审所需的真实模型样本规模——已有两次 DeepSeek Subject 调用，但确定性前置条件拦住了 Judge，因此仍没有成功的真实 Judge 样本——、超出本仓库当前所携带的八个对抗性夹具（注入、证据缺失、矛盾、无支撑主张、已知通过/失败、凭空捏造的引用、真实存在但从未被展示过的引用，以及一个不引用任何证据的确定性判定）之外更广泛夹具集合上的评审器元评估 —— 其中原有五例里有两例在 2026-09-04 被发现是被一条比它们所声称的更早的检查拒绝的，因而对它们本该守护的那条防线什么也没有证明；两者均已修正，现在会断言拒绝的具体原因 ——、超出本仓库目前唯一一个 OpenAI 兼容适配器之外的更广 provider 覆盖面，以及一份被接受的实时/质量信号方差策略。
+评估系统**已实现，但尚未 GA**。在做出 GA 声明之前明确悬而未决的事项包括：实时评审所需的真实模型样本规模 —— 这一项在 2026-09-08 收窄但没有关闭：一次针对 OpenAI 兼容 DeepSeek 端点的真实 Subject 运行[记录在工作区指令证据里](system-prompt-workspace-instructions-evidence.md#live-deepseek-validation)，它停在了评审器的前置条件上，所以 Subject 侧的样本是恰好一次不完整的尝试，评审器侧仍然是零 ——、超出本仓库当前所携带的八个对抗性夹具（注入、证据缺失、矛盾、无支撑主张、已知通过/失败、凭空捏造的引用、真实存在但从未被展示过的引用，以及一个不引用任何证据的确定性判定）之外更广泛夹具集合上的评审器元评估 —— 其中原有五例里有两例在 2026-09-04 被发现是被一条比它们所声称的更早的检查拒绝的，因而对它们本该守护的那条防线什么也没有证明；两者均已修正，现在会断言拒绝的具体原因 ——、超出本仓库目前唯一一个 OpenAI 兼容适配器之外的更广 provider 覆盖面，以及一份被接受的实时/质量信号方差策略。
 
 方差这一项在 2026-09-05 改变了形态，但并没有关闭，而这个区别很重要。**机制**现在已完成设计、实现与验证 —— 见上文[方差与基线](#方差与基线)。**策略**没有：不存在任何校准过的限值，因为校准它们需要本清单第一项所说的那次从未发生过的实时运行，而且没有任何入库 EvalSet 会走到这段代码。一个把"机制已实现"算作"策略已接受"的仓库，正是在做出本契约自身的"不提供默认值"规则所要防止的那种声明。
 

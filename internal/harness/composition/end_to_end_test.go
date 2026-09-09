@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/SongYii/open-code-harness/internal/harness/agentinstructions"
 	"github.com/SongYii/open-code-harness/internal/harness/application"
 	"github.com/SongYii/open-code-harness/internal/harness/composition"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
@@ -39,6 +40,10 @@ func TestAssemblyRunsAToolCallingTurnEndToEnd(t *testing.T) {
 	const fileName = "NOTES.md"
 	const fileBody = "the workspace file the model asks for"
 	if err := os.WriteFile(filepath.Join(config.WorkspaceRoot, fileName), []byte(fileBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const instructionText = "Run the repository verification before completion.\n"
+	if err := os.WriteFile(filepath.Join(config.WorkspaceRoot, "AGENTS.md"), []byte(instructionText), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -115,6 +120,7 @@ func TestAssemblyRunsAToolCallingTurnEndToEnd(t *testing.T) {
 			t.Fatalf("durable stream = %v, missing %q", types, wanted)
 		}
 	}
+	assertDurableInstructionRequestFacts(t, records, instructionText, "what is in "+fileName+"?")
 
 	// Replay is the state authority: the persisted events must reconstruct a
 	// session with no turn still running.
@@ -135,6 +141,10 @@ func TestAssemblyServesACPTurnEndToEnd(t *testing.T) {
 	const fileName = "NOTES.md"
 	const fileBody = "the workspace file the model asks for"
 	if err := os.WriteFile(filepath.Join(config.WorkspaceRoot, fileName), []byte(fileBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const instructionText = "Run the repository verification before completion.\n"
+	if err := os.WriteFile(filepath.Join(config.WorkspaceRoot, "AGENTS.md"), []byte(instructionText), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	config.Policy = policy.ModeDefault
@@ -200,6 +210,11 @@ func TestAssemblyServesACPTurnEndToEnd(t *testing.T) {
 	if !sawToolCall {
 		t.Fatal("catalog-backed read_file turn produced no live tool_call during session/prompt")
 	}
+	records, err := application.ReadWholeStreamPinned(context.Background(), assembly.Store(), domain.SessionID(sessionID), 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDurableInstructionRequestFacts(t, records, instructionText, "what is in "+fileName+"?")
 
 	writeACP(t, clientOut, fmt.Sprintf(`{"jsonrpc":"2.0","id":4,"method":"session/load","params":{"sessionId":%q}}`, sessionID))
 	sawLoadToolCall := false
@@ -314,7 +329,7 @@ func TestAssemblyServesACPTurnEndToEnd(t *testing.T) {
 	// directly still carries the deletion fact as append-only evidence. The
 	// transcript export tests separately cover projection; this test keeps the
 	// durable-store assertion at the composition boundary.
-	records, err := application.ReadWholeStreamPinned(context.Background(), assembly.Store(), domain.SessionID(sessionID), 256)
+	records, err = application.ReadWholeStreamPinned(context.Background(), assembly.Store(), domain.SessionID(sessionID), 256)
 	if err != nil {
 		t.Fatalf("ReadWholeStreamPinned() after delete error = %v", err)
 	}
@@ -326,6 +341,46 @@ func TestAssemblyServesACPTurnEndToEnd(t *testing.T) {
 	}
 	if !sawDeleted {
 		t.Fatalf("durable stream after delete = %v, missing %q", records, domain.EventSessionDeleted)
+	}
+}
+
+func assertDurableInstructionRequestFacts(t *testing.T, records []domain.RecordedEvent, instructionText, input string) {
+	t.Helper()
+	wantSystem := agentinstructions.SystemPromptMessage()
+	wantInstructionFragment := strings.TrimSpace(instructionText)
+	requestCount := 0
+	for _, record := range records {
+		request, ok := record.Event.(domain.ModelRequestRecorded)
+		if !ok {
+			continue
+		}
+		requestCount++
+		if len(request.Messages) == 0 || request.Messages[0].Role != wantSystem.Role || request.Messages[0].Text != wantSystem.Text {
+			t.Fatalf("request %d first message = %#v, want fixed system prompt", requestCount, request.Messages)
+		}
+		found := false
+		for _, message := range request.Messages {
+			if strings.Contains(message.Text, wantInstructionFragment) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("request %d omitted workspace instruction %q: %#v", requestCount, instructionText, request.Messages)
+		}
+		foundInput := false
+		for _, message := range request.Messages {
+			if message.Role == domain.PromptRoleUser && message.Text == input {
+				foundInput = true
+				break
+			}
+		}
+		if !foundInput {
+			t.Fatalf("request %d changed executor input %q: %#v", requestCount, input, request.Messages)
+		}
+	}
+	if requestCount != 2 {
+		t.Fatalf("durable model requests = %d, want 2", requestCount)
 	}
 }
 

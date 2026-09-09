@@ -58,6 +58,17 @@ type ContextCheckpoint struct {
 	SummarizerUsage        uint64
 	SummaryChunks          uint32
 	PrunedToolResultCount  uint32
+	InstructionSnapshot    *InstructionSnapshot
+}
+
+type InstructionSnapshot struct {
+	PromptID        string
+	PromptDigest    string
+	Epoch           uint64
+	ThroughSequence uint64
+	Sources         []domain.InstructionSource
+	RenderedMessage string
+	Digest          string
 }
 
 // Clone returns a deep copy safe to hand to a caller that must not alias
@@ -65,6 +76,11 @@ type ContextCheckpoint struct {
 // owned copies" rule).
 func (checkpoint ContextCheckpoint) Clone() ContextCheckpoint {
 	clone := checkpoint
+	if checkpoint.InstructionSnapshot != nil {
+		snapshot := *checkpoint.InstructionSnapshot
+		snapshot.Sources = append([]domain.InstructionSource(nil), checkpoint.InstructionSnapshot.Sources...)
+		clone.InstructionSnapshot = &snapshot
+	}
 	return clone
 }
 
