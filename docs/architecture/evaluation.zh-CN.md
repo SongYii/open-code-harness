@@ -143,7 +143,9 @@ Scenario 自身的 `fixtureDigest` 是 `DigestFixtureTree` 对其 `fixture/` 源
 
 完整的 Context 机制矩阵 —— 九个 EvalSet，其中五个会拉起真实的 `och -acp` 子进程 —— 通过 `OCH_EVAL_SCHEDULED_CONTEXT_MATRIX=1` 按名称显式启用。未设置该变量时，`TestContextScheduledLaneRunsEveryPairedSet` 会跳过。CI 中唯一设置该变量的任务是 `context-matrix`，它以 `if: github.event_name == 'schedule'` 为条件，并且只运行一条聚焦命令一次（`go test -race ./cmd/och-eval -run '^TestContextScheduledLane' -count=1`）；`go`、`determinism` 与 `soak` 任务都不设置该变量，因此 `-count=1`、`-count=3` 与 `-count=10` 的全量套件运行都不会把它展开。
 
-这条边界是被强制执行的，而不只是被声明的。`TestFullContextMatrixSkipsWithoutTheOptIn` 会在剥离该环境变量后重新调用测试二进制，并要求出现 SKIP；`TestCIEnablesTheFullContextMatrixOnlyInAScheduledJob` 与 `TestBroadSuiteJobsNeverEnableTheFullContextMatrix`（均在 `cmd/och-eval`）会解析 `.github/workflows/ci.yml`，要求恰好一个任务设置该变量、该任务以 schedule 为门禁、其命令是聚焦且 `-count=1` 的，并且没有任何全量套件任务携带它。在 2026-09-04 的 `10190a2` 与本次修改之间，这条边界只存在于文字之中 —— 该车道的门禁是 `testing.Short()`，而没有任何 CI 任务传入 `-short` —— 因此完整矩阵实际在每个 PR 上都会运行，`go` 任务一次、`determinism` 再三次，而本节当时却声称它从不运行。上一段所声明的内容，现在是一个测试。
+这条边界是被强制执行的，而不只是被声明的。`TestFullContextMatrixSkipsWithoutTheOptIn` 会在剥离该环境变量后重新调用测试二进制，并要求出现 SKIP；`TestCIEnablesTheFullContextMatrixOnlyInAScheduledJob` 会扫描整个 workflow 及其任务块，要求全文件恰好一次赋值、该字面量传入进程后必须精确为 `1`，并且赋值只能属于 schedule 门禁下那条聚焦且 `-count=1` 的命令。`TestBroadSuiteJobsNeverEnableTheFullContextMatrix` 继续保证所有全量套件任务不携带该变量；专门的回归测试拒绝不能真正启用测试的值，以及会被每个任务继承的 workflow 顶层赋值。配对守卫也改为双向：每个进程内 Context arm 都必须有相同的 ACP twin，除 `context-recovery-acp` 外不允许 ACP-only arm。
+
+在 2026-09-04 的 `10190a2` 与本次修改之间，这条边界只存在于文字之中 —— 该车道的门禁是 `testing.Short()`，而没有任何 CI 任务传入 `-short` —— 因此完整矩阵实际在每个 PR 上都会运行，`go` 任务一次、`determinism` 再三次，而本节当时却声称它从不运行。上一段所声明的内容，现在是一个测试。
 
 ## 实时车道
 

@@ -70,6 +70,61 @@ func TestScheduledContextMatrixOptInFailsClosed(t *testing.T) {
 	}
 }
 
+func TestScheduledContextWorkflowRejectsAnOptInThatWillNotEnableTheTest(t *testing.T) {
+	workflow := `jobs:
+  context-matrix:
+    if: github.event_name == 'schedule'
+    steps:
+      - env:
+          OCH_EVAL_SCHEDULED_CONTEXT_MATRIX: "0"
+        run: go test -race ./cmd/och-eval -run '^TestContextScheduledLane' -count=1
+`
+	if problems := strings.Join(scheduledContextEnvProblems(workflow), "\n"); !strings.Contains(problems, "literal value 1") {
+		t.Fatalf("problems = %q; want the non-enabling value diagnosed", problems)
+	}
+}
+
+func TestScheduledContextWorkflowRejectsAWorkflowWideOptIn(t *testing.T) {
+	workflow := `env:
+  OCH_EVAL_SCHEDULED_CONTEXT_MATRIX: "1"
+jobs:
+  go:
+    steps:
+      - run: go test -race ./... -count=1
+  context-matrix:
+    if: github.event_name == 'schedule'
+    steps:
+      - env:
+          OCH_EVAL_SCHEDULED_CONTEXT_MATRIX: "1"
+        run: go test -race ./cmd/och-eval -run '^TestContextScheduledLane' -count=1
+`
+	if problems := strings.Join(scheduledContextEnvProblems(workflow), "\n"); !strings.Contains(problems, "exactly one") {
+		t.Fatalf("problems = %q; want the workflow-wide duplicate diagnosed", problems)
+	}
+}
+
+// scheduledContextEnvProblems scans the entire workflow, not only its job
+// blocks. A workflow-level env assignment is inherited by every job, including
+// the broad PR lanes, so it must not be invisible to the wiring guard.
+func scheduledContextEnvProblems(workflow string) []string {
+	assignment := regexp.MustCompile(`(?m)^[ \t]*` + regexp.QuoteMeta(scheduledContextMatrixEnv) + `[ \t]*:[ \t]*([^\r\n]*)$`)
+	matches := assignment.FindAllStringSubmatch(workflow, -1)
+	if len(matches) != 1 {
+		return []string{"the workflow must contain exactly one Context matrix opt-in assignment"}
+	}
+
+	// These are the three YAML spellings that reach the test process as the
+	// exact string "1". Expressions and every other value fail closed because
+	// the test binary itself enables the matrix only for that value.
+	value := strings.TrimSpace(matches[0][1])
+	switch value {
+	case "1", `"1"`, "'1'":
+		return nil
+	default:
+		return []string{"the Context matrix opt-in assignment must be the literal value 1"}
+	}
+}
+
 // TestFullContextMatrixSkipsWithoutTheOptIn proves the default-off claim by
 // running it rather than asserting it: this test binary is re-invoked with
 // the opt-in removed from the environment, and the matrix test must report
@@ -139,14 +194,19 @@ var (
 	wholeSuiteMatch = regexp.MustCompile(`go test [^\n]*\./\.\.\.`)
 )
 
-// ciWorkflowJobs splits the workflow into its top-level jobs.
-func ciWorkflowJobs(t *testing.T) []workflowJob {
+func ciWorkflowText(t *testing.T) string {
 	t.Helper()
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
 	}
-	workflow := readRepoFile(t, filepath.Join(root, ".github", "workflows", "ci.yml"))
+	return readRepoFile(t, filepath.Join(root, ".github", "workflows", "ci.yml"))
+}
+
+// ciWorkflowJobs splits the workflow into its top-level jobs.
+func ciWorkflowJobs(t *testing.T) []workflowJob {
+	t.Helper()
+	workflow := ciWorkflowText(t)
 
 	var jobs []workflowJob
 	var current *workflowJob
@@ -177,6 +237,9 @@ func ciWorkflowJobs(t *testing.T) []workflowJob {
 // TestCIEnablesTheFullContextMatrixOnlyInAScheduledJob is the executable form
 // of the boundary three documents previously only asserted in prose.
 func TestCIEnablesTheFullContextMatrixOnlyInAScheduledJob(t *testing.T) {
+	for _, problem := range scheduledContextEnvProblems(ciWorkflowText(t)) {
+		t.Error(problem)
+	}
 	jobs := ciWorkflowJobs(t)
 
 	var enabling []workflowJob
@@ -313,6 +376,10 @@ func TestScheduledLaneCoversEveryCheckedInContextSet(t *testing.T) {
 // only meaningful against a real subprocess.
 func TestEveryInProcessContextSetHasAnIdenticalACPArm(t *testing.T) {
 	trees := checkedInContextSets(t)
+	for _, name := range unexpectedACPOnlyContextSets(trees) {
+		t.Errorf("%s has no in-process twin; only context-recovery-acp.json may be ACP-only", name)
+	}
+
 	paired := 0
 	for name, inProcess := range trees {
 		arm, found := strings.CutSuffix(name, "-inprocess.json")
@@ -341,6 +408,33 @@ func TestEveryInProcessContextSetHasAnIdenticalACPArm(t *testing.T) {
 	if paired == 0 {
 		t.Fatal("found no paired in-process Context EvalSets; this guard is no longer reading the sets")
 	}
+}
+
+func TestOnlyRecoveryMayBeAnACPOnlyContextSet(t *testing.T) {
+	trees := map[string]documentTree{
+		"context-recovery-acp.json": {},
+		"context-orphan-acp.json":   {},
+	}
+	if unpaired := unexpectedACPOnlyContextSets(trees); len(unpaired) != 1 || unpaired[0] != "context-orphan-acp.json" {
+		t.Fatalf("unexpected ACP-only sets = %v, want [context-orphan-acp.json]", unpaired)
+	}
+}
+
+// unexpectedACPOnlyContextSets returns every Context ACP arm other than the
+// recovery exception that has no checked-in in-process twin.
+func unexpectedACPOnlyContextSets(trees map[string]documentTree) []string {
+	var unexpected []string
+	for name := range trees {
+		arm, found := strings.CutSuffix(name, "-acp.json")
+		if !found || !strings.HasPrefix(arm, "context-") || name == "context-recovery-acp.json" {
+			continue
+		}
+		if _, ok := trees[arm+"-inprocess.json"]; !ok {
+			unexpected = append(unexpected, name)
+		}
+	}
+	sort.Strings(unexpected)
+	return unexpected
 }
 
 func scenarioIDs(tree documentTree) []string {
