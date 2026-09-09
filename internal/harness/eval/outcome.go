@@ -5,6 +5,20 @@ import (
 	"time"
 )
 
+func compactNotRunOutcome(attemptID AttemptID, started time.Time) Outcome {
+	return Outcome{
+		FormatVersion:    FormatVersion,
+		Schema:           SchemaOutcome,
+		AttemptID:        attemptID,
+		Status:           OutcomeIndeterminate,
+		Code:             "compact_not_run",
+		Message:          "the requested compact action found no safe history prefix to cover",
+		StartedAt:        started,
+		EndedAt:          time.Now().UTC(),
+		CollectionStatus: CollectionNotStarted,
+	}
+}
+
 // OutcomeStatus classifies execution and evidence collection, never
 // behavioral quality (design §4/§13).
 type OutcomeStatus string

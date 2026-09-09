@@ -103,17 +103,19 @@ description at the time:
   budget. That deferral has since been closed: the suite landed with ten
   Scenarios, each paired with the ACP executor. This bullet records the state
   at the time of Task 16, not the current one.
-- **Task 17** is now complete through `och-eval judge`: the frozen
+- **Task 17** is complete through `och-eval judge`: the frozen
   `och.eval.judge-config` document, its EvalSet/manifest binding,
   consent-before-credential ordering, deterministic prerequisites, the real
   OpenAI-compatible caller, explicit cost availability, and append-only live
-  Scores are all shipped and tested. What remains outstanding is genuinely
-  outstanding, not deferred wiring: no run against a real live model has ever
-  happened here (no live credentials exist in this environment — a fixture
-  SSE stream reaching an appended Score through the real adapter is what is
-  actually proven), and the `context-quality` Scenario's own live
-  meta-evaluation run has never been executed (it is an example, deliberately
-  never run by CI).
+  Scores are all shipped and tested. A manually authorized DeepSeek run on
+  2026-09-08 completed two real Subject calls (attempt
+  `30f1d1728e0e1e21572c80c697a30360`); the second request reported 1,024
+  cached input tokens out of 1,090. It did not become a live judge sample:
+  deterministic prerequisites stopped the Judge before its provider call
+  because the Scenario required a workspace role it never collected. The
+  same run also proved its requested compact action was a no-op. Those two
+  findings are corrected below; a fresh paid run is still required for a
+  post-compaction live-model claim and live Judge verdict.
 - Design §25.2's `list_dir` tool and MCP suites are out of scope for this
   milestone entirely (design §3's own stated non-goals / §25.4's own "MCP
   absence does not block the eval system").
@@ -142,11 +144,20 @@ with real evidence. Each was amended rather than silently worked around.
   cancelled, so SIGINT reaps an idle agent (25s without reaping, then 1.4s
   complete). `context-checkpoint-interrupt-restart` is part of the suite.
 
-Two Scenario-shaped facts were also found only by running:
+Three Scenario-shaped facts were also found only by running:
 
-- A Scenario that declares the `workspace` evidence role without a `collect`
-  action collects nothing, and the pruning criterion correctly refuses — it
-  has no file to resolve the projected frame's digest against.
+- The live `context-quality` Scenario declared the `workspace` evidence role
+  without a workspace `collect` action. Scenario validation now rejects that
+  contradiction. The repaired Scenario collects `secrets.txt` with
+  `expectedState: "absent"`; collection publishes a hashed observation and
+  `workspace-paths-absent-v1` fails if the path was actually present.
+- A compact action used to discard `CompactSessionResult.Ran`, so a no-op
+  passed as completed. Both executor surfaces now terminate it as
+  `indeterminate/compact_not_run`. The repaired live Scenario uses two
+  padded, complete Turns, a 4,096-token evaluation budget, and manual summary
+  focus; `TestContextQualityExampleReachesRealCompactionAndAbsenceVerificationWithFixtureProvider`
+  proves the checked-in document reaches a real completed compaction and
+  passes absence verification without credentials.
 - The overflow Scenario sits between two walls: too little history and the
   compaction fails `context_summary_invalid` because the summary is not
   smaller than the source it replaces; too much and the local pre-turn
@@ -622,3 +633,26 @@ them requires the live run the first blocker in this list says has never
 happened. The mechanism is also dormant — no checked-in EvalSet reaches it.
 An implemented mechanism counted as an accepted policy would be exactly the
 claim the contract's own no-defaults rule exists to prevent.
+
+
+## Update: the absence verifier could have passed having checked nothing (2026-09-09)
+
+Reviewing the live-context-quality fail-closed slice found the code correct and
+one test missing, which is a fact about the tests rather than about the change.
+
+`verifyWorkspacePathsAbsent` returns `Indeterminate` when a Scenario names it
+but declares no absence expectation. That is the right answer — a criterion
+announcing success over an examination it never performed is worth less than no
+criterion, because a reader counts it as evidence — but nothing exercised it.
+Turning that branch into `Pass` left the whole suite green.
+
+The gap is reachable the ordinary way: someone deletes a `collect` action and
+leaves the verifier named in the Scenario's list.
+
+`TestTheAbsenceVerifierRefusesToPassHavingCheckedNothing` closes it, and the
+re-aimed mutation now fails with "the absence verifier passed a Scenario that
+declares no absence expectation".
+
+The slice's own mutation stands as well: recording every observation as absent
+regardless of what is on disk fails
+`TestExpectedWorkspaceAbsenceIsCollectedAndVerified/present`.

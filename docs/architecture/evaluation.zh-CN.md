@@ -74,6 +74,11 @@ Scenario 自身的 `fixtureDigest` 是 `DigestFixtureTree` 对其 `fixture/` 源
 
 `RunAttempt`（`internal/harness/eval/inprocess.go`）在本进程内直接打开一个真实的 `composition.Assembly`（`composition.Open`），针对它驱动每一个 Scenario 动作（`Service.RunTurn`/`CompactSession`，一个脚本化的 `ApprovalMatcher` 被接入作为该 Assembly 自己的 `tools.Approver`），并在每一条终止路径上关闭它（`assembly.Close()`），在返回之前证明 `WriterStopped`。`restart` 动作会在**同一个**数据库/工作区之上,以一个新的运行时 ID 重新打开一个全新的 Assembly；这个执行器只接受 `clean_shutdown` 模式 —— `interrupt`/`kill` 会被拒绝为 `infra_failed/unsupported_restart_mode`，因为这里根本没有一个独立的进程可供两者中的任意一种去粗暴终止。
 
+显式的 `compact` 动作是一项机制声明，而不是尽力而为的提示。如果
+`Service.CompactSession` 因没有可安全覆盖的历史前缀而返回
+`Ran == false`，Attempt 会终止为 `indeterminate/compact_not_run`。否则，
+质量 Scenario 可能在没有任何压缩证据的情况下冒充“压缩后行为”。
+
 ### `acp_subprocess`
 
 `RunACPAttempt`（`internal/harness/eval/acp_executor.go`）在它自己的进程组中（`startACPProcess`，`Setpgid`）启动一个真实的、独立构建出来的 `och -acp` 二进制文件，通过一个极简的、独立实现的 ACP v1 NDJSON 客户端（`acp_wire.go` —— 刻意不使用 `internal/client/acp`，遵循上文的隔离边界）驱动它，并监管它完整的生命周期：受限的 stderr 捕获、白名单化的子进程环境变量（绝不整体传递 `os.Environ()` —— `BuildChildEnvironment`），以及二进制哈希锁定（`ResolveACPBinary`）。与 `in_process` 不同，这个执行器接受**全部三种**重启模式，并将 `compact` 实现为一个真实的、租约安全的三进程事务（见下文）。在 Windows 上完全不受支持（`acpProcessSupported = false`，`internal/harness/eval/acp_process_windows.go`）—— 设计明确拒绝为 Windows 缺失的真实进程组终止路径去近似出一个"只终止父进程"的替代方案。
@@ -94,9 +99,23 @@ Scenario 自身的 `fixtureDigest` 是 `DigestFixtureTree` 对其 `fixture/` 源
 2. 以一个新的、不同的运行时 ID 启动 `och compact-session`，并等待**它自己**被证明的退出（任何非零退出、超时或无法解码的标准输出都会导致 `infra_failed/acp_compactor_failed`）—— `runACPCompactor` 是一个独立的一次性进程启动器（不同于 `startACPProcess` 面向长生命周期 NDJSON 服务器的实现），会对超时未退出的压缩进程强制发送 SIGKILL，确保绝不会留下一个悬挂的进程。
 3. 以**第三个**不同的运行时 ID 重新启动一个后继写入进程，并通过 `session/load` 恢复同一个 Session。在压缩进程**已被证明干净回收**之后仍然出现的重启失败，会被单独分类（`infra_failed/runtime_lease_not_released`，通过匹配 `internal/harness/runtime` 自身 `ErrLeaseHeld.Error()` 产生的真实、已验证的 stderr 文本得出），与任何其他重启失败（`indeterminate/acp_compact_relaunch_unproven`）区分开来。
 
+后继进程加载成功后，已解码的压缩结果仍是权威事实：`ran:false`
+同样终止为 `indeterminate/compact_not_run`。ACP 路径会先完成重启，
+从而保持三阶段生命周期不变，并让共同清理路径仍能证明一个真实进程句柄
+已经停止。
+
 ## 证据信任模型
 
 评分器或验证器从不直接读取原始文件 —— 只能通过 `ArtifactReader`（`internal/harness/eval/artifact_reader.go`）读取，它在每次读取时都会依据已发布的清单重新校验文件大小与 SHA-256，并拒绝自收集以来发生的符号链接替换、硬链接、或类型变化。`EvidenceManifest` 的发布是一个 Attempt 可被评分的提交标记（设计 §12）；清单中缺失某个必需角色会得到 `Indeterminate`，绝不会被悄悄当作不存在处理。冻结的身份文档（Scenario/Subject/Executor/Attempt）会被**作为证据本身**暂存进清单（`EvidenceDocuments`，`evidence_identity.go`），并带有交叉摘要校验，因此 `RegradeAttempt` 完全不需要任何外部提供的 Scenario 输入 —— 它需要的一切，包括该 Attempt 所归属的通道，都能从该 Attempt 自己已提交的证据中读出。
+
+只有当 Scenario 显式声明带 `expectedState: "absent"` 的 workspace
+收集动作时，路径不存在才构成证据。收集器会发布一个有界的
+`och.eval.workspace-path-observation` JSON 工件，记录实际状态和产生它的
+action ID；`workspace-paths-absent-v1` 经由 `ArtifactReader` 重新读取它，
+依据 Scenario 校验身份，并返回 `Pass`、`Fail` 或 `Indeterminate`。
+因此“目标文件不存在”不再与“收集失败”混为一谈，收集无关文件也无法满足
+该声明。Scenario 校验还会拒绝“要求 workspace 角色却没有 workspace
+收集动作”的配置。
 
 ## 恢复
 

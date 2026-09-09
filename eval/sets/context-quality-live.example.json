@@ -5,13 +5,13 @@
   "scenarios": [
     {
       "id": "context-quality",
-      "digest": "sha256:b8cbc16ba03cc21c86992a66459e70c62593f5cf89d287555a6570428672a7ea"
+      "digest": "sha256:7bd46402ff8342f53fed058e08b01c35823f4dc818e74844b97eae836df8be0d"
     }
   ],
   "subjects": [
     {
       "id": "context-quality-live-example",
-      "digest": "sha256:1377831ed88ee2c69206eb13e3c9c948fe74424ce1451dbd2ad89dec380d1bea"
+      "digest": "sha256:4773a020f0d900c1135821e854c33aacaef40a1441f60a800cd694d1ad46e981"
     }
   ],
   "executors": [

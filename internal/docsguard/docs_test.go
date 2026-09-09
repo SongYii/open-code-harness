@@ -320,6 +320,39 @@ func TestLiveJudgeExampleDigestsAndGuide(t *testing.T) {
 		t.Fatal("the live judge Scenario declares no deterministic verifiers, so nothing would gate a judge run")
 	}
 
+	requiredVerifiers := map[string]bool{
+		eval.VerifierContextManualSummary: false,
+		eval.VerifierWorkspacePathsAbsent: false,
+	}
+	promptCount := 0
+	sawSummaryCompact := false
+	sawExpectedAbsence := false
+	for _, action := range scenario.Actions {
+		switch action.Type {
+		case eval.ActionPrompt:
+			promptCount++
+		case eval.ActionCompact:
+			sawSummaryCompact = action.Compact != nil && action.Compact.Strategy == "summary"
+		case eval.ActionCollect:
+			sawExpectedAbsence = action.Collect != nil &&
+				action.Collect.WorkspacePath == "secrets.txt" &&
+				action.Collect.ExpectedState == eval.WorkspaceExpectedAbsent
+		}
+	}
+	for _, id := range scenario.DeterministicVerifierIDs {
+		if _, required := requiredVerifiers[id]; required {
+			requiredVerifiers[id] = true
+		}
+	}
+	if promptCount < 2 || !sawSummaryCompact || !sawExpectedAbsence {
+		t.Fatal("the live context-quality Scenario no longer guarantees a coverable summary and durable secrets.txt absence evidence")
+	}
+	for id, present := range requiredVerifiers {
+		if !present {
+			t.Fatalf("the live context-quality Scenario does not declare required verifier %q", id)
+		}
+	}
+
 	guide := read(t, filepath.Join(root, "docs/guides/evaluation-operations.md"))
 	for _, value := range []string{
 		"och-eval judge",

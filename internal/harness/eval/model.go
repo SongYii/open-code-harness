@@ -207,11 +207,21 @@ type RestartAction struct {
 }
 
 // CollectAction requests a declared workspace path or verifier fact (design
-// §7). Exactly one of WorkspacePath or VerifierFact must be set.
+// §7). Exactly one of WorkspacePath or VerifierFact must be set. ExpectedState
+// defaults to present; absent requests a durable observation of non-existence
+// rather than misclassifying the missing target as failed collection.
 type CollectAction struct {
-	WorkspacePath string `json:"workspacePath,omitempty"`
-	VerifierFact  string `json:"verifierFact,omitempty"`
+	WorkspacePath string                 `json:"workspacePath,omitempty"`
+	VerifierFact  string                 `json:"verifierFact,omitempty"`
+	ExpectedState WorkspaceExpectedState `json:"expectedState,omitempty"`
 }
+
+type WorkspaceExpectedState string
+
+const (
+	WorkspaceExpectedPresent WorkspaceExpectedState = "present"
+	WorkspaceExpectedAbsent  WorkspaceExpectedState = "absent"
+)
 
 // ApprovalAnswer is one scripted permission-request decision (design §7).
 type ApprovalAnswer string
@@ -318,6 +328,18 @@ func (scenario Scenario) Validate() error {
 	}
 	if overlap := stringSetOverlap(scenario.RequiredEvidenceRoles, scenario.OptionalEvidenceRoles); overlap != "" {
 		return fmt.Errorf("%w: evidence role %q is both required and optional", errInvalidDocument, overlap)
+	}
+	if containsString(scenario.RequiredEvidenceRoles, "workspace") {
+		hasWorkspaceCollection := false
+		for _, action := range scenario.Actions {
+			if action.Type == ActionCollect && action.Collect != nil && action.Collect.WorkspacePath != "" {
+				hasWorkspaceCollection = true
+				break
+			}
+		}
+		if !hasWorkspaceCollection {
+			return fmt.Errorf("%w: required workspace evidence needs a collect action with workspacePath", errInvalidDocument)
+		}
 	}
 	if err := requireNonEmptyEntries("deterministicVerifierIds", scenario.DeterministicVerifierIDs); err != nil {
 		return err
@@ -455,6 +477,17 @@ func (action ScenarioAction) validate(index int) error {
 		hasVerifier := action.Collect.VerifierFact != ""
 		if hasWorkspace == hasVerifier {
 			return fmt.Errorf("%w: action %d: collect requires exactly one of workspacePath or verifierFact", errInvalidDocument, index)
+		}
+		if hasVerifier && action.Collect.ExpectedState != "" {
+			return fmt.Errorf("%w: action %d: collect.expectedState is only valid with workspacePath", errInvalidDocument, index)
+		}
+		if hasWorkspace {
+			switch action.Collect.ExpectedState {
+			case "", WorkspaceExpectedPresent, WorkspaceExpectedAbsent:
+			default:
+				return fmt.Errorf("%w: action %d: collect.expectedState must be %q or %q", errInvalidDocument, index,
+					WorkspaceExpectedPresent, WorkspaceExpectedAbsent)
+			}
 		}
 	default:
 		return fmt.Errorf("%w: action %d: unknown action type %q", errInvalidDocument, index, action.Type)
