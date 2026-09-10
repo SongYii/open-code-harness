@@ -135,6 +135,8 @@ func bindAssemblyFlags(flags *flag.FlagSet, config *composition.Config, policyMo
 	flags.BoolVar(&config.Provider.AllowInsecureLoopback, "provider-allow-insecure-loopback", false, "permit a plain-HTTP provider-url when it resolves to loopback; for a local fixture server only, never a real endpoint")
 	flags.StringVar(&config.Provider.ModelID, "model", "", "provider model identifier (required)")
 	flags.StringVar(&config.Provider.APIKeyEnv, "api-key-env", "OCH_API_KEY", "environment variable holding the provider API key")
+	flags.BoolVar(&config.Provider.IncludeUsage, "provider-include-usage", false, "request provider usage data in streaming responses")
+	flags.StringVar(&config.Provider.MaxTokensField, "provider-max-tokens-field", "", "provider output-limit field: max_tokens or max_completion_tokens; empty omits it")
 	*uintFlags = assemblyUintFlags{}
 	flags.UintVar(&uintFlags.ContextWindow, "context-window", 0, "provider context window in tokens (required)")
 	flags.UintVar(&uintFlags.MaxOutput, "max-output", 0, "provider maximum output in tokens (required)")

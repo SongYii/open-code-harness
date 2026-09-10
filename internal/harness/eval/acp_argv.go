@@ -43,6 +43,12 @@ func NormalizedArgv(subject Subject) ([]string, error) {
 	if subject.Provider.Lane == ProviderLaneFixture {
 		argv = append(argv, "-provider-allow-insecure-loopback")
 	}
+	if subject.Provider.IncludeUsage {
+		argv = append(argv, "-provider-include-usage")
+	}
+	if subject.Provider.MaxTokensField != "" {
+		argv = append(argv, "-provider-max-tokens-field", subject.Provider.MaxTokensField)
+	}
 	if subject.Policy.SandboxPolicy == SandboxPolicyUnsandboxedAllowed {
 		argv = append(argv, "-allow-unsandboxed-exec")
 	}

@@ -6,11 +6,13 @@
   "repositoryDirty": false,
   "provider": {
     "adapterKind": "openaicompat",
-    "normalizedEndpoint": "https://api.example-provider.invalid/v1",
-    "modelId": "replace-with-a-real-model-id",
-    "contextWindow": 4096,
-    "maxOutput": 512,
+    "normalizedEndpoint": "https://api.deepseek.com",
+    "modelId": "deepseek-v4-pro",
+    "contextWindow": 12288,
+    "maxOutput": 1024,
     "credentialEnvVar": "OCH_EVAL_LIVE_PROVIDER_API_KEY",
+    "includeUsage": true,
+    "maxTokensField": "max_tokens",
     "lane": "live"
   },
   "context": {

@@ -73,6 +73,8 @@ func BuildConfig(subject Subject, directories AttemptRootDirectories, runtimeID 
 			APIKeyEnv:             subject.Provider.CredentialEnvVar,
 			ContextWindow:         subject.Provider.ContextWindow,
 			MaxOutput:             subject.Provider.MaxOutput,
+			IncludeUsage:          subject.Provider.IncludeUsage,
+			MaxTokensField:        subject.Provider.MaxTokensField,
 			AllowInsecureLoopback: subject.Provider.Lane == ProviderLaneFixture,
 		},
 		Policy: policy.Mode(subject.Policy.Mode),

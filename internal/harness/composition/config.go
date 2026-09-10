@@ -19,11 +19,13 @@ import (
 // fixtures, shell history, and process listings; the key is read from the
 // named environment variable at Open, and never stored on Config.
 type Provider struct {
-	BaseURL       string
-	ModelID       string
-	APIKeyEnv     string
-	ContextWindow uint32
-	MaxOutput     uint32
+	BaseURL        string
+	ModelID        string
+	APIKeyEnv      string
+	ContextWindow  uint32
+	MaxOutput      uint32
+	IncludeUsage   bool
+	MaxTokensField string
 	// AllowInsecureLoopback permits a plain-HTTP base URL when it resolves to
 	// loopback. It exists for a local fixture server and must stay false
 	// against any real endpoint.
@@ -276,6 +278,11 @@ func (config Config) Validate() error {
 	}
 	if config.Provider.ContextWindow == 0 || config.Provider.MaxOutput == 0 {
 		return fmt.Errorf("%w: Provider.ContextWindow and Provider.MaxOutput must be greater than zero", errInvalidConfig)
+	}
+	switch config.Provider.MaxTokensField {
+	case "", "max_tokens", "max_completion_tokens":
+	default:
+		return fmt.Errorf("%w: Provider.MaxTokensField must be empty, %q, or %q", errInvalidConfig, "max_tokens", "max_completion_tokens")
 	}
 	if err := config.Context.validate(config.Provider.ContextWindow, config.Provider.MaxOutput); err != nil {
 		return err

@@ -67,6 +67,7 @@ func TestValidateRejectsEveryDocumentedCause(t *testing.T) {
 		{"blank api key env", func(c *composition.Config) { c.Provider.APIKeyEnv = "" }, "APIKeyEnv"},
 		{"zero context window", func(c *composition.Config) { c.Provider.ContextWindow = 0 }, "ContextWindow"},
 		{"zero max output", func(c *composition.Config) { c.Provider.MaxOutput = 0 }, "MaxOutput"},
+		{"unknown max tokens field", func(c *composition.Config) { c.Provider.MaxTokensField = "limit" }, "MaxTokensField"},
 		{"unknown policy mode", func(c *composition.Config) { c.Policy = policy.Mode("whatever") }, "Policy"},
 		{"negative step limit", func(c *composition.Config) { c.Limits.MaxSteps = -1 }, "Limits"},
 		{"negative tool call limit", func(c *composition.Config) { c.Limits.MaxToolCallsPerStep = -1 }, "Limits"},
