@@ -1,7 +1,9 @@
 # Live Judge Structured-output Design
 
-**Status:** Accepted normative design  
-**Date:** 2026-09-10  
+**Status:** Accepted normative design
+
+**Date:** 2026-09-10
+
 **Research:** [Live Judge structured-output research](../../research/architecture-gates/2026-09-10-live-judge-structured-output.md)
 
 ## Scope

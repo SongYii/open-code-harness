@@ -2,8 +2,10 @@
 
 **英文规范来源：** [Live Judge Structured-output Design](2026-09-10-live-judge-structured-output-design.md)。若有差异，以英文版为准。
 
-**状态：** 已接受的规范设计  
-**日期：** 2026-09-10  
+**状态：** 已接受的规范设计
+
+**日期：** 2026-09-10
+
 **调研：** [Live Judge 结构化输出调研](../../research/architecture-gates/2026-09-10-live-judge-structured-output.zh-CN.md)
 
 ## 范围
