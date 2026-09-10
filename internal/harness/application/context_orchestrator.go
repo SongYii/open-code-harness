@@ -1486,5 +1486,7 @@ func ModelRequestRecordedFromEnvelope(identity *engine.RequestIdentity, turnID d
 	recorded.MaxOutputTokens = identity.Profile.MaxOutputTokens
 	recorded.IncludeUsage = identity.IncludeUsage
 	recorded.MaxTokensField = identity.MaxTokensField
+	recorded.ResponseFormat = identity.ResponseFormat
+	recorded.ThinkingMode = identity.ThinkingMode
 	return recorded
 }

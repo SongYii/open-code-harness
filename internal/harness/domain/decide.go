@@ -75,6 +75,8 @@ func modelRequestRecordedFromSpec(turnID TurnID, itemID ItemID, spec ModelReques
 		MaxOutputTokens:     spec.MaxOutputTokens,
 		IncludeUsage:        spec.IncludeUsage,
 		MaxTokensField:      spec.MaxTokensField,
+		ResponseFormat:      spec.ResponseFormat,
+		ThinkingMode:        spec.ThinkingMode,
 		Messages:            cloneModelPromptMessages(spec.Messages),
 		Tools:               cloneToolSchemas(spec.Tools),
 	}

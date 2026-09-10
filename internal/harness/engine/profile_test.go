@@ -33,6 +33,11 @@ func TestRequestIdentityValidateRejectsMalformedFields(t *testing.T) {
 		{name: "empty native tools", mutate: func(id *RequestIdentity) { id.Profile.NativeTools = "" }},
 		{name: "unknown tri-state", mutate: func(id *RequestIdentity) { id.Profile.Images = "unknown" }},
 		{name: "invalid max tokens field", mutate: func(id *RequestIdentity) { id.MaxTokensField = "tokens" }},
+		{name: "invalid response format", mutate: func(id *RequestIdentity) { id.ResponseFormat = "yaml" }},
+		{name: "response format unsupported", mutate: func(id *RequestIdentity) {
+			id.Profile.StructuredOutput = CapabilityUnsupported
+		}},
+		{name: "invalid thinking mode", mutate: func(id *RequestIdentity) { id.ThinkingMode = "auto" }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -53,11 +58,13 @@ func validRequestIdentity() RequestIdentity {
 		Profile: CapabilityProfile{
 			NativeTools:      CapabilityUnsupported,
 			Images:           CapabilityUnsupported,
-			StructuredOutput: CapabilityUnsupported,
+			StructuredOutput: CapabilityRequired,
 			ReasoningFields:  CapabilityUnsupported,
 			PromptCache:      CapabilityUnsupported,
 		},
 		IncludeUsage:   true,
 		MaxTokensField: "max_tokens",
+		ResponseFormat: "json_object",
+		ThinkingMode:   "disabled",
 	}
 }

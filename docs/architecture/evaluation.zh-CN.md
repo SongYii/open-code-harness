@@ -140,6 +140,12 @@ action ID；`workspace-paths-absent-v1` 经由 `ArtifactReader` 重新读取它�
 
 实时模型评审器（`internal/harness/eval/judge.go`，Task 17）是面向另一条通道的另一种机制：`RunJudge` 只依据某个 `JudgeConfig` 自身 `Criteria` 所声明的清单角色，构建一个有界的、经过脱敏的证据包，将其发送给一个可注入的 `JudgeCaller`（因此一次真实的实时模型调用与一个测试替身实现的是完全相同的函数类型 —— `RunJudge` 自身从不打开网络连接），并严格解码其响应。在调用任何评审器之前，冻结的评审配置会先经过验证：模型标识与内嵌提示词的精确摘要均为必填项，评判标准 ID 与证据角色必须非空且唯一，并且受信任的评判标准合同会随证据包一同发送。
 
+Judge 的服务端协议固定 `responseFormat=json_object`；可选的厂商扩展
+`thinkingMode` 只允许 `disabled`，仓库内 DeepSeek 配置用它避免默认思考阶段先
+耗尽有界输出预算。没有该扩展的服务可以省略。非法值在联网前拒绝。
+`RunJudge` 仍只调用一次 caller；空内容或坏 JSON 是一条 Indeterminate，显式
+再次运行 `och-eval judge` 才会追加另一条拥有独立用量和成本的 Score。
+
 `JudgeConfig` 是一份文档而非内存中的值：schema 为 `och.eval.judge-config`，其验证与摘要方式与 Scenario/Subject/Executor 完全一致。这正是一个实时 Score 的评审器身份能够离线自证的原因。实时 `EvalSet` 必须声明 `judgeConfigDigest`，fixture 通道的 EvalSet 则必须不声明；每一个新 Attempt 都会把其冻结的 `EvalSet` 作为 `eval-set.json`（角色 `eval_set`）纳入证据，实时 Attempt 还会额外纳入 `judge-config.json`（角色 `judge_config`），因此清单会对两者取哈希，任何后来的读者都能重建出某个判定究竟来自哪一份配置，而无需信任产出它的调用方。这一绑定在读取时（`readJudgeEvidenceDocuments`）会重新校验，而不只是在写入时校验 —— 几个月后打开某个 Attempt 的读者并没有展开步骤可以依赖。在这些角色出现之前采集的 Attempt 仍然可以确定性重新评分，但永远无法接受实时评审 —— 这是诚实的结果：它的证据无法证明自己有此资格。
 
 证据的选取是清单与配置的纯函数。被声明的角色存放在集合中，而 Go 的 map 迭代顺序是随机的，因此候选列表会在任何字节预算生效**之前**被完整排序 —— 否则对同一个 Attempt 判定两次，可能让评审器看到不同的证据，并接受不同的 `evidenceReferences`。遗漏是失败即拒绝的，而不是把问题缩小：某个被声明但清单从未采集的角色，或者总预算无法容纳的条目，都会在调用评审器之前中止本次运行，并记入 `missingEvidence` —— 因为一个被询问了自己从未见过的材料的模型，其"通过"回答与真正读过材料后给出的回答是无法区分的。逐条目截断仍然被允许 —— 该契约本就提供有界摘录 —— 并且每个条目标签都会记录原始字节数、摘录字节数以及是否被截断。

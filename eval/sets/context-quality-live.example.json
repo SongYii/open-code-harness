@@ -25,7 +25,7 @@
   "limits": {
     "tokenCap": 200000
   },
-  "judgeConfigDigest": "sha256:670af20726d7d97fcddcea6580f202067582f0431f0049b6c967e2eb47c033b5",
+  "judgeConfigDigest": "sha256:9abadf3b5657d407f7803750631cfe39751f1caacc60c8b565035fe1a745a9ee",
   "artifactRoot": ".eval-artifacts-context-quality-live",
   "lane": "live"
 }

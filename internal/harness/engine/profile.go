@@ -35,6 +35,8 @@ type RequestIdentity struct {
 	Profile        CapabilityProfile
 	IncludeUsage   bool
 	MaxTokensField string
+	ResponseFormat string
+	ThinkingMode   string
 }
 
 func (identity RequestIdentity) Validate() error {
@@ -54,12 +56,19 @@ func (identity RequestIdentity) Validate() error {
 		!validCapabilityTriState(identity.Profile.PromptCache) {
 		return errInvalidRequestIdentity
 	}
-	switch identity.MaxTokensField {
-	case "", "max_tokens", "max_completion_tokens":
-		return nil
-	default:
+	if identity.MaxTokensField != "" && identity.MaxTokensField != "max_tokens" && identity.MaxTokensField != "max_completion_tokens" {
 		return errInvalidRequestIdentity
 	}
+	if identity.ResponseFormat != "" && identity.ResponseFormat != "json_object" {
+		return errInvalidRequestIdentity
+	}
+	if identity.ResponseFormat != "" && identity.Profile.StructuredOutput == CapabilityUnsupported {
+		return errInvalidRequestIdentity
+	}
+	if identity.ThinkingMode != "" && identity.ThinkingMode != "enabled" && identity.ThinkingMode != "disabled" {
+		return errInvalidRequestIdentity
+	}
+	return nil
 }
 
 func validCapabilityTriState(value CapabilityTriState) bool {

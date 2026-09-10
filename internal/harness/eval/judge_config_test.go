@@ -24,6 +24,8 @@ func validJudgeConfig() JudgeConfig {
 			MaxOutput:          4096,
 			IncludeUsage:       true,
 			MaxTokensField:     "max_completion_tokens",
+			ResponseFormat:     "json_object",
+			ThinkingMode:       "disabled",
 		},
 		Prompt: JudgePrompt{ID: QualityJudgePromptID, Digest: QualityJudgePromptV1Digest()},
 		Criteria: []JudgeCriterion{{
@@ -103,6 +105,9 @@ func TestDecodeJudgeConfigRejectsInvalidDocuments(t *testing.T) {
 		}},
 		{"usage reporting disabled", func(config *JudgeConfig) { config.Provider.IncludeUsage = false }},
 		{"unknown max tokens field", func(config *JudgeConfig) { config.Provider.MaxTokensField = "maxTokens" }},
+		{"missing response format", func(config *JudgeConfig) { config.Provider.ResponseFormat = "" }},
+		{"unknown response format", func(config *JudgeConfig) { config.Provider.ResponseFormat = "json_schema" }},
+		{"enabled thinking mode", func(config *JudgeConfig) { config.Provider.ThinkingMode = "enabled" }},
 		{"unknown prompt id", func(config *JudgeConfig) { config.Prompt.ID = "och_quality_judge_v2" }},
 		{"prompt digest disagrees with embedded prompt", func(config *JudgeConfig) {
 			config.Prompt.Digest = mustDigest(t, 0x41)

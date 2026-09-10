@@ -11,7 +11,8 @@
     "contextWindow": 128000,
     "maxOutput": 4096,
     "includeUsage": true,
-    "maxTokensField": "max_completion_tokens"
+    "maxTokensField": "max_completion_tokens",
+    "responseFormat": "json_object"
   },
   "prompt": {
     "id": "och_quality_judge_v1",

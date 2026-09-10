@@ -149,6 +149,8 @@ type RequestIdentity struct {
     Profile                            CapabilityProfile
     IncludeUsage                       bool
     MaxTokensField                     string
+    ResponseFormat                     string
+    ThinkingMode                       string
 }
 ```
 
@@ -162,14 +164,17 @@ type RequestIdentity struct {
 - Every tri-state is `unsupported`, `supported`, or `required`. Empty is
   invalid. Token fields may be 0 (unknown).
 - `MaxTokensField` is `""`, `"max_tokens"`, or `"max_completion_tokens"`.
+- `ResponseFormat` is `""` or `"json_object"`; `ThinkingMode` is `""`,
+  `"enabled"`, or `"disabled"`.
 
 Shipped presets are `openaicompat.ProfileTextOnly` (`NativeTools=unsupported`)
 and adapter-local `openaicompat.ProfileToolsSupported` (`NativeTools=supported`).
 There is no vendor-named helper and no Application/Engine switch on provider
 names. `New` accepts `NativeTools=supported|required` when the rest of the
 profile is valid (`TestNewAcceptsNativeToolsSupportedAndRequired`).
-`ProfileTextOnly` stays unsupported. The adapter still does not send images,
-`response_format`, or cache-control fields.
+`ProfileTextOnly` stays unsupported. The adapter still does not send images
+or cache-control fields. Structured output and thinking controls are explicit
+static hints, never inferred from a vendor or model name.
 
 ## First adapter: `internal/harness/adapters/openaicompat`
 
@@ -184,6 +189,8 @@ type StaticAPIKey struct{ Value string } // tests; never logged
 type WireHints struct {
     IncludeUsage   bool
     MaxTokensField string
+    ResponseFormat string
+    ThinkingMode   string
 }
 
 type Config struct {
@@ -217,7 +224,7 @@ clients and transports are cloned; `http.DefaultClient` and
 `provider_permanent` and is not followed (`TestCheckRedirectThreeXXIsPermanent`).
 
 `Identity()` copies family `openai_compat`, ModelID, EndpointID derived from
-BaseURL, the profile, and both wire hints (`TestIdentityCopiesProfileAndHints`).
+BaseURL, the profile, and all wire hints (`TestIdentityCopiesProfileAndHints`).
 
 `Stream` is safe for concurrent calls; each call owns one HTTP request
 (`TestStreamConcurrentCallsOwnRequests`). Defaults: idle 60s, response-header
@@ -248,6 +255,8 @@ system prompt. `tool_choice` is omitted (default auto).
 | --- | --- | --- |
 | `stream_options.include_usage` | only if `Hints.IncludeUsage` | `TestStreamRequestMapping` / `include usage`, `omit usage` |
 | `max_tokens` / `max_completion_tokens` | only if `MaxOutputTokens > 0` and the matching hint is set | `TestStreamRequestMapping` / `max tokens`, `omit max when tokens zero` |
+| `response_format.type` | only if `Hints.ResponseFormat=json_object` | `TestStreamRequestMapping` / `structured output and thinking` |
+| `thinking.type` | only if `Hints.ThinkingMode` is set | `TestStreamRequestMapping` / `structured output and thinking` |
 | `tools` | only if `ModelRequest.Tools` is non-empty; each item is `type=function` | `TestStreamSendsToolsAndMessages` |
 | `messages` multi-role | only if `ModelRequest.Messages` is non-empty | `TestStreamSendsToolsAndMessages` |
 | `Authorization: Bearer <key>` | required | `TestStreamRequestMapping` |
