@@ -5,6 +5,12 @@
 - Design: [Provider contract and first real adapter](../superpowers/specs/2026-08-15-provider-adapter-design.md)
 - Status: PR 1–5 implemented and locally verified; not GA
 
+> **Historical status notice (added 2026-09-10):** this ledger preserves the
+> repository state when the first Provider adapter completed. Its later-module
+> list is not current project status. See
+> [How the system works](how-it-works.md) and the
+> [current architecture](current-system.md) for today.
+
 This ledger is the public completion record. The design remains the frozen
 five-PR sequence. Commit history, executable gates, and the commands below
 support the completion statement.

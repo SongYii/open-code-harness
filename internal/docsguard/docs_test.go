@@ -256,6 +256,96 @@ func TestEveryImplementedContractHasEvidence(t *testing.T) {
 	}
 }
 
+var guideEntryPattern = regexp.MustCompile(`(?m)^<!-- contract: ([^ ]+) -->$`)
+
+func plainLanguageGuideEntries(t *testing.T, content string) map[string]string {
+	t.Helper()
+	matches := guideEntryPattern.FindAllStringSubmatchIndex(content, -1)
+	if len(matches) == 0 {
+		t.Fatal("plain-language guide has no contract entry markers")
+	}
+	entries := make(map[string]string, len(matches))
+	for index, match := range matches {
+		target := content[match[2]:match[3]]
+		start := match[1]
+		end := len(content)
+		if index+1 < len(matches) {
+			end = matches[index+1][0]
+		}
+		if _, duplicate := entries[target]; duplicate {
+			t.Errorf("plain-language guide contains duplicate entry for %s", target)
+			continue
+		}
+		entries[target] = content[start:end]
+	}
+	return entries
+}
+
+// TestPlainLanguageGuidesCoverImplementedContracts makes readable subsystem
+// explanations part of the implementation-complete contract. It verifies
+// structure and coverage; reviewers still judge whether the prose is useful.
+func TestPlainLanguageGuidesCoverImplementedContracts(t *testing.T) {
+	root := repoRoot(t)
+	contracts := make(map[string]bool)
+	for _, row := range authorityRows(t, root) {
+		if row.status == "Implemented" && row.authority == "Implemented contract" {
+			contracts[row.target] = true
+		}
+	}
+	if len(contracts) == 0 {
+		t.Fatal("authority table has no implemented contracts")
+	}
+
+	guides := []struct {
+		path     string
+		headings []string
+	}{
+		{
+			path: "docs/architecture/how-it-works.md",
+			headings: []string{
+				"### Problem",
+				"### Visible result",
+				"### Implementation",
+				"### Problems found and fixes",
+				"### Still missing",
+			},
+		},
+		{
+			path: "docs/architecture/how-it-works.zh-CN.md",
+			headings: []string{
+				"### 解决什么问题",
+				"### 用户能看到什么",
+				"### 真实实现",
+				"### 遇到的问题与修复",
+				"### 仍未完成",
+			},
+		},
+	}
+
+	for _, guide := range guides {
+		t.Run(filepath.Base(guide.path), func(t *testing.T) {
+			entries := plainLanguageGuideEntries(t, read(t, filepath.Join(root, filepath.FromSlash(guide.path))))
+			for contract := range contracts {
+				entry, ok := entries[contract]
+				if !ok {
+					t.Errorf("guide has no entry for implemented contract %s", contract)
+					continue
+				}
+				for _, heading := range guide.headings {
+					if !strings.Contains(entry, heading) {
+						t.Errorf("guide entry %s is missing %q", contract, heading)
+					}
+				}
+			}
+			for target := range entries {
+				if !contracts[target] {
+					t.Errorf("guide entry %s is not an implemented contract in the authority table", target)
+				}
+			}
+		})
+	}
+}
+
 // TestDocumentationRulesStateWhichAreExecutable keeps this file discoverable.
 // A gate nobody knows about is a gate contributors work around.
 func TestDocumentationRulesStateWhichAreExecutable(t *testing.T) {

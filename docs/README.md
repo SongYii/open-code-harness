@@ -27,6 +27,17 @@ test-only production branches for the capabilities it does deliver.
 | Status | Authority | Document | Purpose |
 | --- | --- | --- | --- |
 | Accepted | Normative charter | [Foundational architecture](superpowers/specs/2026-08-11-open-code-harness-architecture-design.md) | Product positioning, system boundaries, protocol choices, quality attributes, and milestone order |
+| Accepted | Normative design | [Current system architecture and boundary closure](superpowers/specs/2026-09-09-current-system-architecture-design.md) | As-built architecture map, fail-closed production-package ownership, whole-client-tree isolation, authority boundaries, and mechanically coupled documentation |
+| Accepted | Reading copy | [当前系统架构与边界收口设计](superpowers/specs/2026-09-09-current-system-architecture-design.zh-CN.md) | 与当前系统架构与边界收口英文规范同步的中文阅读版 |
+| Accepted | Normative design | [Plain-language implementation guide and documentation standard](superpowers/specs/2026-09-10-plain-language-implementation-guide-design.md) | Bilingual five-question subsystem guide, historical-snapshot labeling, writing rules, executable coverage, and the documentation-complete definition for future slices |
+| Accepted | Reading copy | [通俗实现导读与项目文档规范设计](superpowers/specs/2026-09-10-plain-language-implementation-guide-design.zh-CN.md) | 与通俗实现导读及项目文档规范英文设计同步的中文阅读版 |
+| Implemented | Implemented contract | [Current system architecture](architecture/current-system.md) | As-built process topology, exhaustive production package ownership and internal dependency allowlist, end-to-end control flow, durable authority table, client isolation, deliberate exceptions, and boundary-change procedure |
+| Implemented | Reading copy | [当前系统架构](architecture/current-system.zh-CN.md) | 当前整体架构英文实现合同的中文语义阅读版；以英文合同为准 |
+| Complete | Evidence ledger | [Current system architecture completion evidence](architecture/current-system-evidence.md) | Design and implementation commits, fail-closed ownership and whole-client isolation mutations, focused/full verification commands, and the explicit limit that import gates do not prove runtime authority |
+| Complete | Plan | [Current system architecture closure implementation plan](superpowers/plans/2026-09-09-current-system-architecture.md) | Five tasks covering fail-closed package ownership, an executable dependency matrix, whole-client-tree isolation, the as-built architecture map, mutation probes, and full verification |
+| Current | Maintained guide | [How the implemented system works](architecture/how-it-works.md) | Plain-language five-question explanation of every implemented subsystem: problem, visible result, real implementation, problems and fixes, and current limits |
+| Current | Reading copy | [项目实现通俗导读](architecture/how-it-works.zh-CN.md) | 每个已实现模块固定回答五个实际问题的中文通俗入口；英文导读为结构真源 |
+| Complete | Evidence ledger | [Plain-language implementation guide completion evidence](architecture/how-it-works-evidence.md) | Module-inventory correction, 20-entry bilingual coverage, historical-snapshot findings, missing-entry mutation, verification, and the limit of structural readability checks |
 | Implemented | Implemented contract | [Domain events and state machine](architecture/domain-events.md) | Current Session/Turn commands, events, errors, invariants, codec, and replay rules |
 | Implemented | Implemented contract | [Engine vertical slice](architecture/engine-vertical-slice.md) | Current Application/Engine ports, bounded stream execution, atomic durability, cancellation, errors, adapters, evidence, and exclusions |
 | Implemented | Reading copy | [已实现 Engine 纵切](architecture/engine-vertical-slice.zh-CN.md) | 与已实现 Engine 合同同步的中文语义阅读版 |
@@ -112,6 +123,9 @@ test-only production branches for the capabilities it does deliver.
 | Accepted | Plan | [Evaluation variance and baseline policy implementation plan](superpowers/plans/2026-09-05-evaluation-variance-policy.md) | Eight TDD tasks: the frozen `och.eval.variance-policy` document with calibration state as a field rather than a comment, pure distribution/spread/stability computation, indeterminate handling with raw and filtered views always shown, the fail-closed rules including refusing `repetitionCount: 1` under a policy, the pinned regenerable baseline a run path never writes back, the paired-arm delta between distributions, the report block and regeneration command, and the documentation sync that must update all four GA-blocker lists together |
 | Accepted | Normative design | [Evaluation system: real Sessions, evidence, and offline regrading](superpowers/specs/2026-09-02-evaluation-design.md) | Milestone 10 evaluation contract: staged in-process then ACP delivery, shared scripted approvals, lease-safe compact/restart semantics, Composition-owned cold evidence export, a four-Cell ordinary-PR smoke, offline regrade, and later live quality; arbitrary external agents, MCP suite, Windows ACP runtime, and OpenTelemetry excluded from v1 |
 | Accepted | Reading copy | [Evaluation 系统：真实 Session、证据与离线重评](superpowers/specs/2026-09-02-evaluation-design.zh-CN.md) | 与 Evaluation 系统规范完整同步的中文阅读版；英文规范文本优先 |
+| Implemented | Implemented contract | [Evaluation system](architecture/evaluation.md) | Current Scenario/Subject/Executor identities, in-process and ACP execution, committed evidence, deterministic verification, consent-gated judging, offline regrade, Context and MCP suites, and variance reporting; not GA |
+| Implemented | Reading copy | [Evaluation 评测系统](architecture/evaluation.zh-CN.md) | 与 Evaluation 英文实现合同同步的中文语义阅读版；英文合同为准 |
+| Complete | Evidence ledger | [Evaluation system completion evidence](architecture/evaluation-evidence.md) | Commits, design corrections, ineffective-test findings, mutation results, benchmarks, live-run reality, and current GA blockers |
 | Accepted | Normative design | [Context mechanism evaluation suite](superpowers/specs/2026-09-03-context-mechanism-evaluation-suite-design.md) | Deterministic production-path coverage for pre-turn/mid-turn preparation, summary/reset, multi-chunk compaction, Tool Result pruning, usage anchoring, overflow recovery, checkpoint restart, fail-closed evidence, and paired in-process/ACP matrices; implemented, with three clauses the implementation corrected and its scheduled-lane CI boundary recorded in the [Evaluation completion evidence](architecture/evaluation-evidence.md) |
 | Accepted | Normative design | [Live judge configuration and evidence binding](superpowers/specs/2026-09-03-evaluation-live-judge-contract-design.md) | Task 17 completion contract: a secret-free frozen JudgeConfig, EvalSet/manifest binding, consent-before-credential ordering, deterministic prerequisites, real OpenAI-compatible invocation, explicit cost availability, and conservative bounded-evidence semantics |
 | Accepted | Normative design | [Observed-state safe file mutation](superpowers/specs/2026-09-04-observed-file-mutation-design.md) | Internal observations, guarded create/replace, atomic publication, and a bounded literal edit tool; implementation is sequenced before workspace instructions |
@@ -203,6 +217,7 @@ test-only production branches for the capabilities it does deliver.
 | Complete | Research evidence | [JSONL audit replica architecture gate](research/architecture-gates/2026-08-16-jsonl-audit-replica.md) | Slice 3 re-verification establishing transactional-outbox confirmation, verify-then-publish ordering, digest-always framing, and verified-import boundaries |
 | Complete | Reading copy | [JSONL 审计副本架构门中文阅读版](research/architecture-gates/2026-08-16-jsonl-audit-replica.zh-CN.md) | 与 JSONL 审计副本架构门完整同步的中文证据记录 |
 | Complete | Plan | [Domain implementation plan](superpowers/plans/2026-08-11-domain-events-state-machine.md) | Completed Task 1–8 implementation sequence |
+| Complete | Plan | [Plain-language implementation guide plan](superpowers/plans/2026-09-10-plain-language-implementation-guide.md) | Repair the module inventory, publish bilingual five-question guides, label dated evidence, enforce guide coverage, and record mutation/full-suite evidence |
 | Complete | Reading copy | [领域实施计划中文阅读版](superpowers/plans/2026-08-11-domain-events-state-machine.zh-CN.md) | Chinese synchronized reading copy of the completed plan |
 
 ## Milestone status
@@ -234,6 +249,7 @@ this file. The rules that can be checked without judgement are now tests in
 | `TestReadingCopiesHaveANormativeSource` | Every `*.zh-CN.md` has an English source beside it |
 | `TestReadingCopiesNameTheirNormativeSource` | Every reading copy names the document that wins when the copies diverge |
 | `TestEveryImplementedContractHasEvidence` | Every implemented contract has an evidence ledger, with exemptions named in the test rather than left implicit |
+| `TestPlainLanguageGuidesCoverImplementedContracts` | Both plain-language guides contain one five-question entry for every implemented contract |
 
 Two further gates run outside the pull-request path, in the nightly lane:
 `determinism` repeats the whole race suite, because a single green run only
@@ -273,3 +289,13 @@ reading copy exists and declares its authority, not that it is current.
    gate to re-verify at the then-current state, so no reference is kept
    tracked or long-lived. Nothing under `.reference/` may be copied into this
    repository.
+9. Every implemented subsystem has a short entry in both plain-language guides
+   answering: problem, visible result, real implementation, problems found and
+   fixes, and current limits. A translation of the technical contract alone is
+   not a substitute.
+10. Evidence ledgers are dated historical records. A superseded status claim
+    stays intact but receives a prominent snapshot notice pointing to current
+    status; new ledgers distinguish “remaining at this slice” from “current.”
+11. An implementation slice is documentation-complete only after its design,
+    plan, production code, implemented contract, reproducible evidence, both
+    plain-language guide entries, deviations, and current limitations agree.
