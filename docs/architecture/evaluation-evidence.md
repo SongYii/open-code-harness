@@ -790,3 +790,24 @@ in the host environment; and `localexec` passed separately in the restricted
 environment where its backend assumptions are stable. The split is required
 because the host exposes a functional bubblewrap backend while one legacy
 test is explicitly named and written for the no-backend case.
+
+## Update: provider-enforced Judge JSON (2026-09-10)
+
+Commit `3f57c00` turns the failed 4,096-token Judge observation above into a
+protocol-level fix. Every JudgeConfig now requires `responseFormat=json_object`;
+the checked-in DeepSeek configuration additionally freezes
+`thinkingMode=disabled`. Exact-body tests observe both fields on the HTTP
+request. Config and adapter mutation tests reject unknown values before I/O,
+and request identity carries both choices into durable request evidence.
+
+`TestRunJudgeMalformedOutputDoesNotRetry` protects the accounting boundary:
+malformed output makes the one invocation Indeterminate and preserves its
+usage; it never triggers a hidden second paid call. An explicit repeated CLI
+run remains a second append-only Score.
+
+Verification: frontend build, TypeScript check, and all 18 frontend tests
+passed; `go vet ./...` passed; full `go test -race ./... -count=1` passed for
+every package except the known host-mode `localexec` expectation split, and
+`go test -race ./internal/harness/adapters/localexec -count=1` passed in the
+restricted environment. No new paid DeepSeek call was made, so the wire
+mechanism is fixture-proven but its live outcome remains to be sampled.
