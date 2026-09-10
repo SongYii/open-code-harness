@@ -126,6 +126,13 @@ and live cache reuse only. Fixing the scenario's evidence contract and making a
 requested no-op compaction visible are separate evaluation changes; a paid
 rerun is required before claiming post-compaction quality or a live judge pass.
 
+Follow-up: the 2026-09-10 run recorded in the
+[Evaluation evidence ledger](evaluation-evidence.md#update-complete-deepseek-subject-to-judge-validation-2026-09-10)
+closed both gaps with a real DeepSeek V4 Pro summary checkpoint, a confirmed
+absent forbidden path, and a passing live Judge Score. This section remains the
+record of the earlier partial sample rather than rewriting its historical
+facts.
+
 ## Final verification and mutation status
 
 All twelve minimum deliberate mutations were made one at a time in production
