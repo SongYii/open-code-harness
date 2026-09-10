@@ -15,7 +15,10 @@ and the [foundational architecture charter](docs/superpowers/specs/2026-08-11-op
 The charter describes intended direction; the
 [current system architecture](docs/architecture/current-system.md) records the
 as-built package map, control flow, state authorities, and enforced dependency
-boundaries.
+boundaries. For a shorter module-by-module explanation of what was built, what
+went wrong, and what remains, start with
+[How the implemented system works](docs/architecture/how-it-works.md) or the
+[中文通俗导读](docs/architecture/how-it-works.zh-CN.md).
 To run something locally instead of reading about it, see
 [Getting Started](docs/getting-started.md).
 

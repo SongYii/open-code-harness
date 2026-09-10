@@ -5,6 +5,12 @@
 - Plan: [EventStore v2 contract migration implementation plan](../superpowers/plans/2026-08-13-eventstore-v2-contract.md)
 - Status: Tasks 1–9 implemented and locally verified; Slice 1 complete; not GA
 
+> **Historical status notice (added 2026-09-10):** this ledger preserves the
+> repository state when EventStore v2 completed. Statements below that SQLite
+> and later modules had not begun are intentionally retained history, not
+> current status. See [How the system works](how-it-works.md) and the
+> [current architecture](current-system.md) for today.
+
 This ledger is the public completion record. The plan remains the frozen
 implementation sequence and intentionally retains its original checkboxes; an
 unchecked plan box is not used as evidence. Commit history, executable gates,

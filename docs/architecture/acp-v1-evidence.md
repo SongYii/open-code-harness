@@ -8,6 +8,12 @@
 
 **Contract:** [ACP v1 Adapter — Implemented Contract](acp-v1.md)
 
+> **Historical status notice (added 2026-09-10):** this ledger preserves the
+> first ACP v1 slice. Statements below about missing Context/session lifecycle
+> capabilities are not current project status. See
+> [How the system works](how-it-works.md) and the
+> [current architecture](current-system.md) for today.
+
 This ledger records what was done. Completion is claimed from the evidence
 below, not from checkbox state.
 
