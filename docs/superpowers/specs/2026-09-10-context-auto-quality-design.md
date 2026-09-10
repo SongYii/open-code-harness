@@ -37,4 +37,3 @@ only the live-model Score may claim semantic quality.
 This slice does not change Context Engine policy, summary prompting, or
 provider behavior. It does not infer quality from fixture output and does not
 set a variance threshold from one live run.
-

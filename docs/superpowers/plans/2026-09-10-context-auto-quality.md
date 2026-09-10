@@ -10,4 +10,3 @@
 5. Run frontend, focused, full race, vet, and diff gates; publish a PR.
 6. Run the live Subject and Judge only after a fresh credential is supplied;
    record the immutable Attempt/Score evidence separately.
-

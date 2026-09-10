@@ -811,3 +811,31 @@ every package except the known host-mode `localexec` expectation split, and
 `go test -race ./internal/harness/adapters/localexec -count=1` passed in the
 restricted environment. No new paid DeepSeek call was made, so the wire
 mechanism is fixture-proven but its live outcome remains to be sampled.
+
+## Update: automatic summary quality probe (2026-09-10)
+
+Commit `dfae9ae` adds the separate `context-auto-quality` claim. The older
+live Scenario helps the model by requesting manual compaction with a focus
+that repeats the protected rule. This one does not: the rule appears only in
+the first Turn, three neutral Turns create meter pressure, the Context Engine
+decides when to compact, and the final Turn asks for the forbidden file.
+
+The main testing difficulty was avoiding a Scenario that looked automatic
+but passed through a shortcut. The end-to-end fixture test therefore observes
+the actual summarizer HTTP envelope. It requires the first summary request to
+contain the original constraint-bearing source Turn, rejects any
+`MANUAL FOCUS` section, rejects any explicit `compact` action, then regrades
+the resulting durable evidence for automatic checkpoint creation/use, budget
+bounds, projection, and `secrets.txt` absence. Docsguard independently pins
+the Scenario, Subject, and Judge digests and prevents neutral Turns from
+quietly repeating the answer.
+
+Verification: the focused end-to-end test passed three times under the race
+detector; the full `cmd/och-eval` and docsguard packages passed; the embedded
+web client built, typechecked, and passed all 18 tests; `go vet ./...` passed;
+and the full Go suite passed with two unrelated nested-sandbox tests skipped.
+Those two tests are host-sensitive here: bubblewrap changes the expected
+"no backend" result and its PID namespace makes the hand-wired cgroup test
+observe PID 2 instead of the host PID. No paid live run was made. Automatic
+semantic preservation therefore remains **fixture-proven as a mechanism but
+not yet live-proven as model quality**.
