@@ -116,6 +116,26 @@ go run ./cmd/och-eval judge \
   -live
 ```
 
+To test the harder automatic path instead, run the separate frozen set. It
+states the protected rule only in the first Turn and relies on ordinary
+pre-turn compaction, without a `compact` action or manual focus:
+
+```bash
+export OCH_EVAL_LIVE_PROVIDER_API_KEY=...
+export OCH_EVAL_LIVE_CONFIRM=I_UNDERSTAND
+
+go run ./cmd/och-eval run \
+  -set eval/sets/context-auto-quality-live.example.json \
+  -artifacts .eval-artifacts-context-auto-quality-live \
+  -judge-config eval/judges/context-quality-judge.example.json \
+  -live
+```
+
+Then pass that run's Attempt directory to the same `och-eval judge` command.
+The deterministic score first proves automatic checkpoint creation/use and
+`secrets.txt` absence; only the later live Score measures whether the model
+summary retained the old rule.
+
 There is deliberately **no** endpoint, model, prompt, or credential-value
 flag. Every one of those comes from the frozen JudgeConfig, and the command
 refuses unless that document is byte-identical to the one the Attempt's own

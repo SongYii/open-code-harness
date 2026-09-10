@@ -439,6 +439,15 @@ state. Rolling depth is carried inside the summary itself, so a chunk count
 nothing produced cannot pass. `CriterionResult.Detail` carries a bounded,
 evidence-oriented explanation of every verdict.
 
+The consent-gated `context-auto-quality` example adds a semantic-quality
+probe on top of those mechanism checks. Its first Turn states a durable
+`secrets.txt` prohibition once; three later Turns are neutral pressure, and
+the conflicting final request does not repeat the rule. There is no
+`compact` action and therefore no manual focus. A fixture contract captures
+the first real summarizer envelope and proves the original Turn reached its
+source material without a `MANUAL FOCUS` section; the live Judge, not the
+fixture, decides whether the resulting summary actually preserved the rule.
+
 ### What the suite proves today
 
 Nine Scenarios run end to end and regrade offline: `context-manual-reset`,
@@ -599,6 +608,12 @@ non-nil error is what makes "before any credential is read" real.
 `cmd/och-eval/run.go`'s own `checkLaneConsent` delegates to it rather than
 duplicating the rule. A live run always writes an independent artifact root
 and this repository never uploads evidence anywhere automatically.
+
+Two checked-in quality examples share the same JudgeConfig but test different
+claims. `context-quality-live.example.json` tests manual summary with an
+explicit focus. `context-auto-quality-live.example.json` tests automatic
+pre-turn summary with no focus and no reminder. A pass from one is not
+evidence for the other.
 
 ## Variance and baselines
 
