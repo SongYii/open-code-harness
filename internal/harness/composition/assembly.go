@@ -134,7 +134,11 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 		// The assembly always enables the workspace tool catalog, and
 		// Application refuses a catalog whose provider profile does not
 		// support native tools. Text-only would make every assembly invalid.
-		Profile:               openaicompat.ProfileToolsSupported(config.Provider.ContextWindow, config.Provider.MaxOutput),
+		Profile: openaicompat.ProfileToolsSupported(config.Provider.ContextWindow, config.Provider.MaxOutput),
+		Hints: openaicompat.WireHints{
+			IncludeUsage:   config.Provider.IncludeUsage,
+			MaxTokensField: config.Provider.MaxTokensField,
+		},
 		AllowInsecureLoopback: config.Provider.AllowInsecureLoopback,
 	})
 	if err != nil {

@@ -457,6 +457,14 @@ func TestSubjectValidateRejectsUnknownProviderLane(t *testing.T) {
 	}
 }
 
+func TestSubjectValidateRejectsUnknownMaxTokensField(t *testing.T) {
+	subject := validSubject()
+	subject.Provider.MaxTokensField = "limit"
+	if err := subject.Validate(); err == nil {
+		t.Fatal("Validate() accepted an unknown provider maxTokensField")
+	}
+}
+
 func TestSubjectValidateRejectsInvertedContextPercentages(t *testing.T) {
 	subject := validSubject()
 	subject.Context.TargetPercent = subject.Context.TriggerPercent

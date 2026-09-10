@@ -679,10 +679,11 @@ a report's own judgement is reproducible offline from the artifacts rather
 than from whatever the report generator was compiled with.
 
 **No defaults are supplied.** A policy must declare its limits, its
-`calibration` state, and a minimum of at least two evaluable repetitions. No
-successful live Judge sample suitable for calibration exists in this
-repository, so a shipped default would be a guess wearing the authority of a
-specification. An uncalibrated policy is marked on **every Cell it governs**,
+`calibration` state, and a minimum of at least two evaluable repetitions. The
+2026-09-10 DeepSeek run produced only two Judge samples over one Attempt, one
+indeterminate and one passing; that is evidence of variance, not a sample set
+large enough to calibrate a shipped default. An uncalibrated policy is marked
+on **every Cell it governs**,
 not once at the
 top of a document a reader may scroll past.
 
@@ -720,17 +721,11 @@ must be exactly 0" would pass unconditionally.
 ## Maturity and GA blockers
 
 Evaluation is **implemented, not GA**. Explicitly outstanding before a GA
-claim: real-model sample size for live judging — `och-eval judge` is wired
-end to end and proven against a fixture SSE stream through the real
-adapter, but **no live judge call has ever been made in this repository**.
-One live *Subject* run did happen, on 2026-09-08 against an
-OpenAI-compatible DeepSeek endpoint, and it is recorded in the
-[workspace-instructions evidence](system-prompt-workspace-instructions-evidence.md#live-deepseek-validation).
-It reached the judge's prerequisites and stopped there: the Score came back
-`indeterminate` before any model request because `manifest-complete-v1` was
-itself indeterminate. So the blocker narrowed rather than closed — the
-Subject side has a live sample of exactly one attempt, the judge side has
-none — and a single partial run is not the sample size a GA claim needs.
+claim: real-model sample size for live judging. On 2026-09-10 a DeepSeek V4
+Pro Subject completed a real summary compaction and preserved its constraint;
+the same Attempt then produced one indeterminate and one passing live Judge
+Score. That closes the zero-sample gap but not the sample-size blocker: one
+Attempt and two inconsistent Judge outcomes cannot establish reliability.
 Also outstanding: judge meta-evaluation against a broader fixture set than the
 eight adversarial fixtures this repository now carries (injection,
 missing-evidence, contradiction, unsupported-claim, known-pass/fail, an
@@ -745,11 +740,9 @@ variance policy for live/quality signals.
 The variance blocker changed shape on 2026-09-05 without closing, and the
 distinction matters. The **mechanism** is now designed, implemented, and
 verified — see [Variance and baselines](#variance-and-baselines) above. The
-**policy** is not: no calibrated limits exist, because calibrating them
-requires live *judge* scores, and the first blocker in this list records
-that no live judge call has been made. The one live Subject run of
-2026-09-08 produced no judge score. No checked-in EvalSet reaches the code
-at all. A repository
+**policy** is not: no calibrated limits exist, because two Judge invocations
+over one live Attempt are not a calibration population. No checked-in EvalSet
+reaches the variance code at all. A repository
 that counted an implemented mechanism as an accepted policy would be making
 exactly the claim this contract's own no-defaults rule exists to prevent.
 

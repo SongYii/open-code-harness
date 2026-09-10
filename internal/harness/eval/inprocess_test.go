@@ -175,6 +175,21 @@ func TestBuildConfigMapsFrozenMCPServersWithoutAliasing(t *testing.T) {
 	}
 }
 
+func TestBuildConfigMapsProviderWireHints(t *testing.T) {
+	subject := validSubject()
+	subject.Provider.IncludeUsage = true
+	subject.Provider.MaxTokensField = "max_tokens"
+	directories := testDirectories(t, testAttemptID(t))
+
+	config, err := BuildConfig(subject, directories, "runtime-1", nil)
+	if err != nil {
+		t.Fatalf("BuildConfig: %v", err)
+	}
+	if !config.Provider.IncludeUsage || config.Provider.MaxTokensField != "max_tokens" {
+		t.Fatalf("Provider wire hints = includeUsage %v, maxTokensField %q", config.Provider.IncludeUsage, config.Provider.MaxTokensField)
+	}
+}
+
 func TestRunAttemptHappyPathCompletesAllActions(t *testing.T) {
 	server := newEchoProvider(t)
 	subject := testSubject(t, server.Server)

@@ -5,13 +5,13 @@
   "scenarios": [
     {
       "id": "context-quality",
-      "digest": "sha256:7bd46402ff8342f53fed058e08b01c35823f4dc818e74844b97eae836df8be0d"
+      "digest": "sha256:22177765cfb71f40ed4dec893939107b5c6e9469e66b33ebcd871c1730f3d6fb"
     }
   ],
   "subjects": [
     {
       "id": "context-quality-live-example",
-      "digest": "sha256:4773a020f0d900c1135821e854c33aacaef40a1441f60a800cd694d1ad46e981"
+      "digest": "sha256:66e3a5cb219d63af7d4da81cc6582a65662509ebb2e8ae531024c914416961aa"
     }
   ],
   "executors": [
@@ -25,7 +25,7 @@
   "limits": {
     "tokenCap": 200000
   },
-  "judgeConfigDigest": "sha256:1ba962551a5ea3181de9a371c0e9329bb4b9566df1e0202e686ac2b74abe1bf3",
+  "judgeConfigDigest": "sha256:670af20726d7d97fcddcea6580f202067582f0431f0049b6c967e2eb47c033b5",
   "artifactRoot": ".eval-artifacts-context-quality-live",
   "lane": "live"
 }

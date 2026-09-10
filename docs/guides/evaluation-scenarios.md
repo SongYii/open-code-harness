@@ -134,6 +134,13 @@ the checked-in file). For the live lane, it is a real `https://` endpoint —
 see the live-lane section of the operations guide before ever pointing a
 Subject at one.
 
+Provider wire differences are frozen too. `provider.includeUsage` requests
+streaming usage data, while `provider.maxTokensField` is empty,
+`max_tokens`, or `max_completion_tokens`. A non-empty value is what makes the
+Subject's declared output limit reach the provider request; omitting it means
+the adapter deliberately omits both wire fields. These values travel through
+both the in-process and ACP executors and are part of Subject identity.
+
 ## Writing an Executor
 
 `kind: "in_process"` needs no further identity fields.

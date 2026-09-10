@@ -1356,10 +1356,16 @@ func summaryFailureCode(err error) string {
 
 // safeFailureMessage never includes raw model output or provider detail —
 // design §13.2's "never embeds partial model output" for
-// ContextCompactionFailed.
+// ContextCompactionFailed. Summary validation failures are assembled only
+// from ValidateSummary's closed set of static reasons, so retaining that
+// reason makes a live failure diagnosable without publishing model text.
 func safeFailureMessage(err error) string {
 	switch summaryFailureCode(err) {
 	case CodeContextSummaryInvalid:
+		const prefix = CodeContextSummaryInvalid + ": "
+		if reason := strings.TrimPrefix(err.Error(), prefix); reason != err.Error() && reason != "" {
+			return "summary output failed validation: " + reason
+		}
 		return "summary output failed validation"
 	case CodeContextCompactionLimit:
 		return "source material exceeds the configured summary chunk limit"

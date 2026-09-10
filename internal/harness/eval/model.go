@@ -577,6 +577,8 @@ type SubjectProvider struct {
 	ContextWindow      uint32              `json:"contextWindow"`
 	MaxOutput          uint32              `json:"maxOutput"`
 	CredentialEnvVar   string              `json:"credentialEnvVar"`
+	IncludeUsage       bool                `json:"includeUsage,omitempty"`
+	MaxTokensField     string              `json:"maxTokensField,omitempty"`
 	Lane               SubjectProviderLane `json:"lane"`
 }
 
@@ -712,6 +714,11 @@ func (provider SubjectProvider) validate() error {
 	}
 	if !envVarNamePattern.MatchString(provider.CredentialEnvVar) {
 		return fmt.Errorf("%w: provider.credentialEnvVar must be a valid environment variable name", errInvalidDocument)
+	}
+	switch provider.MaxTokensField {
+	case "", "max_tokens", "max_completion_tokens":
+	default:
+		return fmt.Errorf("%w: provider.maxTokensField must be empty, %q, or %q", errInvalidDocument, "max_tokens", "max_completion_tokens")
 	}
 	switch provider.Lane {
 	case ProviderLaneFixture, ProviderLaneLive:
