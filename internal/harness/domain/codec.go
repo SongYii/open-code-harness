@@ -305,7 +305,7 @@ func unmarshalEvent(eventType string, data json.RawMessage) (Event, error) {
 	case EventModelRequestRecorded:
 		event = ModelRequestRecorded{}
 		required = modelRequestRecordedKeys()
-		optional = []string{"tools", "purpose", "attemptIndex", "contextDecisionID"}
+		optional = []string{"tools", "purpose", "attemptIndex", "contextDecisionID", "responseFormat", "thinkingMode"}
 	case EventModelUsageRecorded:
 		event = ModelUsageRecorded{}
 		required = modelUsageRecordedKeys()
@@ -786,7 +786,7 @@ func validateModelRequestSpec(spec ModelRequestSpec) error {
 	return validateModelRequestBody(
 		spec.AdapterFamily, spec.ModelID, spec.EndpointID,
 		spec.NativeTools, spec.Images, spec.StructuredOutput,
-		spec.ReasoningFields, spec.PromptCache, spec.MaxTokensField,
+		spec.ReasoningFields, spec.PromptCache, spec.MaxTokensField, spec.ResponseFormat, spec.ThinkingMode,
 		spec.Messages, spec.Tools, CodeInvalidCommand,
 	)
 }
@@ -814,21 +814,30 @@ func validateModelRequestPayload(event ModelRequestRecorded, code ErrorCode) err
 	return validateModelRequestBody(
 		event.AdapterFamily, event.ModelID, event.EndpointID,
 		event.NativeTools, event.Images, event.StructuredOutput,
-		event.ReasoningFields, event.PromptCache, event.MaxTokensField,
+		event.ReasoningFields, event.PromptCache, event.MaxTokensField, event.ResponseFormat, event.ThinkingMode,
 		event.Messages, event.Tools, code,
 	)
 }
 
 func validateModelRequestBody(
-	adapterFamily, modelID, endpointID, nativeTools, images, structuredOutput, reasoningFields, promptCache, maxTokensField string,
+	adapterFamily, modelID, endpointID, nativeTools, images, structuredOutput, reasoningFields, promptCache, maxTokensField, responseFormat, thinkingMode string,
 	messages []ModelPromptMessage,
 	tools []ToolSchema,
 	code ErrorCode,
 ) error {
-	for _, value := range []string{adapterFamily, modelID, endpointID, nativeTools, images, structuredOutput, reasoningFields, promptCache, maxTokensField} {
+	for _, value := range []string{adapterFamily, modelID, endpointID, nativeTools, images, structuredOutput, reasoningFields, promptCache, maxTokensField, responseFormat, thinkingMode} {
 		if !utf8.ValidString(value) {
 			return domainError(code, "model request field must be valid UTF-8")
 		}
+	}
+	if responseFormat != "" && responseFormat != "json_object" {
+		return domainError(code, "model request response format is invalid")
+	}
+	if responseFormat != "" && structuredOutput == "unsupported" {
+		return domainError(code, "model request response format conflicts with capability profile")
+	}
+	if thinkingMode != "" && thinkingMode != "enabled" && thinkingMode != "disabled" {
+		return domainError(code, "model request thinking mode is invalid")
 	}
 	if err := validateModelPromptMessages(messages, code); err != nil {
 		return err

@@ -56,8 +56,15 @@ func validJudgeJSON(t *testing.T, verdict string, criterionIDs []string, evidenc
 // deltas, so the caller under test consumes a real stream rather than a
 // pre-assembled string.
 func newJudgeSSEServer(t *testing.T, body string) *httptest.Server {
+	return newJudgeSSEServerInspect(t, body, nil)
+}
+
+func newJudgeSSEServerInspect(t *testing.T, body string, inspect func(*http.Request)) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if inspect != nil {
+			inspect(r)
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		flusher, _ := w.(http.Flusher)
@@ -82,6 +89,33 @@ func newJudgeSSEServer(t *testing.T, body string) *httptest.Server {
 	}))
 	t.Cleanup(server.Close)
 	return server
+}
+
+func TestJudgeCallerPinsStructuredOutputAndDisablesThinking(t *testing.T) {
+	body := validJudgeJSON(t, "pass", []string{"constraint-preservation"}, []string{"transcript.jsonl"})
+	var requestBody map[string]any
+	server := newJudgeSSEServerInspect(t, body, func(request *http.Request) {
+		if err := json.NewDecoder(request.Body).Decode(&requestBody); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+	})
+	config := loopbackJudgeConfig(t, server.URL)
+	t.Setenv(config.Provider.CredentialEnvVar, "test-key")
+	caller, err := newOpenAICompatibleJudgeCaller(config, server.Client(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := caller(context.Background(), eval.QualityJudgePromptV1, "bundle"); err != nil {
+		t.Fatal(err)
+	}
+	format, formatOK := requestBody["response_format"].(map[string]any)
+	thinking, thinkingOK := requestBody["thinking"].(map[string]any)
+	if !formatOK || format["type"] != "json_object" {
+		t.Fatalf("response_format = %#v", requestBody["response_format"])
+	}
+	if !thinkingOK || thinking["type"] != "disabled" {
+		t.Fatalf("thinking = %#v", requestBody["thinking"])
+	}
 }
 
 func splitInHalf(value string) []string {

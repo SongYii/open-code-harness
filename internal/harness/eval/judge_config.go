@@ -58,6 +58,8 @@ type JudgeProvider struct {
 	MaxOutput          uint32 `json:"maxOutput"`
 	IncludeUsage       bool   `json:"includeUsage"`
 	MaxTokensField     string `json:"maxTokensField,omitempty"`
+	ResponseFormat     string `json:"responseFormat"`
+	ThinkingMode       string `json:"thinkingMode,omitempty"`
 }
 
 // JudgePrompt names the frozen prompt asset and pins its exact bytes.
@@ -192,6 +194,12 @@ func (provider JudgeProvider) validate() error {
 	if !judgeMaxTokensFields[provider.MaxTokensField] {
 		return fmt.Errorf("%w: provider.maxTokensField must be empty, %q, or %q",
 			errInvalidDocument, "max_tokens", "max_completion_tokens")
+	}
+	if provider.ResponseFormat != "json_object" {
+		return fmt.Errorf("%w: provider.responseFormat must be %q", errInvalidDocument, "json_object")
+	}
+	if provider.ThinkingMode != "" && provider.ThinkingMode != "disabled" {
+		return fmt.Errorf("%w: provider.thinkingMode must be empty or %q", errInvalidDocument, "disabled")
 	}
 	return nil
 }

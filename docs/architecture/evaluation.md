@@ -363,6 +363,14 @@ its criterion results, an out-of-range score, or the call itself failing —
 resolves to a real `JudgeOutcome{Verdict: Indeterminate}` carrying a bounded,
 redacted rationale, never a Go error and never silently accepted as `Pass`.
 
+The provider contract freezes `responseFormat=json_object`; its optional
+provider-specific `thinkingMode` admits only `disabled`, which the checked-in
+DeepSeek config uses to reserve the bounded output allowance for the result
+instead of the default reasoning phase. Unknown values fail before HTTP.
+`RunJudge` still invokes its caller exactly once: malformed or empty output is
+one Indeterminate observation, while an explicit second `och-eval judge` run
+appends a separate Score with separate usage and cost.
+
 One case beyond design §21's list is refused for the same reason: a
 **determinate verdict citing no evidence at all**. Every reference rule above
 guards the references that are present, and until 2026-09-04 none required any

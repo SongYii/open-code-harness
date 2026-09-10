@@ -256,6 +256,8 @@ type ModelRequestRecorded struct {
 	MaxOutputTokens     uint32               `json:"maxOutputTokens"`
 	IncludeUsage        bool                 `json:"includeUsage"`
 	MaxTokensField      string               `json:"maxTokensField"`
+	ResponseFormat      string               `json:"responseFormat,omitempty"`
+	ThinkingMode        string               `json:"thinkingMode,omitempty"`
 	Messages            []ModelPromptMessage `json:"messages"`
 	Tools               []ToolSchema         `json:"tools,omitempty"`
 	// Purpose distinguishes a conversation attempt from a Context Engine

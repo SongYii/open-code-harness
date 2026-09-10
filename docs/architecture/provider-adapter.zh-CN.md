@@ -141,6 +141,8 @@ type RequestIdentity struct {
     Profile                            CapabilityProfile
     IncludeUsage                       bool
     MaxTokensField                     string
+    ResponseFormat                     string
+    ThinkingMode                       string
 }
 ```
 
@@ -154,11 +156,14 @@ type RequestIdentity struct {
 - 每个三态必须是 `unsupported`、`supported` 或 `required`，空值非法；token
   字段可为 0（表示未知）；
 - `MaxTokensField` 只能是 `""`、`"max_tokens"` 或 `"max_completion_tokens"`。
+- `ResponseFormat` 只能是 `""` 或 `"json_object"`；`ThinkingMode` 只能是
+  `""`、`"enabled"` 或 `"disabled"`。
 
 唯一随包提供的 preset 是 `openaicompat.ProfileTextOnly`。没有按厂商命名的
 helper，Application/Engine 也不按供应商名分支。`NativeTools=required` 在
 `New` 时拒绝（`TestNewRejectsInvalidConfig` / `native tools required`）。第一
-适配器不发送 `tools`、图片、`response_format` 或 cache-control 字段。
+结构化输出与思考模式必须来自静态 hint，不按厂商名或模型名猜测；适配器仍不
+发送图片或 cache-control 字段。
 
 ## 第一适配器：`internal/harness/adapters/openaicompat`
 
@@ -173,6 +178,8 @@ type StaticAPIKey struct{ Value string } // 仅测试；永不记录
 type WireHints struct {
     IncludeUsage   bool
     MaxTokensField string
+    ResponseFormat string
+    ThinkingMode   string
 }
 
 type Config struct {
@@ -203,7 +210,7 @@ client/transport 会被 clone；从不修改 `http.DefaultClient` 或
 `provider_permanent` 且不跟随（`TestCheckRedirectThreeXXIsPermanent`）。
 
 `Identity()` 拷贝 family `openai_compat`、ModelID、由 BaseURL 导出的
-EndpointID、profile 和两个 wire hint（`TestIdentityCopiesProfileAndHints`）。
+EndpointID、profile 和全部 wire hint（`TestIdentityCopiesProfileAndHints`）。
 
 `Stream` 允许并发调用；每次调用拥有自己的 HTTP 请求
 （`TestStreamConcurrentCallsOwnRequests`）。默认值：idle 60s、响应头 30s、
@@ -224,6 +231,8 @@ EndpointID、profile 和两个 wire hint（`TestIdentityCopiesProfileAndHints`�
 | --- | --- | --- |
 | `stream_options.include_usage` | 仅当 `Hints.IncludeUsage` | `TestStreamRequestMapping` / `include usage`、`omit usage` |
 | `max_tokens` / `max_completion_tokens` | 仅当 `MaxOutputTokens > 0` 且 hint 匹配 | `TestStreamRequestMapping` / `max tokens`、`omit max when tokens zero` |
+| `response_format.type` | 仅当 `Hints.ResponseFormat=json_object` | `TestStreamRequestMapping` / `structured output and thinking` |
+| `thinking.type` | 仅当设置了 `Hints.ThinkingMode` | `TestStreamRequestMapping` / `structured output and thinking` |
 | `Authorization: Bearer <key>` | 必需 | `TestStreamRequestMapping` |
 | `Accept: text/event-stream` | 始终 | `TestStreamRequestMapping` |
 | `User-Agent: open-code-harness` | 默认 | `TestStreamRequestMapping` |

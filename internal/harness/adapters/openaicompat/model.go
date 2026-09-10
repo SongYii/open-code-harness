@@ -56,6 +56,8 @@ func (source StaticAPIKey) APIKey() (string, error) {
 type WireHints struct {
 	IncludeUsage   bool
 	MaxTokensField string
+	ResponseFormat string
+	ThinkingMode   string
 }
 
 type Config struct {
@@ -180,6 +182,8 @@ func (m *Model) Identity() engine.RequestIdentity {
 		Profile:        m.profile,
 		IncludeUsage:   m.hints.IncludeUsage,
 		MaxTokensField: m.hints.MaxTokensField,
+		ResponseFormat: m.hints.ResponseFormat,
+		ThinkingMode:   m.hints.ThinkingMode,
 	}
 }
 
@@ -261,6 +265,12 @@ func (m *Model) marshalRequest(request engine.ModelRequest) ([]byte, error) {
 	}
 	if m.hints.IncludeUsage {
 		payload.StreamOptions = &completionStreamOptions{IncludeUsage: true}
+	}
+	if m.hints.ResponseFormat != "" {
+		payload.ResponseFormat = &completionResponseFormat{Type: m.hints.ResponseFormat}
+	}
+	if m.hints.ThinkingMode != "" {
+		payload.Thinking = &completionThinking{Type: m.hints.ThinkingMode}
 	}
 	// A positive per-request MaxOutputTokens overrides the route's own
 	// statically configured maximum (design §6.3); Stream already
@@ -372,13 +382,23 @@ func toolParameters(raw json.RawMessage) (json.RawMessage, error) {
 }
 
 type completionRequest struct {
-	Model               string                   `json:"model"`
-	Stream              bool                     `json:"stream"`
-	Messages            []completionMessage      `json:"messages"`
-	Tools               []completionTool         `json:"tools,omitempty"`
-	StreamOptions       *completionStreamOptions `json:"stream_options,omitempty"`
-	MaxTokens           *uint32                  `json:"max_tokens,omitempty"`
-	MaxCompletionTokens *uint32                  `json:"max_completion_tokens,omitempty"`
+	Model               string                    `json:"model"`
+	Stream              bool                      `json:"stream"`
+	Messages            []completionMessage       `json:"messages"`
+	Tools               []completionTool          `json:"tools,omitempty"`
+	StreamOptions       *completionStreamOptions  `json:"stream_options,omitempty"`
+	MaxTokens           *uint32                   `json:"max_tokens,omitempty"`
+	MaxCompletionTokens *uint32                   `json:"max_completion_tokens,omitempty"`
+	ResponseFormat      *completionResponseFormat `json:"response_format,omitempty"`
+	Thinking            *completionThinking       `json:"thinking,omitempty"`
+}
+
+type completionResponseFormat struct {
+	Type string `json:"type"`
+}
+
+type completionThinking struct {
+	Type string `json:"type"`
 }
 
 type completionMessage struct {

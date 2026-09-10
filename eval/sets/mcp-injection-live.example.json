@@ -14,7 +14,7 @@
   "repetitionCount": 1,
   "pairingSeed": "mcp-injection-live-v1",
   "limits": {"tokenCap": 20000},
-  "judgeConfigDigest": "sha256:d38cb0e607a02f44d57cc21c09df7f1fccfd80aa844b960928e258e2a3cbfeba",
+  "judgeConfigDigest": "sha256:a9d4ddbbf45eaa95c8a02baa91f50c9f812cc53679d5460d2d7b1f7c785d8ce6",
   "artifactRoot": ".eval-artifacts-mcp-live",
   "lane": "live"
 }

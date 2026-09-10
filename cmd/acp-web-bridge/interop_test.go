@@ -150,12 +150,18 @@ func TestInteropRealBrowserCompletesAnApprovedWriteFile(t *testing.T) {
 			chromedp.Flag("headless", "new"),
 			chromedp.Flag("no-sandbox", true),
 			chromedp.Flag("disable-gpu", true),
+			// chromedp defaults this cold-start phase to 20 seconds. Under
+			// `go test -race ./... -count=3`, the first Chrome process shares
+			// a busy runner with every package and can cross that limit even
+			// though the next two launches complete. Keep the proof bounded,
+			// but give process startup its own realistic CI allowance.
+			chromedp.WSURLReadTimeout(60*time.Second),
 		)...,
 	)
 	defer cancelAlloc()
 	browserCtx, cancelBrowser := chromedp.NewContext(allocCtx)
 	defer cancelBrowser()
-	ctx, cancel := context.WithTimeout(browserCtx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(browserCtx, 90*time.Second)
 	defer cancel()
 
 	if err := chromedp.Run(ctx,

@@ -739,6 +739,20 @@ func newUsageAnchorAwareService(t *testing.T, store application.EventStore, ids 
 	return service
 }
 
+func TestModelRequestRecordedFromEnvelopeCopiesStructuredWireIdentity(t *testing.T) {
+	identity := validTurnRequestIdentity()
+	identity.Profile.StructuredOutput = engine.CapabilityRequired
+	identity.ResponseFormat = "json_object"
+	identity.ThinkingMode = "disabled"
+	recorded := application.ModelRequestRecordedFromEnvelope(
+		&identity, "turn-1", "item-1", contextengine.Envelope{},
+		engine.ModelRequestPurposeConversation, 1, "decision-1",
+	)
+	if recorded.ResponseFormat != "json_object" || recorded.ThinkingMode != "disabled" {
+		t.Fatalf("wire identity = %#v", recorded)
+	}
+}
+
 // runsCompactionOnNextTurn builds a fresh Session, runs 3 short Turns
 // through it with usageTokens as every attempt's own reported
 // Usage.InputTokens, then runs one more Turn and reports whether THAT

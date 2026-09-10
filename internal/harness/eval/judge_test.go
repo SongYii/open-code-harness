@@ -513,6 +513,24 @@ func TestRunJudgeCallerFailureBecomesIndeterminate(t *testing.T) {
 	}
 }
 
+// One paid invocation produces one append-only outcome. Malformed output is
+// evidence of that invocation, not permission to hide another call behind it.
+func TestRunJudgeMalformedOutputDoesNotRetry(t *testing.T) {
+	reader, _, _ := judgeTestFixture(t)
+	calls := 0
+	caller := func(context.Context, string, string) (string, ScorerUsage, error) {
+		calls++
+		return `{"verdict":`, ScorerUsage{OutputTokens: 4096}, nil
+	}
+	outcome, err := RunJudge(context.Background(), reader, testJudgeConfig(), caller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || outcome.Verdict != ScoreIndeterminate || outcome.Usage.OutputTokens != 4096 {
+		t.Fatalf("calls=%d outcome=%+v", calls, outcome)
+	}
+}
+
 var errFixtureJudgeCallFailed = &judgeCallFixtureError{}
 
 type judgeCallFixtureError struct{}
