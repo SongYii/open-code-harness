@@ -711,9 +711,18 @@ Two implementation findings changed the first draft:
    it.
 
 The checked-in keyless fixture drives all six cases three times (18 calls) and
-expects 18 exact matches. This proves wiring and arithmetic only. No paid call
-has been made for this seed in this implementation step, no live accuracy is
-claimed, and no threshold has been selected.
+expects 18 exact matches. This proves wiring and arithmetic only; no threshold
+is selected from the fixture.
+
+The first separately authorized DeepSeek V4 Pro run completed all 18 calls and
+matched all 18 human labels: six expected/observed Pass, nine Fail, and three
+Indeterminate observations. All four directional error counters were zero.
+The bound report is
+`eval/reports/judge-semantic-meta-deepseek-live-2026-09-11.json`
+(`sha256:e95dc9409637a2a70df41588a7aa15a768c93c8c57a0b069b47659ead9c29cfe`).
+It records 17,283 input and 3,140 output tokens. Cost remains explicitly
+unavailable because the v1 JudgeConfig deliberately bound no price table.
+This is evidence for that six-case corpus, not a broad accuracy claim.
 
 Focused tests cover strict decoding, set/config/price binding, exact call-budget
 refusal before the caller, all nine confusion cells, partial-report retention,
@@ -772,7 +781,7 @@ validation follow-up recorded below closes that exact frozen Cell's claim.
 
 See the contract document's own [Maturity and GA blockers](evaluation.md#maturity-and-ga-blockers)
 section. Summarized: real-model live-judge sample size, broader reviewed cases
-and a real-model run for the six-case semantic meta-eval seed, provider breadth
+for semantic meta-evaluation, provider breadth
 beyond one OpenAI-compatible adapter, and calibrated policies beyond the exact
 MCP Cell are explicitly outstanding.
 MCP is now an optional explicit suite, never a runner prerequisite; its live

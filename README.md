@@ -193,8 +193,9 @@ sample size — one complete DeepSeek V4 Pro Subject-through-compaction run and
 two live Judge samples now exist from 2026-09-10, but one Judge sample was
 indeterminate after exhausting its output budget — judge meta-evaluation now
 has ten parser/mechanism fixture families and a six-case labelled semantic
-seed with a repeated runner, but the seed has no live-model result yet and the
-reviewed corpus is still small. Provider breadth also remains outstanding
+seed with a repeated runner. Its first DeepSeek run matched all 18 repeated
+labels with no directional errors, but the reviewed corpus is still small.
+Provider breadth also remains outstanding
 before a GA claim. The
 variance *mechanism* is now
 implemented and verified (distribution over repetitions, a structural

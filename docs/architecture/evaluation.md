@@ -412,8 +412,9 @@ set/config digest. Cancellation publishes an explicitly incomplete prefix
 report with already-paid observations and usage instead of losing them. A
 report can be re-bound offline to its set/config, including case order,
 repetition index, and expected label. The checked-in six-case, three-repetition
-seed is exercised keylessly with a fixture caller; no quality threshold is
-invented and no live result is claimed by that proof.
+seed is exercised keylessly with a fixture caller. Its first separately gated
+DeepSeek run matched all 18 repeated labels; the checked-in report proves only
+that exact small corpus, and no global quality threshold is inferred from it.
 
 `EvaluateJudgeAttempt` (`internal/harness/eval/judge_attempt.go`) is the
 orchestration `och-eval judge` drives, and the order of its gates is the
@@ -800,9 +801,10 @@ were found on 2026-09-04 to be
 satisfied by an earlier refusal than the one they named, and so proved
 nothing about the defense they were written for; both are corrected and now
 assert the refusal reason. A six-case labelled semantic seed and its repeated
-runner now exist, but no real model has run that corpus yet and six synthetic
-cases cannot establish accuracy. Broader reviewed cases and live observations
-therefore remain outstanding. Also outstanding: provider breadth beyond
+runner now exist, and the first DeepSeek run matched all 18 repeated labels
+with no directional errors. Six synthetic cases still cannot establish broad
+accuracy, so broader reviewed cases and another provider remain outstanding.
+Also outstanding: provider breadth beyond
 the one OpenAI-compatible adapter this repository ships, and calibrated
 variance policies for live/quality Cells beyond the exact MCP injection Cell
 measured here.

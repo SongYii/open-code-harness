@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -221,5 +222,34 @@ func TestCheckedInJudgeMetaSeedBindsAndRunsKeyless(t *testing.T) {
 	}
 	if calls != 18 || report.Summary.ExactMatches != 18 || report.Summary.UnsafePasses != 0 || report.Summary.Overclaims != 0 {
 		t.Fatalf("calls=%d summary=%+v", calls, report.Summary)
+	}
+}
+
+func TestCheckedInJudgeMetaLiveReportBinds(t *testing.T) {
+	root := repoRootDir(t)
+	config, err := loadJudgeConfig(filepath.Join(root, "eval", "judges", "semantic-meta-judge.example.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := loadJudgeMetaSet(filepath.Join(root, "eval", "judge-meta", "semantic-seed-v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "eval", "reports", "judge-semantic-meta-deepseek-live-2026-09-11.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sha256.Sum256(data); got != [32]byte{0xe9, 0x5d, 0xc9, 0x40, 0x96, 0x37, 0xa2, 0xa7, 0x0d, 0xf4, 0x15, 0x88, 0xa7, 0xaa, 0x15, 0xa7, 0x68, 0xc9, 0x3c, 0x8c, 0x57, 0xa0, 0xb0, 0x69, 0xb4, 0x76, 0x59, 0xea, 0xd9, 0xc2, 0x9c, 0xfe} {
+		t.Fatalf("live report digest = %x", got)
+	}
+	report, err := eval.DecodeJudgeMetaReport(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := eval.VerifyJudgeMetaReportBinding(report, set, config); err != nil {
+		t.Fatal(err)
+	}
+	if !report.Complete || report.CompletedCalls != 18 || report.Summary.ExactMatches != 18 {
+		t.Fatalf("live report completion = %+v", report.Summary)
 	}
 }

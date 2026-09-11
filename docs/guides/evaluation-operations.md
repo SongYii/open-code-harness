@@ -248,6 +248,11 @@ prefix report rather than discarding calls already paid for. Read
 dangerous direction of an error. The seed has no calibrated threshold and is
 not an ordinary PR lane.
 
+The first checked-in live result is
+`eval/reports/judge-semantic-meta-deepseek-live-2026-09-11.json`: DeepSeek V4
+Pro matched all 18 repeated labels in the six-case seed. Treat that as one
+small-corpus observation, not a universal Judge threshold.
+
 Two more refusals are worth knowing about:
 
 - **Insufficient evidence never passes.** If a criterion declares an
