@@ -78,6 +78,7 @@ repository uses throughout.
 | `d485b58` | Judge meta-eval breadth | Require determinate verdicts to cite every declared evidence role and carry a reviewable rationale; expand the focused adversarial set from eight to ten families |
 | `3023d8c` | Judge semantic meta-eval | Frozen six-case labelled corpus, production-path repeated runner, bound auditable report, and exact-budget live CLI |
 | `1d9cc87` | Judge meta-eval v2 mechanism | Scaled provenance-bound pricing, predeclared calibrated holdout policy, twelve new reviewed cases, and provider-equivalent frozen inputs |
+| `5dfbe95` | Judge meta-eval v2 DeepSeek evidence | Bound 18-call calibration and disjoint 18-call holdout, frozen policy, honestly failing check result, cost upper bounds, and artifact guards |
 
 ## Post-merge review findings closed
 
