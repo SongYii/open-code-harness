@@ -77,6 +77,7 @@ repository uses throughout.
 | `9411237` | Live DeepSeek validation | Freeze Subject wire hints through both executors, make validation failures diagnosable without model text, and tune the context-quality Scenario against real compaction |
 | `d485b58` | Judge meta-eval breadth | Require determinate verdicts to cite every declared evidence role and carry a reviewable rationale; expand the focused adversarial set from eight to ten families |
 | `3023d8c` | Judge semantic meta-eval | Frozen six-case labelled corpus, production-path repeated runner, bound auditable report, and exact-budget live CLI |
+| `1d9cc87` | Judge meta-eval v2 mechanism | Scaled provenance-bound pricing, predeclared calibrated holdout policy, twelve new reviewed cases, and provider-equivalent frozen inputs |
 
 ## Post-merge review findings closed
 
@@ -753,10 +754,10 @@ calibration envelope rather than invented. `judge-meta-check` refuses identity
 substitution and returns the stable gate-failure exit when a bound holdout
 exceeds the envelope.
 
-At this commit the deterministic mechanism and frozen inputs are implemented;
-the priced DeepSeek calibration/holdout and OpenAI holdout remain explicit live
-steps requiring 18 + 18 + 18 authorized calls and the corresponding
-credentials. No result is claimed before those artifacts exist.
+The priced DeepSeek calibration and predeclared holdout were run on 2026-09-11;
+their exact results are recorded below. The byte-equivalent OpenAI holdout
+remains an explicit 18-call live step because no usable OpenAI credential was
+available. No OpenAI result is claimed.
 
 Two focused mutations prove the new tests reach their named hazards. Removing
 the one final ceiling made a non-zero sub-microUSD call publish computed zero;
@@ -780,7 +781,39 @@ all other packages except the same two unrelated nested-sandbox-sensitive
 `localexec` tests already documented above: the sandbox exposes filesystem and
 network containment when the test expects no backend, and the cgroup fixture
 observes PID 2 rather than the host PID. Neither failing package has a branch
-diff. No live provider call was made.
+diff. This verification preceded the separately recorded live calls below.
+
+### DeepSeek calibrated holdout result
+
+The separately authorized DeepSeek V4 Pro calibration completed 18/18 calls:
+16 exact matches, zero unsafe passes, zero false fails, two unexpected
+Indeterminates, and zero overclaims. It used 17,454 input and 3,452 output
+tokens. The peak-rate price table computes a conservative upper-bound cost of
+36,717 microUSD. The bound report is
+`eval/reports/judge-semantic-meta-v2-deepseek-calibration-2026-09-11.json`
+(`sha256:0a4865947f0c23c04bbb2afe365e4d44fd59a9cc7bf44d7ac29f5dcc8ca109d7`).
+
+That report generated the predeclared policy in
+`eval/policies/judge-semantic-meta-v2-deepseek.json`
+(`sha256:67b03524dcce216f60c32be772bc2706844611946e7fbc7bfd788019ee6feac2`).
+The policy copied the observed envelope without manual adjustment: at least 16
+exact matches and at most two unexpected Indeterminates, with all other
+directional errors capped at zero.
+
+The disjoint holdout then completed its own 18/18 calls: 15 exact matches,
+zero unsafe passes, zero false fails, three unexpected Indeterminates, and zero
+overclaims. It used 17,466 input and 3,515 output tokens, with a conservative
+peak-rate upper bound of 36,982 microUSD. The report is
+`eval/reports/judge-semantic-meta-v2-deepseek-validation-2026-09-11.json`
+(`sha256:7d1b66506e8a8ae52556319961feb73f60ea88aad7ad8f6641a0b2067937f987`).
+
+The precommitted gate correctly **failed**: exact matches fell below calibration
+and unexpected Indeterminates exceeded calibration. The result is preserved at
+`eval/reports/judge-semantic-meta-v2-deepseek-policy-result-2026-09-11.json`
+(`sha256:0231439022012c613d36acc97ca36eb52b8fa4616496a80fc5f30d83bb9e08ef`).
+No limit or label was changed after observing the holdout. Across both batches
+there were no unsafe passes, but this model/config has not demonstrated the
+calibrated exact-match stability needed to pass its own empirical policy.
 
 ## MCP suite follow-on
 
@@ -822,12 +855,12 @@ validation follow-up recorded below closes that exact frozen Cell's claim.
 ## Known limitations and open blockers (not GA)
 
 See the contract document's own [Maturity and GA blockers](evaluation.md#maturity-and-ga-blockers)
-section. Summarized: real-model live-judge sample size, broader reviewed cases
-for semantic meta-evaluation, provider breadth
-beyond one OpenAI-compatible adapter, and calibrated policies beyond the exact
-MCP Cell are explicitly outstanding.
-MCP is now an optional explicit suite, never a runner prerequisite; its live
-model-resistance result is still outstanding.
+section. Summarized: more real-model live-judge samples, broader reviewed cases
+for semantic meta-evaluation, a successful independent Judge holdout, provider
+breadth beyond one OpenAI-compatible adapter, and calibrated policies beyond
+the exact MCP Cell are explicitly outstanding. MCP is an optional explicit
+suite, never a runner prerequisite; its exact frozen DeepSeek Cell now has a
+separate successful calibration and validation result.
 
 The variance blocker changed shape on 2026-09-05 without closing. The
 mechanism is implemented and verified and this ledger records its evidence.
