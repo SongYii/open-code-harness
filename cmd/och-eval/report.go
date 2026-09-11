@@ -108,7 +108,7 @@ func reportCommand(args []string, stdout, stderr io.Writer) int {
 	}
 
 	policy, policyDigest, wantVariance, varianceErr := loadVariancePolicy(
-		varianceInputs{policyPath: *variancePolicyPath, scorerID: *varianceScorer}, stderr)
+		varianceInputs{policyPath: *variancePolicyPath, scorerID: *varianceScorer}, set.VariancePolicyDigest, stderr)
 	if varianceErr != nil {
 		fmt.Fprintln(stderr, "och-eval report:", varianceErr)
 		return exitValidation
@@ -140,6 +140,12 @@ func reportCommand(args []string, stdout, stderr io.Writer) int {
 		reportEntry := reportAttemptEntry{AttemptID: eval.AttemptID(entry.Name()), RecoveryState: string(state)}
 		if state == eval.RecoveryTerminal {
 			directories := eval.AttemptRootDirectoriesFor(attemptRoot)
+			if wantVariance {
+				if bindingErr := verifyFrozenEvalSet(directories, set); bindingErr != nil {
+					fmt.Fprintln(stderr, "och-eval report: variance:", bindingErr)
+					return exitValidation
+				}
+			}
 			result, assembleErr := eval.AssembleEvaluationResult(directories)
 			if assembleErr != nil {
 				reportEntry.Error = assembleErr.Error()

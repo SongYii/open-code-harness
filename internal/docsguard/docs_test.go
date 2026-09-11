@@ -12,6 +12,7 @@
 package docsguard_test
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -628,6 +629,23 @@ func TestMCPJudgeExampleDigestsAndMechanism(t *testing.T) {
 	if set.JudgeConfigDigest != digest {
 		t.Fatalf("MCP live set pins judgeConfigDigest %q, but the checked-in JudgeConfig digests to %q", set.JudgeConfigDigest, digest)
 	}
+	policy, err := eval.DecodeVariancePolicy([]byte(read(t, filepath.Join(root, "eval/variance-policies/mcp-injection-live-calibration-v1.json"))))
+	if err != nil {
+		t.Fatalf("decode MCP variance policy: %v", err)
+	}
+	policyDigest, err := eval.VariancePolicyDigest(policy)
+	if err != nil {
+		t.Fatalf("VariancePolicyDigest: %v", err)
+	}
+	if set.VariancePolicyDigest != policyDigest {
+		t.Fatalf("MCP live set pins variancePolicyDigest %q, but the checked-in policy digests to %q", set.VariancePolicyDigest, policyDigest)
+	}
+	if set.RepetitionCount != policy.MinEvaluableRepetitions || set.RepetitionCount < 2 {
+		t.Fatalf("MCP calibration set repetitionCount=%d, policy minimum=%d; want the complete repeated sample", set.RepetitionCount, policy.MinEvaluableRepetitions)
+	}
+	if policy.Calibration != eval.CalibrationUncalibrated {
+		t.Fatalf("MCP calibration policy claims %q before a calibration run is accepted", policy.Calibration)
+	}
 	scenario, err := eval.DecodeScenario([]byte(read(t, filepath.Join(root, "eval/scenarios/mcp-injection-live/scenario.json"))))
 	if err != nil {
 		t.Fatalf("decode MCP Scenario: %v", err)
@@ -653,5 +671,48 @@ func TestMCPJudgeExampleDigestsAndMechanism(t *testing.T) {
 	}
 	if len(subject.MCPServers) == 0 {
 		t.Fatal("MCP live Subject freezes no MCP server configuration")
+	}
+	subjectDigest, err := eval.SubjectDigest(subject)
+	if err != nil {
+		t.Fatalf("SubjectDigest: %v", err)
+	}
+	if set.Subjects[0].Digest != subjectDigest {
+		t.Fatalf("MCP live set pins subject digest %q, but the checked-in Subject digests to %q", set.Subjects[0].Digest, subjectDigest)
+	}
+
+	validationSet, err := eval.DecodeEvalSet([]byte(read(t, filepath.Join(root, "eval/sets/mcp-injection-live-validation.example.json"))))
+	if err != nil {
+		t.Fatalf("decode MCP validation EvalSet: %v", err)
+	}
+	calibratedPolicy, err := eval.DecodeVariancePolicy([]byte(read(t, filepath.Join(root, "eval/variance-policies/mcp-injection-live-v1.json"))))
+	if err != nil {
+		t.Fatalf("decode calibrated MCP variance policy: %v", err)
+	}
+	calibratedDigest, err := eval.VariancePolicyDigest(calibratedPolicy)
+	if err != nil {
+		t.Fatalf("calibrated VariancePolicyDigest: %v", err)
+	}
+	if validationSet.VariancePolicyDigest != calibratedDigest {
+		t.Fatalf("MCP validation set pins variancePolicyDigest %q, policy digests to %q", validationSet.VariancePolicyDigest, calibratedDigest)
+	}
+	if validationSet.RepetitionCount != calibratedPolicy.MinEvaluableRepetitions {
+		t.Fatalf("MCP validation repetitions=%d, calibrated policy minimum=%d", validationSet.RepetitionCount, calibratedPolicy.MinEvaluableRepetitions)
+	}
+	reportPath := filepath.Join(root, "eval/reports/mcp-injection-live-calibration-2026-09-11.json")
+	reportBytes, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("read calibration report: %v", err)
+	}
+	reportDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(reportBytes))
+	wantCitation := "eval/reports/mcp-injection-live-calibration-2026-09-11.json " + reportDigest
+	if calibratedPolicy.Calibration != eval.CalibrationCalibrated || calibratedPolicy.CalibratedFrom != wantCitation {
+		t.Fatalf("calibrated policy citation = %q, want %q", calibratedPolicy.CalibratedFrom, wantCitation)
+	}
+	validationReport, err := os.ReadFile(filepath.Join(root, "eval/reports/mcp-injection-live-validation-2026-09-11.json"))
+	if err != nil {
+		t.Fatalf("read validation report: %v", err)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(validationReport)); got != "bec6e3d7c558916407d1eced15c30c3dfd8368e37c2df68fa51d951960a77db0" {
+		t.Fatalf("MCP validation report digest = %s; update the evidence ledger and this pin together", got)
 	}
 }

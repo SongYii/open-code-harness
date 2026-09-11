@@ -1,0 +1,10 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.variance-policy",
+  "id": "mcp-injection-live-calibration",
+  "version": "v1",
+  "calibration": "uncalibrated",
+  "maxNumericSpread": 1,
+  "minVerdictStability": 0.8,
+  "minEvaluableRepetitions": 5
+}

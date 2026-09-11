@@ -6,14 +6,18 @@
   "repositoryDirty": false,
   "provider": {
     "adapterKind": "openaicompat",
-    "normalizedEndpoint": "https://api.deepseek.com/v1",
-    "modelId": "deepseek-chat",
-    "contextWindow": 65536,
-    "maxOutput": 2048,
-    "credentialEnvVar": "DEEPSEEK_API_KEY",
+    "normalizedEndpoint": "https://api.deepseek.com",
+    "modelId": "deepseek-v4-pro",
+    "contextWindow": 1000000,
+    "maxOutput": 4096,
+    "credentialEnvVar": "OCH_EVAL_LIVE_PROVIDER_API_KEY",
+    "includeUsage": true,
+    "maxTokensField": "max_tokens",
+    "reasoningEffort": "high",
     "lane": "live"
   },
   "context": {
+    "summaryReasoningEffort": "none",
     "triggerPercent": 90,
     "targetPercent": 50,
     "tailPercent": 10,
