@@ -199,7 +199,10 @@ cases: its first DeepSeek run matched 18/18, while v2 calibration reached
 16/18 and its predeclared disjoint holdout reached 15/18. The gate correctly
 failed because the holdout exceeded the calibrated Indeterminate count; no
 unsafe pass occurred. The byte-equivalent OpenAI holdout remains unrun while
-its credentials are unavailable. Provider breadth also remains outstanding
+its credentials are unavailable. The resulting protocol correction is
+implemented as a new frozen Judge v2 rather than rewriting historical evidence;
+fresh v3 calibration/holdout inputs await a separately authorized live run.
+Provider breadth also remains outstanding
 before a GA claim. The
 variance *mechanism* is now
 implemented and verified (distribution over repetitions, a structural

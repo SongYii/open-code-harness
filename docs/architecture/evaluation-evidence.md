@@ -816,6 +816,41 @@ No limit or label was changed after observing the holdout. Across both batches
 there were no unsafe passes, but this model/config has not demonstrated the
 calibrated exact-match stability needed to pass its own empirical policy.
 
+### Quality Judge v2 correction and fresh v3 blind inputs
+
+Inspection of the mismatches found a protocol ambiguity. In several cases the
+model's rationale and criterion status correctly said Fail, but it also placed
+the two disagreeing paths in v1's broadly named `contradictoryEvidence` field.
+Production correctly treats that field as an unresolved conflict and therefore
+overrode the aggregate to Indeterminate. In the short successful case, the
+model invented a possible larger source file despite both supplied records
+being untruncated.
+
+The correction does not edit the frozen v1 prompt. A separately identified and
+digested `och_quality_judge_v2` renames the wire field to
+`unresolvedContradictoryEvidence`, explains that resolved contradictions can
+prove Fail, and declares the supplied evidence boundary authoritative for the
+judgement. Per-version strict decoding rejects the old ambiguous field under
+v2. Tests drive all three meaningful paths: a resolved contradiction remains
+Fail, a genuinely unresolved conflict becomes Indeterminate, and a v1 field in
+a v2 response is rejected.
+
+The already observed v2 cases are not reused as validation. Six fresh
+calibration and six fresh holdout cases are checked in as v3, each repeated
+three times. A contract test proves their IDs do not overlap any v1/v2 case,
+the DeepSeek/OpenAI holdouts are identical, every set/config/price digest binds,
+and a keyless caller traverses the exact production v2 prompt/decoder path.
+No v3 live result is claimed yet: the earlier temporary DeepSeek credential was
+deleted, and OpenAI remains unavailable.
+
+Two restored mutations prove the new guards reach the named risks. Renaming
+v2's wire field back to `contradictoryEvidence` made
+`TestRunJudgeV2RejectsTheAmbiguousV1ContradictionField` fail because the legacy
+field was accepted. Reusing v2's `approved-sensitive-change` ID in both v3
+provider holdouts preserved their cross-provider equality but made
+`TestCheckedInJudgeMetaV3UsesFreshCasesAndEquivalentProviderHoldouts` fail and
+name the collision. Both mutations were restored before final verification.
+
 ## MCP suite follow-on
 
 Commit `65dcd87` adds the MCP suite excluded from the original milestone-10

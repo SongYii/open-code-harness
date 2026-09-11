@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -21,12 +22,31 @@ import (
 //go:embed prompts/quality_judge_v1.md
 var QualityJudgePromptV1 string
 
+//go:embed prompts/quality_judge_v2.md
+var QualityJudgePromptV2 string
+
 // QualityJudgePromptV1Digest is the frozen prompt's own SHA-256, so
 // JudgeConfig.PromptDigest can be set to it without every caller
 // re-hashing the same constant text.
 func QualityJudgePromptV1Digest() Digest {
 	sum := sha256.Sum256([]byte(QualityJudgePromptV1))
 	return Digest("sha256:" + hex.EncodeToString(sum[:]))
+}
+
+func QualityJudgePromptV2Digest() Digest {
+	sum := sha256.Sum256([]byte(QualityJudgePromptV2))
+	return Digest("sha256:" + hex.EncodeToString(sum[:]))
+}
+
+func resolveQualityJudgePrompt(id string) (string, Digest, bool) {
+	switch id {
+	case QualityJudgePromptID:
+		return QualityJudgePromptV1, QualityJudgePromptV1Digest(), true
+	case QualityJudgePromptV2ID:
+		return QualityJudgePromptV2, QualityJudgePromptV2Digest(), true
+	default:
+		return "", "", false
+	}
 }
 
 const (
@@ -75,11 +95,26 @@ type judgeRawOutput struct {
 	Rationale             string              `json:"rationale"`
 }
 
+// judgeRawOutputV2 gives the ambiguous v1 contradiction field its actual
+// fail-closed meaning. A contradiction that proves failure is cited through
+// EvidenceReferences; only an unresolved conflict belongs here.
+type judgeRawOutputV2 struct {
+	Verdict                         string              `json:"verdict"`
+	Score                           *float64            `json:"score"`
+	Criteria                        []judgeRawCriterion `json:"criteria"`
+	EvidenceReferences              []string            `json:"evidenceReferences"`
+	MissingEvidence                 []string            `json:"missingEvidence,omitempty"`
+	UnresolvedContradictoryEvidence []string            `json:"unresolvedContradictoryEvidence,omitempty"`
+	Rationale                       string              `json:"rationale"`
+}
+
 type judgeRawCriterion struct {
 	ID     string   `json:"id"`
 	Status string   `json:"status"`
 	Score  *float64 `json:"score,omitempty"`
 }
+
+var errJudgeTrailingData = errors.New("judge output trailing data")
 
 // indeterminateJudgeOutcome is the shared shape every fail-closed exit
 // from RunJudge below returns: a bounded, redacted reason as Rationale,
@@ -147,19 +182,21 @@ func runJudgeWithBundle(ctx context.Context, bundle judgeEvidenceBundle, config 
 		knownCriteria[criterion.ID] = true
 	}
 
-	raw, usage, callErr := caller(ctx, QualityJudgePromptV1, bundle.Text)
+	promptText, _, ok := resolveQualityJudgePrompt(config.Prompt.ID)
+	if !ok {
+		return JudgeOutcome{}, fmt.Errorf("eval: run judge: unresolved prompt %q", config.Prompt.ID)
+	}
+	raw, usage, callErr := caller(ctx, promptText, bundle.Text)
 	if callErr != nil {
 		return indeterminateJudgeOutcome(fmt.Sprintf("judge call failed: %s", callErr.Error()), usage), nil
 	}
 
-	var output judgeRawOutput
-	decoder := json.NewDecoder(strings.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&output); err != nil {
+	output, err := decodeJudgeRawOutput(raw, config.Prompt.ID)
+	if err != nil {
+		if errors.Is(err, errJudgeTrailingData) {
+			return indeterminateJudgeOutcome("judge output carried trailing data after its own JSON object", usage), nil
+		}
 		return indeterminateJudgeOutcome("judge output failed to decode as the required strict JSON shape", usage), nil
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return indeterminateJudgeOutcome("judge output carried trailing data after its own JSON object", usage), nil
 	}
 
 	switch ScoreVerdict(output.Verdict) {
@@ -274,6 +311,34 @@ func runJudgeWithBundle(ctx context.Context, bundle judgeEvidenceBundle, config 
 		EvidenceReferences: output.EvidenceReferences, MissingEvidence: output.MissingEvidence,
 		ContradictoryEvidence: output.ContradictoryEvidence, Rationale: rationale, Usage: usage,
 	}, nil
+}
+
+func decodeJudgeRawOutput(raw, promptID string) (judgeRawOutput, error) {
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var output judgeRawOutput
+	switch promptID {
+	case QualityJudgePromptID:
+		if err := decoder.Decode(&output); err != nil {
+			return judgeRawOutput{}, err
+		}
+	case QualityJudgePromptV2ID:
+		var v2 judgeRawOutputV2
+		if err := decoder.Decode(&v2); err != nil {
+			return judgeRawOutput{}, err
+		}
+		output = judgeRawOutput{
+			Verdict: v2.Verdict, Score: v2.Score, Criteria: v2.Criteria,
+			EvidenceReferences: v2.EvidenceReferences, MissingEvidence: v2.MissingEvidence,
+			ContradictoryEvidence: v2.UnresolvedContradictoryEvidence, Rationale: v2.Rationale,
+		}
+	default:
+		return judgeRawOutput{}, fmt.Errorf("unknown prompt %q", promptID)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return judgeRawOutput{}, errJudgeTrailingData
+	}
+	return output, nil
 }
 
 // judgeEvidenceEntry is one bounded, redacted, path-labeled excerpt

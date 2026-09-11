@@ -21,12 +21,11 @@ const SchemaJudgeConfig = "och.eval.judge-config"
 // can introduce on its own.
 const JudgeAdapterOpenAICompat = "openaicompat"
 
-// QualityJudgePromptID is the frozen prompt asset's own stable ID. A
-// JudgeConfig must name exactly this prompt: the judge contract is
-// defined by prompts/quality_judge_v1.md's own instructions, and a
-// config that pointed at different text would produce Scores whose
-// meaning could not be reconstructed from this repository.
+// QualityJudgePromptID remains the v1 ID for source compatibility. New
+// configurations should use QualityJudgePromptV2ID; both assets remain frozen
+// so historical Score identities can always be reconstructed.
 const QualityJudgePromptID = "och_quality_judge_v1"
+const QualityJudgePromptV2ID = "och_quality_judge_v2"
 
 // maxJudgeRubricBytes bounds one criterion's own rubric. A rubric is
 // trusted, operator-authored text rendered outside the untrusted
@@ -244,11 +243,12 @@ func validateJudgeEndpoint(endpoint string) error {
 }
 
 func (prompt JudgePrompt) validate() error {
-	if prompt.ID != QualityJudgePromptID {
-		return fmt.Errorf("%w: prompt.id must be %q, not %q", errInvalidDocument, QualityJudgePromptID, prompt.ID)
+	_, expected, ok := resolveQualityJudgePrompt(prompt.ID)
+	if !ok {
+		return fmt.Errorf("%w: prompt.id %q is not a frozen quality judge prompt", errInvalidDocument, prompt.ID)
 	}
-	if expected := QualityJudgePromptV1Digest(); prompt.Digest != expected {
-		return fmt.Errorf("%w: prompt.digest %q does not identify %s", errInvalidDocument, prompt.Digest, QualityJudgePromptID)
+	if prompt.Digest != expected {
+		return fmt.Errorf("%w: prompt.digest %q does not identify %s", errInvalidDocument, prompt.Digest, prompt.ID)
 	}
 	return nil
 }

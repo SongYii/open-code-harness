@@ -266,6 +266,21 @@ bound. The OpenAI holdout uses identical cases with its separately bound dated
 model and standard synchronous price table; this compares provider services,
 not adapter protocols.
 
+The observed v2 holdout failed its frozen envelope and exposed an output-field
+ambiguity rather than an unsafe pass. Historical v1 configs and reports remain
+unchanged. New v3 configs select `och_quality_judge_v2`: resolved contradictions
+that establish failure are ordinary `evidenceReferences`, while only conflicts
+that prevent a determinate decision use `unresolvedContradictoryEvidence`.
+The prompt also treats an untruncated record as complete as supplied, even when
+short. V3 uses twelve entirely new cases; do not reuse the observed v2 holdout
+to claim the correction works.
+
+The next live sequence is the same calibrate-then-check workflow, using
+`semantic-calibration-v3-deepseek.json`,
+`semantic-validation-v3-deepseek.json`, and
+`semantic-meta-judge-deepseek-v3.json`. It remains 18 + 18 paid calls and must
+not run until separately authorized with a temporary credential.
+
 Two more refusals are worth knowing about:
 
 - **Insufficient evidence never passes.** If a criterion declares an

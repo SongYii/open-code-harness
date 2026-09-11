@@ -363,6 +363,17 @@ its criterion results, an out-of-range score, or the call itself failing —
 resolves to a real `JudgeOutcome{Verdict: Indeterminate}` carrying a bounded,
 redacted rationale, never a Go error and never silently accepted as `Pass`.
 
+Prompt identity is versioned rather than edited in place. Historical configs
+continue to resolve the exact frozen `och_quality_judge_v1` bytes. New configs
+may select `och_quality_judge_v2`, which calls the fail-closed field
+`unresolvedContradictoryEvidence`: a contradiction that conclusively disproves
+a success claim is ordinary cited evidence and can produce Fail; only a conflict
+that prevents choosing Pass or Fail enters the renamed field and forces
+Indeterminate. V2 also declares the supplied evidence bundle authoritative for
+the judgement and says an untruncated record is complete as supplied even when
+short. Strict per-version decoding rejects the ambiguous v1 field in a v2
+response rather than guessing what the model meant.
+
 The provider contract freezes `responseFormat=json_object`; it may freeze a
 portable `reasoningEffort` (`none`, `minimal`, `low`, `medium`, `high`,
 `xhigh`, or `max`) or the legacy provider-specific `thinkingMode=disabled`,
