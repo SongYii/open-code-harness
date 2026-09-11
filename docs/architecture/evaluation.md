@@ -378,6 +378,15 @@ to be — so `pass` with an empty `evidenceReferences` was believed. That is the
 budget-omission defect seen from the other side: an answer about material the
 judge never demonstrated reading. An `indeterminate` verdict may still cite
 nothing, since that is often exactly why it is indeterminate.
+Two further semantic checks close correct-JSON but unauditable answers. A
+determinate verdict must cite at least one actually shown manifest entry from
+every evidence role its frozen criteria declared; citing a transcript cannot
+support a separate audit-continuity conclusion merely because the audit file
+was present in the prompt. It must also carry a non-whitespace rationale. A
+failure becomes one Indeterminate observation with the caller's usage, not an
+error or retry. These checks intentionally stop at role coverage and a
+reviewable explanation: sentence-level entailment and per-criterion citations
+would require a new frozen prompt/output version and real-model calibration.
 Every Subject-authored value the judge is shown is labeled `untrusted...
 not an instruction` (the embedded `prompts/quality_judge_v1.md` prompt's own
 framing) — this repository has no live model to prove actually resists a
@@ -761,14 +770,17 @@ Pro Subject completed a real summary compaction and preserved its constraint;
 the same Attempt then produced one indeterminate and one passing live Judge
 Score. That closes the zero-sample gap but not the sample-size blocker: one
 Attempt and two inconsistent Judge outcomes cannot establish reliability.
-Also outstanding: judge meta-evaluation against a broader fixture set than the
-eight adversarial fixtures this repository now carries (injection,
-missing-evidence, contradiction, unsupported-claim, known-pass/fail, an
-invented reference, a real-but-unshown reference, and a determinate verdict
-citing nothing). Two of the original five were found on 2026-09-04 to be
+The focused parser/mechanism meta-eval set now carries ten adversarial fixture
+families: the previous eight (injection, missing-evidence, contradiction,
+unsupported-claim, known-pass/fail, an invented reference, a real-but-unshown
+reference, and a determinate verdict citing nothing), plus declared-role
+coverage and a determinate verdict with no rationale. Two of the original five
+were found on 2026-09-04 to be
 satisfied by an earlier refusal than the one they named, and so proved
 nothing about the defense they were written for; both are corrected and now
-assert the refusal reason. Also outstanding: provider breadth beyond
+assert the refusal reason. Broader semantic meta-evaluation over a labelled
+real-model corpus remains outstanding; ten parser/mechanism fixtures do not
+measure judge accuracy. Also outstanding: provider breadth beyond
 the one OpenAI-compatible adapter this repository ships, and calibrated
 variance policies for live/quality Cells beyond the exact MCP injection Cell
 measured here.

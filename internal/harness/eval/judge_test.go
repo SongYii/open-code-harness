@@ -91,14 +91,14 @@ func TestRunJudgeKnownPassFixture(t *testing.T) {
 }
 
 func TestRunJudgeKnownFailFixture(t *testing.T) {
-	reader, transcriptPath, _ := judgeTestFixture(t)
+	reader, transcriptPath, auditPath := judgeTestFixture(t)
 	caller := fixedJudgeCaller(t, judgeRawOutput{
 		Verdict: "fail",
 		Criteria: []judgeRawCriterion{
 			{ID: "quality", Status: "fail"},
 			{ID: "continuity", Status: "pass"},
 		},
-		EvidenceReferences: []string{transcriptPath},
+		EvidenceReferences: []string{transcriptPath, auditPath},
 		Rationale:          "the transcript shows the constraint was dropped",
 	})
 
@@ -108,6 +108,70 @@ func TestRunJudgeKnownFailFixture(t *testing.T) {
 	}
 	if outcome.Verdict != ScoreFail {
 		t.Fatalf("Verdict = %q, want %q", outcome.Verdict, ScoreFail)
+	}
+}
+
+// TestRunJudgeRejectsDeterminateVerdictWithoutEveryDeclaredEvidenceRole is
+// the role-coverage meta-eval fixture. A global reference list used to let a
+// judge decide both transcript quality and audit continuity while citing only
+// the transcript. A determinate answer must demonstrate that it relied on at
+// least one shown entry from every role the frozen criteria declared.
+func TestRunJudgeRejectsDeterminateVerdictWithoutEveryDeclaredEvidenceRole(t *testing.T) {
+	reader, transcriptPath, _ := judgeTestFixture(t)
+	caller := fixedJudgeCaller(t, judgeRawOutput{
+		Verdict: "fail",
+		Criteria: []judgeRawCriterion{
+			{ID: "quality", Status: "fail"},
+			{ID: "continuity", Status: "pass"},
+		},
+		EvidenceReferences: []string{transcriptPath},
+		Rationale:          "the transcript supports both conclusions",
+	})
+
+	outcome, err := RunJudge(context.Background(), reader, testJudgeConfig(), caller)
+	if err != nil {
+		t.Fatalf("RunJudge: %v", err)
+	}
+	if outcome.Verdict != ScoreIndeterminate {
+		t.Fatalf("Verdict = %q, want %q: audit continuity was decided without citing audit evidence",
+			outcome.Verdict, ScoreIndeterminate)
+	}
+	if !strings.Contains(outcome.Rationale, `cited no evidence from required role "audit"`) {
+		t.Fatalf("refused for the wrong reason: %q", outcome.Rationale)
+	}
+	if outcome.Usage.InputTokens != 42 || outcome.Usage.OutputTokens != 7 {
+		t.Fatalf("Usage = %+v, want the refused call's own usage preserved", outcome.Usage)
+	}
+}
+
+// TestRunJudgeRejectsDeterminateVerdictWithoutRationale is the explanation-
+// free meta-eval fixture. The prompt requires a bounded, specific rationale;
+// an empty string is structurally valid JSON but provides no reviewable claim.
+func TestRunJudgeRejectsDeterminateVerdictWithoutRationale(t *testing.T) {
+	reader, transcriptPath, auditPath := judgeTestFixture(t)
+	caller := fixedJudgeCaller(t, judgeRawOutput{
+		Verdict: "pass",
+		Criteria: []judgeRawCriterion{
+			{ID: "quality", Status: "pass"},
+			{ID: "continuity", Status: "pass"},
+		},
+		EvidenceReferences: []string{transcriptPath, auditPath},
+		Rationale:          "   ",
+	})
+
+	outcome, err := RunJudge(context.Background(), reader, testJudgeConfig(), caller)
+	if err != nil {
+		t.Fatalf("RunJudge: %v", err)
+	}
+	if outcome.Verdict != ScoreIndeterminate {
+		t.Fatalf("Verdict = %q, want %q: a determinate verdict without an explanation is not reviewable",
+			outcome.Verdict, ScoreIndeterminate)
+	}
+	if !strings.Contains(outcome.Rationale, "carried no rationale") {
+		t.Fatalf("refused for the wrong reason: %q", outcome.Rationale)
+	}
+	if outcome.Usage.InputTokens != 42 || outcome.Usage.OutputTokens != 7 {
+		t.Fatalf("Usage = %+v, want the refused call's own usage preserved", outcome.Usage)
 	}
 }
 

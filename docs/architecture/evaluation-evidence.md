@@ -75,6 +75,7 @@ repository uses throughout.
 | `a04371f` | Variance 4–6 (amended) | Disclosure replaces refusal where the limit is only a guess |
 | `895ee1d` | Variance 7 | Report distribution block, baseline command, derived reliability readings |
 | `9411237` | Live DeepSeek validation | Freeze Subject wire hints through both executors, make validation failures diagnosable without model text, and tune the context-quality Scenario against real compaction |
+| `d485b58` | Judge meta-eval breadth | Require determinate verdicts to cite every declared evidence role and carry a reviewable rationale; expand the focused adversarial set from eight to ten families |
 
 ## Post-merge review findings closed
 
@@ -624,6 +625,57 @@ real-but-unshown reference (`workspace/output.txt` — a genuine manifest entry
 that no declared criterion role puts in the bundle, which is the shape a
 reference check written against the manifest instead of the bundle would
 wrongly accept), and a determinate verdict citing nothing.
+
+## Judge meta-eval: correct JSON could still be unauditable
+
+Found on 2026-09-11 by testing semantic obligations rather than adding more
+decoder shapes. The known-fail fixture judged both transcript quality and audit
+continuity but cited only the transcript; production accepted the same shape.
+Separately, a `pass` or `fail` with a whitespace-only rationale was accepted.
+Both satisfy the JSON schema while failing the prompt's evidence-only,
+reviewable-answer contract.
+
+`buildJudgeEvidenceBundle` now retains the manifest-role membership of every
+path actually shown. After reference and contradiction handling, a determinate
+answer must cite at least one shown path from every role declared by the frozen
+criteria and carry a non-whitespace rationale. Either defect becomes an
+Indeterminate outcome and preserves usage. The old known-fail fixture now cites
+both transcript and audit.
+
+This grows the focused adversarial set from eight to ten fixture families. It
+does not close broad semantic meta-evaluation: labelled real-model outputs are
+still needed to measure false passes, false fails, and prompt-injection
+resistance rather than merely parser/mechanism invariants.
+
+Both new fixtures were proven mechanism-specific by mutation:
+
+| Mutation | Observed failure |
+| --- | --- |
+| Disable only the missing-role refusal | `TestRunJudgeRejectsDeterminateVerdictWithoutEveryDeclaredEvidenceRole` accepts `Fail` and fails at its verdict assertion |
+| Disable only the blank-rationale refusal | `TestRunJudgeRejectsDeterminateVerdictWithoutRationale` accepts `Pass` and fails at its verdict assertion |
+
+Verification on the implementation worktree:
+
+```text
+$ go test ./internal/harness/eval ./internal/docsguard -count=1
+ok   github.com/SongYii/open-code-harness/internal/harness/eval
+ok   github.com/SongYii/open-code-harness/internal/docsguard
+
+$ go vet ./...
+(pass)
+
+$ go test -race ./... -count=1
+all packages except internal/harness/adapters/localexec passed;
+internal/harness/eval passed in 325.920s
+```
+
+The full race command is not recorded as green. `localexec` failed two tests
+unchanged by this branch (`TestRunKillsOnResourceLimitSignal` could not observe
+the synthetic cgroup PID registration, and
+`TestEnforcementReportsNoneWithoutAPlatformBackend` ran on a host reporting
+full filesystem/network enforcement). Running that package alone, with and
+without `-race`, reproduced the same two failures; the branch has no diff under
+`internal/harness/adapters/localexec`.
 
 ## MCP suite follow-on
 
