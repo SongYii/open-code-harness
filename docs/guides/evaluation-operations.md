@@ -198,6 +198,37 @@ Pass `-price-table PATH` to get a computed cost. A JudgeConfig that pins a
 a Score claiming a computed cost against a table nobody can identify would
 be worse than one honestly reporting the price as unavailable.
 
+The file is a `PriceTable`, and its shape is:
+
+```json
+{
+  "currency": "USD",
+  "entries": [
+    {
+      "modelId": "replace-with-the-exact-model-id-the-provider-returns",
+      "inputMicrounitsPerToken": 0,
+      "outputMicrounitsPerToken": 0,
+      "cachedInputMicrounitsPerToken": 0
+    }
+  ]
+}
+```
+
+A microunit is 1e-6 of the declared `currency`, and every rate is an integer,
+so no cost is ever a rounded float. `modelId` must match what the provider
+reports, not what you asked for.
+
+**No price table is checked in, and that is deliberate.** Real rates are a
+claim about the world that this repository cannot verify and that goes stale
+without anything here noticing — the same reason the variance policy ships no
+default limits. A model missing from `entries` is how "price unavailable" is
+represented; there is no zero-value fallback, so an absent price is reported
+as `unavailable` rather than as a computed zero. A model that genuinely costs
+nothing is written with explicit zero rates and reports `computed`.
+
+This is why the 2026-09-08 live run recorded its cost as unavailable: no table
+was supplied, which is the mechanism working rather than a gap in it.
+
 ## Credentials and privacy
 
 A fixture-lane run never reads a real credential — `och-eval run` sets a
