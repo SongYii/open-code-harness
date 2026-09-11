@@ -283,6 +283,15 @@ holdout gate failed at 15/18 because one short-record Pass label was judged
 Indeterminate three times. Do not edit or reuse those observed cases for a new
 blind claim. OpenAI remains unrun.
 
+V4 adds a preflight rule for the human labels themselves. Its sets declare
+`labelReviewPolicy: evidence-v1`; each label names exact supporting excerpts
+and a counterfactual. Before any live call, validation checks every quote and
+path, requires every evidence role to be covered, and requires Pass labels to
+show the task, a concrete completion fact, and a named verification fact. This
+does not certify that a reviewer is right, but it makes a weak assumption
+visible and digest-bound. V4 uses fresh cases and must not be replaced by an
+edited v3 set.
+
 Two more refusals are worth knowing about:
 
 - **Insufficient evidence never passes.** If a criterion declares an

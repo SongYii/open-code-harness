@@ -5,25 +5,41 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 
 	"github.com/SongYii/open-code-harness/internal/harness/redact"
 )
 
 const (
-	SchemaJudgeMetaSet    = "och.eval.judge-meta-set"
-	SchemaJudgeMetaReport = "och.eval.judge-meta-report"
+	SchemaJudgeMetaSet             = "och.eval.judge-meta-set"
+	SchemaJudgeMetaReport          = "och.eval.judge-meta-report"
+	JudgeMetaLabelReviewEvidenceV1 = "evidence-v1"
 
-	maxJudgeMetaCases       = 256
-	maxJudgeMetaRepetitions = 20
-	maxJudgeMetaLabelBytes  = 4096
+	maxJudgeMetaCases           = 256
+	maxJudgeMetaRepetitions     = 20
+	maxJudgeMetaLabelBytes      = 4096
+	maxJudgeMetaReviewFactBytes = 1024
 )
 
 // JudgeMetaLabel is trusted, human-reviewed ground truth. Rationale is review
 // evidence for the label and is deliberately never rendered into a judge
 // request.
 type JudgeMetaLabel struct {
-	Verdict   ScoreVerdict `json:"verdict"`
-	Rationale string       `json:"rationale"`
+	Verdict   ScoreVerdict          `json:"verdict"`
+	Rationale string                `json:"rationale"`
+	Review    *JudgeMetaLabelReview `json:"review,omitempty"`
+}
+
+type JudgeMetaLabelReview struct {
+	Facts          []JudgeMetaReviewFact `json:"facts"`
+	Counterfactual string                `json:"counterfactual"`
+}
+
+type JudgeMetaReviewFact struct {
+	Kind         string `json:"kind"`
+	Claim        string `json:"claim"`
+	EvidencePath string `json:"evidencePath"`
+	ExactExcerpt string `json:"exactExcerpt"`
 }
 
 // JudgeMetaEvidence is one synthetic manifest-like record shown to the judge.
@@ -48,6 +64,7 @@ type JudgeMetaSet struct {
 	Version           string          `json:"version"`
 	JudgeConfigDigest Digest          `json:"judgeConfigDigest"`
 	RepetitionCount   int             `json:"repetitionCount"`
+	LabelReviewPolicy string          `json:"labelReviewPolicy,omitempty"`
 	Cases             []JudgeMetaCase `json:"cases"`
 }
 
@@ -85,8 +102,11 @@ func (set JudgeMetaSet) Validate() error {
 		return fmt.Errorf("%w: cases must contain between 1 and %d entries", errInvalidDocument, maxJudgeMetaCases)
 	}
 	seenCases := make(map[string]bool, len(set.Cases))
+	if set.LabelReviewPolicy != "" && set.LabelReviewPolicy != JudgeMetaLabelReviewEvidenceV1 {
+		return fmt.Errorf("%w: unsupported labelReviewPolicy %q", errInvalidDocument, set.LabelReviewPolicy)
+	}
 	for index, metaCase := range set.Cases {
-		if err := metaCase.validate(index); err != nil {
+		if err := metaCase.validate(index, set.LabelReviewPolicy); err != nil {
 			return err
 		}
 		if seenCases[metaCase.ID] {
@@ -97,7 +117,7 @@ func (set JudgeMetaSet) Validate() error {
 	return nil
 }
 
-func (metaCase JudgeMetaCase) validate(index int) error {
+func (metaCase JudgeMetaCase) validate(index int, reviewPolicy string) error {
 	if !hasText(metaCase.ID) {
 		return fmt.Errorf("%w: cases %d: id is required", errInvalidDocument, index)
 	}
@@ -139,6 +159,69 @@ func (metaCase JudgeMetaCase) validate(index int) error {
 	}
 	if total > maxJudgeEvidenceBundleBytes {
 		return fmt.Errorf("%w: cases %d evidence exceeds %d-byte bundle limit", errInvalidDocument, index, maxJudgeEvidenceBundleBytes)
+	}
+	if reviewPolicy == "" {
+		if metaCase.Label.Review != nil {
+			return fmt.Errorf("%w: cases %d: label review requires labelReviewPolicy", errInvalidDocument, index)
+		}
+		return nil
+	}
+	if err := metaCase.validateEvidenceReview(index); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (metaCase JudgeMetaCase) validateEvidenceReview(index int) error {
+	review := metaCase.Label.Review
+	if review == nil || len(review.Facts) == 0 || !hasText(review.Counterfactual) || len(review.Counterfactual) > maxJudgeMetaLabelBytes {
+		return fmt.Errorf("%w: cases %d: evidence-v1 review requires facts and a bounded counterfactual", errInvalidDocument, index)
+	}
+	evidenceByPath := make(map[string]JudgeMetaEvidence, len(metaCase.Evidence))
+	roles := make(map[string]bool)
+	for _, evidence := range metaCase.Evidence {
+		evidenceByPath[evidence.Path] = evidence
+		roles[evidence.Role] = true
+	}
+	coveredRoles := make(map[string]bool)
+	kinds := make(map[string]bool)
+	seenFacts := make(map[string]bool)
+	allowedKinds := map[string]bool{"task": true, "completion": true, "verification": true, "violation": true, "uncertainty": true}
+	for factIndex, fact := range review.Facts {
+		if !allowedKinds[fact.Kind] || !hasText(fact.Claim) || len(fact.Claim) > maxJudgeMetaReviewFactBytes ||
+			!hasText(fact.ExactExcerpt) || len(fact.ExactExcerpt) > maxJudgeMetaReviewFactBytes {
+			return fmt.Errorf("%w: cases %d review fact %d is invalid", errInvalidDocument, index, factIndex)
+		}
+		evidence, ok := evidenceByPath[fact.EvidencePath]
+		if !ok || !strings.Contains(evidence.Text, fact.ExactExcerpt) {
+			return fmt.Errorf("%w: cases %d review fact %d does not quote its named evidence", errInvalidDocument, index, factIndex)
+		}
+		identity := fact.Kind + "\x00" + fact.EvidencePath + "\x00" + fact.ExactExcerpt
+		if seenFacts[identity] {
+			return fmt.Errorf("%w: cases %d repeats a review fact", errInvalidDocument, index)
+		}
+		seenFacts[identity] = true
+		kinds[fact.Kind] = true
+		coveredRoles[evidence.Role] = true
+	}
+	for role := range roles {
+		if !coveredRoles[role] {
+			return fmt.Errorf("%w: cases %d review cites no evidence from role %q", errInvalidDocument, index, role)
+		}
+	}
+	requiredKinds := []string{"task"}
+	switch metaCase.Label.Verdict {
+	case ScorePass:
+		requiredKinds = append(requiredKinds, "completion", "verification")
+	case ScoreFail:
+		requiredKinds = append(requiredKinds, "violation")
+	case ScoreIndeterminate:
+		requiredKinds = append(requiredKinds, "uncertainty")
+	}
+	for _, kind := range requiredKinds {
+		if !kinds[kind] {
+			return fmt.Errorf("%w: cases %d %s review requires a %q fact", errInvalidDocument, index, metaCase.Label.Verdict, kind)
+		}
 	}
 	return nil
 }

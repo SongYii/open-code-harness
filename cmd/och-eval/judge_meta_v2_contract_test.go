@@ -89,6 +89,51 @@ func TestCheckedInJudgeMetaV3UsesFreshCasesAndEquivalentProviderHoldouts(t *test
 	runMetaSetKeylessAtItsLabels(t, deepseek.set, deepseek.config, &deepseek.table)
 }
 
+func TestCheckedInJudgeMetaV4RequiresReviewedFreshCases(t *testing.T) {
+	root := repoRootDir(t)
+	deepseek := loadBoundMetaFixture(t, root,
+		"judges/semantic-meta-judge-deepseek-v4.json",
+		"prices/deepseek-v4-pro-peak-2026-09-11.json",
+		"judge-meta/semantic-calibration-v4-deepseek.json")
+	deepseekHoldout := loadJudgeMetaSetAt(t, root, "judge-meta/semantic-validation-v4-deepseek.json")
+	if err := eval.VerifyJudgeMetaSetBinding(deepseekHoldout, deepseek.config); err != nil {
+		t.Fatal(err)
+	}
+	openai := loadBoundMetaFixture(t, root,
+		"judges/semantic-meta-judge-openai-v3.json",
+		"prices/openai-gpt-5.4-mini-standard-2026-09-11.json",
+		"judge-meta/semantic-validation-v4-openai.json")
+	if !reflect.DeepEqual(deepseekHoldout.Cases, openai.set.Cases) || deepseekHoldout.RepetitionCount != openai.set.RepetitionCount || deepseekHoldout.LabelReviewPolicy != openai.set.LabelReviewPolicy {
+		t.Fatal("v4 provider holdout corpora or review policies drifted")
+	}
+	if deepseek.set.LabelReviewPolicy != eval.JudgeMetaLabelReviewEvidenceV1 || deepseekHoldout.LabelReviewPolicy != eval.JudgeMetaLabelReviewEvidenceV1 {
+		t.Fatal("v4 sets do not require evidence-v1 label review")
+	}
+
+	seen := make(map[string]string)
+	sets := []struct {
+		name string
+		set  eval.JudgeMetaSet
+	}{
+		{"v1-seed", loadJudgeMetaSetAt(t, root, "judge-meta/semantic-seed-v1.json")},
+		{"v2-calibration", loadJudgeMetaSetAt(t, root, "judge-meta/semantic-calibration-v2-deepseek.json")},
+		{"v2-holdout", loadJudgeMetaSetAt(t, root, "judge-meta/semantic-validation-v2-deepseek.json")},
+		{"v3-calibration", loadJudgeMetaSetAt(t, root, "judge-meta/semantic-calibration-v3-deepseek.json")},
+		{"v3-holdout", loadJudgeMetaSetAt(t, root, "judge-meta/semantic-validation-v3-deepseek.json")},
+		{"v4-calibration", deepseek.set},
+		{"v4-holdout", deepseekHoldout},
+	}
+	for _, item := range sets {
+		for _, metaCase := range item.set.Cases {
+			if previous, ok := seen[metaCase.ID]; ok {
+				t.Fatalf("case %q appears in both %s and %s", metaCase.ID, previous, item.name)
+			}
+			seen[metaCase.ID] = item.name
+		}
+	}
+	runMetaSetKeylessAtItsLabels(t, deepseek.set, deepseek.config, &deepseek.table)
+}
+
 func runMetaSetKeylessAtItsLabels(t *testing.T, set eval.JudgeMetaSet, config eval.JudgeConfig, table *eval.PriceTable) {
 	t.Helper()
 	expected := make(map[string]eval.ScoreVerdict, len(set.Cases))

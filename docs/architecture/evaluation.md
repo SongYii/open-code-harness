@@ -374,6 +374,16 @@ the judgement and says an untruncated record is complete as supplied even when
 short. Strict per-version decoding rejects the ambiguous v1 field in a v2
 response rather than guessing what the model meant.
 
+New semantic corpora can opt into `labelReviewPolicy=evidence-v1`. Each trusted
+label then binds typed decision facts to exact excerpts in named evidence paths
+and records a counterfactual. Every evidence role must be cited. Pass labels
+require task, completion, and verification facts; Fail requires task and
+violation; Indeterminate requires task and uncertainty. The policy is optional
+only for backward compatibility: an undeclared review object or unknown policy
+is invalid. These checks make human label support inspectable and digest-bound;
+they deliberately do not claim that a mechanical schema can replace semantic
+review.
+
 The provider contract freezes `responseFormat=json_object`; it may freeze a
 portable `reasoningEffort` (`none`, `minimal`, `low`, `medium`, `high`,
 `xhigh`, or `max`) or the legacy provider-specific `thinkingMode=disabled`,

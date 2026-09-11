@@ -102,6 +102,56 @@ func TestJudgeMetaSetValidationRejectsUnsafeOrAmbiguousCorpus(t *testing.T) {
 	}
 }
 
+func reviewedJudgeMetaSet(t *testing.T) JudgeMetaSet {
+	t.Helper()
+	set := validJudgeMetaSet(t)
+	set.Version = "v4"
+	set.LabelReviewPolicy = JudgeMetaLabelReviewEvidenceV1
+	set.Cases[0].Label.Review = &JudgeMetaLabelReview{
+		Facts: []JudgeMetaReviewFact{
+			{Kind: "task", Claim: "A requested change had to be completed.", EvidencePath: "transcript/pass.txt", ExactExcerpt: "requested change"},
+			{Kind: "completion", Claim: "The turn completed.", EvidencePath: "audit/pass.txt", ExactExcerpt: "turn.completed"},
+			{Kind: "verification", Claim: "Verification passed.", EvidencePath: "audit/pass.txt", ExactExcerpt: "verification=pass"},
+		},
+		Counterfactual: "A missing edit or failed verification would change this label to fail.",
+	}
+	set.Cases[1].Label.Review = &JudgeMetaLabelReview{
+		Facts: []JudgeMetaReviewFact{
+			{Kind: "task", Claim: "Verification was required.", EvidencePath: "transcript/fail.txt", ExactExcerpt: "required verification"},
+			{Kind: "violation", Claim: "The audit records missing verification.", EvidencePath: "audit/fail.txt", ExactExcerpt: "verification=missing"},
+		},
+		Counterfactual: "A completed passing verification would remove the recorded violation.",
+	}
+	return set
+}
+
+func TestJudgeMetaEvidenceReviewPolicyBindsAuditableLabelSupport(t *testing.T) {
+	set := reviewedJudgeMetaSet(t)
+	if err := set.Validate(); err != nil {
+		t.Fatalf("reviewed set rejected: %v", err)
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*JudgeMetaSet)
+	}{
+		{"unsupported policy", func(set *JudgeMetaSet) { set.LabelReviewPolicy = "self-attested" }},
+		{"missing review", func(set *JudgeMetaSet) { set.Cases[0].Label.Review = nil }},
+		{"invented quote", func(set *JudgeMetaSet) { set.Cases[0].Label.Review.Facts[0].ExactExcerpt = "not in evidence" }},
+		{"role not covered", func(set *JudgeMetaSet) { set.Cases[0].Label.Review.Facts[0] = set.Cases[0].Label.Review.Facts[1] }},
+		{"pass lacks verification", func(set *JudgeMetaSet) { set.Cases[0].Label.Review.Facts = set.Cases[0].Label.Review.Facts[:2] }},
+		{"missing counterfactual", func(set *JudgeMetaSet) { set.Cases[0].Label.Review.Counterfactual = " " }},
+		{"review without policy", func(set *JudgeMetaSet) { set.LabelReviewPolicy = "" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := reviewedJudgeMetaSet(t)
+			test.mutate(&candidate)
+			if err := candidate.Validate(); err == nil {
+				t.Fatal("Validate() accepted an unauditable label review")
+			}
+		})
+	}
+}
+
 func TestJudgeMetaSetBindingRejectsWrongDigestRoleOrMissingRole(t *testing.T) {
 	for _, test := range []struct {
 		name   string

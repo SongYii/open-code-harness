@@ -889,6 +889,33 @@ retain the bounded, redacted JSON decoder reason (not the raw model output), so
 a future unknown-field failure is diagnosable without persisting untrusted raw
 content. The temporary credential was deleted after both batches.
 
+### Label-review policy and fresh v4 inputs
+
+The v3 failure changed the next correction target. The model did not merely
+ignore prompt language: all three repetitions identified the same missing
+substance in a human Pass label. Editing that observed label would turn a blind
+holdout into training data while pretending otherwise. The implementation
+therefore preserves v3 and adds an optional, digest-bound `evidence-v1` label
+review policy for new sets.
+
+Every reviewed label now records typed facts, exact excerpts from named case
+evidence, and a counterfactual. Validation checks quote membership, path and
+role coverage, uniqueness, bounds, and verdict-specific fact kinds. Legacy
+sets remain valid only without review objects. Six new calibration and six new
+holdout cases are frozen as v4; their Pass examples include a concrete target,
+target-specific completed action, and named passing check. Contract tests prove
+no ID overlaps v1-v3 and the DeepSeek/OpenAI holdout cases and reviews are
+identical. No v4 live result is claimed before a new authorization.
+
+Two restored mutations prove the label-review tests reach semantics rather
+than only schema shape. Bypassing exact-excerpt membership made the
+`invented quote` subtest fail because the unauditable review was accepted.
+Removing only Pass's required `verification` fact made the
+`pass lacks verification` subtest fail for the same reason. An initial attempt
+to delete the excerpt check entirely produced only an unused-import compile
+failure and therefore proved nothing about the guard; it was replaced by the
+semantic bypass above. All mutations were restored.
+
 ## MCP suite follow-on
 
 Commit `65dcd87` adds the MCP suite excluded from the original milestone-10
