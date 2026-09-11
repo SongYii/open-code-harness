@@ -476,6 +476,9 @@ func TestRunJudgeRejectsMalformedOutput(t *testing.T) {
 		if outcome.Verdict != ScoreIndeterminate {
 			t.Fatalf("Verdict = %q, want %q", outcome.Verdict, ScoreIndeterminate)
 		}
+		if !strings.Contains(outcome.Rationale, `unknown field "unexpectedField"`) {
+			t.Fatalf("Rationale = %q, want a bounded decoder diagnosis", outcome.Rationale)
+		}
 	})
 
 	t.Run("unknown verdict", func(t *testing.T) {

@@ -94,6 +94,64 @@ func TestCheckedInJudgeMetaV2DeepSeekEvidenceBinds(t *testing.T) {
 	}
 }
 
+func TestCheckedInJudgeMetaV3DeepSeekEvidenceBinds(t *testing.T) {
+	root := repoRootDir(t)
+	read := func(path, wantHash string) []byte {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(root, path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != wantHash {
+			t.Fatalf("%s digest = %s, want %s", path, got, wantHash)
+		}
+		return data
+	}
+
+	config, err := loadJudgeConfig(filepath.Join(root, "eval", "judges", "semantic-meta-judge-deepseek-v3.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	calibrationSet := loadJudgeMetaSetAt(t, root, "judge-meta/semantic-calibration-v3-deepseek.json")
+	validationSet := loadJudgeMetaSetAt(t, root, "judge-meta/semantic-validation-v3-deepseek.json")
+	calibration, err := eval.DecodeJudgeMetaReport(read("eval/reports/judge-semantic-meta-v3-deepseek-calibration-2026-09-11.json", "c8ee3b77e19b3ae516544a3495c04b78d642ac7850592ddba1ef2324aea5f170"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := eval.VerifyJudgeMetaReportBinding(calibration, calibrationSet, config); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := eval.DecodeJudgeMetaPolicy(read("eval/policies/judge-semantic-meta-v3-deepseek.json", "5d74f3328080acaa2f5fcdec4937853205ba93ab7d95f9f28b8f3505d7b72fa1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPolicy, err := eval.CalibrateJudgeMetaPolicy(calibration, validationSet, "deepseek-semantic-v3", "v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(policy, wantPolicy) {
+		t.Fatalf("checked-in v3 policy differs from calibration: got %+v want %+v", policy, wantPolicy)
+	}
+	validation, err := eval.DecodeJudgeMetaReport(read("eval/reports/judge-semantic-meta-v3-deepseek-validation-2026-09-11.json", "250e82316ecff015d910f3d75ef9b6af93489320711f520da0918b537e4a8541"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := eval.VerifyJudgeMetaReportBinding(validation, validationSet, config); err != nil {
+		t.Fatal(err)
+	}
+	wantResult, err := eval.EvaluateJudgeMetaPolicy(policy, validation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result eval.JudgeMetaPolicyResult
+	if err := json.Unmarshal(read("eval/reports/judge-semantic-meta-v3-deepseek-policy-result-2026-09-11.json", "9d69cad2a9226b1b281d7039c34757dc1aec7edf567aa4e42ebf6b8f73fd58be"), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(result, wantResult) || result.Passed {
+		t.Fatalf("checked-in v3 result = %+v, recomputed = %+v", result, wantResult)
+	}
+}
+
 func TestJudgeMetaCalibrateAndCheckCommands(t *testing.T) {
 	dir := t.TempDir()
 	calibration := checkedInLiveMetaReport(t)

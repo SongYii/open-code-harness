@@ -275,11 +275,13 @@ The prompt also treats an untruncated record as complete as supplied, even when
 short. V3 uses twelve entirely new cases; do not reuse the observed v2 holdout
 to claim the correction works.
 
-The next live sequence is the same calibrate-then-check workflow, using
+The authorized v3 live sequence used the same calibrate-then-check workflow with
 `semantic-calibration-v3-deepseek.json`,
 `semantic-validation-v3-deepseek.json`, and
-`semantic-meta-judge-deepseek-v3.json`. It remains 18 + 18 paid calls and must
-not run until separately authorized with a temporary credential.
+`semantic-meta-judge-deepseek-v3.json`. Calibration was 17/18; the frozen
+holdout gate failed at 15/18 because one short-record Pass label was judged
+Indeterminate three times. Do not edit or reuse those observed cases for a new
+blind claim. OpenAI remains unrun.
 
 Two more refusals are worth knowing about:
 

@@ -16,3 +16,11 @@
 7. When a new temporary DeepSeek credential is available, run 18 calibration
    calls, freeze the policy, then run the predeclared 18-call holdout. Run the
    identical OpenAI holdout only when its credential is available.
+
+## Execution state (2026-09-11)
+
+Steps 1–6 are complete. The authorized DeepSeek step completed: calibration
+was 17/18 and the disjoint holdout was 15/18, so the frozen gate correctly
+failed. The former contradiction ambiguity did not recur; all holdout misses
+were one sparsely evidenced Pass label, which is preserved rather than edited
+after observation. OpenAI remains unrun because its credential is unavailable.

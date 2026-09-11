@@ -196,7 +196,7 @@ func runJudgeWithBundle(ctx context.Context, bundle judgeEvidenceBundle, config 
 		if errors.Is(err, errJudgeTrailingData) {
 			return indeterminateJudgeOutcome("judge output carried trailing data after its own JSON object", usage), nil
 		}
-		return indeterminateJudgeOutcome("judge output failed to decode as the required strict JSON shape", usage), nil
+		return indeterminateJudgeOutcome(fmt.Sprintf("judge output failed to decode as the required strict JSON shape: %v", err), usage), nil
 	}
 
 	switch ScoreVerdict(output.Verdict) {
