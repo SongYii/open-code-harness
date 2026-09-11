@@ -21,6 +21,8 @@
 
 Steps 1–6 are complete. The authorized DeepSeek step completed: calibration
 was 17/18 and the disjoint holdout was 15/18, so the frozen gate correctly
-failed. The former contradiction ambiguity did not recur; all holdout misses
-were one sparsely evidenced Pass label, which is preserved rather than edited
-after observation. OpenAI remains unrun because its credential is unavailable.
+failed. The former contradiction ambiguity caused no holdout downgrade; one
+calibration schema failure cannot be classified because that run preceded the
+new bounded decoder diagnosis. All holdout misses were one sparsely evidenced
+Pass label, which is preserved rather than edited after observation. OpenAI
+remains unrun because its credential is unavailable.

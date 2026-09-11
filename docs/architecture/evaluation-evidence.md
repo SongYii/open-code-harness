@@ -859,6 +859,9 @@ directional error; it used 15,921 input and 3,361 output tokens, with a
 conservative peak-price upper bound of 34,335 microUSD. Its report is
 `eval/reports/judge-semantic-meta-v3-deepseek-calibration-2026-09-11.json`
 (`sha256:c8ee3b77e19b3ae516544a3495c04b78d642ac7850592ddba1ef2324aea5f170`).
+That run predated the decoder-diagnostic improvement below, and raw model text
+is intentionally not retained, so the one schema failure cannot honestly be
+classified as a legacy field, malformed JSON, or another unknown field.
 The generated policy is
 `eval/policies/judge-semantic-meta-v3-deepseek.json`
 (`sha256:5d74f3328080acaa2f5fcdec4937853205ba93ab7d95f9f28b8f3505d7b72fa1`).
@@ -867,8 +870,8 @@ The disjoint holdout reached 15/18 exact, with zero unsafe passes, zero false
 fails, three unexpected Indeterminates, and zero overclaims. All three misses
 were the same human-labelled Pass, `short-hotfix-record-complete`: the model
 consistently judged `edit banner.txt ok` / `check banner ok` too weak to prove
-the actual typo was fixed. This is not the old contradiction-field failure;
-no resolved contradiction was downgraded. It is evidence that the reviewed
+the actual typo was fixed. No resolved contradiction was downgraded through
+the old field in the holdout. It is evidence that the reviewed
 Pass label assumed more evidentiary meaning than the bytes establish. The
 holdout used 16,023 input and 3,613 output tokens, with a 35,467 microUSD upper
 bound. Its report is

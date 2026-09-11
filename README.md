@@ -203,7 +203,8 @@ its credentials are unavailable. The resulting protocol correction is
 implemented as a new frozen Judge v2 rather than rewriting historical evidence;
 fresh v3 DeepSeek calibration reached 17/18, but its 15/18 holdout correctly
 failed because one sparsely evidenced Pass case was consistently judged
-Indeterminate. The old contradiction ambiguity did not recur.
+Indeterminate. Resolved contradictions were no longer silently downgraded in
+the holdout; one calibration schema failure predates detailed diagnostics.
 Provider breadth also remains outstanding
 before a GA claim. The
 variance *mechanism* is now
