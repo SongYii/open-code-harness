@@ -179,14 +179,15 @@ func TestBuildConfigMapsProviderWireHints(t *testing.T) {
 	subject := validSubject()
 	subject.Provider.IncludeUsage = true
 	subject.Provider.MaxTokensField = "max_tokens"
+	subject.Provider.ThinkingMode = "disabled"
 	directories := testDirectories(t, testAttemptID(t))
 
 	config, err := BuildConfig(subject, directories, "runtime-1", nil)
 	if err != nil {
 		t.Fatalf("BuildConfig: %v", err)
 	}
-	if !config.Provider.IncludeUsage || config.Provider.MaxTokensField != "max_tokens" {
-		t.Fatalf("Provider wire hints = includeUsage %v, maxTokensField %q", config.Provider.IncludeUsage, config.Provider.MaxTokensField)
+	if !config.Provider.IncludeUsage || config.Provider.MaxTokensField != "max_tokens" || config.Provider.ThinkingMode != "disabled" {
+		t.Fatalf("Provider wire hints = includeUsage %v, maxTokensField %q, thinkingMode %q", config.Provider.IncludeUsage, config.Provider.MaxTokensField, config.Provider.ThinkingMode)
 	}
 }
 

@@ -49,6 +49,9 @@ func NormalizedArgv(subject Subject) ([]string, error) {
 	if subject.Provider.MaxTokensField != "" {
 		argv = append(argv, "-provider-max-tokens-field", subject.Provider.MaxTokensField)
 	}
+	if subject.Provider.ThinkingMode != "" {
+		argv = append(argv, "-provider-thinking-mode", subject.Provider.ThinkingMode)
+	}
 	if subject.Policy.SandboxPolicy == SandboxPolicyUnsandboxedAllowed {
 		argv = append(argv, "-allow-unsandboxed-exec")
 	}

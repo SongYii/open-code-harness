@@ -68,6 +68,7 @@ func TestValidateRejectsEveryDocumentedCause(t *testing.T) {
 		{"zero context window", func(c *composition.Config) { c.Provider.ContextWindow = 0 }, "ContextWindow"},
 		{"zero max output", func(c *composition.Config) { c.Provider.MaxOutput = 0 }, "MaxOutput"},
 		{"unknown max tokens field", func(c *composition.Config) { c.Provider.MaxTokensField = "limit" }, "MaxTokensField"},
+		{"enabled thinking mode", func(c *composition.Config) { c.Provider.ThinkingMode = "enabled" }, "ThinkingMode"},
 		{"unknown policy mode", func(c *composition.Config) { c.Policy = policy.Mode("whatever") }, "Policy"},
 		{"negative step limit", func(c *composition.Config) { c.Limits.MaxSteps = -1 }, "Limits"},
 		{"negative tool call limit", func(c *composition.Config) { c.Limits.MaxToolCallsPerStep = -1 }, "Limits"},

@@ -138,6 +138,7 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 		Hints: openaicompat.WireHints{
 			IncludeUsage:   config.Provider.IncludeUsage,
 			MaxTokensField: config.Provider.MaxTokensField,
+			ThinkingMode:   config.Provider.ThinkingMode,
 		},
 		AllowInsecureLoopback: config.Provider.AllowInsecureLoopback,
 	})

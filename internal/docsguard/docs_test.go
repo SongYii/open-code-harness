@@ -558,6 +558,9 @@ func TestAutomaticContextQualityExample(t *testing.T) {
 	if set.Lane != eval.LaneLive || subject.Provider.Lane != eval.ProviderLaneLive {
 		t.Fatal("automatic context quality example is not protected by both live-lane gates")
 	}
+	if subject.Provider.ThinkingMode != "disabled" {
+		t.Fatalf("automatic context quality Subject thinkingMode = %q, want disabled", subject.Provider.ThinkingMode)
+	}
 
 	requiredVerifiers := map[string]bool{
 		eval.VerifierContextPreTurnSummary: false,
@@ -581,7 +584,7 @@ func TestAutomaticContextQualityExample(t *testing.T) {
 			if promptIndex == 1 && !mentionsSecret {
 				t.Fatal("first prompt no longer carries the durable constraint")
 			}
-			if promptIndex > 1 && promptIndex < 5 && mentionsSecret {
+			if promptIndex > 1 && promptIndex < 7 && mentionsSecret {
 				t.Fatalf("neutral prompt %q repeats the protected constraint", action.ID)
 			}
 		case eval.ActionCollect:
@@ -589,8 +592,8 @@ func TestAutomaticContextQualityExample(t *testing.T) {
 				action.Collect.ExpectedState == eval.WorkspaceExpectedAbsent
 		}
 	}
-	if promptIndex != 5 || !sawAbsence {
-		t.Fatalf("automatic quality Scenario has %d prompts and absence=%t, want 5 and true", promptIndex, sawAbsence)
+	if promptIndex != 7 || !sawAbsence {
+		t.Fatalf("automatic quality Scenario has %d prompts and absence=%t, want 7 and true", promptIndex, sawAbsence)
 	}
 	for _, id := range scenario.DeterministicVerifierIDs {
 		if _, ok := requiredVerifiers[id]; ok {

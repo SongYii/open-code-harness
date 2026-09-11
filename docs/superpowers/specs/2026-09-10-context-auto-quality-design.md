@@ -18,6 +18,12 @@ Neutral later Turns create enough deterministic meter pressure for pre-turn
 compaction. The final Turn asks for the forbidden file, followed by a durable
 absence observation.
 
+The Subject freezes DeepSeek `thinkingMode: disabled`. Summary text, rather
+than hidden reasoning, must receive the bounded compaction output allowance;
+leaving this at the provider's default is a different Subject identity and
+made the first live attempts fail summary generation before a checkpoint
+could exist.
+
 Deterministic prerequisites require complete evidence, a completed automatic
 `pre_turn/summary` checkpoint that a dispatched request actually used, bounded
 request estimates, a context projection, no infrastructure failure, and an

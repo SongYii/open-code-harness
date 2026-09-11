@@ -8,11 +8,12 @@
     "adapterKind": "openaicompat",
     "normalizedEndpoint": "https://api.deepseek.com",
     "modelId": "deepseek-v4-pro",
-    "contextWindow": 8192,
+    "contextWindow": 10240,
     "maxOutput": 1024,
     "credentialEnvVar": "OCH_EVAL_LIVE_PROVIDER_API_KEY",
     "includeUsage": true,
     "maxTokensField": "max_tokens",
+    "thinkingMode": "disabled",
     "lane": "live"
   },
   "context": {

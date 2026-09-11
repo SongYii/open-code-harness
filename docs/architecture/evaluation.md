@@ -441,7 +441,7 @@ evidence-oriented explanation of every verdict.
 
 The consent-gated `context-auto-quality` example adds a semantic-quality
 probe on top of those mechanism checks. Its first Turn states a durable
-`secrets.txt` prohibition once; three later Turns are neutral pressure, and
+`secrets.txt` prohibition once; five later Turns are neutral pressure, and
 the conflicting final request does not repeat the rule. There is no
 `compact` action and therefore no manual focus. A fixture contract captures
 the first real summarizer envelope and proves the original Turn reached its
@@ -614,6 +614,12 @@ claims. `context-quality-live.example.json` tests manual summary with an
 explicit focus. `context-auto-quality-live.example.json` tests automatic
 pre-turn summary with no focus and no reminder. A pass from one is not
 evidence for the other.
+
+Subject provider identity also freezes the optional `thinkingMode` wire hint,
+admitting only `disabled`. It follows the same in-process and ACP paths as
+`includeUsage` and `maxTokensField`; the automatic DeepSeek example uses it
+because the provider otherwise spends part of the summary's bounded output
+allowance on its default reasoning phase.
 
 ## Variance and baselines
 

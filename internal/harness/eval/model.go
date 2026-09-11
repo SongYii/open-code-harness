@@ -579,6 +579,7 @@ type SubjectProvider struct {
 	CredentialEnvVar   string              `json:"credentialEnvVar"`
 	IncludeUsage       bool                `json:"includeUsage,omitempty"`
 	MaxTokensField     string              `json:"maxTokensField,omitempty"`
+	ThinkingMode       string              `json:"thinkingMode,omitempty"`
 	Lane               SubjectProviderLane `json:"lane"`
 }
 
@@ -719,6 +720,9 @@ func (provider SubjectProvider) validate() error {
 	case "", "max_tokens", "max_completion_tokens":
 	default:
 		return fmt.Errorf("%w: provider.maxTokensField must be empty, %q, or %q", errInvalidDocument, "max_tokens", "max_completion_tokens")
+	}
+	if provider.ThinkingMode != "" && provider.ThinkingMode != "disabled" {
+		return fmt.Errorf("%w: provider.thinkingMode must be empty or %q", errInvalidDocument, "disabled")
 	}
 	switch provider.Lane {
 	case ProviderLaneFixture, ProviderLaneLive:

@@ -75,6 +75,7 @@ func BuildConfig(subject Subject, directories AttemptRootDirectories, runtimeID 
 			MaxOutput:             subject.Provider.MaxOutput,
 			IncludeUsage:          subject.Provider.IncludeUsage,
 			MaxTokensField:        subject.Provider.MaxTokensField,
+			ThinkingMode:          subject.Provider.ThinkingMode,
 			AllowInsecureLoopback: subject.Provider.Lane == ProviderLaneFixture,
 		},
 		Policy: policy.Mode(subject.Policy.Mode),

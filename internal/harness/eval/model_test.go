@@ -465,6 +465,14 @@ func TestSubjectValidateRejectsUnknownMaxTokensField(t *testing.T) {
 	}
 }
 
+func TestSubjectValidateRejectsEnabledThinkingMode(t *testing.T) {
+	subject := validSubject()
+	subject.Provider.ThinkingMode = "enabled"
+	if err := subject.Validate(); err == nil {
+		t.Fatal("Validate() accepted enabled provider thinkingMode")
+	}
+}
+
 func TestSubjectValidateRejectsInvertedContextPercentages(t *testing.T) {
 	subject := validSubject()
 	subject.Context.TargetPercent = subject.Context.TriggerPercent

@@ -137,6 +137,7 @@ func bindAssemblyFlags(flags *flag.FlagSet, config *composition.Config, policyMo
 	flags.StringVar(&config.Provider.APIKeyEnv, "api-key-env", "OCH_API_KEY", "environment variable holding the provider API key")
 	flags.BoolVar(&config.Provider.IncludeUsage, "provider-include-usage", false, "request provider usage data in streaming responses")
 	flags.StringVar(&config.Provider.MaxTokensField, "provider-max-tokens-field", "", "provider output-limit field: max_tokens or max_completion_tokens; empty omits it")
+	flags.StringVar(&config.Provider.ThinkingMode, "provider-thinking-mode", "", "provider thinking mode: disabled; empty uses the provider default")
 	*uintFlags = assemblyUintFlags{}
 	flags.UintVar(&uintFlags.ContextWindow, "context-window", 0, "provider context window in tokens (required)")
 	flags.UintVar(&uintFlags.MaxOutput, "max-output", 0, "provider maximum output in tokens (required)")

@@ -26,6 +26,7 @@ type Provider struct {
 	MaxOutput      uint32
 	IncludeUsage   bool
 	MaxTokensField string
+	ThinkingMode   string
 	// AllowInsecureLoopback permits a plain-HTTP base URL when it resolves to
 	// loopback. It exists for a local fixture server and must stay false
 	// against any real endpoint.
@@ -283,6 +284,9 @@ func (config Config) Validate() error {
 	case "", "max_tokens", "max_completion_tokens":
 	default:
 		return fmt.Errorf("%w: Provider.MaxTokensField must be empty, %q, or %q", errInvalidConfig, "max_tokens", "max_completion_tokens")
+	}
+	if config.Provider.ThinkingMode != "" && config.Provider.ThinkingMode != "disabled" {
+		return fmt.Errorf("%w: Provider.ThinkingMode must be empty or %q", errInvalidConfig, "disabled")
 	}
 	if err := config.Context.validate(config.Provider.ContextWindow, config.Provider.MaxOutput); err != nil {
 		return err
