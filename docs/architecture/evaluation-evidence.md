@@ -80,6 +80,7 @@ repository uses throughout.
 | `1d9cc87` | Judge meta-eval v2 mechanism | Scaled provenance-bound pricing, predeclared calibrated holdout policy, twelve new reviewed cases, and provider-equivalent frozen inputs |
 | `5dfbe95` | Judge meta-eval v2 DeepSeek evidence | Bound 18-call calibration and disjoint 18-call holdout, frozen policy, honestly failing check result, cost upper bounds, and artifact guards |
 | `f554442` | Quality Judge v2 correction | Versioned prompt/wire semantics for resolved vs. unresolved contradictions, authoritative evidence scope, fresh v3 blind sets, provider-equivalence and no-reuse guards |
+| `9b54f21` | Quality Judge v3 DeepSeek evidence | Bound 17/18 calibration and 15/18 disjoint holdout, honest sparse-evidence gate failure, diagnostic decode reason, cost bounds, and artifact guards |
 
 ## Post-merge review findings closed
 
