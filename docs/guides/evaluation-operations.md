@@ -4,13 +4,14 @@
 
 **See also:** [Evaluation System — Implemented Contract](../architecture/evaluation.md) for the underlying mechanism; [Authoring Evaluation Scenarios](evaluation-scenarios.md) if you also need to change what runs.
 
-## The four commands
+## The five commands
 
 ```text
 och-eval run     -set PATH -artifacts PATH [-och-binary PATH] [-live] [-judge-config PATH]
 och-eval regrade -attempt PATH -scorer ID
-och-eval report  -set PATH [-artifacts PATH] [-output PATH]
+och-eval report  -set PATH [-artifacts PATH] [-output PATH] [-variance-policy PATH -variance-scorer ID]
 och-eval judge   -attempt PATH -judge-config PATH [-price-table PATH] [-live]
+och-eval baseline -set PATH -artifacts PATH -variance-policy PATH -variance-scorer ID -id ID
 ```
 
 `run` expands and executes an EvalSet's every Cell, publishing Attempt
@@ -30,6 +31,12 @@ find) into one JSON document on stdout. `judge` runs one live quality
 judgement against an already-published live Attempt and appends the Score it
 produces; it is documented in full under
 [Live quality judging](#live-quality-judging) below.
+
+When `report` or `baseline` receives a variance policy, the policy must match
+the EvalSet's pinned `variancePolicyDigest`, and every measured Attempt must
+carry that exact frozen EvalSet in its manifest-protected evidence. An
+artifact directory from a different run is refused even if its set ID happens
+to be the same.
 
 Every command's machine output is one versioned JSON document on stdout;
 human-readable diagnostics go to stderr. Exit codes distinguish validation
@@ -135,6 +142,49 @@ Then pass that run's Attempt directory to the same `och-eval judge` command.
 The deterministic score first proves automatic checkpoint creation/use and
 `secrets.txt` absence; only the later live Score measures whether the model
 summary retained the old rule.
+
+The MCP injection calibration example is the first checked-in repeated live
+set. It makes five independent Subject calls and then needs exactly one Judge
+call per resulting Attempt. Use a fresh artifact root; judging the same
+Attempt twice creates two Scores for the same scorer and is deliberately not
+silently reduced:
+
+```bash
+export OCH_EVAL_LIVE_PROVIDER_API_KEY=...
+export OCH_EVAL_LIVE_JUDGE_API_KEY=...
+export OCH_EVAL_LIVE_CONFIRM=I_UNDERSTAND
+artifact_root="$(mktemp -d)"
+
+go run ./cmd/och-eval run \
+  -set eval/sets/mcp-injection-live.example.json \
+  -artifacts "$artifact_root" \
+  -judge-config eval/judges/mcp-injection-judge.example.json \
+  -live
+
+for attempt in "$artifact_root"/*; do
+  go run ./cmd/och-eval judge \
+    -attempt "$attempt" \
+    -judge-config eval/judges/mcp-injection-judge.example.json \
+    -live
+done
+
+go run ./cmd/och-eval report \
+  -set eval/sets/mcp-injection-live.example.json \
+  -artifacts "$artifact_root" \
+  -variance-policy eval/variance-policies/mcp-injection-live-calibration-v1.json \
+  -variance-scorer mcp-injection-judge
+```
+
+The policy is intentionally `uncalibrated`: this collects the numbers that
+may justify a later policy; provisional limits cannot gate the run used to
+discover them.
+
+The checked-in 2026-09-11 calibration has now earned
+`mcp-injection-live-v1.json` for this exact Cell. To reproduce its independent
+validation, use `mcp-injection-live-validation.example.json` with a fresh
+artifact root, judge each of its five Attempts once, and report with the
+calibrated policy. Do not reuse the calibration artifacts: the commands will
+refuse them because their frozen EvalSet is different.
 
 There is deliberately **no** endpoint, model, prompt, or credential-value
 flag. Every one of those comes from the frozen JudgeConfig, and the command

@@ -630,13 +630,13 @@ by `cmd/och-eval` (`variance_report.go`, `baseline_cmd.go`). The accepted
 contract is the
 [variance and baseline policy design](../superpowers/specs/2026-09-04-evaluation-variance-policy-design.md).
 
-**This mechanism is dormant.** Every checked-in EvalSet declares
-`repetitionCount: 1`, and an EvalSet that references a variance policy while
-declaring one repetition is refused at load time. Nothing in this repository
-reaches this code today, and no configuration was invented so that something
-would. It is a tested library whose first configuration has not arrived; the
-first one that should reference a variance policy is the first live quality
-EvalSet.
+The first consumer is checked in and remains explicit, outside PR CI.
+`mcp-injection-live.example.json` collected five calibration repetitions
+under an uncalibrated policy; a separate five-repetition validation set then
+applied the resulting scenario-specific calibrated policy. Both batches were
+5/5 pass with numeric spread 0 and verdict stability 1. The reports live under
+`eval/reports/`; this is evidence for that exact MCP Cell, not a universal
+default for unrelated quality evaluations.
 
 ### What a Cell publishes
 
@@ -717,6 +717,11 @@ on **every Cell it governs**,
 not once at the
 top of a document a reader may scroll past.
 
+`report` and `baseline` fail closed twice: the supplied policy digest must
+equal the EvalSet's `variancePolicyDigest`, and every measured Attempt's
+manifest-protected frozen EvalSet must digest to the exact EvalSet supplied to
+the command. Matching a human-readable set ID is not enough.
+
 ### Two baselines, and what may gate
 
 The within-run paired arm and the pinned `och.eval.baseline` document are
@@ -764,17 +769,19 @@ citing nothing). Two of the original five were found on 2026-09-04 to be
 satisfied by an earlier refusal than the one they named, and so proved
 nothing about the defense they were written for; both are corrected and now
 assert the refusal reason. Also outstanding: provider breadth beyond
-the one OpenAI-compatible adapter this repository ships, and an accepted
-variance policy for live/quality signals.
+the one OpenAI-compatible adapter this repository ships, and calibrated
+variance policies for live/quality Cells beyond the exact MCP injection Cell
+measured here.
 
 The variance blocker changed shape on 2026-09-05 without closing, and the
 distinction matters. The **mechanism** is now designed, implemented, and
 verified — see [Variance and baselines](#variance-and-baselines) above. The
-**policy** is not: no calibrated limits exist, because two Judge invocations
-over one live Attempt are not a calibration population. No checked-in EvalSet
-reaches the variance code at all. A repository
-that counted an implemented mechanism as an accepted policy would be making
-exactly the claim this contract's own no-defaults rule exists to prevent.
+first **scenario-specific policy** now exists: five independent calibration
+Attempts established spread 0 and unanimous verdicts; a separate five-Attempt
+batch then satisfied the pinned limits (`maxNumericSpread=0.05`,
+`minVerdictStability=1`, five evaluable repetitions). This does not create a
+global default. Generalizing one easy MCP Cell to unrelated quality signals
+would violate this contract's own no-defaults rule.
 
 ## MCP evaluation suite
 

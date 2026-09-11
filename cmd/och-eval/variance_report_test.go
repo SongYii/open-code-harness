@@ -61,11 +61,15 @@ func runReportCLI(t *testing.T, args ...string) (evaluationReport, string, int) 
 // an empty variance block reads exactly like "no variance problems", which is
 // the misreading this whole mechanism exists to prevent.
 func producedArtifacts(t *testing.T) string {
+	return producedArtifactsForSet(t, checkedInSetPath(t))
+}
+
+func producedArtifactsForSet(t *testing.T, setPath string) string {
 	t.Helper()
 	artifactRoot := t.TempDir()
 	var stdout, stderr bytes.Buffer
 	if code := runCLI(context.Background(), []string{
-		"run", "-set", checkedInSetPath(t), "-artifacts", artifactRoot,
+		"run", "-set", setPath, "-artifacts", artifactRoot,
 	}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("run exit = %d; stderr=%s", code, stderr.String())
 	}
@@ -120,18 +124,14 @@ func TestReportWithoutAVariancePolicyIsUnchanged(t *testing.T) {
 
 // TestReportPublishesThePerCellDistributionBlock.
 func TestReportPublishesThePerCellDistributionBlock(t *testing.T) {
-	artifactRoot := producedArtifacts(t)
+	policyPath := writePolicy(t, nil)
+	setPath := boundVarianceSetPath(t, policyPath)
+	artifactRoot := producedArtifactsForSet(t, setPath)
 
 	report, stderr, code := runReportCLI(t,
-		"-set", checkedInSetPath(t),
+		"-set", setPath,
 		"-artifacts", artifactRoot,
-		"-variance-policy", writePolicy(t, func(p *eval.VariancePolicy) {
-			// The checked-in sets run each Cell once, so the floor is lowered
-			// to let this report produce a block at all. The Cell will be
-			// Cell will fail evaluableEnough for having too few evaluable
-			// repetitions, which is the correct answer.
-			p.MinEvaluableRepetitions = 2
-		}),
+		"-variance-policy", policyPath,
 		"-variance-scorer", "baseline-v1",
 	)
 	if code != exitOK {
@@ -153,12 +153,14 @@ func TestReportPublishesThePerCellDistributionBlock(t *testing.T) {
 // TestReportMarksAnUncalibratedPolicyOnEveryCellItGoverns closes the accepted
 // ordering's own risk at the point a reader actually sees a number.
 func TestReportMarksAnUncalibratedPolicyOnEveryCellItGoverns(t *testing.T) {
-	artifactRoot := producedArtifacts(t)
+	policyPath := writePolicy(t, nil)
+	setPath := boundVarianceSetPath(t, policyPath)
+	artifactRoot := producedArtifactsForSet(t, setPath)
 
 	report, stderr, code := runReportCLI(t,
-		"-set", checkedInSetPath(t),
+		"-set", setPath,
 		"-artifacts", artifactRoot,
-		"-variance-policy", writePolicy(t, nil),
+		"-variance-policy", policyPath,
 		"-variance-scorer", "baseline-v1",
 	)
 	if code != exitOK {
@@ -183,16 +185,18 @@ func TestReportMarksAnUncalibratedPolicyOnEveryCellItGoverns(t *testing.T) {
 // TestReportNeverGatesOnAVarianceSignal: a variance result must not change
 // the exit code. Ordinary PR CI gates on deterministic verifiers only.
 func TestReportNeverGatesOnAVarianceSignal(t *testing.T) {
-	artifactRoot := producedArtifacts(t)
+	policyPath := writePolicy(t, func(p *eval.VariancePolicy) {
+		// Impossible to satisfy: no Cell will be evaluableEnough.
+		p.MinEvaluableRepetitions = 99
+	})
+	setPath := boundVarianceSetPath(t, policyPath)
+	artifactRoot := producedArtifactsForSet(t, setPath)
 
-	withoutPolicy, _, codeWithout := runReportCLI(t, "-set", checkedInSetPath(t), "-artifacts", artifactRoot)
+	withoutPolicy, _, codeWithout := runReportCLI(t, "-set", setPath, "-artifacts", artifactRoot)
 	_, stderr, codeWith := runReportCLI(t,
-		"-set", checkedInSetPath(t),
+		"-set", setPath,
 		"-artifacts", artifactRoot,
-		"-variance-policy", writePolicy(t, func(p *eval.VariancePolicy) {
-			// Impossible to satisfy: no Cell will be evaluableEnough.
-			p.MinEvaluableRepetitions = 99
-		}),
+		"-variance-policy", policyPath,
 		"-variance-scorer", "baseline-v1",
 	)
 	if codeWith != codeWithout {
@@ -221,20 +225,33 @@ func TestReportRefusesAnInvalidVariancePolicyRatherThanIgnoringIt(t *testing.T) 
 	}
 }
 
+func TestReportRefusesAPolicyTheSetDidNotBind(t *testing.T) {
+	boundPolicy := writePolicy(t, nil)
+	setPath := boundVarianceSetPath(t, boundPolicy)
+	otherPolicy := writePolicy(t, func(policy *eval.VariancePolicy) {
+		policy.ID = "other-policy"
+	})
+
+	_, stderr, code := runReportCLI(t,
+		"-set", setPath, "-artifacts", t.TempDir(),
+		"-variance-policy", otherPolicy, "-variance-scorer", varianceTestScorer)
+	if code == exitOK || !strings.Contains(stderr, "does not match the bound") {
+		t.Fatalf("report exit=%d stderr=%q, want policy-binding refusal", code, stderr)
+	}
+}
+
 // TestBaselineCommandWritesADeterministicDocument.
 //
-// This test has to build its own EvalSet, and the reason is worth stating:
-// **no checked-in set can exercise this command at all.** All sixteen declare
-// repetitionCount: 1, while any valid variance policy requires at least two
-// evaluable repetitions — a spread cannot be measured from one sample. So a
-// baseline built from any checked-in fixture is correctly refused, and a test
-// using one would only ever prove the refusal.
+// This deterministic test builds its own fixture EvalSet. The checked-in live
+// calibration set exercises this command operationally, but a unit test must
+// not spend money or require credentials; the ordinary fixture sets still run
+// once and intentionally bind no variance policy.
 //
-// A two-repetition set is therefore written here. That is not a workaround
-// for an awkward fixture; it is the first configuration in this repository
-// that a variance signal can be read from at all.
+// A two-repetition fixture set is therefore written here to prove the same
+// command and binding path without a provider call.
 func TestBaselineCommandWritesADeterministicDocument(t *testing.T) {
-	setPath := twoRepetitionSetPath(t)
+	policyPath := writePolicy(t, nil) // minEvaluableRepetitions 2
+	setPath := boundVarianceSetPath(t, policyPath)
 	artifactRoot := t.TempDir()
 	var runStdout, runStderr bytes.Buffer
 	if code := runCLI(context.Background(), []string{
@@ -244,7 +261,6 @@ func TestBaselineCommandWritesADeterministicDocument(t *testing.T) {
 	}
 	scoreEveryAttempt(t, artifactRoot)
 
-	policyPath := writePolicy(t, nil) // minEvaluableRepetitions 2
 	read := func() []byte {
 		t.Helper()
 		out := filepath.Join(t.TempDir(), "baseline.json")
@@ -292,9 +308,9 @@ func TestBaselineCommandWritesADeterministicDocument(t *testing.T) {
 	}
 }
 
-// TestBaselineRefusesASingleRepetitionSet states the other half plainly: the
-// command cannot be pointed at the sets this repository actually ships.
-func TestBaselineRefusesASingleRepetitionSet(t *testing.T) {
+// TestBaselineRefusesAnUnboundSet states the other half plainly: supplying a
+// policy on the command line cannot retroactively bind an experiment to it.
+func TestBaselineRefusesAnUnboundSet(t *testing.T) {
 	artifactRoot := producedArtifacts(t)
 	var stdout, stderr bytes.Buffer
 	code := runCLI(context.Background(), []string{
@@ -308,16 +324,17 @@ func TestBaselineRefusesASingleRepetitionSet(t *testing.T) {
 	if code == exitOK {
 		t.Fatal("a baseline was built from single-repetition Attempts")
 	}
-	if !strings.Contains(stderr.String(), "evaluable") {
-		t.Fatalf("stderr = %q, want it to name the shortfall", stderr.String())
+	if !strings.Contains(stderr.String(), "binding") {
+		t.Fatalf("stderr = %q, want it to name the missing binding", stderr.String())
 	}
 }
 
-// twoRepetitionSetPath writes a copy of the checked-in PR set that runs each
-// Cell twice.
-func twoRepetitionSetPath(t *testing.T) string {
+// boundVarianceSetPath writes a self-contained copy of the checked-in PR tree
+// whose EvalSet runs each Cell twice and names the exact policy digest.
+func boundVarianceSetPath(t *testing.T, policyPath string) string {
 	t.Helper()
-	data, err := os.ReadFile(checkedInSetPath(t))
+	path := copyCheckedInEvalTree(t)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,19 +343,82 @@ func twoRepetitionSetPath(t *testing.T) string {
 		t.Fatal(err)
 	}
 	set.RepetitionCount = 2
+	policyData, err := os.ReadFile(policyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := eval.DecodeVariancePolicy(policyData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set.VariancePolicyDigest, err = eval.VariancePolicyDigest(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
 	encoded, err := json.Marshal(set)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The copy has to live beside the original: an EvalSet's Scenario,
-	// Subject, and Executor references resolve relative to the set document's
-	// own directory, so a copy in a temp dir cannot find any of them.
-	path := filepath.Join(filepath.Dir(checkedInSetPath(t)), "zz-two-repetitions-test.json")
 	if err := os.WriteFile(path, encoded, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Remove(path) })
 	return path
+}
+
+func TestReportRefusesArtifactsFromADifferentFrozenSet(t *testing.T) {
+	policyPath := writePolicy(t, nil)
+	setPath := boundVarianceSetPath(t, policyPath)
+	artifactRoot := producedArtifactsForSet(t, setPath)
+
+	data, err := os.ReadFile(setPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := eval.DecodeEvalSet(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set.PairingSeed = "different-experiment"
+	changed, err := json.Marshal(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(setPath, changed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, stderr, code := runReportCLI(t, "-set", setPath, "-artifacts", artifactRoot,
+		"-variance-policy", policyPath, "-variance-scorer", varianceTestScorer)
+	if code == exitOK || !strings.Contains(stderr, "frozen eval set digest") {
+		t.Fatalf("report exit=%d stderr=%q, want frozen-set mismatch refusal", code, stderr)
+	}
+}
+
+func TestVarianceAttemptMustBelongToFrozenSet(t *testing.T) {
+	set := eval.EvalSet{
+		ID: "set", RepetitionCount: 2,
+		Scenarios: []eval.ScenarioRef{{ID: "scenario", Digest: eval.Digest("sha256:" + strings.Repeat("1", 64))}},
+		Subjects:  []eval.SubjectRef{{ID: "subject", Digest: eval.Digest("sha256:" + strings.Repeat("2", 64))}},
+		Executors: []eval.ExecutorRef{{ID: "executor", Digest: eval.Digest("sha256:" + strings.Repeat("3", 64))}},
+	}
+	attempt := eval.Attempt{
+		EvalSetID: "set", RepetitionIndex: 1,
+		ScenarioID: "scenario", ScenarioDigest: set.Scenarios[0].Digest,
+		SubjectID: "subject", SubjectDigest: set.Subjects[0].Digest,
+		ExecutorID: "executor", ExecutorDigest: set.Executors[0].Digest,
+	}
+	if err := verifyAttemptInEvalSet(attempt, set); err != nil {
+		t.Fatalf("matching attempt rejected: %v", err)
+	}
+	attempt.RepetitionIndex = 2
+	if err := verifyAttemptInEvalSet(attempt, set); err == nil {
+		t.Fatal("out-of-range repetition was accepted")
+	}
+	attempt.RepetitionIndex = 1
+	attempt.SubjectDigest = eval.Digest("sha256:" + strings.Repeat("4", 64))
+	if err := verifyAttemptInEvalSet(attempt, set); err == nil {
+		t.Fatal("cell outside the frozen set was accepted")
+	}
 }
 
 // TestReportPublishesDerivedReliabilityReadings is design §3.4.

@@ -192,13 +192,14 @@ identity is provable offline) are all real and tested. Real-model live
 sample size — one complete DeepSeek V4 Pro Subject-through-compaction run and
 two live Judge samples now exist from 2026-09-10, but one Judge sample was
 indeterminate after exhausting its output budget — judge meta-evaluation
-breadth, provider breadth, and an accepted variance policy
-are still outstanding before a GA claim. The variance *mechanism* is now
+breadth and provider breadth remain outstanding before a GA claim. The
+variance *mechanism* is now
 implemented and verified (distribution over repetitions, a structural
 reliability rule separated from an uncalibrated threshold one, two baselines,
-and derived readings that need no threshold at all), but it ships **dormant** —
-no checked-in EvalSet reaches it — and no calibrated limits exist, so the
-policy itself is not accepted. See the
+and derived readings that need no threshold at all). Its first checked-in
+consumer is the explicit five-repetition MCP injection calibration set. A
+second independent five-repetition batch passed the resulting MCP-specific
+calibrated policy; no global default is inferred from that one Cell. See the
 [Evaluation contract](docs/architecture/evaluation.md) and its
 [evidence ledger](docs/architecture/evaluation-evidence.md). The project
 remains pre-v0.

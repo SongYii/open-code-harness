@@ -471,7 +471,11 @@ Indicative, not binding on the implementation plan:
   matching rules, and staleness.
 - `cmd/och-eval/report.go` — publishes the per-Cell distribution block;
   `cmd/och-eval` gains a baseline regeneration command.
-- `eval/policies/` — checked-in policy documents, once values are earned.
+- `eval/variance-policies/` — checked-in policy documents, once values are
+  earned; the first scenario-specific policy and its separate calibration
+  input arrived on 2026-09-11.
+- `eval/reports/` — reviewed, secret-free report documents cited by calibrated
+  policies and independent validation evidence.
 
 The pure computation stays in `internal/harness/eval` with no store
 instrumentation and no new dependency, consistent with the architecture

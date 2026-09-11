@@ -181,7 +181,7 @@ Judge 的服务端协议固定 `responseFormat=json_object`；还可以冻结通
 
 实现位于 `internal/harness/eval`（`variance_policy.go`、`variance.go`、`baseline.go`、`variance_pairing.go`、`variance_grouping.go`），由 `cmd/och-eval`（`variance_report.go`、`baseline_cmd.go`）发布。被接受的契约是[方差与基线策略设计](../superpowers/specs/2026-09-04-evaluation-variance-policy-design.md)。
 
-**这套机制处于休眠状态。** 所有入库 EvalSet 都声明 `repetitionCount: 1`，而一个引用了方差策略却只声明跑一次的 EvalSet 会在加载时被拒绝。今天本仓库里没有任何东西会走到这段代码，也没有为了让它被走到而编造配置。它是一个测试过、但第一份配置尚未到来的库；第一份应当引用方差策略的配置，是第一个 live 质量 EvalSet。
+第一位消费方已经入库，仍需显式执行且不进入 PR CI。`mcp-injection-live.example.json` 先在未校准策略下采集五次；另一份五次重复的验证集再应用由此得到的、只针对该 Scenario 的校准策略。两批都是 5/5 通过、数字极差 0、判定稳定性 1。报告保存在 `eval/reports/`；这只是该 MCP Cell 的证据，不是其他质量评测的通用默认值。
 
 ### 一个 Cell 发布什么
 
@@ -218,6 +218,8 @@ Judge 的服务端协议固定 `responseFormat=json_object`；还可以冻结通
 
 **不提供任何默认值。** 一份策略必须声明它的限值、它的 `calibration` 状态，以及一个至少为二的可评估下限。2026-09-10 的 DeepSeek 运行只对同一个 Attempt 得到了两次 Judge 样本：一次不可判定、一次通过。这能证明存在方差，却远不足以校准默认限值。未校准的策略会标注在**它所治理的每一个 Cell 上**，而不是只在文档顶部标一次、让读者可能划过去。
 
+`report` 与 `baseline` 会做两层失败关闭：传入的策略摘要必须等于 EvalSet 的 `variancePolicyDigest`；每个被测 Attempt 中受 manifest 保护的冻结 EvalSet，也必须与命令行传入的完整 EvalSet 摘要一致。只匹配人类可读的 set ID 不够。
+
 ### 两条基线，以及什么可以卡门禁
 
 运行内配对臂和钉住的 `och.eval.baseline` 文档两者都必需；它们回答不同的问题，失败方式也不同。基线只与身份摘要精确匹配的 Cell 比较 —— 不匹配会被报告出来，绝不当作"没有基线"或"通过"处理，因为通常的原因是 Scenario 或 Subject 被编辑过了。基线可由显式命令重新生成、记录它所依据的 Attempt id，并且绝不会被读取它的车道回写。陈旧性会被披露，比较照样展示。
@@ -236,9 +238,9 @@ Judge 的服务端协议固定 `responseFormat=json_object`；还可以冻结通
 
 ## 成熟度与 GA 阻碍项
 
-评估系统**已实现，但尚未 GA**。在做出 GA 声明之前明确悬而未决的事项包括：实时评审所需的真实模型样本规模。2026-09-10，一次 DeepSeek V4 Pro Subject 完成了真实摘要压缩并保留约束；同一 Attempt 随后产生一次不可判定和一次通过的实时 Judge Score。这关闭了“零样本”缺口，却没有关闭样本规模问题：一个 Attempt、两个不一致的 Judge 结果不能证明可靠性。其余阻碍项是：超出当前八个对抗性夹具的更广评审器元评估、超出唯一 OpenAI 兼容适配器的 provider 覆盖面，以及一份被接受的实时/质量信号方差策略。
+评估系统**已实现，但尚未 GA**。在做出 GA 声明之前明确悬而未决的事项包括：实时评审所需的真实模型样本规模。2026-09-10，一次 DeepSeek V4 Pro Subject 完成了真实摘要压缩并保留约束；同一 Attempt 随后产生一次不可判定和一次通过的实时 Judge Score。这关闭了“零样本”缺口，却没有关闭样本规模问题：一个 Attempt、两个不一致的 Judge 结果不能证明可靠性。其余阻碍项是：超出当前八个对抗性夹具的更广评审器元评估、超出唯一 OpenAI 兼容适配器的 provider 覆盖面，以及覆盖本次精确 MCP 注入 Cell 之外实时/质量信号的校准方差策略。
 
-方差这一项在 2026-09-05 改变了形态，但并没有关闭，而这个区别很重要。**机制**现在已完成设计、实现与验证 —— 见上文[方差与基线](#方差与基线)。**策略**没有：对同一个实时 Attempt 的两次 Judge 调用不是校准总体，而且没有任何入库 EvalSet 会走到这段代码。一个把"机制已实现"算作"策略已接受"的仓库，正是在做出本契约自身的"不提供默认值"规则所要防止的那种声明。
+第一份**仅针对具体 Scenario 的策略**现在已经存在：五个独立校准 Attempt 得到极差 0 和一致判定；另一批五个 Attempt 随后满足钉住的限值（`maxNumericSpread=0.05`、`minVerdictStability=1`、五次可评估重复）。这不会产生全局默认值。把一个简单 MCP Cell 的结果推广到无关质量信号，仍然正是本契约“不提供默认值”规则要防止的错误。
 
 ## MCP 评测套件
 

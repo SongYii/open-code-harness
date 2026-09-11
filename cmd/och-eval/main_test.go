@@ -152,6 +152,11 @@ func copyCheckedInEvalTree(t *testing.T) string {
 	for _, relative := range []string{
 		"sets/pr-inprocess.json",
 		"scenarios/smoke-prompt/scenario.json",
+		"scenarios/smoke-prompt/fixture/.gitkeep",
+		"scenarios/tool-approval-failure/scenario.json",
+		"scenarios/tool-approval-failure/fixture/.gitkeep",
+		"scenarios/context-compaction/scenario.json",
+		"scenarios/context-compaction/fixture/.gitkeep",
 		"subjects/smoke-subject.json",
 		"executors/smoke-executor.json",
 	} {
@@ -167,8 +172,10 @@ func copyCheckedInEvalTree(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
-	if err := os.MkdirAll(filepath.Join(destinationRoot, "scenarios", "smoke-prompt", "fixture"), 0o700); err != nil {
-		t.Fatal(err)
+	for _, scenario := range []string{"smoke-prompt", "tool-approval-failure", "context-compaction"} {
+		if err := os.MkdirAll(filepath.Join(destinationRoot, "scenarios", scenario, "fixture"), 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return filepath.Join(destinationRoot, "sets", "pr-inprocess.json")
 }
