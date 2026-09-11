@@ -110,6 +110,18 @@ func loadJudgeConfig(path string) (eval.JudgeConfig, error) {
 	return config, nil
 }
 
+func loadJudgeMetaSet(path string) (eval.JudgeMetaSet, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return eval.JudgeMetaSet{}, fmt.Errorf("read judge meta set: %w", err)
+	}
+	set, err := eval.DecodeJudgeMetaSet(data)
+	if err != nil {
+		return eval.JudgeMetaSet{}, fmt.Errorf("decode judge meta set: %w", err)
+	}
+	return set, nil
+}
+
 // loadJudgePriceTable resolves the optional price table a JudgeConfig may
 // pin. A config that names a priceTableDigest requires the table and
 // requires it to match: a Score that claimed a computed cost against a

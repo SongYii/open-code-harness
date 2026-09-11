@@ -677,6 +677,59 @@ full filesystem/network enforcement). Running that package alone, with and
 without `-race`, reproduced the same two failures; the branch has no diff under
 `internal/harness/adapters/localexec`.
 
+## Judge semantic meta-evaluation: labelled evidence, not more parser cases
+
+The 2026-09-11 follow-on adds a frozen six-case labelled seed bound to
+`semantic-meta-judge` and a repeated runner. It follows the pinned OpenAI Evals
+meta-eval precedent (human choice labels compared with grader choices), but
+publishes the full expected/observed confusion matrix and asymmetric raw counts
+instead of only one metascore. In particular, an expected Fail or Indeterminate
+observed as Pass is counted as `unsafePasses` and cannot cancel numerically
+against a false fail.
+
+Every case goes through the production criteria/evidence renderer, frozen
+prompt, strict output decoder, evidence checks, and one-call rule. The label
+rationale is never sent to the model. Reports bind the exact set/config/model,
+retain every observation, available per-criterion result, and usage record, and can be
+re-verified offline against case order, repetition index, and expected label.
+
+Two implementation findings changed the first draft:
+
+1. The new documentation initially wrote the consent literal as `1`; the first
+   CLI test failed because the repository's shared gate correctly requires
+   `I_UNDERSTAND`. The implementation uses that shared gate rather than a new
+   spelling.
+2. Requiring criterion results on every observation would reject the production
+   Judge's legitimate fail-closed outcome when a provider or decoder failed
+   before criteria existed. Such calls now remain bound Indeterminate
+   observations with usage; determinate observations still require criteria.
+3. Returning a plain cancellation error after some calls would discard paid
+   observations. Cancellation now produces an explicitly incomplete prefix
+   report with planned/completed calls, a stop reason, and all usage already
+   incurred; the CLI returns the stable indeterminate exit code after writing
+   it.
+
+The checked-in keyless fixture drives all six cases three times (18 calls) and
+expects 18 exact matches. This proves wiring and arithmetic only. No paid call
+has been made for this seed in this implementation step, no live accuracy is
+claimed, and no threshold has been selected.
+
+Focused tests cover strict decoding, set/config/price binding, exact call-budget
+refusal before the caller, all nine confusion cells, partial-report retention,
+aggregate tampering, offline order/label substitution, and the checked-in 18-call
+fixture. Two manual mutations were killed by
+`TestSummarizeJudgeMetaKeepsErrorDirectionsSeparate`: reversing the unsafe-pass
+condition changed the expected count from 2 to 1, and dropping determinate-to-
+Indeterminate errors changed the expected count from 1 to 0. After restoration,
+the focused packages and docsguard passed, as did `go vet ./...`.
+
+The full `go test -race ./... -count=1` run passed the new eval and CLI code and
+all other packages except the same two unrelated nested-sandbox-sensitive
+`localexec` tests already documented above: the sandbox exposes filesystem and
+network containment when the test expects no backend, and the cgroup fixture
+observes PID 2 rather than the host PID. Neither failing package has a branch
+diff. No live provider call was made.
+
 ## MCP suite follow-on
 
 Commit `65dcd87` adds the MCP suite excluded from the original milestone-10
@@ -717,10 +770,10 @@ validation follow-up recorded below closes that exact frozen Cell's claim.
 ## Known limitations and open blockers (not GA)
 
 See the contract document's own [Maturity and GA blockers](evaluation.md#maturity-and-ga-blockers)
-section. Summarized: real-model live-judge sample size, judge
-meta-evaluation breadth beyond the eight adversarial fixtures recorded above,
-provider breadth beyond one OpenAI-compatible adapter, and an accepted
-variance policy for live/quality signals are all explicitly outstanding.
+section. Summarized: real-model live-judge sample size, broader reviewed cases
+and a real-model run for the six-case semantic meta-eval seed, provider breadth
+beyond one OpenAI-compatible adapter, and calibrated policies beyond the exact
+MCP Cell are explicitly outstanding.
 MCP is now an optional explicit suite, never a runner prerequisite; its live
 model-resistance result is still outstanding.
 

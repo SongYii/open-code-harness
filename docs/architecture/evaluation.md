@@ -394,6 +394,27 @@ prompt-injection attempt in an automated test, so what is tested is the
 mechanism: that labeling is genuinely present around real transcript
 content, not merely aspirational prompt text.
 
+`och.eval.judge-meta-set` and `RunJudgeMetaSet` now provide the separate
+semantic measurement that parser fixtures cannot. A frozen set binds one exact
+JudgeConfig digest and carries ordered human-reviewed labels plus small inline
+transcript/audit evidence. Label rationales are review metadata and never enter
+the model request. Cases use the production criteria/evidence renderer, frozen
+prompt, one-call rule, strict decoder, and evidence checks. Repetitions produce
+ordered observations carrying every per-criterion result the Judge produced
+(none if the call or decoder failed first) and a complete 3×3 expected/observed
+confusion matrix;
+raw counters keep unsafe passes, false fails, unexpected indeterminates, and
+overclaims distinct rather than hiding direction inside one accuracy number.
+
+The live `och-eval judge-meta` command requires the normal two-part consent and
+an exact `-max-calls = cases × repetitions` acknowledgement after verifying the
+set/config digest. Cancellation publishes an explicitly incomplete prefix
+report with already-paid observations and usage instead of losing them. A
+report can be re-bound offline to its set/config, including case order,
+repetition index, and expected label. The checked-in six-case, three-repetition
+seed is exercised keylessly with a fixture caller; no quality threshold is
+invented and no live result is claimed by that proof.
+
 `EvaluateJudgeAttempt` (`internal/harness/eval/judge_attempt.go`) is the
 orchestration `och-eval judge` drives, and the order of its gates is the
 contract: frozen evidence and the supplied config's digest first, then
@@ -778,9 +799,10 @@ coverage and a determinate verdict with no rationale. Two of the original five
 were found on 2026-09-04 to be
 satisfied by an earlier refusal than the one they named, and so proved
 nothing about the defense they were written for; both are corrected and now
-assert the refusal reason. Broader semantic meta-evaluation over a labelled
-real-model corpus remains outstanding; ten parser/mechanism fixtures do not
-measure judge accuracy. Also outstanding: provider breadth beyond
+assert the refusal reason. A six-case labelled semantic seed and its repeated
+runner now exist, but no real model has run that corpus yet and six synthetic
+cases cannot establish accuracy. Broader reviewed cases and live observations
+therefore remain outstanding. Also outstanding: provider breadth beyond
 the one OpenAI-compatible adapter this repository ships, and calibrated
 variance policies for live/quality Cells beyond the exact MCP injection Cell
 measured here.
