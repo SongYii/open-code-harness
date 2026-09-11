@@ -236,6 +236,32 @@ func RunJudge(ctx context.Context, reader *ArtifactReader, config JudgeConfig, c
 		}, nil
 	}
 
+	// Every declared role is required to build the question, so a
+	// determinate answer must cite at least one shown entry from every one
+	// of those roles. A global citation list that names only a transcript
+	// cannot support a separate audit-continuity conclusion merely because
+	// both files happened to be present in the prompt.
+	if ScoreVerdict(output.Verdict) != ScoreIndeterminate {
+		citedRoles := make(map[string]bool)
+		for _, ref := range output.EvidenceReferences {
+			for _, role := range bundle.PathRoles[ref] {
+				citedRoles[role] = true
+			}
+		}
+		for _, criterion := range config.Criteria {
+			for _, role := range criterion.EvidenceRoles {
+				if !citedRoles[role] {
+					return indeterminateJudgeOutcome(
+						fmt.Sprintf("judge output cited no evidence from required role %q", role), usage), nil
+				}
+			}
+		}
+		if !hasText(output.Rationale) {
+			return indeterminateJudgeOutcome(
+				fmt.Sprintf("judge output claimed verdict %q but carried no rationale", output.Verdict), usage), nil
+		}
+	}
+
 	return JudgeOutcome{
 		Verdict: ScoreVerdict(output.Verdict), NumericScore: output.Score, Criteria: resultCriteria,
 		EvidenceReferences: output.EvidenceReferences, MissingEvidence: output.MissingEvidence,
@@ -260,6 +286,7 @@ type judgeEvidenceEntry struct {
 type judgeEvidenceBundle struct {
 	Text           string
 	AvailablePaths []string
+	PathRoles      map[string][]string
 	MissingPaths   []string
 }
 
@@ -366,5 +393,16 @@ func buildJudgeEvidenceBundle(reader *ArtifactReader, config JudgeConfig) (judge
 		builder.WriteString("\n")
 	}
 	builder.WriteString("</evidence>\n")
-	return judgeEvidenceBundle{Text: builder.String(), AvailablePaths: availablePaths, MissingPaths: missing}, nil
+	pathRoles := make(map[string][]string, len(availablePaths))
+	for _, role := range sortedRoles {
+		for _, manifestEntry := range reader.Entries(role) {
+			if !containsString(availablePaths, manifestEntry.Path) {
+				continue
+			}
+			pathRoles[manifestEntry.Path] = append(pathRoles[manifestEntry.Path], role)
+		}
+	}
+	return judgeEvidenceBundle{
+		Text: builder.String(), AvailablePaths: availablePaths, PathRoles: pathRoles, MissingPaths: missing,
+	}, nil
 }
