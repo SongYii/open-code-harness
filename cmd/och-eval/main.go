@@ -30,7 +30,7 @@ func main() {
 
 func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "och-eval: missing subcommand: run, regrade, report, or judge")
+		fmt.Fprintln(stderr, "och-eval: missing subcommand: run, regrade, report, baseline, judge, or judge-meta")
 		return exitValidation
 	}
 	switch args[0] {
@@ -44,8 +44,10 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return baselineCommand(args[1:], stdout, stderr)
 	case "judge":
 		return judgeCommand(ctx, args[1:], stdout, stderr)
+	case "judge-meta":
+		return judgeMetaCommand(ctx, args[1:], stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "och-eval: unknown subcommand %q: want run, regrade, report, or judge\n", args[0])
+		fmt.Fprintf(stderr, "och-eval: unknown subcommand %q: want run, regrade, report, baseline, judge, or judge-meta\n", args[0])
 		return exitValidation
 	}
 }

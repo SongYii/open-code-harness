@@ -76,6 +76,7 @@ repository uses throughout.
 | `895ee1d` | Variance 7 | Report distribution block, baseline command, derived reliability readings |
 | `9411237` | Live DeepSeek validation | Freeze Subject wire hints through both executors, make validation failures diagnosable without model text, and tune the context-quality Scenario against real compaction |
 | `d485b58` | Judge meta-eval breadth | Require determinate verdicts to cite every declared evidence role and carry a reviewable rationale; expand the focused adversarial set from eight to ten families |
+| `3023d8c` | Judge semantic meta-eval | Frozen six-case labelled corpus, production-path repeated runner, bound auditable report, and exact-budget live CLI |
 
 ## Post-merge review findings closed
 
@@ -677,6 +678,68 @@ full filesystem/network enforcement). Running that package alone, with and
 without `-race`, reproduced the same two failures; the branch has no diff under
 `internal/harness/adapters/localexec`.
 
+## Judge semantic meta-evaluation: labelled evidence, not more parser cases
+
+The 2026-09-11 follow-on adds a frozen six-case labelled seed bound to
+`semantic-meta-judge` and a repeated runner. It follows the pinned OpenAI Evals
+meta-eval precedent (human choice labels compared with grader choices), but
+publishes the full expected/observed confusion matrix and asymmetric raw counts
+instead of only one metascore. In particular, an expected Fail or Indeterminate
+observed as Pass is counted as `unsafePasses` and cannot cancel numerically
+against a false fail.
+
+Every case goes through the production criteria/evidence renderer, frozen
+prompt, strict output decoder, evidence checks, and one-call rule. The label
+rationale is never sent to the model. Reports bind the exact set/config/model,
+retain every observation, available per-criterion result, and usage record, and can be
+re-verified offline against case order, repetition index, and expected label.
+
+Two implementation findings changed the first draft:
+
+1. The new documentation initially wrote the consent literal as `1`; the first
+   CLI test failed because the repository's shared gate correctly requires
+   `I_UNDERSTAND`. The implementation uses that shared gate rather than a new
+   spelling.
+2. Requiring criterion results on every observation would reject the production
+   Judge's legitimate fail-closed outcome when a provider or decoder failed
+   before criteria existed. Such calls now remain bound Indeterminate
+   observations with usage; determinate observations still require criteria.
+3. Returning a plain cancellation error after some calls would discard paid
+   observations. Cancellation now produces an explicitly incomplete prefix
+   report with planned/completed calls, a stop reason, and all usage already
+   incurred; the CLI returns the stable indeterminate exit code after writing
+   it.
+
+The checked-in keyless fixture drives all six cases three times (18 calls) and
+expects 18 exact matches. This proves wiring and arithmetic only; no threshold
+is selected from the fixture.
+
+The first separately authorized DeepSeek V4 Pro run completed all 18 calls and
+matched all 18 human labels: six expected/observed Pass, nine Fail, and three
+Indeterminate observations. All four directional error counters were zero.
+The bound report is
+`eval/reports/judge-semantic-meta-deepseek-live-2026-09-11.json`
+(`sha256:e95dc9409637a2a70df41588a7aa15a768c93c8c57a0b069b47659ead9c29cfe`).
+It records 17,283 input and 3,140 output tokens. Cost remains explicitly
+unavailable because the v1 JudgeConfig deliberately bound no price table.
+This is evidence for that six-case corpus, not a broad accuracy claim.
+
+Focused tests cover strict decoding, set/config/price binding, exact call-budget
+refusal before the caller, all nine confusion cells, partial-report retention,
+aggregate tampering, offline order/label substitution, and the checked-in 18-call
+fixture. Two manual mutations were killed by
+`TestSummarizeJudgeMetaKeepsErrorDirectionsSeparate`: reversing the unsafe-pass
+condition changed the expected count from 2 to 1, and dropping determinate-to-
+Indeterminate errors changed the expected count from 1 to 0. After restoration,
+the focused packages and docsguard passed, as did `go vet ./...`.
+
+The full `go test -race ./... -count=1` run passed the new eval and CLI code and
+all other packages except the same two unrelated nested-sandbox-sensitive
+`localexec` tests already documented above: the sandbox exposes filesystem and
+network containment when the test expects no backend, and the cgroup fixture
+observes PID 2 rather than the host PID. Neither failing package has a branch
+diff. No live provider call was made.
+
 ## MCP suite follow-on
 
 Commit `65dcd87` adds the MCP suite excluded from the original milestone-10
@@ -717,10 +780,10 @@ validation follow-up recorded below closes that exact frozen Cell's claim.
 ## Known limitations and open blockers (not GA)
 
 See the contract document's own [Maturity and GA blockers](evaluation.md#maturity-and-ga-blockers)
-section. Summarized: real-model live-judge sample size, judge
-meta-evaluation breadth beyond the eight adversarial fixtures recorded above,
-provider breadth beyond one OpenAI-compatible adapter, and an accepted
-variance policy for live/quality signals are all explicitly outstanding.
+section. Summarized: real-model live-judge sample size, broader reviewed cases
+for semantic meta-evaluation, provider breadth
+beyond one OpenAI-compatible adapter, and calibrated policies beyond the exact
+MCP Cell are explicitly outstanding.
 MCP is now an optional explicit suite, never a runner prerequisite; its live
 model-resistance result is still outstanding.
 

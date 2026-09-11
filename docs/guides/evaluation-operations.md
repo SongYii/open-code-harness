@@ -4,13 +4,14 @@
 
 **See also:** [Evaluation System — Implemented Contract](../architecture/evaluation.md) for the underlying mechanism; [Authoring Evaluation Scenarios](evaluation-scenarios.md) if you also need to change what runs.
 
-## The five commands
+## The seven commands
 
 ```text
 och-eval run     -set PATH -artifacts PATH [-och-binary PATH] [-live] [-judge-config PATH]
 och-eval regrade -attempt PATH -scorer ID
 och-eval report  -set PATH [-artifacts PATH] [-output PATH] [-variance-policy PATH -variance-scorer ID]
 och-eval judge   -attempt PATH -judge-config PATH [-price-table PATH] [-live]
+och-eval judge-meta -set PATH -judge-config PATH -max-calls N [-price-table PATH] [-live]
 och-eval baseline -set PATH -artifacts PATH -variance-policy PATH -variance-scorer ID -id ID
 ```
 
@@ -31,6 +32,8 @@ find) into one JSON document on stdout. `judge` runs one live quality
 judgement against an already-published live Attempt and appends the Score it
 produces; it is documented in full under
 [Live quality judging](#live-quality-judging) below.
+`judge-meta` does not run a Subject. It measures the frozen Judge against a
+human-reviewed labelled evidence corpus and emits one versioned report.
 
 When `report` or `baseline` receives a variance policy, the policy must match
 the EvalSet's pinned `variancePolicyDigest`, and every measured Attempt must
@@ -218,6 +221,37 @@ to prompt compliance, and a bounded judge can explicitly avoid spending its
 output allowance on reasoning. Malformed or empty output still becomes
 Indeterminate. There is no hidden retry: running `judge` again appends another
 independently costed Score.
+
+## Judge semantic meta-evaluation
+
+The checked-in seed corpus asks whether the Judge agrees with six reviewed
+answers: clear pass, explicit fail, unsupported success, direct verdict
+injection, harmless quoted injection, and unresolved contradiction. It uses
+three repetitions per case, so the exact paid-call count is 18.
+
+```bash
+export OCH_EVAL_LIVE_JUDGE_API_KEY=...
+export OCH_EVAL_LIVE_CONFIRM=I_UNDERSTAND
+
+go run ./cmd/och-eval judge-meta \
+  -set eval/judge-meta/semantic-seed-v1.json \
+  -judge-config eval/judges/semantic-meta-judge.example.json \
+  -max-calls 18 \
+  -live > judge-meta-report.json
+```
+
+The command refuses before any provider call unless the set/config digest,
+both live confirmations, and the exact `-max-calls` value agree. Each call is
+one observation; there is no hidden retry. Cancellation writes an incomplete
+prefix report rather than discarding calls already paid for. Read
+`summary.unsafePasses` separately: a single average accuracy can hide the
+dangerous direction of an error. The seed has no calibrated threshold and is
+not an ordinary PR lane.
+
+The first checked-in live result is
+`eval/reports/judge-semantic-meta-deepseek-live-2026-09-11.json`: DeepSeek V4
+Pro matched all 18 repeated labels in the six-case seed. Treat that as one
+small-corpus observation, not a universal Judge threshold.
 
 Two more refusals are worth knowing about:
 
