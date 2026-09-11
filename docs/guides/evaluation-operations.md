@@ -4,7 +4,7 @@
 
 **See also:** [Evaluation System — Implemented Contract](../architecture/evaluation.md) for the underlying mechanism; [Authoring Evaluation Scenarios](evaluation-scenarios.md) if you also need to change what runs.
 
-## The seven commands
+## The eight command families
 
 ```text
 och-eval run     -set PATH -artifacts PATH [-och-binary PATH] [-live] [-judge-config PATH]
@@ -12,6 +12,8 @@ och-eval regrade -attempt PATH -scorer ID
 och-eval report  -set PATH [-artifacts PATH] [-output PATH] [-variance-policy PATH -variance-scorer ID]
 och-eval judge   -attempt PATH -judge-config PATH [-price-table PATH] [-live]
 och-eval judge-meta -set PATH -judge-config PATH -max-calls N [-price-table PATH] [-live]
+och-eval judge-meta-calibrate -report PATH -validation-set PATH -id ID -version VERSION
+och-eval judge-meta-check -report PATH -policy PATH
 och-eval baseline -set PATH -artifacts PATH -variance-policy PATH -variance-scorer ID -id ID
 ```
 
@@ -34,6 +36,9 @@ produces; it is documented in full under
 [Live quality judging](#live-quality-judging) below.
 `judge-meta` does not run a Subject. It measures the frozen Judge against a
 human-reviewed labelled evidence corpus and emits one versioned report.
+`judge-meta-calibrate` converts one complete calibration report into an
+empirical policy while pre-binding a different holdout set. `judge-meta-check`
+applies that policy offline and exits 3 when the holdout breaches it.
 
 When `report` or `baseline` receives a variance policy, the policy must match
 the EvalSet's pinned `variancePolicyDigest`, and every measured Attempt must
@@ -252,6 +257,14 @@ The first checked-in live result is
 `eval/reports/judge-semantic-meta-deepseek-live-2026-09-11.json`: DeepSeek V4
 Pro matched all 18 repeated labels in the six-case seed. Treat that as one
 small-corpus observation, not a universal Judge threshold.
+
+V2 uses two disjoint 18-call DeepSeek sets. First run the calibration set,
+generate a policy while naming the holdout set, then run and check that holdout.
+Both live runs retain the existing dual consent and exact `-max-calls 18` gate.
+The DeepSeek price table records official peak rates as a conservative upper
+bound. The OpenAI holdout uses identical cases with its separately bound dated
+model and standard synchronous price table; this compares provider services,
+not adapter protocols.
 
 Two more refusals are worth knowing about:
 

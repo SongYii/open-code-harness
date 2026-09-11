@@ -157,9 +157,11 @@ Judge 的服务端协议固定 `responseFormat=json_object`；还可以冻结通
 
 此外，两种“JSON 正确但无法复核”的确定性答案也会拒绝。`pass/fail` 必须至少引用冻结 criteria 声明的每一种证据角色；同时判断 transcript 质量和 audit 连续性却只引用 transcript，不会因为 audit 文件曾在提示词中出现就算有依据。它还必须提供非空白理由。失败会保留本次调用用量并产生一条 Indeterminate，不报 Go 错误也不重试。`indeterminate` 可以没有引用或理由。这只证明角色覆盖和存在可复核解释，不冒充逐句语义正确性；逐 criterion 引用需要新的冻结输出协议，真实正确率仍需要模型校准。
 
-`och.eval.judge-meta-set` 与 `RunJudgeMetaSet` 用来衡量解析器测试无法回答的“语义是否判对”。冻结 set 绑定精确 JudgeConfig 摘要，按顺序保存人工标签和小段 transcript/audit 合成证据；标签解释只供评审，绝不发给模型。每例复用生产环境相同的证据包装、冻结提示词、单次调用、严格解析和引用检查。报告保留完整 3×3 混淆矩阵，并把危险通过、错误失败、意外不可判定和强行下结论分别计数。live 命令还要求双重同意和精确调用预算；取消会输出保留已付费观察与用量的未完成前缀报告。报告可在离线时重新核对 set/config、案例顺序、重复序号和预期标签。仓库内六例、每例三次的种子集只由无密钥 fixture 证明机制，尚未据此声称真实模型质量或通过阈值。
+`och.eval.judge-meta-set` 与 `RunJudgeMetaSet` 用来衡量解析器测试无法回答的“语义是否判对”。冻结 set 绑定精确 JudgeConfig 摘要，按顺序保存人工标签和小段 transcript/audit 合成证据；标签解释只供评审，绝不发给模型。每例复用生产环境相同的证据包装、冻结提示词、单次调用、严格解析和引用检查。报告保留完整 3×3 混淆矩阵，并把危险通过、错误失败、意外不可判定和强行下结论分别计数。live 命令还要求双重同意和精确调用预算；取消会输出保留已付费观察与用量的未完成前缀报告。报告可在离线时重新核对 set/config、案例顺序、重复序号和预期标签。仓库内六例、每例三次的种子集已经由 DeepSeek 真实运行，18 次全部匹配标签；这仍只证明该小语料。
 
-一个评审 Score 通过与确定性重新评分完全相同的 `PublishScore` 路径发布，`Lane` 设为 `LaneLive` —— 不存在单独的文档类型。`internal/harness/eval/price.go` 的 `PriceTable` 以整数微单位计算成本，与 `Score.ScorerUsage` 自身的成本字段相互独立（评审器自身的用量，绝不会并入 Subject 的用量）；一个未定价的模型会返回 `ok=false`，而不是零成本。
+v2 另加预先分开的六例校准集和六例留出集，每例三次。策略会提前绑定另一份验证集摘要，不能看完校准成绩再换简单题。DeepSeek 与 OpenAI 的留出题由测试保证完全相同。价格现在可用“每一百万 token 的整数微美元”精确表示，整次费用只向上取整一次；来源、日期和峰值/标准价选择也进入摘要。DeepSeek 峰值表给出保守上界。两家服务仍共用 OpenAI-compatible 适配器，所以这不是第二种协议实现。
+
+一个评审 Score 通过与确定性重新评分完全相同的 `PublishScore` 路径发布，`Lane` 设为 `LaneLive` —— 不存在单独的文档类型。`internal/harness/eval/price.go` 的 `PriceTable` 以整数微单位计算成本，并支持带 token 单位的缩放费率，与 `Score.ScorerUsage` 自身的成本字段相互独立（评审器自身的用量，绝不会并入 Subject 的用量）；一个未定价、无效或溢出的模型会返回 `ok=false`，而不是零成本。
 
 ## 对等性
 

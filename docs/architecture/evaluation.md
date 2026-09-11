@@ -416,6 +416,23 @@ seed is exercised keylessly with a fixture caller. Its first separately gated
 DeepSeek run matched all 18 repeated labels; the checked-in report proves only
 that exact small corpus, and no global quality threshold is inferred from it.
 
+V2 keeps those identities immutable and adds disjoint six-case calibration and
+holdout sets, each repeated three times. A provider-equivalence contract keeps
+the DeepSeek and OpenAI holdout cases byte-identical. A calibrated
+`och.eval.judge-meta-policy` copies the calibration report's empirical error
+envelope and binds the calibration report, exact JudgeConfig, sample count,
+and a different validation-set digest declared before checking. The offline
+`judge-meta-check` refuses a substituted set and exits as a gate failure when
+the holdout exceeds that envelope. This is a regression boundary, not a
+population-accuracy assertion.
+
+Price entries may use legacy integer microunits per token or scaled integer
+microunits over a declared token unit. Scaled terms are summed with arbitrary
+precision and rounded up once, preventing cheap rates from truncating to zero.
+Frozen provenance names the official source, observation date, and rate basis.
+The DeepSeek table selects peak rates as a conservative upper bound; the
+OpenAI table selects standard synchronous rates.
+
 `EvaluateJudgeAttempt` (`internal/harness/eval/judge_attempt.go`) is the
 orchestration `och-eval judge` drives, and the order of its gates is the
 contract: frozen evidence and the supplied config's digest first, then

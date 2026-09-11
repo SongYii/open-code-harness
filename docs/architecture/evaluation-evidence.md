@@ -724,6 +724,48 @@ It records 17,283 input and 3,140 output tokens. Cost remains explicitly
 unavailable because the v1 JudgeConfig deliberately bound no price table.
 This is evidence for that six-case corpus, not a broad accuracy claim.
 
+## Judge meta-evaluation v2: pricing and predeclared holdout
+
+The v2 implementation keeps every v1 identity unchanged and adds twelve new
+reviewed cases: six calibration and six holdout cases, each repeated three
+times. A contract test proves that the OpenAI and DeepSeek holdout documents
+carry identical ordered labels and evidence even though each binds its own
+JudgeConfig. This expands the reviewed corpus to 18 distinct cases without
+letting provider-specific edits change the comparison question.
+
+Official pricing exposed a representation bug before a priced run occurred.
+The original integer-microunits-per-token fields cannot encode DeepSeek V4
+Pro's USD 1.32/M input or 3.96/M output rates. Scaled entries now bind one
+integer token unit and integer microunits per that unit; arbitrary-precision
+arithmetic sums the whole call before one conservative ceiling. Tests reject
+truncation to zero, overflow, negative/mixed/incomplete rates, duplicate
+models, unknown JSON fields, and partial or invalid provenance. The checked-in
+DeepSeek table binds the official peak rate as an upper bound; the OpenAI table
+binds standard synchronous GPT-5.4 mini rates. Sources and observation dates
+are part of each table digest.
+
+The first policy draft only rejected using the calibration set itself. That
+did not prevent choosing an easier replacement after seeing results. The
+implemented `och.eval.judge-meta-policy` instead binds the calibration report,
+calibration set, exact JudgeConfig and sample count, plus the different
+validation set declared at policy creation. Its limits are copied from the raw
+calibration envelope rather than invented. `judge-meta-check` refuses identity
+substitution and returns the stable gate-failure exit when a bound holdout
+exceeds the envelope.
+
+At this commit the deterministic mechanism and frozen inputs are implemented;
+the priced DeepSeek calibration/holdout and OpenAI holdout remain explicit live
+steps requiring 18 + 18 + 18 authorized calls and the corresponding
+credentials. No result is claimed before those artifacts exist.
+
+Two focused mutations prove the new tests reach their named hazards. Removing
+the one final ceiling made a non-zero sub-microUSD call publish computed zero;
+`TestEstimateCostSupportsFractionalMicrounitsPerToken` failed. Replacing the
+predeclared-holdout equality check with the earlier "anything except the
+calibration set" rule let a third set through;
+`TestCalibrateAndEvaluateJudgeMetaPolicyOnDisjointHoldout` failed. Both changes
+were restored and the focused tests passed.
+
 Focused tests cover strict decoding, set/config/price binding, exact call-budget
 refusal before the caller, all nine confusion cells, partial-report retention,
 aggregate tampering, offline order/label substitution, and the checked-in 18-call
