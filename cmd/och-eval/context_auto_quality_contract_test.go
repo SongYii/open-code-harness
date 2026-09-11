@@ -42,6 +42,7 @@ func TestContextAutoQualityExampleUsesAutomaticSummaryWithoutFocus(t *testing.T)
 
 	var capturesMu sync.Mutex
 	var summaryRequests []string
+	var summaryEfforts, conversationEfforts []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, readErr := io.ReadAll(io.LimitReader(r.Body, maxFixtureRequestBytes))
 		_ = r.Body.Close()
@@ -60,6 +61,11 @@ func TestContextAutoQualityExampleUsesAutomaticSummaryWithoutFocus(t *testing.T)
 		if isSummarizerRequest(request) {
 			capturesMu.Lock()
 			summaryRequests = append(summaryRequests, request.Messages[len(request.Messages)-1].Content)
+			summaryEfforts = append(summaryEfforts, request.ReasoningEffort)
+			capturesMu.Unlock()
+		} else {
+			capturesMu.Lock()
+			conversationEfforts = append(conversationEfforts, request.ReasoningEffort)
 			capturesMu.Unlock()
 		}
 		contextMechanismFixtureScript(w, r)
@@ -113,9 +119,24 @@ func TestContextAutoQualityExampleUsesAutomaticSummaryWithoutFocus(t *testing.T)
 
 	capturesMu.Lock()
 	captured := append([]string(nil), summaryRequests...)
+	capturedSummaryEfforts := append([]string(nil), summaryEfforts...)
+	capturedConversationEfforts := append([]string(nil), conversationEfforts...)
 	capturesMu.Unlock()
 	if len(captured) == 0 {
-		t.Fatal("no automatic summarizer request was observed")
+		t.Fatalf("no automatic summarizer request was observed; result=%+v conversation_requests=%d", results[0], len(capturedConversationEfforts))
+	}
+	for _, effort := range capturedSummaryEfforts {
+		if effort != "none" {
+			t.Fatalf("summary reasoning_effort = %q, want none", effort)
+		}
+	}
+	if len(capturedConversationEfforts) == 0 {
+		t.Fatal("no conversation request was observed")
+	}
+	for _, effort := range capturedConversationEfforts {
+		if effort != "high" {
+			t.Fatalf("conversation reasoning_effort = %q, want high", effort)
+		}
 	}
 	first := captured[0]
 	if !strings.Contains(first, "长期有效的硬性约束") || !strings.Contains(first, "secrets.txt") {

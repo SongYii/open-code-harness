@@ -151,6 +151,7 @@ type RequestIdentity struct {
     MaxTokensField                     string
     ResponseFormat                     string
     ThinkingMode                       string
+    ReasoningEffort                    engine.ReasoningEffort
 }
 ```
 
@@ -165,7 +166,9 @@ type RequestIdentity struct {
   invalid. Token fields may be 0 (unknown).
 - `MaxTokensField` is `""`, `"max_tokens"`, or `"max_completion_tokens"`.
 - `ResponseFormat` is `""` or `"json_object"`; `ThinkingMode` is `""`,
-  `"enabled"`, or `"disabled"`.
+  `"enabled"`, or `"disabled"`. `ReasoningEffort` is empty or `none`,
+  `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; it cannot coexist
+  with `ThinkingMode`.
 
 Shipped presets are `openaicompat.ProfileTextOnly` (`NativeTools=unsupported`)
 and adapter-local `openaicompat.ProfileToolsSupported` (`NativeTools=supported`).
@@ -191,6 +194,7 @@ type WireHints struct {
     MaxTokensField string
     ResponseFormat string
     ThinkingMode   string
+    ReasoningEffort engine.ReasoningEffort
 }
 
 type Config struct {
@@ -257,6 +261,7 @@ system prompt. `tool_choice` is omitted (default auto).
 | `max_tokens` / `max_completion_tokens` | only if `MaxOutputTokens > 0` and the matching hint is set | `TestStreamRequestMapping` / `max tokens`, `omit max when tokens zero` |
 | `response_format.type` | only if `Hints.ResponseFormat=json_object` | `TestStreamRequestMapping` / `structured output and thinking` |
 | `thinking.type` | only if `Hints.ThinkingMode` is set | `TestStreamRequestMapping` / `structured output and thinking` |
+| `reasoning_effort` | explicit `ModelRequest.ReasoningEffort`, otherwise `Hints.ReasoningEffort`; omitted when both are empty | `TestStreamRequestMapping` / `reasoning effort`; `TestStreamPerRequestReasoningEffortOverridesRouteDefault` |
 | `tools` | only if `ModelRequest.Tools` is non-empty; each item is `type=function` | `TestStreamSendsToolsAndMessages` |
 | `messages` multi-role | only if `ModelRequest.Messages` is non-empty | `TestStreamSendsToolsAndMessages` |
 | `Authorization: Bearer <key>` | required | `TestStreamRequestMapping` |

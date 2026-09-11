@@ -10,3 +10,15 @@
 5. Run frontend, focused, full race, vet, and diff gates; publish a PR.
 6. Run the live Subject and Judge only after a fresh credential is supplied;
    record the immutable Attempt/Score evidence separately.
+
+## Follow-up: independent reasoning effort
+
+7. Add one provider-neutral `ReasoningEffort` vocabulary and an explicit
+   per-request override; never derive request semantics from `Purpose`.
+8. Expose normal response effort through Provider config and summary effort
+   through Context config, including CLI, in-process, ACP, Subject, and Judge
+   paths.
+9. Preserve legacy `thinkingMode` compatibility but reject mixed controls and
+   unknown values before network I/O.
+10. Prove exact HTTP bodies, summary override, executor parity, strict event
+    replay, and the automatic-context end-to-end contract.

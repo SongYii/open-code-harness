@@ -558,8 +558,9 @@ func TestAutomaticContextQualityExample(t *testing.T) {
 	if set.Lane != eval.LaneLive || subject.Provider.Lane != eval.ProviderLaneLive {
 		t.Fatal("automatic context quality example is not protected by both live-lane gates")
 	}
-	if subject.Provider.ThinkingMode != "disabled" {
-		t.Fatalf("automatic context quality Subject thinkingMode = %q, want disabled", subject.Provider.ThinkingMode)
+	if subject.Provider.ReasoningEffort != "high" || subject.Context.SummaryReasoningEffort != "none" {
+		t.Fatalf("automatic context quality reasoning effort = response %q summary %q, want high/none",
+			subject.Provider.ReasoningEffort, subject.Context.SummaryReasoningEffort)
 	}
 
 	requiredVerifiers := map[string]bool{

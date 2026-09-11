@@ -143,6 +143,7 @@ type RequestIdentity struct {
     MaxTokensField                     string
     ResponseFormat                     string
     ThinkingMode                       string
+    ReasoningEffort                    engine.ReasoningEffort
 }
 ```
 
@@ -157,7 +158,9 @@ type RequestIdentity struct {
   字段可为 0（表示未知）；
 - `MaxTokensField` 只能是 `""`、`"max_tokens"` 或 `"max_completion_tokens"`。
 - `ResponseFormat` 只能是 `""` 或 `"json_object"`；`ThinkingMode` 只能是
-  `""`、`"enabled"` 或 `"disabled"`。
+  `""`、`"enabled"` 或 `"disabled"`。`ReasoningEffort` 只能为空或
+  `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`，且不能与
+  `ThinkingMode` 同时设置。
 
 唯一随包提供的 preset 是 `openaicompat.ProfileTextOnly`。没有按厂商命名的
 helper，Application/Engine 也不按供应商名分支。`NativeTools=required` 在
@@ -180,6 +183,7 @@ type WireHints struct {
     MaxTokensField string
     ResponseFormat string
     ThinkingMode   string
+    ReasoningEffort engine.ReasoningEffort
 }
 
 type Config struct {
@@ -233,6 +237,7 @@ EndpointID、profile 和全部 wire hint（`TestIdentityCopiesProfileAndHints`�
 | `max_tokens` / `max_completion_tokens` | 仅当 `MaxOutputTokens > 0` 且 hint 匹配 | `TestStreamRequestMapping` / `max tokens`、`omit max when tokens zero` |
 | `response_format.type` | 仅当 `Hints.ResponseFormat=json_object` | `TestStreamRequestMapping` / `structured output and thinking` |
 | `thinking.type` | 仅当设置了 `Hints.ThinkingMode` | `TestStreamRequestMapping` / `structured output and thinking` |
+| `reasoning_effort` | 优先使用显式 `ModelRequest.ReasoningEffort`，否则使用 `Hints.ReasoningEffort`；两者都为空时省略 | `TestStreamRequestMapping` / `reasoning effort`；`TestStreamPerRequestReasoningEffortOverridesRouteDefault` |
 | `Authorization: Bearer <key>` | 必需 | `TestStreamRequestMapping` |
 | `Accept: text/event-stream` | 始终 | `TestStreamRequestMapping` |
 | `User-Agent: open-code-harness` | 默认 | `TestStreamRequestMapping` |

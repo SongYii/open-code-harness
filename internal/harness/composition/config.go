@@ -9,6 +9,7 @@ import (
 
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/mcp"
 	"github.com/SongYii/open-code-harness/internal/harness/contextengine"
+	"github.com/SongYii/open-code-harness/internal/harness/engine"
 	"github.com/SongYii/open-code-harness/internal/harness/policy"
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
 )
@@ -27,6 +28,9 @@ type Provider struct {
 	IncludeUsage   bool
 	MaxTokensField string
 	ThinkingMode   string
+	// ReasoningEffort is the normal conversation default. Empty delegates to
+	// the provider. Context.SummaryReasoningEffort may override it per summary.
+	ReasoningEffort string
 	// AllowInsecureLoopback permits a plain-HTTP base URL when it resolves to
 	// loopback. It exists for a local fixture server and must stay false
 	// against any real endpoint.
@@ -56,6 +60,9 @@ type MCPServerConfig = mcp.ServerConfig
 // default, and Validate rejects an out-of-range or inverted relationship
 // before Open constructs any resource.
 type Context struct {
+	// SummaryReasoningEffort is the per-request override used only by rolling
+	// summary calls. Empty inherits Provider.ReasoningEffort.
+	SummaryReasoningEffort string
 	// TriggerPercent/TargetPercent/TailPercent derive contextengine.Budget
 	// (design §8) from Provider.ContextWindow/MaxOutput: the fraction of
 	// hardInput that triggers compaction, the fraction compaction targets,
@@ -287,6 +294,15 @@ func (config Config) Validate() error {
 	}
 	if config.Provider.ThinkingMode != "" && config.Provider.ThinkingMode != "disabled" {
 		return fmt.Errorf("%w: Provider.ThinkingMode must be empty or %q", errInvalidConfig, "disabled")
+	}
+	if !engine.IsReasoningEffort(engine.ReasoningEffort(config.Provider.ReasoningEffort)) {
+		return fmt.Errorf("%w: Provider.ReasoningEffort is not supported", errInvalidConfig)
+	}
+	if !engine.IsReasoningEffort(engine.ReasoningEffort(config.Context.SummaryReasoningEffort)) {
+		return fmt.Errorf("%w: Context.SummaryReasoningEffort is not supported", errInvalidConfig)
+	}
+	if config.Provider.ThinkingMode != "" && (config.Provider.ReasoningEffort != "" || config.Context.SummaryReasoningEffort != "") {
+		return fmt.Errorf("%w: Provider.ThinkingMode cannot be combined with reasoning effort", errInvalidConfig)
 	}
 	if err := config.Context.validate(config.Provider.ContextWindow, config.Provider.MaxOutput); err != nil {
 		return err

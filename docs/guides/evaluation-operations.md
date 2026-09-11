@@ -161,13 +161,13 @@ Only after all three does the provider call happen, and the credential the
 JudgeConfig names is read only inside that call. Anything refused above
 happens before a credential is ever looked up.
 
-JudgeConfigs freeze `responseFormat: "json_object"`; the checked-in DeepSeek
-config additionally freezes `thinkingMode: "disabled"`. The adapter sends
-those as provider-level controls: strict JSON is not left to prompt compliance,
-and DeepSeek does not spend the bounded output allowance on its default
-thinking mode. Providers without that extension omit it. Malformed or empty
-output still becomes Indeterminate. There is no hidden retry: running `judge`
-again appends another independently costed Score.
+JudgeConfigs freeze `responseFormat: "json_object"`; they may also freeze a
+`reasoningEffort`. The legacy DeepSeek example retains
+`thinkingMode: "disabled"`; the two controls are mutually exclusive. Strict JSON is not left
+to prompt compliance, and a bounded judge can explicitly avoid spending its
+output allowance on reasoning. Malformed or empty output still becomes
+Indeterminate. There is no hidden retry: running `judge` again appends another
+independently costed Score.
 
 Two more refusals are worth knowing about:
 

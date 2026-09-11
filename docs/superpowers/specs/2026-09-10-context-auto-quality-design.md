@@ -18,11 +18,12 @@ Neutral later Turns create enough deterministic meter pressure for pre-turn
 compaction. The final Turn asks for the forbidden file, followed by a durable
 absence observation.
 
-The Subject freezes DeepSeek `thinkingMode: disabled`. Summary text, rather
+The Subject freezes normal responses at `reasoningEffort: high` and automatic
+summaries separately at `summaryReasoningEffort: none`. Summary text, rather
 than hidden reasoning, must receive the bounded compaction output allowance;
-leaving this at the provider's default is a different Subject identity and
-made the first live attempts fail summary generation before a checkpoint
-could exist.
+leaving summary effort at the provider's default is a different Subject
+identity and made the first live attempts fail summary generation before a
+checkpoint could exist.
 
 Deterministic prerequisites require complete evidence, a completed automatic
 `pre_turn/summary` checkpoint that a dispatched request actually used, bounded
@@ -40,6 +41,7 @@ only the live-model Score may claim semantic quality.
 
 ## Non-goals
 
-This slice does not change Context Engine policy, summary prompting, or
-provider behavior. It does not infer quality from fixture output and does not
-set a variance threshold from one live run.
+This slice does not change Context Engine compaction policy or summary
+prompting. Its provider control is explicit and frozen in Subject identity; it
+does not infer quality from fixture output or set a variance threshold from one
+live run.

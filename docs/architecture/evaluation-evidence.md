@@ -874,3 +874,20 @@ and Outcome digest
 the Judge used 11,452 input and 336 output tokens. Cost remains unavailable
 because no frozen price table was supplied. The temporary credential file was
 deleted immediately after the run.
+
+## Follow-up: independent response and summary reasoning effort (2026-09-11)
+
+The provider-neutral request contract now accepts `none`, `minimal`, `low`,
+`medium`, `high`, `xhigh`, and `max`. Normal conversation requests use the
+frozen Provider default, while the Context summarizer supplies its own explicit
+per-request override. The implementation does not branch on `Purpose`: that
+field remains attribution-only, and two different request bodies can exist
+only because the caller explicitly selected two different efforts.
+
+The settings are available through composition, CLI, in-process and ACP eval
+execution, Subject identity, and JudgeConfig. Legacy `thinkingMode` remains
+decodable, but mixing it with either effort setting fails before HTTP. Exact
+request-body tests prove default mapping and per-request override; the
+automatic-context fixture contract observes `high` on every conversation call
+and `none` on every summary call. Strict event replay also round-trips the
+normal response effort as durable request evidence.

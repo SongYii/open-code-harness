@@ -473,6 +473,23 @@ func TestSubjectValidateRejectsEnabledThinkingMode(t *testing.T) {
 	}
 }
 
+func TestSubjectValidateAcceptsIndependentReasoningEfforts(t *testing.T) {
+	subject := validSubject()
+	subject.Provider.ReasoningEffort = "high"
+	subject.Context.SummaryReasoningEffort = "none"
+	if err := subject.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestSubjectValidateRejectsUnknownReasoningEffort(t *testing.T) {
+	subject := validSubject()
+	subject.Context.SummaryReasoningEffort = "extreme"
+	if err := subject.Validate(); err == nil {
+		t.Fatal("Validate() accepted unknown summary reasoning effort")
+	}
+}
+
 func TestSubjectValidateRejectsInvertedContextPercentages(t *testing.T) {
 	subject := validSubject()
 	subject.Context.TargetPercent = subject.Context.TriggerPercent

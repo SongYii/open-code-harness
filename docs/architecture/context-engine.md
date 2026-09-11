@@ -65,6 +65,7 @@ Defaults (design §8's own table, all configurable via
 | `MaxOverflowCompactionsPerTurn` | 2 | 1–3 |
 | `CompactionTimeout` | 2 minutes | 5 seconds–10 minutes |
 | `MaxPrunedToolResultsPerRequest` | 64 | 1–64 |
+| `SummaryReasoningEffort` | inherit Provider | empty or `none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max` |
 
 The default deterministic meter, `och_wire_estimate_v1`
 (`contextengine.WireEstimateMeter`): text/JSON payload `ceil(UTF-8 bytes / 3)`;

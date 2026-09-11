@@ -69,6 +69,12 @@ func TestValidateRejectsEveryDocumentedCause(t *testing.T) {
 		{"zero max output", func(c *composition.Config) { c.Provider.MaxOutput = 0 }, "MaxOutput"},
 		{"unknown max tokens field", func(c *composition.Config) { c.Provider.MaxTokensField = "limit" }, "MaxTokensField"},
 		{"enabled thinking mode", func(c *composition.Config) { c.Provider.ThinkingMode = "enabled" }, "ThinkingMode"},
+		{"unknown response reasoning effort", func(c *composition.Config) { c.Provider.ReasoningEffort = "extreme" }, "ReasoningEffort"},
+		{"unknown summary reasoning effort", func(c *composition.Config) { c.Context.SummaryReasoningEffort = "extreme" }, "SummaryReasoningEffort"},
+		{"conflicting reasoning controls", func(c *composition.Config) {
+			c.Provider.ThinkingMode = "disabled"
+			c.Provider.ReasoningEffort = "high"
+		}, "cannot be combined"},
 		{"unknown policy mode", func(c *composition.Config) { c.Policy = policy.Mode("whatever") }, "Policy"},
 		{"negative step limit", func(c *composition.Config) { c.Limits.MaxSteps = -1 }, "Limits"},
 		{"negative tool call limit", func(c *composition.Config) { c.Limits.MaxToolCallsPerStep = -1 }, "Limits"},

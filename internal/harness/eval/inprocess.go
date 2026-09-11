@@ -76,6 +76,7 @@ func BuildConfig(subject Subject, directories AttemptRootDirectories, runtimeID 
 			IncludeUsage:          subject.Provider.IncludeUsage,
 			MaxTokensField:        subject.Provider.MaxTokensField,
 			ThinkingMode:          subject.Provider.ThinkingMode,
+			ReasoningEffort:       subject.Provider.ReasoningEffort,
 			AllowInsecureLoopback: subject.Provider.Lane == ProviderLaneFixture,
 		},
 		Policy: policy.Mode(subject.Policy.Mode),
@@ -86,6 +87,7 @@ func BuildConfig(subject Subject, directories AttemptRootDirectories, runtimeID 
 			ApprovalTimeout:     subject.Policy.Limits.ApprovalTimeout,
 		},
 		Context: composition.Context{
+			SummaryReasoningEffort:         subject.Context.SummaryReasoningEffort,
 			TriggerPercent:                 subject.Context.TriggerPercent,
 			TargetPercent:                  subject.Context.TargetPercent,
 			TailPercent:                    subject.Context.TailPercent,

@@ -52,6 +52,9 @@ func NormalizedArgv(subject Subject) ([]string, error) {
 	if subject.Provider.ThinkingMode != "" {
 		argv = append(argv, "-provider-thinking-mode", subject.Provider.ThinkingMode)
 	}
+	if subject.Provider.ReasoningEffort != "" {
+		argv = append(argv, "-provider-reasoning-effort", subject.Provider.ReasoningEffort)
+	}
 	if subject.Policy.SandboxPolicy == SandboxPolicyUnsandboxedAllowed {
 		argv = append(argv, "-allow-unsandboxed-exec")
 	}
@@ -74,6 +77,9 @@ func NormalizedArgv(subject Subject) ([]string, error) {
 	// positive, so they are always emitted -- never conditionally, unlike
 	// the Limits fields above.
 	context := subject.Context
+	if context.SummaryReasoningEffort != "" {
+		argv = append(argv, "-context-summary-reasoning-effort", context.SummaryReasoningEffort)
+	}
 	argv = append(argv,
 		"-context-trigger-percent", formatUint32(context.TriggerPercent),
 		"-context-target-percent", formatUint32(context.TargetPercent),
