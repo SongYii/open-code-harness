@@ -75,6 +75,7 @@ repository uses throughout.
 | `a04371f` | Variance 4–6 (amended) | Disclosure replaces refusal where the limit is only a guess |
 | `895ee1d` | Variance 7 | Report distribution block, baseline command, derived reliability readings |
 | `9411237` | Live DeepSeek validation | Freeze Subject wire hints through both executors, make validation failures diagnosable without model text, and tune the context-quality Scenario against real compaction |
+| `d485b58` | Judge meta-eval breadth | Require determinate verdicts to cite every declared evidence role and carry a reviewable rationale; expand the focused adversarial set from eight to ten families |
 
 ## Post-merge review findings closed
 
