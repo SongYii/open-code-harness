@@ -79,6 +79,7 @@ repository uses throughout.
 | `3023d8c` | Judge semantic meta-eval | Frozen six-case labelled corpus, production-path repeated runner, bound auditable report, and exact-budget live CLI |
 | `1d9cc87` | Judge meta-eval v2 mechanism | Scaled provenance-bound pricing, predeclared calibrated holdout policy, twelve new reviewed cases, and provider-equivalent frozen inputs |
 | `5dfbe95` | Judge meta-eval v2 DeepSeek evidence | Bound 18-call calibration and disjoint 18-call holdout, frozen policy, honestly failing check result, cost upper bounds, and artifact guards |
+| `f554442` | Quality Judge v2 correction | Versioned prompt/wire semantics for resolved vs. unresolved contradictions, authoritative evidence scope, fresh v3 blind sets, provider-equivalence and no-reuse guards |
 
 ## Post-merge review findings closed
 
