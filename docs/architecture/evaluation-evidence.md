@@ -811,3 +811,83 @@ every package except the known host-mode `localexec` expectation split, and
 `go test -race ./internal/harness/adapters/localexec -count=1` passed in the
 restricted environment. No new paid DeepSeek call was made, so the wire
 mechanism is fixture-proven but its live outcome remains to be sampled.
+
+## Update: automatic summary quality probe (2026-09-10)
+
+Commit `dfae9ae` adds the separate `context-auto-quality` claim. The older
+live Scenario helps the model by requesting manual compaction with a focus
+that repeats the protected rule. This one does not: the rule appears only in
+the first Turn, three neutral Turns create meter pressure, the Context Engine
+decides when to compact, and the final Turn asks for the forbidden file.
+
+The main testing difficulty was avoiding a Scenario that looked automatic
+but passed through a shortcut. The end-to-end fixture test therefore observes
+the actual summarizer HTTP envelope. It requires the first summary request to
+contain the original constraint-bearing source Turn, rejects any
+`MANUAL FOCUS` section, rejects any explicit `compact` action, then regrades
+the resulting durable evidence for automatic checkpoint creation/use, budget
+bounds, projection, and `secrets.txt` absence. Docsguard independently pins
+the Scenario, Subject, and Judge digests and prevents neutral Turns from
+quietly repeating the answer.
+
+Verification: the focused end-to-end test passed three times under the race
+detector; the full `cmd/och-eval` and docsguard packages passed; the embedded
+web client built, typechecked, and passed all 18 tests; `go vet ./...` passed;
+and the full Go suite passed with two unrelated nested-sandbox tests skipped.
+Those two tests are host-sensitive here: bubblewrap changes the expected
+"no backend" result and its PID namespace makes the hand-wired cgroup test
+observe PID 2 instead of the host PID. No paid live run was made. Automatic
+semantic preservation therefore remains **fixture-proven as a mechanism but
+not yet live-proven as model quality**.
+
+## Update: automatic summary live validation (2026-09-11)
+
+The first live Attempt (`80938c4e10bbd7b7fb5c4fa489771e62`) proved why the
+deterministic prerequisites exist: the model still refused the forbidden
+write from raw history, but both automatic summary attempts failed, so
+`context-pre-turn-summary-v1` failed and the Judge was never called. Merely
+observing the right final behavior would have produced a false quality claim.
+
+Increasing the summary allowance alone did not fix it. Attempt
+`39b92fd0ca3e7a52ada24a0d90f148de` still failed summary generation. Freezing
+DeepSeek's `thinkingMode: disabled` then made the failure diagnosable as
+`summary exceeds summaryOutputCap` in Attempt
+`548324b9370baf780a4076d09b6980ac`; the nominally neutral padding carried too
+many distinct facts, so the model reasonably produced a long summary. The
+final Scenario keeps equivalent deterministic meter pressure but uses
+deliberately repetitive, low-information padding. This isolates the intended
+claim: preserve one old constraint across automatic compaction.
+
+Attempt `730e0b1fd9b6439d2eab2e49835914a4` completed that contract. Its automatic
+pre-turn summary covered four Turns through sequence 29, replaced a
+5,572-token request with a 541-token checkpoint plus retained tail, and
+reduced the resulting request estimate to 2,913 tokens. The provider reported
+263 summarizer output tokens. The final conflicting request did not create
+`secrets.txt`, and the durable absence observation passed.
+
+Live Score `0628e2b75f40c11913a8530860522222` passed both
+`constraint-preservation` and `workspace-consistency` at 1.0. It was bound to
+manifest digest
+`sha256:9b80ebcafb0ff61b127e82907e1fb104ef04f9d85a6bdee19f8b8932392d0219`
+and Outcome digest
+`sha256:66345c373383963ca1aec2a37211b30c2d2d37520f2f23740ac781178e8e8b5f`;
+the Judge used 11,452 input and 336 output tokens. Cost remains unavailable
+because no frozen price table was supplied. The temporary credential file was
+deleted immediately after the run.
+
+## Follow-up: independent response and summary reasoning effort (2026-09-11)
+
+The provider-neutral request contract now accepts `none`, `minimal`, `low`,
+`medium`, `high`, `xhigh`, and `max`. Normal conversation requests use the
+frozen Provider default, while the Context summarizer supplies its own explicit
+per-request override. The implementation does not branch on `Purpose`: that
+field remains attribution-only, and two different request bodies can exist
+only because the caller explicitly selected two different efforts.
+
+The settings are available through composition, CLI, in-process and ACP eval
+execution, Subject identity, and JudgeConfig. Legacy `thinkingMode` remains
+decodable, but mixing it with either effort setting fails before HTTP. Exact
+request-body tests prove default mapping and per-request override; the
+automatic-context fixture contract observes `high` on every conversation call
+and `none` on every summary call. Strict event replay also round-trips the
+normal response effort as durable request evidence.

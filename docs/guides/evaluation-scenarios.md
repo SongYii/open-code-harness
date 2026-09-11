@@ -138,8 +138,14 @@ Provider wire differences are frozen too. `provider.includeUsage` requests
 streaming usage data, while `provider.maxTokensField` is empty,
 `max_tokens`, or `max_completion_tokens`. A non-empty value is what makes the
 Subject's declared output limit reach the provider request; omitting it means
-the adapter deliberately omits both wire fields. These values travel through
-both the in-process and ACP executors and are part of Subject identity.
+the adapter deliberately omits both wire fields. `provider.reasoningEffort`
+controls normal responses and `context.summaryReasoningEffort` explicitly
+overrides it for compaction calls; each is empty or one of `none`, `minimal`,
+`low`, `medium`, `high`, `xhigh`, and `max`. Empty summary effort inherits the
+normal response setting. A provider may support only a subset and will reject
+unsupported values. The legacy provider-specific `thinkingMode` remains for
+compatibility but cannot be combined with either effort field. These values
+travel through both executors and are part of Subject identity.
 
 ## Writing an Executor
 

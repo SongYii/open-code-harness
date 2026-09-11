@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/SongYii/open-code-harness/internal/harness/engine"
 )
 
 // FormatVersion is every eval wire document's v1 format version (design §6).
@@ -579,6 +581,8 @@ type SubjectProvider struct {
 	CredentialEnvVar   string              `json:"credentialEnvVar"`
 	IncludeUsage       bool                `json:"includeUsage,omitempty"`
 	MaxTokensField     string              `json:"maxTokensField,omitempty"`
+	ThinkingMode       string              `json:"thinkingMode,omitempty"`
+	ReasoningEffort    string              `json:"reasoningEffort,omitempty"`
 	Lane               SubjectProviderLane `json:"lane"`
 }
 
@@ -586,6 +590,7 @@ type SubjectProvider struct {
 // exposes (design §10; internal/harness/composition/config.go's Context
 // type is the runtime counterpart this snapshot's fields mirror).
 type SubjectContext struct {
+	SummaryReasoningEffort         string        `json:"summaryReasoningEffort,omitempty"`
 	TriggerPercent                 uint32        `json:"triggerPercent"`
 	TargetPercent                  uint32        `json:"targetPercent"`
 	TailPercent                    uint32        `json:"tailPercent"`
@@ -659,6 +664,9 @@ func (subject Subject) Validate() error {
 	if err := subject.Context.validate(); err != nil {
 		return err
 	}
+	if subject.Provider.ThinkingMode != "" && subject.Context.SummaryReasoningEffort != "" {
+		return fmt.Errorf("%w: provider.thinkingMode cannot be combined with context.summaryReasoningEffort", errInvalidDocument)
+	}
 	if err := subject.Policy.validate(); err != nil {
 		return err
 	}
@@ -720,6 +728,15 @@ func (provider SubjectProvider) validate() error {
 	default:
 		return fmt.Errorf("%w: provider.maxTokensField must be empty, %q, or %q", errInvalidDocument, "max_tokens", "max_completion_tokens")
 	}
+	if provider.ThinkingMode != "" && provider.ThinkingMode != "disabled" {
+		return fmt.Errorf("%w: provider.thinkingMode must be empty or %q", errInvalidDocument, "disabled")
+	}
+	if !engine.IsReasoningEffort(engine.ReasoningEffort(provider.ReasoningEffort)) {
+		return fmt.Errorf("%w: provider.reasoningEffort is not supported", errInvalidDocument)
+	}
+	if provider.ThinkingMode != "" && provider.ReasoningEffort != "" {
+		return fmt.Errorf("%w: provider.thinkingMode cannot be combined with provider.reasoningEffort", errInvalidDocument)
+	}
 	switch provider.Lane {
 	case ProviderLaneFixture, ProviderLaneLive:
 	default:
@@ -748,6 +765,9 @@ func validateNormalizedEndpoint(endpoint string) error {
 }
 
 func (context SubjectContext) validate() error {
+	if !engine.IsReasoningEffort(engine.ReasoningEffort(context.SummaryReasoningEffort)) {
+		return fmt.Errorf("%w: context.summaryReasoningEffort is not supported", errInvalidDocument)
+	}
 	if context.TriggerPercent == 0 || context.TriggerPercent > 99 {
 		return fmt.Errorf("%w: context.triggerPercent must be 1-99", errInvalidDocument)
 	}

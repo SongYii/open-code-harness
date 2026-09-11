@@ -44,6 +44,11 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 		}},
 		{name: "response format with unsupported profile", mutate: func(cfg *Config) { cfg.Hints.ResponseFormat = "json_object" }},
 		{name: "invalid thinking mode", mutate: func(cfg *Config) { cfg.Hints.ThinkingMode = "auto" }},
+		{name: "invalid reasoning effort", mutate: func(cfg *Config) { cfg.Hints.ReasoningEffort = "extreme" }},
+		{name: "conflicting reasoning controls", mutate: func(cfg *Config) {
+			cfg.Hints.ThinkingMode = "disabled"
+			cfg.Hints.ReasoningEffort = engine.ReasoningEffortHigh
+		}},
 		{name: "negative idle", mutate: func(cfg *Config) { cfg.IdleTimeout = -1 }},
 		{name: "ftp scheme", mutate: func(cfg *Config) { cfg.BaseURL = "ftp://api.example.com/v1" }},
 	}
@@ -98,7 +103,7 @@ func TestNewAcceptsLoopbackHTTPWhenAllowed(t *testing.T) {
 func TestIdentityCopiesProfileAndHints(t *testing.T) {
 	cfg := validConfig(nil)
 	cfg.HTTPClient = nil
-	cfg.Hints = WireHints{IncludeUsage: true, MaxTokensField: "max_completion_tokens", ResponseFormat: "json_object", ThinkingMode: "disabled"}
+	cfg.Hints = WireHints{IncludeUsage: true, MaxTokensField: "max_completion_tokens", ResponseFormat: "json_object", ReasoningEffort: engine.ReasoningEffortHigh}
 	cfg.Profile = ProfileTextOnly(128000, 4096)
 	cfg.Profile.StructuredOutput = engine.CapabilityRequired
 	model := newTestModel(t, cfg)
@@ -109,7 +114,7 @@ func TestIdentityCopiesProfileAndHints(t *testing.T) {
 	if got.AdapterFamily != adapterFamily || got.ModelID != "test-model" || got.EndpointID != "api.example.com/v1" {
 		t.Fatalf("Identity() = %#v", got)
 	}
-	if !got.IncludeUsage || got.MaxTokensField != "max_completion_tokens" || got.ResponseFormat != "json_object" || got.ThinkingMode != "disabled" {
+	if !got.IncludeUsage || got.MaxTokensField != "max_completion_tokens" || got.ResponseFormat != "json_object" || got.ReasoningEffort != engine.ReasoningEffortHigh {
 		t.Fatalf("Identity hints = %+v", got)
 	}
 	if got.Profile != cfg.Profile {
@@ -183,6 +188,7 @@ func TestStreamRequestMapping(t *testing.T) {
 		{name: "max completion tokens", hints: WireHints{MaxTokensField: "max_completion_tokens"}, maxOutput: 16, wantMaxField: "max_completion_tokens"},
 		{name: "omit max when tokens zero", hints: WireHints{MaxTokensField: "max_tokens"}, wantMaxAbsent: true},
 		{name: "structured output and thinking", hints: WireHints{ResponseFormat: "json_object", ThinkingMode: "disabled"}, wantMaxAbsent: true},
+		{name: "reasoning effort", hints: WireHints{ReasoningEffort: engine.ReasoningEffortMax}, wantMaxAbsent: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -244,6 +250,9 @@ func TestStreamRequestMapping(t *testing.T) {
 				if !ok || thinking["type"] != "disabled" {
 					t.Fatalf("thinking = %#v", payload["thinking"])
 				}
+			}
+			if test.hints.ReasoningEffort != "" && payload["reasoning_effort"] != string(test.hints.ReasoningEffort) {
+				t.Fatalf("reasoning_effort = %#v", payload["reasoning_effort"])
 			}
 		})
 	}

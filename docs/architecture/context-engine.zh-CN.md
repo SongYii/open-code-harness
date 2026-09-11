@@ -57,6 +57,7 @@ summaryOutputCap = min(O, max(128, floor(hardInput * 0.10)))
 | `MaxOverflowCompactionsPerTurn` | 2 | 1–3 |
 | `CompactionTimeout` | 2 分钟 | 5 秒–10 分钟 |
 | `MaxPrunedToolResultsPerRequest` | 64 | 1–64（已接受并校验；**尚未被消费**——见[已知局限](#已知局限)） |
+| `SummaryReasoningEffort` | 继承 Provider | 留空或 `none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max` |
 
 默认确定性度量器 `och_wire_estimate_v1`（`contextengine.WireEstimateMeter`）：
 文本/JSON 载荷 `ceil(UTF-8 字节数 / 3)`；每条消息固定 8 token 的成帧

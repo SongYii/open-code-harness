@@ -305,7 +305,7 @@ func unmarshalEvent(eventType string, data json.RawMessage) (Event, error) {
 	case EventModelRequestRecorded:
 		event = ModelRequestRecorded{}
 		required = modelRequestRecordedKeys()
-		optional = []string{"tools", "purpose", "attemptIndex", "contextDecisionID", "responseFormat", "thinkingMode"}
+		optional = []string{"tools", "purpose", "attemptIndex", "contextDecisionID", "responseFormat", "thinkingMode", "reasoningEffort"}
 	case EventModelUsageRecorded:
 		event = ModelUsageRecorded{}
 		required = modelUsageRecordedKeys()
@@ -786,7 +786,7 @@ func validateModelRequestSpec(spec ModelRequestSpec) error {
 	return validateModelRequestBody(
 		spec.AdapterFamily, spec.ModelID, spec.EndpointID,
 		spec.NativeTools, spec.Images, spec.StructuredOutput,
-		spec.ReasoningFields, spec.PromptCache, spec.MaxTokensField, spec.ResponseFormat, spec.ThinkingMode,
+		spec.ReasoningFields, spec.PromptCache, spec.MaxTokensField, spec.ResponseFormat, spec.ThinkingMode, spec.ReasoningEffort,
 		spec.Messages, spec.Tools, CodeInvalidCommand,
 	)
 }
@@ -814,18 +814,18 @@ func validateModelRequestPayload(event ModelRequestRecorded, code ErrorCode) err
 	return validateModelRequestBody(
 		event.AdapterFamily, event.ModelID, event.EndpointID,
 		event.NativeTools, event.Images, event.StructuredOutput,
-		event.ReasoningFields, event.PromptCache, event.MaxTokensField, event.ResponseFormat, event.ThinkingMode,
+		event.ReasoningFields, event.PromptCache, event.MaxTokensField, event.ResponseFormat, event.ThinkingMode, event.ReasoningEffort,
 		event.Messages, event.Tools, code,
 	)
 }
 
 func validateModelRequestBody(
-	adapterFamily, modelID, endpointID, nativeTools, images, structuredOutput, reasoningFields, promptCache, maxTokensField, responseFormat, thinkingMode string,
+	adapterFamily, modelID, endpointID, nativeTools, images, structuredOutput, reasoningFields, promptCache, maxTokensField, responseFormat, thinkingMode, reasoningEffort string,
 	messages []ModelPromptMessage,
 	tools []ToolSchema,
 	code ErrorCode,
 ) error {
-	for _, value := range []string{adapterFamily, modelID, endpointID, nativeTools, images, structuredOutput, reasoningFields, promptCache, maxTokensField, responseFormat, thinkingMode} {
+	for _, value := range []string{adapterFamily, modelID, endpointID, nativeTools, images, structuredOutput, reasoningFields, promptCache, maxTokensField, responseFormat, thinkingMode, reasoningEffort} {
 		if !utf8.ValidString(value) {
 			return domainError(code, "model request field must be valid UTF-8")
 		}
@@ -838,6 +838,14 @@ func validateModelRequestBody(
 	}
 	if thinkingMode != "" && thinkingMode != "enabled" && thinkingMode != "disabled" {
 		return domainError(code, "model request thinking mode is invalid")
+	}
+	switch reasoningEffort {
+	case "", "none", "minimal", "low", "medium", "high", "xhigh", "max":
+	default:
+		return domainError(code, "model request reasoning effort is invalid")
+	}
+	if thinkingMode != "" && reasoningEffort != "" {
+		return domainError(code, "model request thinking mode conflicts with reasoning effort")
 	}
 	if err := validateModelPromptMessages(messages, code); err != nil {
 		return err

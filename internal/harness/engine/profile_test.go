@@ -38,6 +38,11 @@ func TestRequestIdentityValidateRejectsMalformedFields(t *testing.T) {
 			id.Profile.StructuredOutput = CapabilityUnsupported
 		}},
 		{name: "invalid thinking mode", mutate: func(id *RequestIdentity) { id.ThinkingMode = "auto" }},
+		{name: "invalid reasoning effort", mutate: func(id *RequestIdentity) {
+			id.ThinkingMode = ""
+			id.ReasoningEffort = "extreme"
+		}},
+		{name: "conflicting reasoning controls", mutate: func(id *RequestIdentity) { id.ReasoningEffort = ReasoningEffortHigh }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

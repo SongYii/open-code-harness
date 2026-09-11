@@ -492,6 +492,7 @@ func (service *Service) stepRequestRecorded(turnID domain.TurnID, itemID domain.
 	recorded.MaxTokensField = identity.MaxTokensField
 	recorded.ResponseFormat = identity.ResponseFormat
 	recorded.ThinkingMode = identity.ThinkingMode
+	recorded.ReasoningEffort = string(identity.ReasoningEffort)
 	return recorded
 }
 

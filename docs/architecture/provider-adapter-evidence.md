@@ -170,3 +170,14 @@ an unsupported capability profile are rejected by `New` before HTTP.
 
 The same full race/vet verification recorded in the evaluation evidence was
 run. No live provider call was used for this adapter extension.
+
+## 2026-09-11 reasoning-effort extension
+
+The adapter now emits the standard `reasoning_effort` field from a validated
+route default or an explicit `engine.ModelRequest` override. The override is
+caller-owned request semantics rather than a hidden branch on Purpose.
+`TestStreamRequestMapping` covers the default and
+`TestStreamPerRequestReasoningEffortOverridesRouteDefault` covers the override;
+identity and durable model-request evidence retain the configured normal
+response effort. Legacy `thinking.type` remains supported but is mutually
+exclusive with the new control.

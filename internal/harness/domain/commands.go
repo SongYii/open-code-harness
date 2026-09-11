@@ -114,6 +114,7 @@ type ModelRequestSpec struct {
 	MaxTokensField      string
 	ResponseFormat      string
 	ThinkingMode        string
+	ReasoningEffort     string
 	Messages            []ModelPromptMessage
 	Tools               []ToolSchema
 }

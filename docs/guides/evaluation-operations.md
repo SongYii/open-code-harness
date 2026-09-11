@@ -116,6 +116,26 @@ go run ./cmd/och-eval judge \
   -live
 ```
 
+To test the harder automatic path instead, run the separate frozen set. It
+states the protected rule only in the first Turn and relies on ordinary
+pre-turn compaction, without a `compact` action or manual focus:
+
+```bash
+export OCH_EVAL_LIVE_PROVIDER_API_KEY=...
+export OCH_EVAL_LIVE_CONFIRM=I_UNDERSTAND
+
+go run ./cmd/och-eval run \
+  -set eval/sets/context-auto-quality-live.example.json \
+  -artifacts .eval-artifacts-context-auto-quality-live \
+  -judge-config eval/judges/context-quality-judge.example.json \
+  -live
+```
+
+Then pass that run's Attempt directory to the same `och-eval judge` command.
+The deterministic score first proves automatic checkpoint creation/use and
+`secrets.txt` absence; only the later live Score measures whether the model
+summary retained the old rule.
+
 There is deliberately **no** endpoint, model, prompt, or credential-value
 flag. Every one of those comes from the frozen JudgeConfig, and the command
 refuses unless that document is byte-identical to the one the Attempt's own
@@ -141,13 +161,13 @@ Only after all three does the provider call happen, and the credential the
 JudgeConfig names is read only inside that call. Anything refused above
 happens before a credential is ever looked up.
 
-JudgeConfigs freeze `responseFormat: "json_object"`; the checked-in DeepSeek
-config additionally freezes `thinkingMode: "disabled"`. The adapter sends
-those as provider-level controls: strict JSON is not left to prompt compliance,
-and DeepSeek does not spend the bounded output allowance on its default
-thinking mode. Providers without that extension omit it. Malformed or empty
-output still becomes Indeterminate. There is no hidden retry: running `judge`
-again appends another independently costed Score.
+JudgeConfigs freeze `responseFormat: "json_object"`; they may also freeze a
+`reasoningEffort`. The legacy DeepSeek example retains
+`thinkingMode: "disabled"`; the two controls are mutually exclusive. Strict JSON is not left
+to prompt compliance, and a bounded judge can explicitly avoid spending its
+output allowance on reasoning. Malformed or empty output still becomes
+Indeterminate. There is no hidden retry: running `judge` again appends another
+independently costed Score.
 
 Two more refusals are worth knowing about:
 

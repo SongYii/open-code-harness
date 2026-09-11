@@ -29,14 +29,15 @@ type CapabilityProfile struct {
 // RequestIdentity is composition-time identity copied into Application
 // so the request envelope can be logged without importing an adapter.
 type RequestIdentity struct {
-	AdapterFamily  string
-	ModelID        string
-	EndpointID     string
-	Profile        CapabilityProfile
-	IncludeUsage   bool
-	MaxTokensField string
-	ResponseFormat string
-	ThinkingMode   string
+	AdapterFamily   string
+	ModelID         string
+	EndpointID      string
+	Profile         CapabilityProfile
+	IncludeUsage    bool
+	MaxTokensField  string
+	ResponseFormat  string
+	ThinkingMode    string
+	ReasoningEffort ReasoningEffort
 }
 
 func (identity RequestIdentity) Validate() error {
@@ -66,6 +67,9 @@ func (identity RequestIdentity) Validate() error {
 		return errInvalidRequestIdentity
 	}
 	if identity.ThinkingMode != "" && identity.ThinkingMode != "enabled" && identity.ThinkingMode != "disabled" {
+		return errInvalidRequestIdentity
+	}
+	if !IsReasoningEffort(identity.ReasoningEffort) || identity.ThinkingMode != "" && identity.ReasoningEffort != "" {
 		return errInvalidRequestIdentity
 	}
 	return nil

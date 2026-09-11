@@ -136,8 +136,10 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 		// support native tools. Text-only would make every assembly invalid.
 		Profile: openaicompat.ProfileToolsSupported(config.Provider.ContextWindow, config.Provider.MaxOutput),
 		Hints: openaicompat.WireHints{
-			IncludeUsage:   config.Provider.IncludeUsage,
-			MaxTokensField: config.Provider.MaxTokensField,
+			IncludeUsage:    config.Provider.IncludeUsage,
+			MaxTokensField:  config.Provider.MaxTokensField,
+			ThinkingMode:    config.Provider.ThinkingMode,
+			ReasoningEffort: engine.ReasoningEffort(config.Provider.ReasoningEffort),
 		},
 		AllowInsecureLoopback: config.Provider.AllowInsecureLoopback,
 	})
@@ -163,7 +165,7 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 	if err != nil {
 		return release(fmt.Errorf("composition: context budget: %w", err))
 	}
-	contextSummarizer, err := application.NewEngineContextSummarizer(runner)
+	contextSummarizer, err := application.NewEngineContextSummarizer(runner, engine.ReasoningEffort(config.Context.SummaryReasoningEffort))
 	if err != nil {
 		return release(fmt.Errorf("composition: context summarizer: %w", err))
 	}

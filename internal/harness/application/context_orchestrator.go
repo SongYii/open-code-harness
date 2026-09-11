@@ -59,7 +59,8 @@ func (source contextEventStorePageSource) ReadPage(ctx context.Context, sessionI
 // attempts already use, but text-only, with no Tools, never entering
 // RunTurn or emitting assistant deltas.
 type EngineContextSummarizer struct {
-	runner *engine.TurnRunner
+	runner          *engine.TurnRunner
+	reasoningEffort engine.ReasoningEffort
 }
 
 var _ ContextSummarizer = (*EngineContextSummarizer)(nil)
@@ -69,11 +70,11 @@ var _ ContextSummarizer = (*EngineContextSummarizer)(nil)
 // path already holds (Service.runner) means a compaction attempt goes
 // through the identical Model/credential/transport as a normal attempt —
 // design §18's deliberate "no second Provider" choice.
-func NewEngineContextSummarizer(runner *engine.TurnRunner) (*EngineContextSummarizer, error) {
-	if runner == nil {
+func NewEngineContextSummarizer(runner *engine.TurnRunner, reasoningEffort engine.ReasoningEffort) (*EngineContextSummarizer, error) {
+	if runner == nil || !engine.IsReasoningEffort(reasoningEffort) {
 		return nil, applicationError(CategoryValidation, "invalid_configuration", false, nil)
 	}
-	return &EngineContextSummarizer{runner: runner}, nil
+	return &EngineContextSummarizer{runner: runner, reasoningEffort: reasoningEffort}, nil
 }
 
 func (summarizer *EngineContextSummarizer) Summarize(ctx context.Context, request ContextSummarizeRequest) (ContextSummarizeResult, error) {
@@ -88,6 +89,7 @@ func (summarizer *EngineContextSummarizer) Summarize(ctx context.Context, reques
 			Input:           request.Content,
 			Purpose:         engine.ModelRequestPurposeCompaction,
 			MaxOutputTokens: request.MaxOutputTokens,
+			ReasoningEffort: summarizer.reasoningEffort,
 		},
 		MaxOutputBytes: request.MaxOutputBytes,
 	})
@@ -1488,5 +1490,6 @@ func ModelRequestRecordedFromEnvelope(identity *engine.RequestIdentity, turnID d
 	recorded.MaxTokensField = identity.MaxTokensField
 	recorded.ResponseFormat = identity.ResponseFormat
 	recorded.ThinkingMode = identity.ThinkingMode
+	recorded.ReasoningEffort = string(identity.ReasoningEffort)
 	return recorded
 }

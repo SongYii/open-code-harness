@@ -511,6 +511,103 @@ func TestLiveJudgeExampleDigestsAndGuide(t *testing.T) {
 	}
 }
 
+// TestAutomaticContextQualityExample keeps the automatic quality claim tied
+// to executable wiring. In particular, a later edit must not quietly add a
+// manual compact/focus shortcut or repeat the protected constraint in one of
+// the neutral Turns.
+func TestAutomaticContextQualityExample(t *testing.T) {
+	root := repoRoot(t)
+	set, err := eval.DecodeEvalSet([]byte(read(t, filepath.Join(root, "eval/sets/context-auto-quality-live.example.json"))))
+	if err != nil {
+		t.Fatalf("decode automatic context quality EvalSet: %v", err)
+	}
+	scenario, err := eval.DecodeScenario([]byte(read(t, filepath.Join(root, "eval/scenarios/context-auto-quality/scenario.json"))))
+	if err != nil {
+		t.Fatalf("decode automatic context quality Scenario: %v", err)
+	}
+	subject, err := eval.DecodeSubject([]byte(read(t, filepath.Join(root, "eval/subjects/context-auto-quality-live-example.json"))))
+	if err != nil {
+		t.Fatalf("decode automatic context quality Subject: %v", err)
+	}
+	config, err := eval.DecodeJudgeConfig([]byte(read(t, filepath.Join(root, "eval/judges/context-quality-judge.example.json"))))
+	if err != nil {
+		t.Fatalf("decode context quality JudgeConfig: %v", err)
+	}
+
+	scenarioDigest, err := eval.ScenarioDigest(scenario)
+	if err != nil {
+		t.Fatalf("ScenarioDigest: %v", err)
+	}
+	subjectDigest, err := eval.SubjectDigest(subject)
+	if err != nil {
+		t.Fatalf("SubjectDigest: %v", err)
+	}
+	judgeDigest, err := eval.JudgeConfigDigest(config)
+	if err != nil {
+		t.Fatalf("JudgeConfigDigest: %v", err)
+	}
+	if len(set.Scenarios) != 1 || set.Scenarios[0].ID != scenario.ID || set.Scenarios[0].Digest != scenarioDigest {
+		t.Fatalf("automatic quality set scenario ref = %+v, want %q at %q", set.Scenarios, scenario.ID, scenarioDigest)
+	}
+	if len(set.Subjects) != 1 || set.Subjects[0].ID != subject.ID || set.Subjects[0].Digest != subjectDigest {
+		t.Fatalf("automatic quality set subject ref = %+v, want %q at %q", set.Subjects, subject.ID, subjectDigest)
+	}
+	if set.JudgeConfigDigest != judgeDigest {
+		t.Fatalf("automatic quality set judge digest = %q, want %q", set.JudgeConfigDigest, judgeDigest)
+	}
+	if set.Lane != eval.LaneLive || subject.Provider.Lane != eval.ProviderLaneLive {
+		t.Fatal("automatic context quality example is not protected by both live-lane gates")
+	}
+	if subject.Provider.ReasoningEffort != "high" || subject.Context.SummaryReasoningEffort != "none" {
+		t.Fatalf("automatic context quality reasoning effort = response %q summary %q, want high/none",
+			subject.Provider.ReasoningEffort, subject.Context.SummaryReasoningEffort)
+	}
+
+	requiredVerifiers := map[string]bool{
+		eval.VerifierContextPreTurnSummary: false,
+		eval.VerifierContextBudgetBounds:   false,
+		eval.VerifierContextProjection:     false,
+		eval.VerifierWorkspacePathsAbsent:  false,
+		"outcome-not-infra-failed-v1":      false,
+	}
+	promptIndex := 0
+	sawAbsence := false
+	for _, action := range scenario.Actions {
+		switch action.Type {
+		case eval.ActionCompact:
+			t.Fatalf("automatic quality Scenario contains explicit compact action %q", action.ID)
+		case eval.ActionPrompt:
+			promptIndex++
+			if action.Prompt == nil {
+				t.Fatalf("prompt action %q has no prompt", action.ID)
+			}
+			mentionsSecret := strings.Contains(action.Prompt.Text, "secrets.txt")
+			if promptIndex == 1 && !mentionsSecret {
+				t.Fatal("first prompt no longer carries the durable constraint")
+			}
+			if promptIndex > 1 && promptIndex < 7 && mentionsSecret {
+				t.Fatalf("neutral prompt %q repeats the protected constraint", action.ID)
+			}
+		case eval.ActionCollect:
+			sawAbsence = action.Collect != nil && action.Collect.WorkspacePath == "secrets.txt" &&
+				action.Collect.ExpectedState == eval.WorkspaceExpectedAbsent
+		}
+	}
+	if promptIndex != 7 || !sawAbsence {
+		t.Fatalf("automatic quality Scenario has %d prompts and absence=%t, want 7 and true", promptIndex, sawAbsence)
+	}
+	for _, id := range scenario.DeterministicVerifierIDs {
+		if _, ok := requiredVerifiers[id]; ok {
+			requiredVerifiers[id] = true
+		}
+	}
+	for id, found := range requiredVerifiers {
+		if !found {
+			t.Errorf("automatic quality Scenario lacks verifier %q", id)
+		}
+	}
+}
+
 // TestMCPJudgeExampleDigestsAndMechanism keeps the live MCP example bound to
 // both its judge and the production-path containment checks that must pass
 // before a paid judge call is allowed.

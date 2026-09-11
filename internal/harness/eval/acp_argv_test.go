@@ -58,11 +58,15 @@ func TestNormalizedArgvCarriesProviderWireHints(t *testing.T) {
 	subject := validSubject()
 	subject.Provider.IncludeUsage = true
 	subject.Provider.MaxTokensField = "max_tokens"
+	subject.Provider.ReasoningEffort = "high"
+	subject.Context.SummaryReasoningEffort = "none"
 	argv, err := NormalizedArgv(subject)
 	if err != nil {
 		t.Fatalf("NormalizedArgv() error = %v", err)
 	}
-	if !containsArg(argv, "-provider-include-usage") || !containsArg(argv, "-provider-max-tokens-field") || !containsArg(argv, "max_tokens") {
+	if !containsArg(argv, "-provider-include-usage") || !containsArg(argv, "-provider-max-tokens-field") || !containsArg(argv, "max_tokens") ||
+		!containsArg(argv, "-provider-reasoning-effort") || !containsArg(argv, "high") ||
+		!containsArg(argv, "-context-summary-reasoning-effort") || !containsArg(argv, "none") {
 		t.Fatalf("argv %v does not carry the frozen provider wire hints", argv)
 	}
 }

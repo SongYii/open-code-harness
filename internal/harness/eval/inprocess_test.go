@@ -179,14 +179,16 @@ func TestBuildConfigMapsProviderWireHints(t *testing.T) {
 	subject := validSubject()
 	subject.Provider.IncludeUsage = true
 	subject.Provider.MaxTokensField = "max_tokens"
+	subject.Provider.ReasoningEffort = "high"
+	subject.Context.SummaryReasoningEffort = "none"
 	directories := testDirectories(t, testAttemptID(t))
 
 	config, err := BuildConfig(subject, directories, "runtime-1", nil)
 	if err != nil {
 		t.Fatalf("BuildConfig: %v", err)
 	}
-	if !config.Provider.IncludeUsage || config.Provider.MaxTokensField != "max_tokens" {
-		t.Fatalf("Provider wire hints = includeUsage %v, maxTokensField %q", config.Provider.IncludeUsage, config.Provider.MaxTokensField)
+	if !config.Provider.IncludeUsage || config.Provider.MaxTokensField != "max_tokens" || config.Provider.ReasoningEffort != "high" || config.Context.SummaryReasoningEffort != "none" {
+		t.Fatalf("reasoning config not mapped: provider=%+v context=%+v", config.Provider, config.Context)
 	}
 }
 

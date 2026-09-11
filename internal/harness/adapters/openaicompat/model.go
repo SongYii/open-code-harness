@@ -54,10 +54,11 @@ func (source StaticAPIKey) APIKey() (string, error) {
 }
 
 type WireHints struct {
-	IncludeUsage   bool
-	MaxTokensField string
-	ResponseFormat string
-	ThinkingMode   string
+	IncludeUsage    bool
+	MaxTokensField  string
+	ResponseFormat  string
+	ThinkingMode    string
+	ReasoningEffort engine.ReasoningEffort
 }
 
 type Config struct {
@@ -176,14 +177,15 @@ func (m *Model) Identity() engine.RequestIdentity {
 		return engine.RequestIdentity{}
 	}
 	return engine.RequestIdentity{
-		AdapterFamily:  adapterFamily,
-		ModelID:        m.modelID,
-		EndpointID:     m.endpointID,
-		Profile:        m.profile,
-		IncludeUsage:   m.hints.IncludeUsage,
-		MaxTokensField: m.hints.MaxTokensField,
-		ResponseFormat: m.hints.ResponseFormat,
-		ThinkingMode:   m.hints.ThinkingMode,
+		AdapterFamily:   adapterFamily,
+		ModelID:         m.modelID,
+		EndpointID:      m.endpointID,
+		Profile:         m.profile,
+		IncludeUsage:    m.hints.IncludeUsage,
+		MaxTokensField:  m.hints.MaxTokensField,
+		ResponseFormat:  m.hints.ResponseFormat,
+		ThinkingMode:    m.hints.ThinkingMode,
+		ReasoningEffort: m.hints.ReasoningEffort,
 	}
 }
 
@@ -201,6 +203,9 @@ func (m *Model) Stream(ctx context.Context, request engine.ModelRequest) (engine
 		return nil, startupFailure(engine.FailureClassPermanent, "provider_permanent", 0, "", "invalid request")
 	}
 	if request.MaxOutputTokens > m.profile.MaxOutputTokens {
+		return nil, startupFailure(engine.FailureClassPermanent, "provider_permanent", 0, "", "invalid request")
+	}
+	if !engine.IsReasoningEffort(request.ReasoningEffort) || request.ReasoningEffort != "" && m.hints.ThinkingMode != "" {
 		return nil, startupFailure(engine.FailureClassPermanent, "provider_permanent", 0, "", "invalid request")
 	}
 	key, err := m.apiKey.APIKey()
@@ -271,6 +276,13 @@ func (m *Model) marshalRequest(request engine.ModelRequest) ([]byte, error) {
 	}
 	if m.hints.ThinkingMode != "" {
 		payload.Thinking = &completionThinking{Type: m.hints.ThinkingMode}
+	}
+	reasoningEffort := request.ReasoningEffort
+	if reasoningEffort == "" {
+		reasoningEffort = m.hints.ReasoningEffort
+	}
+	if reasoningEffort != "" {
+		payload.ReasoningEffort = reasoningEffort
 	}
 	// A positive per-request MaxOutputTokens overrides the route's own
 	// statically configured maximum (design §6.3); Stream already
@@ -391,6 +403,7 @@ type completionRequest struct {
 	MaxCompletionTokens *uint32                   `json:"max_completion_tokens,omitempty"`
 	ResponseFormat      *completionResponseFormat `json:"response_format,omitempty"`
 	Thinking            *completionThinking       `json:"thinking,omitempty"`
+	ReasoningEffort     engine.ReasoningEffort    `json:"reasoning_effort,omitempty"`
 }
 
 type completionResponseFormat struct {

@@ -140,9 +140,10 @@ action ID；`workspace-paths-absent-v1` 经由 `ArtifactReader` 重新读取它�
 
 实时模型评审器（`internal/harness/eval/judge.go`，Task 17）是面向另一条通道的另一种机制：`RunJudge` 只依据某个 `JudgeConfig` 自身 `Criteria` 所声明的清单角色，构建一个有界的、经过脱敏的证据包，将其发送给一个可注入的 `JudgeCaller`（因此一次真实的实时模型调用与一个测试替身实现的是完全相同的函数类型 —— `RunJudge` 自身从不打开网络连接），并严格解码其响应。在调用任何评审器之前，冻结的评审配置会先经过验证：模型标识与内嵌提示词的精确摘要均为必填项，评判标准 ID 与证据角色必须非空且唯一，并且受信任的评判标准合同会随证据包一同发送。
 
-Judge 的服务端协议固定 `responseFormat=json_object`；可选的厂商扩展
-`thinkingMode` 只允许 `disabled`，仓库内 DeepSeek 配置用它避免默认思考阶段先
-耗尽有界输出预算。没有该扩展的服务可以省略。非法值在联网前拒绝。
+Judge 的服务端协议固定 `responseFormat=json_object`；还可以冻结通用的
+`reasoningEffort`（`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、
+`max`），或使用旧的厂商扩展 `thinkingMode=disabled`，但两者不能并存。
+非法值在联网前拒绝。
 `RunJudge` 仍只调用一次 caller；空内容或坏 JSON 是一条 Indeterminate，显式
 再次运行 `och-eval judge` 才会追加另一条拥有独立用量和成本的 Score。
 

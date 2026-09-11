@@ -363,10 +363,10 @@ its criterion results, an out-of-range score, or the call itself failing —
 resolves to a real `JudgeOutcome{Verdict: Indeterminate}` carrying a bounded,
 redacted rationale, never a Go error and never silently accepted as `Pass`.
 
-The provider contract freezes `responseFormat=json_object`; its optional
-provider-specific `thinkingMode` admits only `disabled`, which the checked-in
-DeepSeek config uses to reserve the bounded output allowance for the result
-instead of the default reasoning phase. Unknown values fail before HTTP.
+The provider contract freezes `responseFormat=json_object`; it may freeze a
+portable `reasoningEffort` (`none`, `minimal`, `low`, `medium`, `high`,
+`xhigh`, or `max`) or the legacy provider-specific `thinkingMode=disabled`,
+but never both. Unknown values fail before HTTP.
 `RunJudge` still invokes its caller exactly once: malformed or empty output is
 one Indeterminate observation, while an explicit second `och-eval judge` run
 appends a separate Score with separate usage and cost.
@@ -438,6 +438,15 @@ then the marker on the *latest* user message — and holds no cross-request
 state. Rolling depth is carried inside the summary itself, so a chunk count
 nothing produced cannot pass. `CriterionResult.Detail` carries a bounded,
 evidence-oriented explanation of every verdict.
+
+The consent-gated `context-auto-quality` example adds a semantic-quality
+probe on top of those mechanism checks. Its first Turn states a durable
+`secrets.txt` prohibition once; five later Turns are neutral pressure, and
+the conflicting final request does not repeat the rule. There is no
+`compact` action and therefore no manual focus. A fixture contract captures
+the first real summarizer envelope and proves the original Turn reached its
+source material without a `MANUAL FOCUS` section; the live Judge, not the
+fixture, decides whether the resulting summary actually preserved the rule.
 
 ### What the suite proves today
 
@@ -599,6 +608,19 @@ non-nil error is what makes "before any credential is read" real.
 `cmd/och-eval/run.go`'s own `checkLaneConsent` delegates to it rather than
 duplicating the rule. A live run always writes an independent artifact root
 and this repository never uploads evidence anywhere automatically.
+
+Two checked-in quality examples share the same JudgeConfig but test different
+claims. `context-quality-live.example.json` tests manual summary with an
+explicit focus. `context-auto-quality-live.example.json` tests automatic
+pre-turn summary with no focus and no reminder. A pass from one is not
+evidence for the other.
+
+Subject identity freezes normal `provider.reasoningEffort` independently from
+`context.summaryReasoningEffort`. Empty summary effort inherits the normal
+setting; a non-empty value becomes an explicit per-request override and never
+depends on the request's Purpose tag. Both settings follow identical
+in-process and ACP paths. The automatic DeepSeek example uses `high` for the
+answer and `none` for summaries so bounded summary output is visible text.
 
 ## Variance and baselines
 

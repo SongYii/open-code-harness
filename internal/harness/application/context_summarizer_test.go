@@ -12,7 +12,7 @@ import (
 func TestEngineContextSummarizerSendsCompactionPurposeAndNoTools(t *testing.T) {
 	expected := engine.ModelRequest{
 		SessionID: "session-1", TurnID: "turn-1", ItemID: "item-1",
-		Input: "summarize this", Purpose: engine.ModelRequestPurposeCompaction, MaxOutputTokens: 128,
+		Input: "summarize this", Purpose: engine.ModelRequestPurposeCompaction, MaxOutputTokens: 128, ReasoningEffort: engine.ReasoningEffortNone,
 	}
 	model, err := testkit.NewScriptedModel(expected, testkit.ScriptedModelConfig{Steps: []testkit.ScriptedStep{
 		{Event: engine.StreamEvent{Type: engine.StreamEventTextDelta, Text: "## Objective\nsummary"}},
@@ -25,7 +25,7 @@ func TestEngineContextSummarizerSendsCompactionPurposeAndNoTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	summarizer, err := application.NewEngineContextSummarizer(runner)
+	summarizer, err := application.NewEngineContextSummarizer(runner, engine.ReasoningEffortNone)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestEngineContextSummarizerRejectsToolCallFromStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	summarizer, err := application.NewEngineContextSummarizer(runner)
+	summarizer, err := application.NewEngineContextSummarizer(runner, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,21 @@ func TestEngineContextSummarizerRejectsToolCallFromStream(t *testing.T) {
 }
 
 func TestNewEngineContextSummarizerRejectsNilRunner(t *testing.T) {
-	if _, err := application.NewEngineContextSummarizer(nil); !application.IsCategory(err, application.CategoryValidation) {
+	if _, err := application.NewEngineContextSummarizer(nil, ""); !application.IsCategory(err, application.CategoryValidation) {
 		t.Fatalf("NewEngineContextSummarizer(nil) error = %v, want CategoryValidation", err)
+	}
+}
+
+func TestNewEngineContextSummarizerRejectsUnknownReasoningEffort(t *testing.T) {
+	model, err := testkit.NewScriptedModel(engine.ModelRequest{}, testkit.ScriptedModelConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := engine.NewTurnRunner(model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.NewEngineContextSummarizer(runner, "extreme"); !application.IsCategory(err, application.CategoryValidation) {
+		t.Fatalf("NewEngineContextSummarizer() error = %v, want CategoryValidation", err)
 	}
 }
