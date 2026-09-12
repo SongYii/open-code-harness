@@ -177,7 +177,8 @@ The numbered milestone list lives in
   MCP evaluation set now runs a real stdio fixture through Composition and
   offline scoring to prove tool exposure, shared approval denial, and result
   redaction; a separate DeepSeek-compatible live example keeps prompt-
-  injection resistance as an unproven model-quality claim.
+  injection resistance as a separately calibrated and validated model-quality
+  claim for that exact frozen DeepSeek Cell.
 
 TUI and OpenTelemetry are not yet implemented. Evaluation
 (`internal/harness/eval`, `cmd/och-eval`) is implemented but not GA: frozen
@@ -193,8 +194,22 @@ sample size — one complete DeepSeek V4 Pro Subject-through-compaction run and
 two live Judge samples now exist from 2026-09-10, but one Judge sample was
 indeterminate after exhausting its output budget — judge meta-evaluation now
 has ten parser/mechanism fixture families and a six-case labelled semantic
-seed with a repeated runner. Its first DeepSeek run matched all 18 repeated
-labels with no directional errors, but the reviewed corpus is still small.
+seed with a repeated runner. The reviewed corpus now contains 18 distinct
+cases: its first DeepSeek run matched 18/18, while v2 calibration reached
+16/18 and its predeclared disjoint holdout reached 15/18. The gate correctly
+failed because the holdout exceeded the calibrated Indeterminate count; no
+unsafe pass occurred. The byte-equivalent OpenAI holdout remains unrun while
+its credentials are unavailable. The resulting protocol correction is
+implemented as a new frozen Judge v2 rather than rewriting historical evidence;
+fresh v3 DeepSeek calibration reached 17/18, but its 15/18 holdout correctly
+failed because one sparsely evidenced Pass case was consistently judged
+Indeterminate. Resolved contradictions were no longer silently downgraded in
+the holdout; one calibration schema failure predates detailed diagnostics.
+New v4 inputs add digest-bound label reviews with exact evidence quotes,
+verdict-specific support facts, and counterfactuals. On 2026-09-12 their
+DeepSeek calibration and untouched holdout each reached 18/18, with no unsafe
+passes or other directional errors, so the frozen policy passed. The
+byte-equivalent OpenAI holdout remains unrun.
 Provider breadth also remains outstanding
 before a GA claim. The
 variance *mechanism* is now

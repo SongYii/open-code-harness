@@ -1,0 +1,20 @@
+{
+  "currency": "USD",
+  "id": "openai-gpt-5.4-mini-standard",
+  "version": "2026-09-11",
+  "sourceUrl": "https://developers.openai.com/api/docs/pricing",
+  "observedAt": "2026-09-11",
+  "rateBasis": "Official standard synchronous text-token rates, not Batch, Flex, Priority, or regional processing rates.",
+  "entries": [
+    {
+      "modelId": "gpt-5.4-mini-2026-03-17",
+      "inputMicrounitsPerToken": 0,
+      "outputMicrounitsPerToken": 0,
+      "cachedInputMicrounitsPerToken": 0,
+      "rateUnitTokens": 1000000,
+      "inputMicrounitsPerRateUnit": 750000,
+      "outputMicrounitsPerRateUnit": 4500000,
+      "cachedInputMicrounitsPerRateUnit": 75000
+    }
+  ]
+}

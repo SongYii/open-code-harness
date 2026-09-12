@@ -4,7 +4,7 @@
 
 **See also:** [Evaluation System — Implemented Contract](../architecture/evaluation.md) for the underlying mechanism; [Authoring Evaluation Scenarios](evaluation-scenarios.md) if you also need to change what runs.
 
-## The seven commands
+## The eight command families
 
 ```text
 och-eval run     -set PATH -artifacts PATH [-och-binary PATH] [-live] [-judge-config PATH]
@@ -12,6 +12,8 @@ och-eval regrade -attempt PATH -scorer ID
 och-eval report  -set PATH [-artifacts PATH] [-output PATH] [-variance-policy PATH -variance-scorer ID]
 och-eval judge   -attempt PATH -judge-config PATH [-price-table PATH] [-live]
 och-eval judge-meta -set PATH -judge-config PATH -max-calls N [-price-table PATH] [-live]
+och-eval judge-meta-calibrate -report PATH -validation-set PATH -id ID -version VERSION
+och-eval judge-meta-check -report PATH -policy PATH
 och-eval baseline -set PATH -artifacts PATH -variance-policy PATH -variance-scorer ID -id ID
 ```
 
@@ -34,6 +36,9 @@ produces; it is documented in full under
 [Live quality judging](#live-quality-judging) below.
 `judge-meta` does not run a Subject. It measures the frozen Judge against a
 human-reviewed labelled evidence corpus and emits one versioned report.
+`judge-meta-calibrate` converts one complete calibration report into an
+empirical policy while pre-binding a different holdout set. `judge-meta-check`
+applies that policy offline and exits 3 when the holdout breaches it.
 
 When `report` or `baseline` receives a variance policy, the policy must match
 the EvalSet's pinned `variancePolicyDigest`, and every measured Attempt must
@@ -252,6 +257,43 @@ The first checked-in live result is
 `eval/reports/judge-semantic-meta-deepseek-live-2026-09-11.json`: DeepSeek V4
 Pro matched all 18 repeated labels in the six-case seed. Treat that as one
 small-corpus observation, not a universal Judge threshold.
+
+V2 uses two disjoint 18-call DeepSeek sets. First run the calibration set,
+generate a policy while naming the holdout set, then run and check that holdout.
+Both live runs retain the existing dual consent and exact `-max-calls 18` gate.
+The DeepSeek price table records official peak rates as a conservative upper
+bound. The OpenAI holdout uses identical cases with its separately bound dated
+model and standard synchronous price table; this compares provider services,
+not adapter protocols.
+
+The observed v2 holdout failed its frozen envelope and exposed an output-field
+ambiguity rather than an unsafe pass. Historical v1 configs and reports remain
+unchanged. New v3 configs select `och_quality_judge_v2`: resolved contradictions
+that establish failure are ordinary `evidenceReferences`, while only conflicts
+that prevent a determinate decision use `unresolvedContradictoryEvidence`.
+The prompt also treats an untruncated record as complete as supplied, even when
+short. V3 uses twelve entirely new cases; do not reuse the observed v2 holdout
+to claim the correction works.
+
+The authorized v3 live sequence used the same calibrate-then-check workflow with
+`semantic-calibration-v3-deepseek.json`,
+`semantic-validation-v3-deepseek.json`, and
+`semantic-meta-judge-deepseek-v3.json`. Calibration was 17/18; the frozen
+holdout gate failed at 15/18 because one short-record Pass label was judged
+Indeterminate three times. Do not edit or reuse those observed cases for a new
+blind claim. OpenAI remains unrun.
+
+V4 adds a preflight rule for the human labels themselves. Its sets declare
+`labelReviewPolicy: evidence-v1`; each label names exact supporting excerpts
+and a counterfactual. Before any live call, validation checks every quote and
+path, requires every evidence role to be covered, and requires Pass labels to
+show the task, a concrete completion fact, and a named verification fact. This
+does not certify that a reviewer is right, but it makes a weak assumption
+visible and digest-bound. V4 uses fresh cases and must not be replaced by an
+edited v3 set. The authorized 2026-09-12 DeepSeek v4 run reached 18/18 on both
+calibration and the untouched holdout, with no directional errors; its frozen
+policy passed. A checked-in test pins and recomputes the four report/policy
+artifacts. This proves only the frozen DeepSeek cell; OpenAI remains unrun.
 
 Two more refusals are worth knowing about:
 

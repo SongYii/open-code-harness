@@ -77,6 +77,12 @@ repository uses throughout.
 | `9411237` | Live DeepSeek validation | Freeze Subject wire hints through both executors, make validation failures diagnosable without model text, and tune the context-quality Scenario against real compaction |
 | `d485b58` | Judge meta-eval breadth | Require determinate verdicts to cite every declared evidence role and carry a reviewable rationale; expand the focused adversarial set from eight to ten families |
 | `3023d8c` | Judge semantic meta-eval | Frozen six-case labelled corpus, production-path repeated runner, bound auditable report, and exact-budget live CLI |
+| `1d9cc87` | Judge meta-eval v2 mechanism | Scaled provenance-bound pricing, predeclared calibrated holdout policy, twelve new reviewed cases, and provider-equivalent frozen inputs |
+| `5dfbe95` | Judge meta-eval v2 DeepSeek evidence | Bound 18-call calibration and disjoint 18-call holdout, frozen policy, honestly failing check result, cost upper bounds, and artifact guards |
+| `f554442` | Quality Judge v2 correction | Versioned prompt/wire semantics for resolved vs. unresolved contradictions, authoritative evidence scope, fresh v3 blind sets, provider-equivalence and no-reuse guards |
+| `9b54f21` | Quality Judge v3 DeepSeek evidence | Bound 17/18 calibration and 15/18 disjoint holdout, honest sparse-evidence gate failure, diagnostic decode reason, cost bounds, and artifact guards |
+| `56fc0a1` | Auditable label review | Evidence-v1 label support facts, exact excerpts, counterfactuals, verdict-specific gates, twelve fresh v4 cases, and no-reuse/provider-equivalence guards |
+| `722e956` | Reviewed-label DeepSeek evidence | Bound 18/18 calibration and 18/18 disjoint holdout, passing frozen policy, conservative cost accounting, and artifact guards |
 
 ## Post-merge review findings closed
 
@@ -724,6 +730,48 @@ It records 17,283 input and 3,140 output tokens. Cost remains explicitly
 unavailable because the v1 JudgeConfig deliberately bound no price table.
 This is evidence for that six-case corpus, not a broad accuracy claim.
 
+## Judge meta-evaluation v2: pricing and predeclared holdout
+
+The v2 implementation keeps every v1 identity unchanged and adds twelve new
+reviewed cases: six calibration and six holdout cases, each repeated three
+times. A contract test proves that the OpenAI and DeepSeek holdout documents
+carry identical ordered labels and evidence even though each binds its own
+JudgeConfig. This expands the reviewed corpus to 18 distinct cases without
+letting provider-specific edits change the comparison question.
+
+Official pricing exposed a representation bug before a priced run occurred.
+The original integer-microunits-per-token fields cannot encode DeepSeek V4
+Pro's USD 1.32/M input or 3.96/M output rates. Scaled entries now bind one
+integer token unit and integer microunits per that unit; arbitrary-precision
+arithmetic sums the whole call before one conservative ceiling. Tests reject
+truncation to zero, overflow, negative/mixed/incomplete rates, duplicate
+models, unknown JSON fields, and partial or invalid provenance. The checked-in
+DeepSeek table binds the official peak rate as an upper bound; the OpenAI table
+binds standard synchronous GPT-5.4 mini rates. Sources and observation dates
+are part of each table digest.
+
+The first policy draft only rejected using the calibration set itself. That
+did not prevent choosing an easier replacement after seeing results. The
+implemented `och.eval.judge-meta-policy` instead binds the calibration report,
+calibration set, exact JudgeConfig and sample count, plus the different
+validation set declared at policy creation. Its limits are copied from the raw
+calibration envelope rather than invented. `judge-meta-check` refuses identity
+substitution and returns the stable gate-failure exit when a bound holdout
+exceeds the envelope.
+
+The priced DeepSeek calibration and predeclared holdout were run on 2026-09-11;
+their exact results are recorded below. The byte-equivalent OpenAI holdout
+remains an explicit 18-call live step because no usable OpenAI credential was
+available. No OpenAI result is claimed.
+
+Two focused mutations prove the new tests reach their named hazards. Removing
+the one final ceiling made a non-zero sub-microUSD call publish computed zero;
+`TestEstimateCostSupportsFractionalMicrounitsPerToken` failed. Replacing the
+predeclared-holdout equality check with the earlier "anything except the
+calibration set" rule let a third set through;
+`TestCalibrateAndEvaluateJudgeMetaPolicyOnDisjointHoldout` failed. Both changes
+were restored and the focused tests passed.
+
 Focused tests cover strict decoding, set/config/price binding, exact call-budget
 refusal before the caller, all nine confusion cells, partial-report retention,
 aggregate tampering, offline order/label substitution, and the checked-in 18-call
@@ -738,7 +786,166 @@ all other packages except the same two unrelated nested-sandbox-sensitive
 `localexec` tests already documented above: the sandbox exposes filesystem and
 network containment when the test expects no backend, and the cgroup fixture
 observes PID 2 rather than the host PID. Neither failing package has a branch
-diff. No live provider call was made.
+diff. This verification preceded the separately recorded live calls below.
+
+### DeepSeek calibrated holdout result
+
+The separately authorized DeepSeek V4 Pro calibration completed 18/18 calls:
+16 exact matches, zero unsafe passes, zero false fails, two unexpected
+Indeterminates, and zero overclaims. It used 17,454 input and 3,452 output
+tokens. The peak-rate price table computes a conservative upper-bound cost of
+36,717 microUSD. The bound report is
+`eval/reports/judge-semantic-meta-v2-deepseek-calibration-2026-09-11.json`
+(`sha256:0a4865947f0c23c04bbb2afe365e4d44fd59a9cc7bf44d7ac29f5dcc8ca109d7`).
+
+That report generated the predeclared policy in
+`eval/policies/judge-semantic-meta-v2-deepseek.json`
+(`sha256:67b03524dcce216f60c32be772bc2706844611946e7fbc7bfd788019ee6feac2`).
+The policy copied the observed envelope without manual adjustment: at least 16
+exact matches and at most two unexpected Indeterminates, with all other
+directional errors capped at zero.
+
+The disjoint holdout then completed its own 18/18 calls: 15 exact matches,
+zero unsafe passes, zero false fails, three unexpected Indeterminates, and zero
+overclaims. It used 17,466 input and 3,515 output tokens, with a conservative
+peak-rate upper bound of 36,982 microUSD. The report is
+`eval/reports/judge-semantic-meta-v2-deepseek-validation-2026-09-11.json`
+(`sha256:7d1b66506e8a8ae52556319961feb73f60ea88aad7ad8f6641a0b2067937f987`).
+
+The precommitted gate correctly **failed**: exact matches fell below calibration
+and unexpected Indeterminates exceeded calibration. The result is preserved at
+`eval/reports/judge-semantic-meta-v2-deepseek-policy-result-2026-09-11.json`
+(`sha256:0231439022012c613d36acc97ca36eb52b8fa4616496a80fc5f30d83bb9e08ef`).
+No limit or label was changed after observing the holdout. Across both batches
+there were no unsafe passes, but this model/config has not demonstrated the
+calibrated exact-match stability needed to pass its own empirical policy.
+
+### Quality Judge v2 correction and fresh v3 blind inputs
+
+Inspection of the mismatches found a protocol ambiguity. In several cases the
+model's rationale and criterion status correctly said Fail, but it also placed
+the two disagreeing paths in v1's broadly named `contradictoryEvidence` field.
+Production correctly treats that field as an unresolved conflict and therefore
+overrode the aggregate to Indeterminate. In the short successful case, the
+model invented a possible larger source file despite both supplied records
+being untruncated.
+
+The correction does not edit the frozen v1 prompt. A separately identified and
+digested `och_quality_judge_v2` renames the wire field to
+`unresolvedContradictoryEvidence`, explains that resolved contradictions can
+prove Fail, and declares the supplied evidence boundary authoritative for the
+judgement. Per-version strict decoding rejects the old ambiguous field under
+v2. Tests drive all three meaningful paths: a resolved contradiction remains
+Fail, a genuinely unresolved conflict becomes Indeterminate, and a v1 field in
+a v2 response is rejected.
+
+The already observed v2 cases are not reused as validation. Six fresh
+calibration and six fresh holdout cases are checked in as v3, each repeated
+three times. A contract test proves their IDs do not overlap any v1/v2 case,
+the DeepSeek/OpenAI holdouts are identical, every set/config/price digest binds,
+and a keyless caller traverses the exact production v2 prompt/decoder path.
+No v3 live result is claimed yet: the earlier temporary DeepSeek credential was
+deleted, and OpenAI remains unavailable.
+
+Two restored mutations prove the new guards reach the named risks. Renaming
+v2's wire field back to `contradictoryEvidence` made
+`TestRunJudgeV2RejectsTheAmbiguousV1ContradictionField` fail because the legacy
+field was accepted. Reusing v2's `approved-sensitive-change` ID in both v3
+provider holdouts preserved their cross-provider equality but made
+`TestCheckedInJudgeMetaV3UsesFreshCasesAndEquivalentProviderHoldouts` fail and
+name the collision. Both mutations were restored before final verification.
+
+The subsequently authorized v3 DeepSeek run completed both 18-call batches.
+Calibration reached 17/18 exact, with one strict-JSON decode failure and no
+directional error; it used 15,921 input and 3,361 output tokens, with a
+conservative peak-price upper bound of 34,335 microUSD. Its report is
+`eval/reports/judge-semantic-meta-v3-deepseek-calibration-2026-09-11.json`
+(`sha256:c8ee3b77e19b3ae516544a3495c04b78d642ac7850592ddba1ef2324aea5f170`).
+That run predated the decoder-diagnostic improvement below, and raw model text
+is intentionally not retained, so the one schema failure cannot honestly be
+classified as a legacy field, malformed JSON, or another unknown field.
+The generated policy is
+`eval/policies/judge-semantic-meta-v3-deepseek.json`
+(`sha256:5d74f3328080acaa2f5fcdec4937853205ba93ab7d95f9f28b8f3505d7b72fa1`).
+
+The disjoint holdout reached 15/18 exact, with zero unsafe passes, zero false
+fails, three unexpected Indeterminates, and zero overclaims. All three misses
+were the same human-labelled Pass, `short-hotfix-record-complete`: the model
+consistently judged `edit banner.txt ok` / `check banner ok` too weak to prove
+the actual typo was fixed. No resolved contradiction was downgraded through
+the old field in the holdout. It is evidence that the reviewed
+Pass label assumed more evidentiary meaning than the bytes establish. The
+holdout used 16,023 input and 3,613 output tokens, with a 35,467 microUSD upper
+bound. Its report is
+`eval/reports/judge-semantic-meta-v3-deepseek-validation-2026-09-11.json`
+(`sha256:250e82316ecff015d910f3d75ef9b6af93489320711f520da0918b537e4a8541`).
+
+The frozen policy again correctly failed on exact matches and unexpected
+Indeterminates. The result is
+`eval/reports/judge-semantic-meta-v3-deepseek-policy-result-2026-09-11.json`
+(`sha256:9d69cad2a9226b1b281d7039c34757dc1aec7edf567aa4e42ebf6b8f73fd58be`).
+Neither the v3 label nor its limits were changed after observation. The next
+corpus must apply a stricter human-review rule for Pass evidence and use fresh
+cases; v3 cannot be recycled into another blind claim. Decoder failures now
+retain the bounded, redacted JSON decoder reason (not the raw model output), so
+a future unknown-field failure is diagnosable without persisting untrusted raw
+content. The temporary credential was deleted after both batches.
+
+### Label-review policy and fresh v4 inputs
+
+The v3 failure changed the next correction target. The model did not merely
+ignore prompt language: all three repetitions identified the same missing
+substance in a human Pass label. Editing that observed label would turn a blind
+holdout into training data while pretending otherwise. The implementation
+therefore preserves v3 and adds an optional, digest-bound `evidence-v1` label
+review policy for new sets.
+
+Every reviewed label now records typed facts, exact excerpts from named case
+evidence, and a counterfactual. Validation checks quote membership, path and
+role coverage, uniqueness, bounds, and verdict-specific fact kinds. Legacy
+sets remain valid only without review objects. Six new calibration and six new
+holdout cases are frozen as v4; their Pass examples include a concrete target,
+target-specific completed action, and named passing check. Contract tests prove
+no ID overlaps v1-v3 and the DeepSeek/OpenAI holdout cases and reviews are
+identical. No v4 live result is claimed before a new authorization.
+
+Two restored mutations prove the label-review tests reach semantics rather
+than only schema shape. Bypassing exact-excerpt membership made the
+`invented quote` subtest fail because the unauditable review was accepted.
+Removing only Pass's required `verification` fact made the
+`pass lacks verification` subtest fail for the same reason. An initial attempt
+to delete the excerpt check entirely produced only an unused-import compile
+failure and therefore proved nothing about the guard; it was replaced by the
+semantic bypass above. All mutations were restored.
+
+### DeepSeek v4 reviewed-label live evidence (2026-09-12)
+
+After the corpus and review policy were frozen, the separately authorized
+DeepSeek run executed the predeclared 18-call calibration followed by the
+disjoint 18-call holdout. Calibration was 18/18 exact, with zero unsafe passes,
+false fails, unexpected Indeterminates, or overclaims. It used 17,016 input and
+3,589 output tokens; the pinned peak-rate table computed 36,684 microUSD. The
+report is
+`eval/reports/judge-semantic-meta-v4-deepseek-calibration-2026-09-12.json`
+(`sha256:86c026caef4ac6cedf319a713ecf344f94f3d5ddc4aa871a931b42ba48e154a3`).
+
+The generated calibration envelope is
+`eval/policies/judge-semantic-meta-v4-deepseek.json`
+(`sha256:10e204e8d7f928ab74da734453bdc00e06fdb6dfa2c6f7dd627848f60fea4da6`).
+The untouched holdout was also 18/18 exact with all four directional-error
+counts at zero. It used 17,019 input and 3,541 output tokens and computed
+36,496 microUSD. Its report is
+`eval/reports/judge-semantic-meta-v4-deepseek-validation-2026-09-12.json`
+(`sha256:6722352b7bbb73d608f1fae4c7f2906dec8fc69b95ff398f2fd4ec09c9db8358`).
+The frozen-policy check passed with no breaches:
+`eval/reports/judge-semantic-meta-v4-deepseek-policy-result-2026-09-12.json`
+(`sha256:ac2f0105adf928d9afc99f801052c0d80571a06f5b7418620ffcf5f774194a58`).
+
+`TestCheckedInJudgeMetaV4DeepSeekEvidenceBinds` pins all four file hashes,
+verifies both report bindings, regenerates the policy from calibration, and
+recomputes the passing result. The temporary credential was deleted after both
+batches. This is evidence only for the pinned DeepSeek configuration and fresh
+v4 corpus; the byte-equivalent OpenAI holdout remains unrun.
 
 ## MCP suite follow-on
 
@@ -780,12 +987,12 @@ validation follow-up recorded below closes that exact frozen Cell's claim.
 ## Known limitations and open blockers (not GA)
 
 See the contract document's own [Maturity and GA blockers](evaluation.md#maturity-and-ga-blockers)
-section. Summarized: real-model live-judge sample size, broader reviewed cases
-for semantic meta-evaluation, provider breadth
-beyond one OpenAI-compatible adapter, and calibrated policies beyond the exact
-MCP Cell are explicitly outstanding.
-MCP is now an optional explicit suite, never a runner prerequisite; its live
-model-resistance result is still outstanding.
+section. Summarized: more real-model live-judge samples, broader reviewed cases
+for semantic meta-evaluation, a successful independent Judge holdout, provider
+breadth beyond one OpenAI-compatible adapter, and calibrated policies beyond
+the exact MCP Cell are explicitly outstanding. MCP is an optional explicit
+suite, never a runner prerequisite; its exact frozen DeepSeek Cell now has a
+separate successful calibration and validation result.
 
 The variance blocker changed shape on 2026-09-05 without closing. The
 mechanism is implemented and verified and this ledger records its evidence.

@@ -63,6 +63,80 @@ func fixedJudgeCaller(t *testing.T, output judgeRawOutput) JudgeCaller {
 	}
 }
 
+func v2JudgeConfig() JudgeConfig {
+	config := testJudgeConfig()
+	config.Prompt = JudgePrompt{ID: QualityJudgePromptV2ID, Digest: QualityJudgePromptV2Digest()}
+	return config
+}
+
+func fixedJudgeCallerJSON(t *testing.T, output map[string]any, inspectPrompt func(string)) JudgeCaller {
+	t.Helper()
+	data, err := json.Marshal(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return func(_ context.Context, prompt, _ string) (string, ScorerUsage, error) {
+		if inspectPrompt != nil {
+			inspectPrompt(prompt)
+		}
+		return string(data), ScorerUsage{}, nil
+	}
+}
+
+func TestRunJudgeV2KeepsResolvedContradictionAsFail(t *testing.T) {
+	reader, transcriptPath, auditPath := judgeTestFixture(t)
+	calledWithV2 := false
+	caller := fixedJudgeCallerJSON(t, map[string]any{
+		"verdict":            "fail",
+		"criteria":           []map[string]any{{"id": "quality", "status": "fail"}, {"id": "continuity", "status": "fail"}},
+		"evidenceReferences": []string{transcriptPath, auditPath},
+		"rationale":          "the audit resolves the transcript's false success claim",
+	}, func(prompt string) { calledWithV2 = prompt == QualityJudgePromptV2 })
+	outcome, err := RunJudge(context.Background(), reader, v2JudgeConfig(), caller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !calledWithV2 || outcome.Verdict != ScoreFail || len(outcome.ContradictoryEvidence) != 0 {
+		t.Fatalf("calledWithV2=%t outcome=%+v", calledWithV2, outcome)
+	}
+}
+
+func TestRunJudgeV2UnresolvedContradictionIsIndeterminate(t *testing.T) {
+	reader, transcriptPath, auditPath := judgeTestFixture(t)
+	caller := fixedJudgeCallerJSON(t, map[string]any{
+		"verdict":                         "fail",
+		"criteria":                        []map[string]any{{"id": "quality", "status": "fail"}, {"id": "continuity", "status": "fail"}},
+		"evidenceReferences":              []string{transcriptPath, auditPath},
+		"unresolvedContradictoryEvidence": []string{transcriptPath, auditPath},
+		"rationale":                       "the two equally authoritative records cannot be reconciled",
+	}, nil)
+	outcome, err := RunJudge(context.Background(), reader, v2JudgeConfig(), caller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Verdict != ScoreIndeterminate || !reflect.DeepEqual(outcome.ContradictoryEvidence, []string{transcriptPath, auditPath}) {
+		t.Fatalf("outcome=%+v", outcome)
+	}
+}
+
+func TestRunJudgeV2RejectsTheAmbiguousV1ContradictionField(t *testing.T) {
+	reader, transcriptPath, auditPath := judgeTestFixture(t)
+	caller := fixedJudgeCallerJSON(t, map[string]any{
+		"verdict":               "fail",
+		"criteria":              []map[string]any{{"id": "quality", "status": "fail"}, {"id": "continuity", "status": "fail"}},
+		"evidenceReferences":    []string{transcriptPath, auditPath},
+		"contradictoryEvidence": []string{transcriptPath, auditPath},
+		"rationale":             "legacy ambiguous field",
+	}, nil)
+	outcome, err := RunJudge(context.Background(), reader, v2JudgeConfig(), caller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Verdict != ScoreIndeterminate || !strings.Contains(outcome.Rationale, "strict JSON shape") {
+		t.Fatalf("outcome=%+v", outcome)
+	}
+}
+
 func TestRunJudgeKnownPassFixture(t *testing.T) {
 	reader, transcriptPath, auditPath := judgeTestFixture(t)
 	caller := fixedJudgeCaller(t, judgeRawOutput{
@@ -401,6 +475,9 @@ func TestRunJudgeRejectsMalformedOutput(t *testing.T) {
 		}
 		if outcome.Verdict != ScoreIndeterminate {
 			t.Fatalf("Verdict = %q, want %q", outcome.Verdict, ScoreIndeterminate)
+		}
+		if !strings.Contains(outcome.Rationale, `unknown field "unexpectedField"`) {
+			t.Fatalf("Rationale = %q, want a bounded decoder diagnosis", outcome.Rationale)
 		}
 	})
 
