@@ -12,6 +12,7 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/contextengine"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
+	"github.com/SongYii/open-code-harness/internal/harness/telemetry"
 )
 
 // defaultContextPageLimit mirrors ReadWholeStreamPinned's own bound
@@ -61,6 +62,7 @@ func (source contextEventStorePageSource) ReadPage(ctx context.Context, sessionI
 type EngineContextSummarizer struct {
 	runner          *engine.TurnRunner
 	reasoningEffort engine.ReasoningEffort
+	telemetry       telemetry.Tracer
 }
 
 var _ ContextSummarizer = (*EngineContextSummarizer)(nil)
@@ -71,28 +73,42 @@ var _ ContextSummarizer = (*EngineContextSummarizer)(nil)
 // through the identical Model/credential/transport as a normal attempt —
 // design §18's deliberate "no second Provider" choice.
 func NewEngineContextSummarizer(runner *engine.TurnRunner, reasoningEffort engine.ReasoningEffort) (*EngineContextSummarizer, error) {
+	return NewEngineContextSummarizerWithTelemetry(runner, reasoningEffort, telemetry.Noop())
+}
+
+// NewEngineContextSummarizerWithTelemetry constructs the production
+// summarizer while keeping the original constructor's no-op compatibility.
+func NewEngineContextSummarizerWithTelemetry(runner *engine.TurnRunner, reasoningEffort engine.ReasoningEffort, tracer telemetry.Tracer) (*EngineContextSummarizer, error) {
 	if runner == nil || !engine.IsReasoningEffort(reasoningEffort) {
 		return nil, applicationError(CategoryValidation, "invalid_configuration", false, nil)
 	}
-	return &EngineContextSummarizer{runner: runner, reasoningEffort: reasoningEffort}, nil
+	if tracer == nil {
+		tracer = telemetry.Noop()
+	}
+	return &EngineContextSummarizer{runner: runner, reasoningEffort: reasoningEffort, telemetry: tracer}, nil
 }
 
-func (summarizer *EngineContextSummarizer) Summarize(ctx context.Context, request ContextSummarizeRequest) (ContextSummarizeResult, error) {
+func (summarizer *EngineContextSummarizer) Summarize(ctx context.Context, request ContextSummarizeRequest) (output ContextSummarizeResult, returnErr error) {
 	if summarizer == nil || summarizer.runner == nil {
 		return ContextSummarizeResult{}, applicationError(CategoryValidation, "invalid_request", false, nil)
 	}
-	result, err := summarizer.runner.Collect(ctx, engine.CollectRequest{
+	modelRequest := engine.ModelRequest{
+		SessionID: request.SessionID, TurnID: request.TurnID, ItemID: request.ItemID,
+		Input: request.Content, Purpose: engine.ModelRequestPurposeCompaction,
+		MaxOutputTokens: request.MaxOutputTokens, ReasoningEffort: summarizer.reasoningEffort,
+	}
+	traceCtx, span := telemetry.SafeStart(summarizer.telemetry, ctx, modelTraceStart(modelRequest))
+	var stats engine.AttemptStats
+	defer func() { span.End(traceEnd(returnErr, modelStatsAttributes(stats)...)) }()
+	result, err := summarizer.runner.Collect(traceCtx, engine.CollectRequest{
 		ModelRequest: engine.ModelRequest{
-			SessionID:       request.SessionID,
-			TurnID:          request.TurnID,
-			ItemID:          request.ItemID,
-			Input:           request.Content,
-			Purpose:         engine.ModelRequestPurposeCompaction,
-			MaxOutputTokens: request.MaxOutputTokens,
-			ReasoningEffort: summarizer.reasoningEffort,
+			SessionID: modelRequest.SessionID, TurnID: modelRequest.TurnID, ItemID: modelRequest.ItemID,
+			Input: modelRequest.Input, Purpose: modelRequest.Purpose,
+			MaxOutputTokens: modelRequest.MaxOutputTokens, ReasoningEffort: modelRequest.ReasoningEffort,
 		},
 		MaxOutputBytes: request.MaxOutputBytes,
 	})
+	stats = result.Stats
 	if err != nil {
 		return ContextSummarizeResult{}, err
 	}
@@ -169,6 +185,7 @@ type ContextOrchestratorDeps struct {
 	// ProjectToolResult's marker-framed excerpt (design §10). Zero
 	// disables pruning entirely.
 	MaxPrunedToolResultsPerRequest uint32
+	Telemetry                      telemetry.Tracer
 	// Identity is the active route's identity, when known -- the same
 	// value turn.go/loop.go already pass to ModelRequestRecordedFromEnvelope
 	// (service.config.RequestIdentity). PrepareContext uses it only to
@@ -293,7 +310,7 @@ type PrepareContextResult struct {
 // model.request.recorded itself (those require a running assistant item,
 // per domain's decideRecordContextPreparation, and belong to the caller's
 // own admission batch), and it never dispatches a Provider attempt.
-func PrepareContext(ctx context.Context, deps ContextOrchestratorDeps, state domain.Session, input PrepareContextInput) (PrepareContextResult, error) {
+func PrepareContext(ctx context.Context, deps ContextOrchestratorDeps, state domain.Session, input PrepareContextInput) (result PrepareContextResult, returnErr error) {
 	if err := contextError(ctx); err != nil {
 		return PrepareContextResult{}, err
 	}
@@ -306,6 +323,19 @@ func PrepareContext(ctx context.Context, deps ContextOrchestratorDeps, state dom
 	if !validContextTrigger(input.Trigger) {
 		return PrepareContextResult{}, applicationError(CategoryValidation, "invalid_request", false, nil)
 	}
+	traceCtx, span := telemetry.SafeStart(deps.Telemetry, ctx, telemetry.Start{
+		Kind:       telemetry.KindContextPrepare,
+		Attributes: append(traceIDs(input.SessionID, input.TurnID, input.ItemID), traceString(telemetry.KeyContextTrigger, input.Trigger)...),
+	})
+	ctx = traceCtx
+	defer func() {
+		attributes := []telemetry.Attribute{
+			telemetry.Bool(telemetry.KeyContextCompacted, result.CompactionRan),
+			telemetry.Uint64(telemetry.KeyContextEstimatedTokens, result.Prepared.EstimatedTotalTokens),
+			telemetry.Uint64(telemetry.KeyContextPrunedResults, uint64(result.Prepared.PrunedToolResultCount)),
+		}
+		span.End(traceEnd(returnErr, attributes...))
+	}()
 
 	previous, err := loadUsableCheckpoint(ctx, deps, input.SessionID)
 	if err != nil {
@@ -396,7 +426,7 @@ func PrepareContext(ctx context.Context, deps ContextOrchestratorDeps, state dom
 		}
 	}
 
-	result := PrepareContextResult{
+	result = PrepareContextResult{
 		State: state, SourceHeadVersion: scan.HeadVersion, Budget: deps.Budget,
 		UsageAnchorApplied: usageAnchorApplied, UsageAnchorTokens: usageAnchorTokens,
 	}
@@ -607,7 +637,7 @@ func countTurnUnits(units []contextengine.ContextUnit) uint64 {
 // a summary failure is left as a logged failed bracket and the caller
 // proceeds uncompacted (ran=false, checkpoint=nil) — never silently
 // retried into a reset it does not need.
-func runCompactionBracket(ctx context.Context, deps ContextOrchestratorDeps, state domain.Session, input PrepareContextInput, headVersion uint64, previous *contextengine.ContextCheckpoint, plan contextengine.PlanResult) (domain.Session, *contextengine.ContextCheckpoint, bool, error) {
+func runCompactionBracket(ctx context.Context, deps ContextOrchestratorDeps, state domain.Session, input PrepareContextInput, headVersion uint64, previous *contextengine.ContextCheckpoint, plan contextengine.PlanResult) (next domain.Session, checkpointResult *contextengine.ContextCheckpoint, ran bool, returnErr error) {
 	if len(plan.CoveredUnits) == 0 {
 		// Nothing safe to cover (design's context_nothing_to_compact):
 		// never open a bracket for an empty prefix.
@@ -618,6 +648,24 @@ func runCompactionBracket(ctx context.Context, deps ContextOrchestratorDeps, sta
 	if err != nil {
 		return domain.Session{}, nil, false, applicationError(CategoryInternal, "id_generation_failed", false, err)
 	}
+	attributes := append(traceIDs(input.SessionID, input.TurnID, input.ItemID), traceString(telemetry.KeyCompactionID, string(compactionID))...)
+	attributes = append(attributes, traceString(telemetry.KeyContextTrigger, input.Trigger)...)
+	traceCtx, span := telemetry.SafeStart(deps.Telemetry, ctx, telemetry.Start{Kind: telemetry.KindContextCompact, Attributes: attributes})
+	ctx = traceCtx
+	strategy := domain.ContextStrategySummary
+	defer func() {
+		endAttributes := []telemetry.Attribute{telemetry.Bool(telemetry.KeyContextCompacted, ran)}
+		endAttributes = append(endAttributes, traceString(telemetry.KeyContextStrategy, strategy)...)
+		if checkpointResult != nil {
+			endAttributes = append(endAttributes,
+				telemetry.Uint64(telemetry.KeyContextCoveredEvents, checkpointResult.Coverage.CoveredEventCount),
+				telemetry.Uint64(telemetry.KeyContextCoveredTurns, checkpointResult.Coverage.CoveredTurnCount),
+				telemetry.Uint64(telemetry.KeyContextSummaryChunks, uint64(checkpointResult.SummaryChunks)),
+				telemetry.Uint64(telemetry.KeyContextEstimatedTokens, checkpointResult.EstimatedRequestTokens),
+			)
+		}
+		span.End(traceEnd(returnErr, endAttributes...))
+	}()
 	nextState, err := startCompaction(ctx, deps, state, input, compactionID, domain.ContextStrategySummary, headVersion, previous)
 	if err != nil {
 		return domain.Session{}, nil, false, err
@@ -671,6 +719,7 @@ func runCompactionBracket(ctx context.Context, deps ContextOrchestratorDeps, sta
 	if err != nil {
 		return domain.Session{}, nil, false, applicationError(CategoryInternal, "id_generation_failed", false, err)
 	}
+	strategy = domain.ContextStrategyReset
 	state, err = startCompaction(ctx, deps, state, input, resetCompactionID, domain.ContextStrategyReset, headVersion, previous)
 	if err != nil {
 		return domain.Session{}, nil, false, err
@@ -780,7 +829,7 @@ func failCompaction(ctx context.Context, deps ContextOrchestratorDeps, state dom
 // but over ContextOrchestratorDeps rather than *Service, since this
 // orchestrator does not hold a *Service (see ContextOrchestratorDeps's own
 // doc comment for why).
-func appendCompactOrchestrator(ctx context.Context, deps ContextOrchestratorDeps, sessionID domain.SessionID, state domain.Session, events []domain.UncommittedEvent) (domain.Session, []domain.RecordedEvent, error) {
+func appendCompactOrchestrator(ctx context.Context, deps ContextOrchestratorDeps, sessionID domain.SessionID, state domain.Session, events []domain.UncommittedEvent) (next domain.Session, records []domain.RecordedEvent, returnErr error) {
 	commandID, err := deps.IDs.NewCommandID()
 	if err != nil {
 		return domain.Session{}, nil, applicationError(CategoryInternal, "id_generation_failed", false, err)
@@ -789,7 +838,9 @@ func appendCompactOrchestrator(ctx context.Context, deps ContextOrchestratorDeps
 	if err != nil {
 		return domain.Session{}, nil, err
 	}
-	nextState, records, err := CommitAppendIntent(ctx, deps.Store, state, intent)
+	traceCtx, trace := startAppendTrace(ctx, deps.Telemetry, intent)
+	defer func() { trace.end(returnErr) }()
+	nextState, records, err := CommitAppendIntent(traceCtx, deps.Store, state, intent)
 	if err == nil {
 		return nextState, records, nil
 	}
@@ -800,7 +851,7 @@ func appendCompactOrchestrator(ctx context.Context, deps ContextOrchestratorDeps
 	// any further summarization is attempted" -- this compaction-bracket
 	// append (Start, Complete, or Fail) is never left permanently
 	// uncertain, mirroring turn.go's own resolveAdmissionUnknown pattern.
-	resolveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), deps.appendResolutionConfig().Timeout)
+	resolveCtx, cancel := context.WithTimeout(context.WithoutCancel(traceCtx), deps.appendResolutionConfig().Timeout)
 	defer cancel()
 	receipt, resolveErr := ResolveAppendIntent(resolveCtx, deps.Store, intent, deps.appendResolutionConfig())
 	if resolveErr != nil {

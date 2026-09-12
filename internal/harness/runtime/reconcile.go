@@ -9,6 +9,7 @@ import (
 
 	"github.com/SongYii/open-code-harness/internal/harness/application"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
+	"github.com/SongYii/open-code-harness/internal/harness/telemetry"
 )
 
 // processCrashCode is the stable recovery terminal reason.
@@ -54,6 +55,7 @@ type reconciler struct {
 	// rotation between Launch attempts cannot strand the recovery append
 	// behind a stale fencing token.
 	authority application.AuthoritySource
+	telemetry telemetry.Tracer
 }
 
 // reconcileSession replays one session stream and appends the recovery
@@ -117,14 +119,15 @@ func (r *reconciler) appendCompactionOnlyRecovery(ctx context.Context, session d
 		Event:         domain.ContextCompactionFailed{ID: compaction.ID, Code: runtimeRecoveredCode, Message: runtimeRecoveredMessage},
 	}}
 
-	receipt, err := r.store.Append(ctx, application.AppendRequest{
+	request := application.AppendRequest{
 		AppendID:        appendID,
 		SessionID:       session,
 		ExpectedVersion: head,
 		CommandID:       lineage,
 		Authority:       r.authority.CurrentAuthority(),
 		Events:          events,
-	})
+	}
+	receipt, err := r.appendRecoveryRequest(ctx, request)
 	if err != nil {
 		return false, err
 	}
@@ -189,19 +192,38 @@ func (r *reconciler) appendRecovery(ctx context.Context, session domain.SessionI
 	}
 	add(domain.TurnInterrupted{TurnID: turn, Reason: processCrashCode})
 
-	receipt, err := r.store.Append(ctx, application.AppendRequest{
+	request := application.AppendRequest{
 		AppendID:        appendID,
 		SessionID:       session,
 		ExpectedVersion: head,
 		CommandID:       lineage,
 		Authority:       r.authority.CurrentAuthority(),
 		Events:          events,
-	})
+	}
+	receipt, err := r.appendRecoveryRequest(ctx, request)
 	if err != nil {
 		return false, err
 	}
 	_ = receipt
 	return true, nil
+}
+
+func (r *reconciler) appendRecoveryRequest(ctx context.Context, request application.AppendRequest) (application.CommitReceipt, error) {
+	attributes := []telemetry.Attribute{
+		telemetry.String(telemetry.KeyAppendID, string(request.AppendID)),
+		telemetry.String(telemetry.KeySessionID, string(request.SessionID)),
+		telemetry.Uint64(telemetry.KeyAppendEventCount, uint64(len(request.Events))),
+		telemetry.Uint64(telemetry.KeyAppendExpectedVersion, request.ExpectedVersion),
+	}
+	traceCtx, span := telemetry.SafeStart(r.telemetry, ctx, telemetry.Start{Kind: telemetry.KindStoreAppend, Attributes: attributes})
+	receipt, err := r.store.Append(traceCtx, request)
+	end := telemetry.End{Outcome: telemetry.OutcomeOK}
+	if err != nil {
+		end.Outcome = telemetry.OutcomeFailed
+		end.Code = "recovery_append_failed"
+	}
+	span.End(end)
+	return receipt, err
 }
 
 // readAll pages through one session stream at a pinned head.

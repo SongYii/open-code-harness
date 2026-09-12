@@ -61,6 +61,18 @@ func TestValidateRejectsEveryDocumentedCause(t *testing.T) {
 		{"relative database path", func(c *composition.Config) { c.DatabasePath = "harness.db" }, "DatabasePath"},
 		{"database parent missing", func(c *composition.Config) { c.DatabasePath = filepath.Join(c.DatabasePath, "absent", "harness.db") }, "DatabasePath parent"},
 		{"blank runtime id", func(c *composition.Config) { c.RuntimeID = "" }, "RuntimeID"},
+		{"telemetry option without endpoint", func(c *composition.Config) { c.Telemetry.SampleRatio = 0.5 }, "OTLPTraceEndpoint"},
+		{"telemetry plaintext remote", func(c *composition.Config) {
+			c.Telemetry.OTLPTraceEndpoint = "http://192.0.2.1/v1/traces"
+			c.Telemetry.AllowInsecureLoopback = true
+		}, "loopback"},
+		{"telemetry endpoint missing trace path", func(c *composition.Config) {
+			c.Telemetry.OTLPTraceEndpoint = "https://collector.invalid"
+		}, "/v1/traces"},
+		{"telemetry sample ratio out of range", func(c *composition.Config) {
+			c.Telemetry.OTLPTraceEndpoint = "https://collector.invalid/v1/traces"
+			c.Telemetry.SampleRatio = 1.1
+		}, "sample ratio"},
 		{"audit directory missing", func(c *composition.Config) { c.AuditDirectory = filepath.Join(c.WorkspaceRoot, "absent") }, "AuditDirectory"},
 		{"blank base url", func(c *composition.Config) { c.Provider.BaseURL = "" }, "BaseURL"},
 		{"blank model id", func(c *composition.Config) { c.Provider.ModelID = "" }, "ModelID"},

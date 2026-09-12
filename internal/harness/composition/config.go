@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/mcp"
+	oteladapter "github.com/SongYii/open-code-harness/internal/harness/adapters/otel"
 	"github.com/SongYii/open-code-harness/internal/harness/contextengine"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
 	"github.com/SongYii/open-code-harness/internal/harness/policy"
@@ -45,6 +46,28 @@ type Limits struct {
 	MaxToolCallsPerStep int
 	MaxAssistantBytes   int
 	ApprovalTimeout     time.Duration
+}
+
+type Telemetry struct {
+	OTLPTraceEndpoint     string
+	SampleRatio           float64
+	AllowInsecureLoopback bool
+}
+
+func (config Telemetry) validate(runtimeID string) error {
+	if config.OTLPTraceEndpoint == "" {
+		if config.SampleRatio != 0 || config.AllowInsecureLoopback {
+			return fmt.Errorf("%w: Telemetry fields require OTLPTraceEndpoint", errInvalidConfig)
+		}
+		return nil
+	}
+	if err := oteladapter.ValidateConfig(oteladapter.Config{
+		Endpoint: config.OTLPTraceEndpoint, SampleRatio: config.SampleRatio,
+		AllowInsecureLoopback: config.AllowInsecureLoopback, InstanceID: runtimeID,
+	}); err != nil {
+		return fmt.Errorf("%w: Telemetry: %v", errInvalidConfig, err)
+	}
+	return nil
 }
 
 // MCPServerConfig is the composition-owned spelling of the adapter's static
@@ -202,6 +225,9 @@ type Config struct {
 	// §21); see the Context type's own doc for why there is no separate
 	// enable switch here.
 	Context Context
+	// Telemetry is opt-in. It never changes provider, protocol, Domain, or
+	// evaluation identity; see the 2026-09-12 trace-only design.
+	Telemetry Telemetry
 	// Approver is optional. Unset becomes a deny slot so an ACP server can
 	// attach later without reconstructing the Service.
 	Approver tools.Approver
@@ -269,6 +295,9 @@ func (config Config) Validate() error {
 	}
 	if config.RuntimeID == "" {
 		return fmt.Errorf("%w: RuntimeID is required", errInvalidConfig)
+	}
+	if err := config.Telemetry.validate(config.RuntimeID); err != nil {
+		return err
 	}
 	if config.AuditDirectory != "" {
 		if err := requireExistingDirectory("AuditDirectory", config.AuditDirectory); err != nil {

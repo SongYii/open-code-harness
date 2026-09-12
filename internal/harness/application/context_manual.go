@@ -6,6 +6,7 @@ import (
 
 	"github.com/SongYii/open-code-harness/internal/harness/contextengine"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
+	"github.com/SongYii/open-code-harness/internal/harness/telemetry"
 )
 
 // maxCompactSessionFocusBytes is design §15.4's own bound on the optional
@@ -63,7 +64,7 @@ type CompactSessionResult struct {
 // work (a redundant Scan/plan) under real local contention, which
 // implementation plan Task 12's own dedicated concurrency race matrix is
 // positioned to measure and close if it matters.
-func (service *Service) CompactSession(ctx context.Context, request CompactSessionRequest) (CompactSessionResult, error) {
+func (service *Service) CompactSession(ctx context.Context, request CompactSessionRequest) (result CompactSessionResult, returnErr error) {
 	if service == nil {
 		return CompactSessionResult{}, applicationError(CategoryValidation, "invalid_request", false, nil)
 	}
@@ -132,6 +133,20 @@ func (service *Service) CompactSession(ctx context.Context, request CompactSessi
 	if err != nil {
 		return CompactSessionResult{}, applicationError(CategoryInternal, "id_generation_failed", false, err)
 	}
+	attributes := traceString(telemetry.KeySessionID, string(request.SessionID))
+	attributes = append(attributes, traceString(telemetry.KeyCompactionID, string(compactionID))...)
+	attributes = append(attributes, traceString(telemetry.KeyContextTrigger, domain.ContextTriggerManual)...)
+	attributes = append(attributes, traceString(telemetry.KeyContextStrategy, strategy)...)
+	traceCtx, span := telemetry.SafeStart(service.telemetry, ctx, telemetry.Start{Kind: telemetry.KindContextCompact, Attributes: attributes})
+	ctx = traceCtx
+	defer func() {
+		span.End(traceEnd(returnErr,
+			telemetry.Bool(telemetry.KeyContextCompacted, result.Ran),
+			telemetry.Uint64(telemetry.KeyContextCoveredEvents, result.CoveredEventCount),
+			telemetry.Uint64(telemetry.KeyContextCoveredTurns, result.CoveredTurnCount),
+			telemetry.Uint64(telemetry.KeyContextEstimatedTokens, result.EstimatedRequestTokens),
+		))
+	}()
 	state, err = startCompaction(ctx, deps, state, input, compactionID, strategy, scan.HeadVersion, previous)
 	if err != nil {
 		return CompactSessionResult{}, err
@@ -159,10 +174,11 @@ func (service *Service) CompactSession(ctx context.Context, request CompactSessi
 	if _, err := completeCompaction(ctx, deps, state, request.SessionID, compactionID, *checkpoint); err != nil {
 		return CompactSessionResult{}, err
 	}
-	return CompactSessionResult{
+	result = CompactSessionResult{
 		Ran: true, CheckpointID: checkpoint.ID, CheckpointKind: string(checkpoint.Kind),
 		CoveredEventCount: checkpoint.Coverage.CoveredEventCount, CoveredTurnCount: checkpoint.Coverage.CoveredTurnCount,
 		ThroughSequence: checkpoint.Coverage.ThroughSequence, TokensBefore: checkpoint.TokensBefore,
 		CheckpointTokens: checkpoint.CheckpointTokens, EstimatedRequestTokens: checkpoint.EstimatedRequestTokens,
-	}, nil
+	}
+	return result, nil
 }

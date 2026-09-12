@@ -155,6 +155,9 @@ func bindAssemblyFlags(flags *flag.FlagSet, config *composition.Config, policyMo
 	flags.UintVar(&uintFlags.MaxOverflowCompactionsPerTurn, "context-max-overflow-compactions-per-turn", 0, "maximum per-Turn Provider overflow recoveries; 0 uses the Context Engine default")
 	flags.UintVar(&uintFlags.MaxPrunedToolResultsPerRequest, "context-max-pruned-tool-results-per-request", 0, "maximum Tool Results one request may prune; 0 uses the Context Engine default")
 	flags.DurationVar(&config.Context.CompactionTimeout, "context-compaction-timeout", 0, "bound on one summarizer call within a compaction bracket; 0 uses the Context Engine default")
+	flags.StringVar(&config.Telemetry.OTLPTraceEndpoint, "otel-traces-endpoint", "", "OTLP/HTTP /v1/traces URL; empty disables telemetry")
+	flags.Float64Var(&config.Telemetry.SampleRatio, "otel-traces-sample-ratio", 0, "trace head-sampling ratio in (0,1]; 0 uses 1.0 when telemetry is enabled")
+	flags.BoolVar(&config.Telemetry.AllowInsecureLoopback, "otel-allow-insecure-loopback", false, "permit plain HTTP telemetry only to a literal loopback IP")
 	flags.DurationVar(&config.ShutdownTimeout, "shutdown-timeout", composition.DefaultShutdownTimeout, "how long shutdown may wait for the host's loops")
 	flags.BoolVar(&config.AllowUnsandboxedExec, "allow-unsandboxed-exec", false, "proceed even if no OS-level exec sandbox (bwrap, sandbox-exec) is available on this host; logs which guarantee is absent")
 }

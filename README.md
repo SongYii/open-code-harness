@@ -179,7 +179,14 @@ The numbered milestone list lives in
   redaction; a separate DeepSeek-compatible live example keeps prompt-
   injection resistance as an unproven model-quality claim.
 
-TUI and OpenTelemetry are not yet implemented. Evaluation
+- Trace-only OpenTelemetry observability is implemented and runtime opt-in,
+  with a closed metadata vocabulary, bounded fail-open OTLP/HTTP export, no
+  external context propagation, and a byte-identical Provider request test.
+  Its substantial dependency/binary cost, full trigger topology, and official
+  Collector proof are explicit in the [contract](docs/architecture/observability-otel.md)
+  and [evidence ledger](docs/architecture/observability-otel-evidence.md).
+
+The fuller TypeScript TUI is not yet implemented. Evaluation
 (`internal/harness/eval`, `cmd/och-eval`) is implemented but not GA: frozen
 Scenario/Subject/Executor identity, append-only Attempt/Outcome/Evidence
 Manifest/Score documents, both the in-process and real `och -acp` subprocess

@@ -1,7 +1,7 @@
 # 项目实现通俗导读
 
 - 状态：持续维护的通俗导读
-- 最后核对：2026-09-10
+- 最后核对：2026-09-12
 - 英文规范真源：[how-it-works.md](how-it-works.md)
 - 整体地图：[当前系统架构](current-system.zh-CN.md)
 
@@ -443,6 +443,35 @@ Checkpoint 继续。
 
 不同真实模型和代码库上的质量证据仍不足，机制已实现但还不能宣称 GA。
 
+<!-- contract: docs/architecture/observability-otel.md -->
+## 只记录元数据的 Trace 可观测性
+
+### 解决什么问题
+
+事件库能证明什么已提交，却不方便看一次慢 Turn 到底耗在模型、审批、工具、压缩还是
+数据库。
+
+### 用户能看到什么
+
+运维人员可以主动开启 OTLP Trace，用一棵树查看一次 Turn 的各段耗时；不配地址就
+完全不导出。
+
+### 真实实现
+
+业务包只引用项目自己的窄接口，不直接依赖 OTel。Adapter 最多排队 256 个 Span，
+通过 OTLP/HTTP 导出，不重试也不向外部请求传播 Trace。见[合同](observability-otel.md)
+和[证据](observability-otel-evidence.md)。
+
+### 遇到的问题与修复
+
+第一个泄密 canary 其实像合法元数据；非法结束字段会留下半条 Span；强制丢弃基准的
+假 Server 也曾无法退出。实现与测试都已针对这些问题修正。
+
+### 仍未完成
+
+没有原生 Metrics/Logs、Dashboard、内置 Collector 或跨进程传播。外部 Collector
+证据和几种 Trace 拓扑还需补齐；明显的二进制体积成本已经公开记录。
+
 <!-- contract: docs/architecture/system-prompt-workspace-instructions.md -->
 ## System Prompt 与 Workspace Instructions
 
@@ -521,5 +550,5 @@ Judge 评分和方差文档。见[合同](evaluation.md)和[证据](evaluation-e
 
 ### 仍未完成
 
-仍没有成功 Live Judge 样本、校准后的方差策略或第二类 Provider。OpenTelemetry 是
-另一项尚未设计的工作。
+仍没有成功 Live Judge 样本、校准后的方差策略或第二类 Provider。OpenTelemetry 与
+评测分开，也不能当作评分证据。

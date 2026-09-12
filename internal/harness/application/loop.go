@@ -231,7 +231,7 @@ func (service *Service) runAfterAdmission(ctx context.Context, request RunTurnRe
 }
 
 func (service *Service) runSingleAttempt(ctx context.Context, owned *ownedTurn) (RunTurnResult, error) {
-	runResult, err := service.runner.Run(ctx, engine.RunRequest{
+	runResult, err := service.runModel(ctx, engine.RunRequest{
 		ModelRequest: engine.ModelRequest{
 			SessionID: owned.result.SessionID,
 			TurnID:    owned.result.TurnID,
@@ -531,16 +531,20 @@ func (service *Service) commitStepAppend(ctx context.Context, owned *ownedTurn, 
 	if err := owned.lease.retainIntent(intent); err != nil {
 		return storeContractViolation(err)
 	}
-	next, records, err := CommitAppendIntent(ctx, service.store, owned.state, intent)
+	appendCtx, appendTrace := startAppendTrace(ctx, service.telemetry, intent)
+	next, records, err := CommitAppendIntent(appendCtx, service.store, owned.state, intent)
 	if err != nil {
 		if isAppendOutcomeUnknown(err) {
 			if retainErr := owned.lease.retainUnknown(executionPhaseStepAppendUnknown); retainErr != nil {
+				appendTrace.end(retainErr)
 				return storeContractViolation(retainErr)
 			}
-			return service.resolveStepAppendUnknown(ctx, owned, intent)
+			return service.resolveStepAppendUnknown(ctx, owned, intent, appendTrace)
 		}
+		appendTrace.end(err)
 		return err
 	}
+	appendTrace.end(nil)
 	if err := owned.lease.setPhase(executionPhaseRunning); err != nil {
 		return storeContractViolation(err)
 	}
@@ -551,14 +555,16 @@ func (service *Service) commitStepAppend(ctx context.Context, owned *ownedTurn, 
 	return nil
 }
 
-func (service *Service) resolveStepAppendUnknown(ctx context.Context, owned *ownedTurn, intent AppendIntent) error {
+func (service *Service) resolveStepAppendUnknown(ctx context.Context, owned *ownedTurn, intent AppendIntent, appendTrace *logicalAppendTrace) error {
 	resolveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), service.config.AppendResolutionTimeout)
 	defer cancel()
 	receipt, err := ResolveAppendIntent(resolveCtx, service.store, intent, service.appendResolutionConfig())
 	if err != nil {
+		appendTrace.end(err)
 		return err
 	}
 	next, records, err := ApplyCommittedIntent(owned.state, intent, receipt)
+	appendTrace.end(err)
 	if err != nil {
 		return err
 	}
@@ -643,16 +649,20 @@ func (service *Service) commitTerminalAppend(commitCtx, deliveryCtx context.Cont
 	if err := owned.lease.retainIntent(intent); err != nil {
 		return cloneRunTurnResult(owned.result), storeContractViolation(err)
 	}
-	_, records, err := CommitAppendIntent(commitCtx, service.store, owned.state, intent)
+	appendCtx, appendTrace := startAppendTrace(commitCtx, service.telemetry, intent)
+	_, records, err := CommitAppendIntent(appendCtx, service.store, owned.state, intent)
 	if err != nil {
 		if isAppendOutcomeUnknown(err) || commitCtx.Err() != nil {
 			if retainErr := owned.lease.retainUnknown(executionPhaseTerminalUnknown); retainErr != nil {
+				appendTrace.end(retainErr)
 				return cloneRunTurnResult(owned.result), storeContractViolation(retainErr)
 			}
-			return service.resolveTerminalUnknown(deliveryCtx, owned.lease, owned.state, owned.result, intent, owned.result.Records, owned.emitter)
+			return service.resolveTerminalUnknown(deliveryCtx, owned.lease, owned.state, owned.result, intent, owned.result.Records, owned.emitter, appendTrace)
 		}
+		appendTrace.end(err)
 		return cloneRunTurnResult(owned.result), err
 	}
+	appendTrace.end(nil)
 	owned.result.Status = status
 	owned.result.Text = text
 	owned.result.TerminalCommitted = true

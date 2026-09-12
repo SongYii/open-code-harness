@@ -1,7 +1,7 @@
 # How the Implemented System Works
 
 - Status: Maintained plain-language guide
-- Last reconciled: 2026-09-10
+- Last reconciled: 2026-09-12
 - Chinese reading copy: [项目实现通俗导读](how-it-works.zh-CN.md)
 - Architecture map: [Current system architecture](current-system.md)
 
@@ -521,6 +521,38 @@ multi-chunk summarization. Each received a focused test and follow-up fix.
 Quality across real models and repositories needs broader live evidence; the
 mechanism is implemented but not GA-calibrated.
 
+<!-- contract: docs/architecture/observability-otel.md -->
+## Trace-only observability
+
+### Problem
+
+The event log proves what committed, but it does not make a slow live Turn's
+model, policy, approval, tool, compaction, and storage time easy to see.
+
+### Visible result
+
+An operator can opt into a bounded OTLP trace tree and see where one Turn
+spent time. With no endpoint flag, nothing is exported.
+
+### Implementation
+
+A project-owned metadata-only port keeps OTel out of business packages. One
+adapter queues at most 256 spans and exports OTLP/HTTP without retries or
+propagation. See the [contract](observability-otel.md) and
+[evidence](observability-otel-evidence.md).
+
+### Problems found and fixes
+
+The first canary was accidentally legal metadata, invalid end data could leave
+a span unfinished, and a forced-drop benchmark fixture could hang on close.
+The tests were strengthened and the end path now always closes safely.
+
+### Still missing
+
+There are no native metrics/logs, dashboard, bundled Collector, or remote
+propagation. External Collector evidence and several trace-topology variants
+remain open; the binary-size increase is material and published.
+
 <!-- contract: docs/architecture/system-prompt-workspace-instructions.md -->
 ## System prompt and workspace instructions
 
@@ -616,4 +648,5 @@ now catch those errors.
 ### Still missing
 
 There is still no successful live judge sample, calibrated variance policy, or
-second provider family. OpenTelemetry is a separate, undesigned concern.
+second provider family. OpenTelemetry is separate from evaluation and cannot
+be used as score evidence.

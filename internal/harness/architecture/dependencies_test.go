@@ -34,6 +34,8 @@ func TestClassifyProductionDirectory(t *testing.T) {
 		{name: "context engine production subpackage", directory: "internal/harness/contextengine/planning", want: ownerContextEngine, inspect: true, hasOwner: true},
 		{name: "redact root", directory: "internal/harness/redact", want: ownerRedact, inspect: true, hasOwner: true},
 		{name: "redact production subpackage", directory: "internal/harness/redact/patterns", want: ownerRedact, inspect: true, hasOwner: true},
+		{name: "telemetry root", directory: "internal/harness/telemetry", want: ownerTelemetry, inspect: true, hasOwner: true},
+		{name: "telemetry production subpackage", directory: "internal/harness/telemetry/internal", want: ownerTelemetry, inspect: true, hasOwner: true},
 		{name: "memory root", directory: "internal/harness/adapters/memory", want: ownerMemory, inspect: true, hasOwner: true},
 		{name: "memory production subpackage", directory: "internal/harness/adapters/memory/index", want: ownerMemory, inspect: true, hasOwner: true},
 		{name: "openaicompat root", directory: "internal/harness/adapters/openaicompat", want: ownerOpenAICompat, inspect: true, hasOwner: true},
@@ -51,6 +53,8 @@ func TestClassifyProductionDirectory(t *testing.T) {
 		{name: "localexec production subpackage", directory: "internal/harness/adapters/localexec/internal", want: ownerLocalExec, inspect: true, hasOwner: true},
 		{name: "mcp root", directory: "internal/harness/adapters/mcp", want: ownerMCP, inspect: true, hasOwner: true},
 		{name: "mcp production subpackage", directory: "internal/harness/adapters/mcp/internal", want: ownerMCP, inspect: true, hasOwner: true},
+		{name: "otel root", directory: "internal/harness/adapters/otel", want: ownerOTel, inspect: true, hasOwner: true},
+		{name: "otel production subpackage", directory: "internal/harness/adapters/otel/internal", want: ownerOTel, inspect: true, hasOwner: true},
 		{name: "sqlite root", directory: "internal/harness/adapters/sqlite", want: ownerSQLite, inspect: true, hasOwner: true},
 		{name: "runtime root", directory: "internal/harness/runtime", want: ownerRuntime, inspect: true, hasOwner: true},
 		{name: "runtime production subpackage", directory: "internal/harness/runtime/internal", want: ownerRuntime, inspect: true, hasOwner: true},
@@ -171,6 +175,12 @@ func TestForbiddenImport(t *testing.T) {
 		{name: "application cannot import memory subpackage", owner: ownerApplication, importPath: modulePath + "/internal/harness/adapters/memory/index", forbidden: true},
 		{name: "memory cannot import network", owner: ownerMemory, importPath: "net/http", forbidden: true},
 		{name: "application may import engine", owner: ownerApplication, importPath: modulePath + "/internal/harness/engine", forbidden: false},
+		{name: "application may import telemetry", owner: ownerApplication, importPath: modulePath + "/internal/harness/telemetry", forbidden: false},
+		{name: "runtime may import telemetry", owner: ownerRuntime, importPath: modulePath + "/internal/harness/telemetry", forbidden: false},
+		{name: "memory may import telemetry", owner: ownerMemory, importPath: modulePath + "/internal/harness/telemetry", forbidden: false},
+		{name: "otel may import telemetry", owner: ownerOTel, importPath: modulePath + "/internal/harness/telemetry", forbidden: false},
+		{name: "application cannot import otel SDK", owner: ownerApplication, importPath: "go.opentelemetry.io/otel/trace", forbidden: true},
+		{name: "otel adapter may import otel SDK", owner: ownerOTel, importPath: "go.opentelemetry.io/otel/trace", forbidden: false},
 		{name: "engine may import domain", owner: ownerEngine, importPath: modulePath + "/internal/harness/domain", forbidden: false},
 		{name: "domain may import standard library", owner: ownerDomain, importPath: "time", forbidden: false},
 		{name: "domain cannot import net/http", owner: ownerDomain, importPath: "net/http", forbidden: true},
@@ -447,6 +457,8 @@ const (
 	ownerAgentInstructions packageOwner = "agentinstructions"
 	ownerContextEngine     packageOwner = "contextengine"
 	ownerRedact            packageOwner = "redact"
+	ownerTelemetry         packageOwner = "telemetry"
+	ownerOTel              packageOwner = "otel"
 )
 
 var excludedTestSupportDirectories = []string{
@@ -469,12 +481,14 @@ var ownedPackageRoots = []struct {
 	{root: "internal/harness/policy", owner: ownerPolicy},
 	{root: "internal/harness/tools", owner: ownerTools},
 	{root: "internal/harness/redact", owner: ownerRedact},
+	{root: "internal/harness/telemetry", owner: ownerTelemetry},
 	{root: "internal/harness/adapters/memory", owner: ownerMemory},
 	{root: "internal/harness/adapters/openaicompat", owner: ownerOpenAICompat},
 	{root: "internal/harness/adapters/sqlite", owner: ownerSQLite},
 	{root: "internal/harness/adapters/workspacefs", owner: ownerWorkspaceFS},
 	{root: "internal/harness/adapters/localexec", owner: ownerLocalExec},
 	{root: "internal/harness/adapters/mcp", owner: ownerMCP},
+	{root: "internal/harness/adapters/otel", owner: ownerOTel},
 	{root: "internal/harness/adapters/system", owner: ownerSystem},
 	{root: "internal/harness/adapters/acp", owner: ownerACP},
 	{root: "internal/harness/runtime", owner: ownerRuntime},
@@ -519,22 +533,24 @@ func productionOwnershipViolation(directory string) string {
 var allowedHarnessImports = map[packageOwner][]string{
 	ownerDomain:            {},
 	ownerEngine:            {modulePath + "/internal/harness/domain"},
-	ownerApplication:       {modulePath + "/internal/harness/agentinstructions", modulePath + "/internal/harness/contextengine", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/engine", modulePath + "/internal/harness/policy", modulePath + "/internal/harness/redact", modulePath + "/internal/harness/tools"},
+	ownerApplication:       {modulePath + "/internal/harness/agentinstructions", modulePath + "/internal/harness/contextengine", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/engine", modulePath + "/internal/harness/policy", modulePath + "/internal/harness/redact", modulePath + "/internal/harness/telemetry", modulePath + "/internal/harness/tools"},
 	ownerContextEngine:     {modulePath + "/internal/harness/domain", modulePath + "/internal/harness/redact"},
 	ownerAgentInstructions: {modulePath + "/internal/harness/domain"},
 	ownerPolicy:            {modulePath + "/internal/harness/domain"},
 	ownerTools:             {modulePath + "/internal/harness/domain"},
 	ownerRedact:            {},
-	ownerMemory:            {modulePath + "/internal/harness/application", modulePath + "/internal/harness/contextengine", modulePath + "/internal/harness/domain"},
+	ownerTelemetry:         {},
+	ownerMemory:            {modulePath + "/internal/harness/application", modulePath + "/internal/harness/contextengine", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/telemetry"},
 	ownerOpenAICompat:      {modulePath + "/internal/harness/domain", modulePath + "/internal/harness/engine", modulePath + "/internal/harness/redact"},
 	ownerSQLite:            {modulePath + "/internal/harness/application", modulePath + "/internal/harness/contextengine", modulePath + "/internal/harness/domain"},
 	ownerWorkspaceFS:       {modulePath + "/internal/harness/domain", modulePath + "/internal/harness/tools"},
 	ownerLocalExec:         {modulePath + "/internal/harness/domain", modulePath + "/internal/harness/tools"},
 	ownerMCP:               {modulePath + "/internal/harness/domain", modulePath + "/internal/harness/tools"},
+	ownerOTel:              {modulePath + "/internal/harness/telemetry"},
 	ownerSystem:            {modulePath + "/internal/harness/application", modulePath + "/internal/harness/domain"},
 	ownerACP:               {modulePath + "/internal/harness/application", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/engine", modulePath + "/internal/harness/tools"},
-	ownerRuntime:           {modulePath + "/internal/harness/adapters/sqlite", modulePath + "/internal/harness/application", modulePath + "/internal/harness/domain"},
-	ownerComposition:       {modulePath + "/internal/harness/adapters", modulePath + "/internal/harness/application", modulePath + "/internal/harness/contextengine", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/engine", modulePath + "/internal/harness/policy", modulePath + "/internal/harness/runtime", modulePath + "/internal/harness/tools", modulePath + "/internal/harness/transcript"},
+	ownerRuntime:           {modulePath + "/internal/harness/adapters/sqlite", modulePath + "/internal/harness/application", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/telemetry"},
+	ownerComposition:       {modulePath + "/internal/harness/adapters", modulePath + "/internal/harness/application", modulePath + "/internal/harness/contextengine", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/engine", modulePath + "/internal/harness/policy", modulePath + "/internal/harness/runtime", modulePath + "/internal/harness/telemetry", modulePath + "/internal/harness/tools", modulePath + "/internal/harness/transcript"},
 	ownerTranscript:        {modulePath + "/internal/harness/application", modulePath + "/internal/harness/domain"},
 	ownerEval:              {modulePath + "/internal/harness/application", modulePath + "/internal/harness/composition", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/engine", modulePath + "/internal/harness/policy", modulePath + "/internal/harness/redact", modulePath + "/internal/harness/tools", modulePath + "/internal/harness/transcript"},
 }
@@ -744,6 +760,24 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/eval",
 			modulePath+"/internal/harness/testkit",
 		)
+	case ownerTelemetry:
+		forbidden = append(forbidden,
+			modulePath+"/internal/harness/domain",
+			modulePath+"/internal/harness/application",
+			modulePath+"/internal/harness/engine",
+			modulePath+"/internal/harness/adapters",
+			modulePath+"/internal/harness/runtime",
+			modulePath+"/internal/harness/composition",
+		)
+	case ownerOTel:
+		forbidden = append(forbidden,
+			modulePath+"/internal/harness/application",
+			modulePath+"/internal/harness/domain",
+			modulePath+"/internal/harness/engine",
+			modulePath+"/internal/harness/runtime",
+			modulePath+"/internal/harness/composition",
+			modulePath+"/internal/harness/testkit",
+		)
 	}
 	// The Runtime Host owns the canonical store's lifecycle and its Config
 	// embeds sqlite.Config; the Slice 4 design established that dependency.
@@ -767,7 +801,10 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			}
 		}
 	}
-	if owner == ownerDomain || owner == ownerApplication || owner == ownerEngine || owner == ownerMemory || owner == ownerPolicy || owner == ownerTools || owner == ownerTranscript || owner == ownerAgentInstructions || owner == ownerContextEngine || owner == ownerRedact {
+	if owner != ownerOTel && strings.HasPrefix(importPath, "go.opentelemetry.io/otel") {
+		return "OpenTelemetry dependency is confined to adapters/otel"
+	}
+	if owner == ownerDomain || owner == ownerApplication || owner == ownerEngine || owner == ownerMemory || owner == ownerPolicy || owner == ownerTools || owner == ownerTranscript || owner == ownerAgentInstructions || owner == ownerContextEngine || owner == ownerRedact || owner == ownerTelemetry {
 		switch importPath {
 		case "os", "os/exec", "net", "net/http":
 			return "forbidden host/network dependency"
@@ -814,6 +851,8 @@ func adapterOwnerRoot(owner packageOwner) (string, bool) {
 		return adaptersRoot + "/acp", true
 	case ownerMCP:
 		return adaptersRoot + "/mcp", true
+	case ownerOTel:
+		return adaptersRoot + "/otel", true
 	default:
 		return "", false
 	}
@@ -1004,6 +1043,7 @@ func TestOnlyCompositionAndRuntimeMayNameAnAdapter(t *testing.T) {
 		modulePath + "/internal/harness/adapters/workspacefs",
 		modulePath + "/internal/harness/adapters/localexec",
 		modulePath + "/internal/harness/adapters/mcp",
+		modulePath + "/internal/harness/adapters/otel",
 		modulePath + "/internal/harness/adapters/system",
 		modulePath + "/internal/harness/adapters/acp",
 	}
@@ -1012,7 +1052,8 @@ func TestOnlyCompositionAndRuntimeMayNameAnAdapter(t *testing.T) {
 		ownerRuntime, ownerMemory, ownerOpenAICompat, ownerSQLite,
 		ownerWorkspaceFS, ownerLocalExec, ownerSystem, ownerACP,
 		ownerTranscript, ownerEval, ownerMCP,
-		ownerAgentInstructions, ownerContextEngine, ownerRedact,
+		ownerAgentInstructions, ownerContextEngine, ownerRedact, ownerTelemetry,
+		ownerOTel,
 	}
 	permitted := func(owner packageOwner, adapter string) bool {
 		if selfRoot, ok := adapterOwnerRoot(owner); ok && adapter == selfRoot {
