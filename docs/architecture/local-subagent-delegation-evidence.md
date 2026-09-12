@@ -1,12 +1,18 @@
 # Local Subagent Delegation Completion Evidence
 
-**Status:** implementation complete; final commit and full verification pending
+**Status:** complete
 
 **Contract:** [local subagent delegation](local-subagent-delegation.md)
 
 **Design:** [accepted design](../superpowers/specs/2026-09-12-local-subagent-delegation-design.md)
 
 **Plan:** [implementation plan](../superpowers/plans/2026-09-12-local-subagent-delegation.md)
+
+## Commit
+
+| Commit | Content |
+| --- | --- |
+| `3bd08c8` | Research, accepted design and plan, durable lineage, opt-in tool/config, fresh read-only child execution, cancellation/failure bounds, Composition/CLI/trace wiring, tests, contracts, and evidence |
 
 ## What is proven
 
@@ -35,11 +41,29 @@ go test -race ./internal/harness/application -run 'TestDelegateTask|TestTelemetr
 go test ./internal/harness/tools ./internal/harness/application -count=1
 go test ./internal/harness/composition -run 'TestValidate|TestOpenWithNoMCP|TestOpenAddsDelegate' -count=1
 go test ./internal/harness/composition -run TestAssemblyRunsDelegated -count=1
+go test ./internal/harness/domain ./internal/harness/application ./internal/docsguard -count=1
+go vet ./...
+go build ./...
+git diff --check
 ```
 
 The last command uses only loopback HTTP but requires network permission in the
-execution sandbox. Final full-suite, vet, cross-build, docsguard, and mutation
-results are recorded after the implementation commit.
+execution sandbox. A full `go test ./... -count=1` passed every completed
+package except the two previously documented `localexec` host-capability
+tests; both also failed in an isolated rerun because this host reports an
+available bwrap filesystem/network backend while the fixtures expect none,
+and the cgroup fixture never observes its synthetic PID. The first full run
+also started before `npm run build` regenerated the ignored embedded web
+assets; after that build, the focused production set passed:
+
+```text
+go test ./cmd/acp-web-bridge ./cmd/och ./internal/harness/domain \
+  ./internal/harness/tools ./internal/harness/application \
+  ./internal/harness/composition ./internal/docsguard -count=1
+```
+
+No subagent code is on either failing `localexec` test path. This ledger does
+not rewrite the known host-dependent failures into a clean full-suite claim.
 
 ## Mutation checks
 

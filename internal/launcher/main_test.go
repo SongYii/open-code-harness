@@ -128,6 +128,20 @@ func TestServeModeACPFlagRemainsValid(t *testing.T) {
 	}
 }
 
+func TestBindAssemblyFlagsParsesSubagents(t *testing.T) {
+	flags := flag.NewFlagSet("och", flag.ContinueOnError)
+	config := composition.Config{}
+	var policyMode string
+	var uintFlags assemblyUintFlags
+	bindAssemblyFlags(flags, &config, &policyMode, &uintFlags)
+	if err := flags.Parse([]string{"-subagents", "-subagent-timeout=45s"}); err != nil {
+		t.Fatal(err)
+	}
+	if !config.Subagents.Enabled || config.Subagents.Timeout != 45*time.Second {
+		t.Fatalf("Subagents = %#v", config.Subagents)
+	}
+}
+
 func TestExportSessionDoesNotUseServeFlags(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := exportSession(context.Background(), []string{"-acp", "-database", "x", "-session", "s"}, &stdout, &stderr)
