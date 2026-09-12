@@ -1,4 +1,3 @@
-// Package telemetry defines the metadata-only Harness trace vocabulary.
 package telemetry
 
 import (
@@ -257,9 +256,7 @@ func (noopTracer) Start(ctx context.Context, _ Start) (context.Context, Span) {
 }
 func (noopSpan) End(End) {}
 
-var defaultNoop Tracer = noopTracer{}
-
-func Noop() Tracer { return defaultNoop }
+func Noop() Tracer { return noopTracer{} }
 
 func SafeStart(tracer Tracer, ctx context.Context, start Start) (context.Context, Span) {
 	if ctx == nil {

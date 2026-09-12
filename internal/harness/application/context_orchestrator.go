@@ -185,9 +185,7 @@ type ContextOrchestratorDeps struct {
 	// ProjectToolResult's marker-framed excerpt (design §10). Zero
 	// disables pruning entirely.
 	MaxPrunedToolResultsPerRequest uint32
-	// Telemetry observes only bounded metadata about preparation and
-	// compaction. Nil is treated as the no-op tracer.
-	Telemetry telemetry.Tracer
+	Telemetry                      telemetry.Tracer
 	// Identity is the active route's identity, when known -- the same
 	// value turn.go/loop.go already pass to ModelRequestRecordedFromEnvelope
 	// (service.config.RequestIdentity). PrepareContext uses it only to

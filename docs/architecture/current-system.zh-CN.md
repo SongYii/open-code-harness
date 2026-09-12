@@ -1,7 +1,7 @@
 # 当前系统架构
 
 - 状态：已实现合同
-- 与代码最后核对：2026-09-09
+- 与代码最后核对：2026-09-12
 - 英文规范真源：[current-system.md](current-system.md)
 - 设计：[当前系统架构与边界收口](../superpowers/specs/2026-09-09-current-system-architecture-design.zh-CN.md)
 
@@ -32,7 +32,9 @@ Runtime 可以依赖 SQLite，因为 Runtime Host 负责规范 Store 的租约�
 | `tools` | 工具规格与执行端口 | `domain` |
 | `agentinstructions` | 固定系统提示与指令渲染 | `domain` |
 | `contextengine` | 上下文预算、投影、压缩、checkpoint | `domain`、`redact` |
-| `application` | Turn/Step 编排和事务边界 | 上述服务包与 `domain` |
+| `telemetry` | 固定字段、只含元数据的 Trace 端口 | 无 |
+| `application` | Turn/Step 编排和事务边界 | 上述服务包、`domain` 与 `telemetry` |
+| `adapters/otel` | 有上限的 OTLP/HTTP 导出，唯一可引用 OTel SDK 的包 | `telemetry` |
 | `adapters/*` | ACP、Provider、文件、进程、MCP、存储等外部 I/O | 各自明确列出的端口；Adapter 之间禁止互相导入 |
 | `runtime` | 租约、恢复、心跳、Exporter 生命周期 | `application`、`domain`、仅 `adapters/sqlite` 例外 |
 | `transcript` | Session 只读投影/导出 | `application`、`domain` |
@@ -75,6 +77,7 @@ Application 掌握循环和追加顺序；Adapter 掌握外部 I/O；Domain 掌�
 | Adapter 装配 | Composition | Application 不选择具体 Adapter |
 | 租约和恢复 | Runtime Host | 客户端连接不拥有恢复生命周期 |
 | 评测结论 | 冻结身份与已提交证据 | Judge 不能覆盖失败的确定性前置条件 |
+| 运行耗时 | 不新增权威；Trace 只是可丢失的诊断 | OTLP 不能证明提交、重放或评测成功 |
 
 Harness 事实以事件追加为发布边界。Checkpoint 和导出只能加速或展示重放，不能
 改写历史。
@@ -87,5 +90,5 @@ Harness 事实以事件追加为发布边界。Checkpoint 和导出只能加速�
 
 ## 7. 当前未覆盖能力
 
-本文不新增完整 TypeScript TUI、Windows runtime enforcement、OpenTelemetry、远程
+本文不新增完整 TypeScript TUI、Windows runtime enforcement、原生 OTel Metrics/Logs、远程
 daemon/A2A、Streamable HTTP MCP/OAuth 或第二类 Provider，也不把 pre-v0 宣称为 GA。

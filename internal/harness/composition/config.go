@@ -48,8 +48,6 @@ type Limits struct {
 	ApprovalTimeout     time.Duration
 }
 
-// Telemetry configures the optional metadata-only OTLP trace adapter. An empty
-// endpoint disables telemetry completely.
 type Telemetry struct {
 	OTLPTraceEndpoint     string
 	SampleRatio           float64

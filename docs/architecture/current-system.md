@@ -1,7 +1,7 @@
 # Current System Architecture
 
 - Status: Implemented contract
-- Last reconciled with code: 2026-09-09
+- Last reconciled with code: 2026-09-12
 - Stability: internal topology; public protocol stability is stated by each
   protocol contract
 - Design: [Current system architecture and boundary closure](../superpowers/specs/2026-09-09-current-system-architecture-design.md)
@@ -33,6 +33,8 @@ authority boundaries, and dependency direction.
                                               └──────────────────────────┘
                                                         │
                                               derived JSONL/transcripts
+                                                        │
+                                          optional metadata-only OTLP traces
 ```
 
 ACP is the only public client protocol. The browser bridge transports ACP
@@ -62,16 +64,18 @@ separately by the same test.
 | `tools` | Tool specifications and execution ports | `domain` |
 | `agentinstructions` | Fixed system prompt and bounded instruction rendering | `domain` |
 | `contextengine` | Context measurement, projection, planning, summaries, checkpoints | `domain`, `redact` |
-| `application` | Turn/step orchestration and transaction boundaries | `agentinstructions`, `contextengine`, `domain`, `engine`, `policy`, `redact`, `tools` |
+| `telemetry` | Closed metadata-only trace port and vocabulary | none |
+| `application` | Turn/step orchestration and transaction boundaries | `agentinstructions`, `contextengine`, `domain`, `engine`, `policy`, `redact`, `telemetry`, `tools` |
 | `adapters/acp` | ACP server-side validation and event projection | `application`, `domain`, `engine`, `tools` |
 | `adapters/openaicompat` | Provider HTTP/SSE mapping | `domain`, `engine`, `redact` |
 | `adapters/workspacefs` | Workspace-confined file operations | `domain`, `tools` |
 | `adapters/localexec` | Confined subprocess execution | `domain`, `tools` |
 | `adapters/mcp` | External MCP discovery/call projection | `domain`, `tools` |
-| `adapters/memory` | Deterministic in-memory ports | `application`, `contextengine`, `domain` |
+| `adapters/otel` | Bounded OTLP/HTTP trace export; sole OTel SDK owner | `telemetry` |
+| `adapters/memory` | Deterministic in-memory ports | `application`, `contextengine`, `domain`, `telemetry` |
 | `adapters/sqlite` | Canonical durable event/checkpoint store | `application`, `contextengine`, `domain` |
 | `adapters/system` | Wall clock and ID generation | `application`, `domain` |
-| `runtime` | Lease, recovery, heartbeat, exporter lifecycle | `adapters/sqlite`, `application`, `domain` |
+| `runtime` | Lease, recovery, heartbeat, exporter lifecycle | `adapters/sqlite`, `application`, `domain`, `telemetry` |
 | `transcript` | Read-only session projection/export | `application`, `domain` |
 | `composition` | Production construction and shutdown | adapters plus `application`, `contextengine`, `domain`, `engine`, `policy`, `runtime`, `tools`, `transcript` |
 | `eval` | Scenario execution and evidence/scoring | `application`, `composition`, `domain`, `engine`, `policy`, `redact`, `tools`, `transcript` |
@@ -143,6 +147,7 @@ See [Engine](engine-vertical-slice.md), [Tool runtime](tool-runtime.md),
 | Adapter construction | Composition | Application ports contain no concrete adapter selection |
 | Store lease/recovery | Runtime Host | Client connection lifetime does not own recovery |
 | Evaluation result | Frozen Scenario/Subject/Executor plus committed evidence | A judge score cannot override failed deterministic prerequisites |
+| Operational timing | no new authority; traces are sampled diagnostics | OTLP spans cannot prove commit, replay, or evaluation success |
 
 Event append is the publication boundary for Harness facts. Checkpoints and
 exports may accelerate or expose replay but cannot rewrite accepted history.
@@ -176,6 +181,6 @@ unclear, the architecture decision is unfinished.
 ## 8. Current exclusions
 
 This map does not make the pre-v0 system GA. It does not add the fuller
-TypeScript TUI, Windows runtime enforcement, OpenTelemetry, remote daemon/A2A,
+TypeScript TUI, Windows runtime enforcement, native OTel metrics/logs, remote daemon/A2A,
 Streamable HTTP MCP/OAuth, or another provider family. Their absence is a
 product-scope question, not permission to cross the boundaries above.

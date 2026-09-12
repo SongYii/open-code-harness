@@ -27,8 +27,7 @@ func (err *ErrLeaseHeld) Error() string {
 
 // Config bounds one host. Zero values take documented defaults.
 type Config struct {
-	SQLite sqlite.Config
-	// Telemetry observes startup reconciliation. Nil is the no-op behavior.
+	SQLite    sqlite.Config
 	Telemetry telemetry.Tracer
 
 	// AuditDirectory enables the background exporter after readiness; empty

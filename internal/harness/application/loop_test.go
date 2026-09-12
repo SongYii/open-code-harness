@@ -1770,6 +1770,7 @@ func newToolServiceWithStore(t *testing.T, store application.EventStore, model e
 	config.MaxAssistantBytes = base.MaxAssistantBytes
 	config.ApprovalTimeout = base.ApprovalTimeout
 	config.PolicyMode = base.PolicyMode
+	config.Telemetry = base.Telemetry
 	if config.MaxSteps == 0 {
 		config.MaxSteps = application.DefaultMaxSteps
 	}

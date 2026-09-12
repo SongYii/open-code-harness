@@ -58,8 +58,7 @@ func (service *Service) RunTurn(ctx context.Context, request RunTurnRequest) (re
 	}
 	switch lookup.Kind {
 	case CommandRequestLookupFound:
-		role = "replayed"
-		return service.runTurnFound(ctx, request, requestDigest, *lookup.Record, true)
+		return service.runTurnFound(ctx, request, requestDigest, *lookup.Record, true, &role)
 	case CommandRequestLookupIdentityMismatch:
 		return RunTurnResult{}, applicationError(CategoryConflict, CodeCommandIdentityMismatch, false, nil)
 	}
@@ -158,7 +157,7 @@ func (service *Service) runTurnOwned(ctx context.Context, request RunTurnRequest
 				return RunTurnResult{}, storeContractViolation(validateErr)
 			}
 			if lookup.Kind == CommandRequestLookupFound {
-				return service.runTurnFound(ctx, request, requestDigest, *lookup.Record, false)
+				return service.runTurnFound(ctx, request, requestDigest, *lookup.Record, false, nil)
 			}
 			if lookup.Kind == CommandRequestLookupIdentityMismatch {
 				return RunTurnResult{}, applicationError(CategoryConflict, CodeCommandIdentityMismatch, false, nil)
@@ -242,7 +241,7 @@ func (service *Service) runTurnOwnedWithContextEngine(ctx context.Context, reque
 				return RunTurnResult{}, storeContractViolation(validateErr)
 			}
 			if lookup.Kind == CommandRequestLookupFound {
-				return service.runTurnFound(ctx, request, requestDigest, *lookup.Record, false)
+				return service.runTurnFound(ctx, request, requestDigest, *lookup.Record, false, nil)
 			}
 			if lookup.Kind == CommandRequestLookupIdentityMismatch {
 				return RunTurnResult{}, applicationError(CategoryConflict, CodeCommandIdentityMismatch, false, nil)
@@ -298,7 +297,7 @@ func contextHistoryPrefix(prepared PrepareContextResult) []domain.ModelPromptMes
 	return messages[:len(messages)-1]
 }
 
-func (service *Service) runTurnFound(ctx context.Context, request RunTurnRequest, digest Digest, record CommandRequestRecord, attachLocal bool) (RunTurnResult, error) {
+func (service *Service) runTurnFound(ctx context.Context, request RunTurnRequest, digest Digest, record CommandRequestRecord, attachLocal bool, traceRole *string) (RunTurnResult, error) {
 	if record.RunTurnRequestID != request.RequestID || record.SessionID != request.SessionID || record.RequestDigest != digest {
 		return RunTurnResult{}, storeContractViolation(errors.New("found command record does not match lookup identity"))
 	}
@@ -311,6 +310,9 @@ func (service *Service) runTurnFound(ctx context.Context, request RunTurnRequest
 		return RunTurnResult{}, mapV2StoreError(ctx, err, "read")
 	}
 	if result.Status != domain.TurnStatusRunning {
+		if traceRole != nil {
+			*traceRole = "replayed"
+		}
 		return result, durableRequestTerminalError(result)
 	}
 	if !attachLocal {
@@ -319,6 +321,9 @@ func (service *Service) runTurnFound(ctx context.Context, request RunTurnRequest
 	lease, attached := service.executions.attachExisting(request.RequestID, request.SessionID, digest)
 	if !attached {
 		return RunTurnResult{}, applicationError(CategoryConflict, CodeReconciliationRequired, false, nil)
+	}
+	if traceRole != nil {
+		*traceRole = "joined"
 	}
 	defer lease.release()
 	return lease.wait(ctx)
@@ -539,7 +544,7 @@ func (service *Service) reloadDurableWinner(ctx context.Context, request RunTurn
 	if lookup.Kind != CommandRequestLookupFound {
 		return RunTurnResult{}, storeContractViolation(errors.New("cas loser could not reload durable winner"))
 	}
-	return service.runTurnFound(ctx, request, digest, *lookup.Record, false)
+	return service.runTurnFound(ctx, request, digest, *lookup.Record, false, nil)
 }
 
 func isAppendOutcomeUnknown(err error) bool {
