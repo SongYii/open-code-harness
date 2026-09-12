@@ -1,0 +1,31 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.set",
+  "id": "context-auto-quality-live-example",
+  "scenarios": [
+    {
+      "id": "context-auto-quality",
+      "digest": "sha256:484fc9d4f04f800651953b504fa687ab3ade6a872556311357cee645600f0a83"
+    }
+  ],
+  "subjects": [
+    {
+      "id": "context-auto-quality-live-example",
+      "digest": "sha256:5113e7760317701971eac24ac6836dfa8c22972ed2a8670ae4998eae56d295c6"
+    }
+  ],
+  "executors": [
+    {
+      "id": "smoke-executor",
+      "digest": "sha256:3c34297540f47a11ae091da1f5b229391db0daeabc1dc0f797bfd0db9046e5aa"
+    }
+  ],
+  "repetitionCount": 1,
+  "pairingSeed": "context-auto-quality-live-example-v1",
+  "limits": {
+    "tokenCap": 300000
+  },
+  "judgeConfigDigest": "sha256:9abadf3b5657d407f7803750631cfe39751f1caacc60c8b565035fe1a745a9ee",
+  "artifactRoot": ".eval-artifacts-context-auto-quality-live",
+  "lane": "live"
+}

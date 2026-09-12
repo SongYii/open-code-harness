@@ -5,13 +5,15 @@
   "version": "v1",
   "provider": {
     "adapterKind": "openaicompat",
-    "normalizedEndpoint": "https://api.example-provider.invalid/v1",
-    "modelId": "replace-with-a-real-judge-model-id",
+    "normalizedEndpoint": "https://api.deepseek.com",
+    "modelId": "deepseek-v4-pro",
     "credentialEnvVar": "OCH_EVAL_LIVE_JUDGE_API_KEY",
-    "contextWindow": 128000,
+    "contextWindow": 1000000,
     "maxOutput": 4096,
     "includeUsage": true,
-    "maxTokensField": "max_completion_tokens"
+    "maxTokensField": "max_tokens",
+    "responseFormat": "json_object",
+    "thinkingMode": "disabled"
   },
   "prompt": {
     "id": "och_quality_judge_v1",

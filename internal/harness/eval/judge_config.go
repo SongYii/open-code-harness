@@ -3,6 +3,8 @@ package eval
 import (
 	"fmt"
 	"net/url"
+
+	"github.com/SongYii/open-code-harness/internal/harness/engine"
 )
 
 // SchemaJudgeConfig is the `och.eval.judge-config` document schema. It is
@@ -58,6 +60,9 @@ type JudgeProvider struct {
 	MaxOutput          uint32 `json:"maxOutput"`
 	IncludeUsage       bool   `json:"includeUsage"`
 	MaxTokensField     string `json:"maxTokensField,omitempty"`
+	ResponseFormat     string `json:"responseFormat"`
+	ThinkingMode       string `json:"thinkingMode,omitempty"`
+	ReasoningEffort    string `json:"reasoningEffort,omitempty"`
 }
 
 // JudgePrompt names the frozen prompt asset and pins its exact bytes.
@@ -192,6 +197,18 @@ func (provider JudgeProvider) validate() error {
 	if !judgeMaxTokensFields[provider.MaxTokensField] {
 		return fmt.Errorf("%w: provider.maxTokensField must be empty, %q, or %q",
 			errInvalidDocument, "max_tokens", "max_completion_tokens")
+	}
+	if provider.ResponseFormat != "json_object" {
+		return fmt.Errorf("%w: provider.responseFormat must be %q", errInvalidDocument, "json_object")
+	}
+	if provider.ThinkingMode != "" && provider.ThinkingMode != "disabled" {
+		return fmt.Errorf("%w: provider.thinkingMode must be empty or %q", errInvalidDocument, "disabled")
+	}
+	if !engine.IsReasoningEffort(engine.ReasoningEffort(provider.ReasoningEffort)) {
+		return fmt.Errorf("%w: provider.reasoningEffort is not supported", errInvalidDocument)
+	}
+	if provider.ThinkingMode != "" && provider.ReasoningEffort != "" {
+		return fmt.Errorf("%w: provider.thinkingMode cannot be combined with provider.reasoningEffort", errInvalidDocument)
 	}
 	return nil
 }

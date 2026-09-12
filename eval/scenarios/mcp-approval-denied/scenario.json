@@ -1,0 +1,15 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.scenario",
+  "id": "mcp-approval-denied",
+  "description": "A real discovered MCP tool reaches the model and is denied through the shared RiskExec approval path.",
+  "fixtureDigest": "sha256:b8df41988ea848bb1f4ce93782143f0bffe1d5bed268ea1f380fa75e5c7cde8a",
+  "fixtureCopyPolicy": {"maxFiles": 10, "maxFileBytes": 1048576, "maxTotalBytes": 1048576},
+  "actions": [{"id": "prompt-1", "type": "prompt", "prompt": {"text": "TRIGGER_MCP_APPROVAL_DENY call the echo tool"}}],
+  "approvalScript": [{"promptActionId": "prompt-1", "ordinal": 0, "toolName": "mcp_fixture_echo", "answer": "deny"}],
+  "requiredCapabilities": ["prompt", "mcp_stdio"],
+  "requiredEvidenceRoles": ["transcript", "audit"],
+  "deterministicVerifierIds": ["mcp-tool-surface-observed-v1", "mcp-approval-denied-v1", "outcome-not-infra-failed-v1"],
+  "limits": {},
+  "pairingTags": ["mcp", "mechanism"]
+}

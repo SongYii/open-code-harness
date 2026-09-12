@@ -12,6 +12,7 @@
 package docsguard_test
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -256,6 +257,96 @@ func TestEveryImplementedContractHasEvidence(t *testing.T) {
 	}
 }
 
+var guideEntryPattern = regexp.MustCompile(`(?m)^<!-- contract: ([^ ]+) -->$`)
+
+func plainLanguageGuideEntries(t *testing.T, content string) map[string]string {
+	t.Helper()
+	matches := guideEntryPattern.FindAllStringSubmatchIndex(content, -1)
+	if len(matches) == 0 {
+		t.Fatal("plain-language guide has no contract entry markers")
+	}
+	entries := make(map[string]string, len(matches))
+	for index, match := range matches {
+		target := content[match[2]:match[3]]
+		start := match[1]
+		end := len(content)
+		if index+1 < len(matches) {
+			end = matches[index+1][0]
+		}
+		if _, duplicate := entries[target]; duplicate {
+			t.Errorf("plain-language guide contains duplicate entry for %s", target)
+			continue
+		}
+		entries[target] = content[start:end]
+	}
+	return entries
+}
+
+// TestPlainLanguageGuidesCoverImplementedContracts makes readable subsystem
+// explanations part of the implementation-complete contract. It verifies
+// structure and coverage; reviewers still judge whether the prose is useful.
+func TestPlainLanguageGuidesCoverImplementedContracts(t *testing.T) {
+	root := repoRoot(t)
+	contracts := make(map[string]bool)
+	for _, row := range authorityRows(t, root) {
+		if row.status == "Implemented" && row.authority == "Implemented contract" {
+			contracts[row.target] = true
+		}
+	}
+	if len(contracts) == 0 {
+		t.Fatal("authority table has no implemented contracts")
+	}
+
+	guides := []struct {
+		path     string
+		headings []string
+	}{
+		{
+			path: "docs/architecture/how-it-works.md",
+			headings: []string{
+				"### Problem",
+				"### Visible result",
+				"### Implementation",
+				"### Problems found and fixes",
+				"### Still missing",
+			},
+		},
+		{
+			path: "docs/architecture/how-it-works.zh-CN.md",
+			headings: []string{
+				"### 解决什么问题",
+				"### 用户能看到什么",
+				"### 真实实现",
+				"### 遇到的问题与修复",
+				"### 仍未完成",
+			},
+		},
+	}
+
+	for _, guide := range guides {
+		t.Run(filepath.Base(guide.path), func(t *testing.T) {
+			entries := plainLanguageGuideEntries(t, read(t, filepath.Join(root, filepath.FromSlash(guide.path))))
+			for contract := range contracts {
+				entry, ok := entries[contract]
+				if !ok {
+					t.Errorf("guide has no entry for implemented contract %s", contract)
+					continue
+				}
+				for _, heading := range guide.headings {
+					if !strings.Contains(entry, heading) {
+						t.Errorf("guide entry %s is missing %q", contract, heading)
+					}
+				}
+			}
+			for target := range entries {
+				if !contracts[target] {
+					t.Errorf("guide entry %s is not an implemented contract in the authority table", target)
+				}
+			}
+		})
+	}
+}
+
 // TestDocumentationRulesStateWhichAreExecutable keeps this file discoverable.
 // A gate nobody knows about is a gate contributors work around.
 func TestDocumentationRulesStateWhichAreExecutable(t *testing.T) {
@@ -418,5 +509,210 @@ func TestLiveJudgeExampleDigestsAndGuide(t *testing.T) {
 		if !strings.Contains(guide, value) {
 			t.Fatalf("the operations guide never mentions %q", value)
 		}
+	}
+}
+
+// TestAutomaticContextQualityExample keeps the automatic quality claim tied
+// to executable wiring. In particular, a later edit must not quietly add a
+// manual compact/focus shortcut or repeat the protected constraint in one of
+// the neutral Turns.
+func TestAutomaticContextQualityExample(t *testing.T) {
+	root := repoRoot(t)
+	set, err := eval.DecodeEvalSet([]byte(read(t, filepath.Join(root, "eval/sets/context-auto-quality-live.example.json"))))
+	if err != nil {
+		t.Fatalf("decode automatic context quality EvalSet: %v", err)
+	}
+	scenario, err := eval.DecodeScenario([]byte(read(t, filepath.Join(root, "eval/scenarios/context-auto-quality/scenario.json"))))
+	if err != nil {
+		t.Fatalf("decode automatic context quality Scenario: %v", err)
+	}
+	subject, err := eval.DecodeSubject([]byte(read(t, filepath.Join(root, "eval/subjects/context-auto-quality-live-example.json"))))
+	if err != nil {
+		t.Fatalf("decode automatic context quality Subject: %v", err)
+	}
+	config, err := eval.DecodeJudgeConfig([]byte(read(t, filepath.Join(root, "eval/judges/context-quality-judge.example.json"))))
+	if err != nil {
+		t.Fatalf("decode context quality JudgeConfig: %v", err)
+	}
+
+	scenarioDigest, err := eval.ScenarioDigest(scenario)
+	if err != nil {
+		t.Fatalf("ScenarioDigest: %v", err)
+	}
+	subjectDigest, err := eval.SubjectDigest(subject)
+	if err != nil {
+		t.Fatalf("SubjectDigest: %v", err)
+	}
+	judgeDigest, err := eval.JudgeConfigDigest(config)
+	if err != nil {
+		t.Fatalf("JudgeConfigDigest: %v", err)
+	}
+	if len(set.Scenarios) != 1 || set.Scenarios[0].ID != scenario.ID || set.Scenarios[0].Digest != scenarioDigest {
+		t.Fatalf("automatic quality set scenario ref = %+v, want %q at %q", set.Scenarios, scenario.ID, scenarioDigest)
+	}
+	if len(set.Subjects) != 1 || set.Subjects[0].ID != subject.ID || set.Subjects[0].Digest != subjectDigest {
+		t.Fatalf("automatic quality set subject ref = %+v, want %q at %q", set.Subjects, subject.ID, subjectDigest)
+	}
+	if set.JudgeConfigDigest != judgeDigest {
+		t.Fatalf("automatic quality set judge digest = %q, want %q", set.JudgeConfigDigest, judgeDigest)
+	}
+	if set.Lane != eval.LaneLive || subject.Provider.Lane != eval.ProviderLaneLive {
+		t.Fatal("automatic context quality example is not protected by both live-lane gates")
+	}
+	if subject.Provider.ReasoningEffort != "high" || subject.Context.SummaryReasoningEffort != "none" {
+		t.Fatalf("automatic context quality reasoning effort = response %q summary %q, want high/none",
+			subject.Provider.ReasoningEffort, subject.Context.SummaryReasoningEffort)
+	}
+
+	requiredVerifiers := map[string]bool{
+		eval.VerifierContextPreTurnSummary: false,
+		eval.VerifierContextBudgetBounds:   false,
+		eval.VerifierContextProjection:     false,
+		eval.VerifierWorkspacePathsAbsent:  false,
+		"outcome-not-infra-failed-v1":      false,
+	}
+	promptIndex := 0
+	sawAbsence := false
+	for _, action := range scenario.Actions {
+		switch action.Type {
+		case eval.ActionCompact:
+			t.Fatalf("automatic quality Scenario contains explicit compact action %q", action.ID)
+		case eval.ActionPrompt:
+			promptIndex++
+			if action.Prompt == nil {
+				t.Fatalf("prompt action %q has no prompt", action.ID)
+			}
+			mentionsSecret := strings.Contains(action.Prompt.Text, "secrets.txt")
+			if promptIndex == 1 && !mentionsSecret {
+				t.Fatal("first prompt no longer carries the durable constraint")
+			}
+			if promptIndex > 1 && promptIndex < 7 && mentionsSecret {
+				t.Fatalf("neutral prompt %q repeats the protected constraint", action.ID)
+			}
+		case eval.ActionCollect:
+			sawAbsence = action.Collect != nil && action.Collect.WorkspacePath == "secrets.txt" &&
+				action.Collect.ExpectedState == eval.WorkspaceExpectedAbsent
+		}
+	}
+	if promptIndex != 7 || !sawAbsence {
+		t.Fatalf("automatic quality Scenario has %d prompts and absence=%t, want 7 and true", promptIndex, sawAbsence)
+	}
+	for _, id := range scenario.DeterministicVerifierIDs {
+		if _, ok := requiredVerifiers[id]; ok {
+			requiredVerifiers[id] = true
+		}
+	}
+	for id, found := range requiredVerifiers {
+		if !found {
+			t.Errorf("automatic quality Scenario lacks verifier %q", id)
+		}
+	}
+}
+
+// TestMCPJudgeExampleDigestsAndMechanism keeps the live MCP example bound to
+// both its judge and the production-path containment checks that must pass
+// before a paid judge call is allowed.
+func TestMCPJudgeExampleDigestsAndMechanism(t *testing.T) {
+	root := repoRoot(t)
+	set, err := eval.DecodeEvalSet([]byte(read(t, filepath.Join(root, "eval/sets/mcp-injection-live.example.json"))))
+	if err != nil {
+		t.Fatalf("decode MCP live EvalSet: %v", err)
+	}
+	config, err := eval.DecodeJudgeConfig([]byte(read(t, filepath.Join(root, "eval/judges/mcp-injection-judge.example.json"))))
+	if err != nil {
+		t.Fatalf("decode MCP JudgeConfig: %v", err)
+	}
+	digest, err := eval.JudgeConfigDigest(config)
+	if err != nil {
+		t.Fatalf("JudgeConfigDigest: %v", err)
+	}
+	if set.JudgeConfigDigest != digest {
+		t.Fatalf("MCP live set pins judgeConfigDigest %q, but the checked-in JudgeConfig digests to %q", set.JudgeConfigDigest, digest)
+	}
+	policy, err := eval.DecodeVariancePolicy([]byte(read(t, filepath.Join(root, "eval/variance-policies/mcp-injection-live-calibration-v1.json"))))
+	if err != nil {
+		t.Fatalf("decode MCP variance policy: %v", err)
+	}
+	policyDigest, err := eval.VariancePolicyDigest(policy)
+	if err != nil {
+		t.Fatalf("VariancePolicyDigest: %v", err)
+	}
+	if set.VariancePolicyDigest != policyDigest {
+		t.Fatalf("MCP live set pins variancePolicyDigest %q, but the checked-in policy digests to %q", set.VariancePolicyDigest, policyDigest)
+	}
+	if set.RepetitionCount != policy.MinEvaluableRepetitions || set.RepetitionCount < 2 {
+		t.Fatalf("MCP calibration set repetitionCount=%d, policy minimum=%d; want the complete repeated sample", set.RepetitionCount, policy.MinEvaluableRepetitions)
+	}
+	if policy.Calibration != eval.CalibrationUncalibrated {
+		t.Fatalf("MCP calibration policy claims %q before a calibration run is accepted", policy.Calibration)
+	}
+	scenario, err := eval.DecodeScenario([]byte(read(t, filepath.Join(root, "eval/scenarios/mcp-injection-live/scenario.json"))))
+	if err != nil {
+		t.Fatalf("decode MCP Scenario: %v", err)
+	}
+	required := map[string]bool{
+		eval.VerifierMCPToolSurface:       false,
+		eval.VerifierNoToolCallObserved:   false,
+		eval.VerifierWorkspacePathsAbsent: false,
+	}
+	for _, id := range scenario.DeterministicVerifierIDs {
+		if _, ok := required[id]; ok {
+			required[id] = true
+		}
+	}
+	for id, found := range required {
+		if !found {
+			t.Errorf("MCP live Scenario lacks deterministic prerequisite %q", id)
+		}
+	}
+	subject, err := eval.DecodeSubject([]byte(read(t, filepath.Join(root, "eval/subjects/mcp-live-deepseek-example.json"))))
+	if err != nil {
+		t.Fatalf("decode MCP live Subject: %v", err)
+	}
+	if len(subject.MCPServers) == 0 {
+		t.Fatal("MCP live Subject freezes no MCP server configuration")
+	}
+	subjectDigest, err := eval.SubjectDigest(subject)
+	if err != nil {
+		t.Fatalf("SubjectDigest: %v", err)
+	}
+	if set.Subjects[0].Digest != subjectDigest {
+		t.Fatalf("MCP live set pins subject digest %q, but the checked-in Subject digests to %q", set.Subjects[0].Digest, subjectDigest)
+	}
+
+	validationSet, err := eval.DecodeEvalSet([]byte(read(t, filepath.Join(root, "eval/sets/mcp-injection-live-validation.example.json"))))
+	if err != nil {
+		t.Fatalf("decode MCP validation EvalSet: %v", err)
+	}
+	calibratedPolicy, err := eval.DecodeVariancePolicy([]byte(read(t, filepath.Join(root, "eval/variance-policies/mcp-injection-live-v1.json"))))
+	if err != nil {
+		t.Fatalf("decode calibrated MCP variance policy: %v", err)
+	}
+	calibratedDigest, err := eval.VariancePolicyDigest(calibratedPolicy)
+	if err != nil {
+		t.Fatalf("calibrated VariancePolicyDigest: %v", err)
+	}
+	if validationSet.VariancePolicyDigest != calibratedDigest {
+		t.Fatalf("MCP validation set pins variancePolicyDigest %q, policy digests to %q", validationSet.VariancePolicyDigest, calibratedDigest)
+	}
+	if validationSet.RepetitionCount != calibratedPolicy.MinEvaluableRepetitions {
+		t.Fatalf("MCP validation repetitions=%d, calibrated policy minimum=%d", validationSet.RepetitionCount, calibratedPolicy.MinEvaluableRepetitions)
+	}
+	reportPath := filepath.Join(root, "eval/reports/mcp-injection-live-calibration-2026-09-11.json")
+	reportBytes, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("read calibration report: %v", err)
+	}
+	reportDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(reportBytes))
+	wantCitation := "eval/reports/mcp-injection-live-calibration-2026-09-11.json " + reportDigest
+	if calibratedPolicy.Calibration != eval.CalibrationCalibrated || calibratedPolicy.CalibratedFrom != wantCitation {
+		t.Fatalf("calibrated policy citation = %q, want %q", calibratedPolicy.CalibratedFrom, wantCitation)
+	}
+	validationReport, err := os.ReadFile(filepath.Join(root, "eval/reports/mcp-injection-live-validation-2026-09-11.json"))
+	if err != nil {
+		t.Fatalf("read validation report: %v", err)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(validationReport)); got != "bec6e3d7c558916407d1eced15c30c3dfd8368e37c2df68fa51d951960a77db0" {
+		t.Fatalf("MCP validation report digest = %s; update the evidence ledger and this pin together", got)
 	}
 }

@@ -192,6 +192,9 @@ func TestRunTurnRequestIdentityAdmitsThreeEvents(t *testing.T) {
 	recordingStore := &turnRecordingStore{EventStore: store}
 	model := &repeatingSuccessModel{text: "done"}
 	identity := validTurnRequestIdentity()
+	identity.Profile.StructuredOutput = engine.CapabilityRequired
+	identity.ResponseFormat = "json_object"
+	identity.ThinkingMode = "disabled"
 	config := application.DefaultConfig()
 	config.RequestIdentity = &identity
 	service := newTurnServiceWithConfig(t, recordingStore, testkit.NewSequenceIDs(), model, config)
@@ -215,6 +218,9 @@ func TestRunTurnRequestIdentityAdmitsThreeEvents(t *testing.T) {
 	recorded, ok := result.Records[2].Event.(domain.ModelRequestRecorded)
 	if !ok || recorded.AdapterFamily != identity.AdapterFamily || recorded.ModelID != identity.ModelID || recorded.EndpointID != identity.EndpointID {
 		t.Fatalf("request recorded = %#v", result.Records[2].Event)
+	}
+	if recorded.ResponseFormat != "json_object" || recorded.ThinkingMode != "disabled" {
+		t.Fatalf("request wire identity = %#v", recorded)
 	}
 	if !reflect.DeepEqual(recorded.Messages, []domain.ModelPromptMessage{{Role: domain.PromptRoleUser, Text: "inspect"}}) {
 		t.Fatalf("request messages = %#v", recorded.Messages)

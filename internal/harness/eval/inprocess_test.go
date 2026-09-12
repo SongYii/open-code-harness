@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -152,6 +153,43 @@ func jsonString(value string) string {
 		return `""`
 	}
 	return string(encoded)
+}
+
+func TestBuildConfigMapsFrozenMCPServersWithoutAliasing(t *testing.T) {
+	subject := validSubject()
+	subject.Policy.SandboxPolicy = SandboxPolicyUnsandboxedAllowed
+	subject.MCPServers = []SubjectMCPServer{{Name: "fixture", Command: "sh", Args: []string{"mcp-fixture.sh"}}}
+	directories := testDirectories(t, testAttemptID(t))
+
+	config, err := BuildConfig(subject, directories, "runtime-1", nil)
+	if err != nil {
+		t.Fatalf("BuildConfig: %v", err)
+	}
+	if len(config.MCPServers) != 1 || config.MCPServers[0].Name != "fixture" ||
+		config.MCPServers[0].Command != "sh" || !reflect.DeepEqual(config.MCPServers[0].Args, []string{"mcp-fixture.sh"}) {
+		t.Fatalf("MCPServers = %#v", config.MCPServers)
+	}
+	subject.MCPServers[0].Args[0] = "changed"
+	if config.MCPServers[0].Args[0] != "mcp-fixture.sh" {
+		t.Fatal("BuildConfig aliased the frozen Subject's MCP args")
+	}
+}
+
+func TestBuildConfigMapsProviderWireHints(t *testing.T) {
+	subject := validSubject()
+	subject.Provider.IncludeUsage = true
+	subject.Provider.MaxTokensField = "max_tokens"
+	subject.Provider.ReasoningEffort = "high"
+	subject.Context.SummaryReasoningEffort = "none"
+	directories := testDirectories(t, testAttemptID(t))
+
+	config, err := BuildConfig(subject, directories, "runtime-1", nil)
+	if err != nil {
+		t.Fatalf("BuildConfig: %v", err)
+	}
+	if !config.Provider.IncludeUsage || config.Provider.MaxTokensField != "max_tokens" || config.Provider.ReasoningEffort != "high" || config.Context.SummaryReasoningEffort != "none" {
+		t.Fatalf("reasoning config not mapped: provider=%+v context=%+v", config.Provider, config.Context)
+	}
 }
 
 func TestRunAttemptHappyPathCompletesAllActions(t *testing.T) {

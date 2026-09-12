@@ -60,6 +60,8 @@ const (
 	execRedactionMarker      = "TRIGGER_EXEC_REDACTION"
 	readMissingTriggerMarker = "TRIGGER_READ_MISSING"
 	readOutsideTriggerMarker = "TRIGGER_READ_OUTSIDE"
+	mcpApprovalTriggerMarker = "TRIGGER_MCP_APPROVAL_DENY"
+	mcpResultTriggerMarker   = "TRIGGER_MCP_RESULT_REDACTION"
 )
 
 // smartFixtureScript answers every checked-in smoke Scenario's request
@@ -92,6 +94,10 @@ func smartFixtureScript(w http.ResponseWriter, r *http.Request) {
 		writeToolCallSSE(w, "call_missing", "read_file", `{"path":"does-not-exist.txt"}`)
 	case bytes.Contains(body, []byte(readOutsideTriggerMarker)):
 		writeToolCallSSE(w, "call_outside", "read_file", `{"path":"../outside.txt"}`)
+	case bytes.Contains(body, []byte(mcpApprovalTriggerMarker)):
+		writeToolCallSSE(w, "call_mcp_echo", eval.MCPFixtureEchoToolName, `{"text":"hello"}`)
+	case bytes.Contains(body, []byte(mcpResultTriggerMarker)):
+		writeToolCallSSE(w, "call_mcp_poison", eval.MCPFixturePoisonToolName, `{}`)
 	default:
 		writeSSELine(w, `{"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}`)
 		writeSSELine(w, `{"choices":[{"delta":{},"finish_reason":"stop"}]}`)

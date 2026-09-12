@@ -363,6 +363,14 @@ its criterion results, an out-of-range score, or the call itself failing —
 resolves to a real `JudgeOutcome{Verdict: Indeterminate}` carrying a bounded,
 redacted rationale, never a Go error and never silently accepted as `Pass`.
 
+The provider contract freezes `responseFormat=json_object`; it may freeze a
+portable `reasoningEffort` (`none`, `minimal`, `low`, `medium`, `high`,
+`xhigh`, or `max`) or the legacy provider-specific `thinkingMode=disabled`,
+but never both. Unknown values fail before HTTP.
+`RunJudge` still invokes its caller exactly once: malformed or empty output is
+one Indeterminate observation, while an explicit second `och-eval judge` run
+appends a separate Score with separate usage and cost.
+
 One case beyond design §21's list is refused for the same reason: a
 **determinate verdict citing no evidence at all**. Every reference rule above
 guards the references that are present, and until 2026-09-04 none required any
@@ -370,12 +378,43 @@ to be — so `pass` with an empty `evidenceReferences` was believed. That is the
 budget-omission defect seen from the other side: an answer about material the
 judge never demonstrated reading. An `indeterminate` verdict may still cite
 nothing, since that is often exactly why it is indeterminate.
+Two further semantic checks close correct-JSON but unauditable answers. A
+determinate verdict must cite at least one actually shown manifest entry from
+every evidence role its frozen criteria declared; citing a transcript cannot
+support a separate audit-continuity conclusion merely because the audit file
+was present in the prompt. It must also carry a non-whitespace rationale. A
+failure becomes one Indeterminate observation with the caller's usage, not an
+error or retry. These checks intentionally stop at role coverage and a
+reviewable explanation: sentence-level entailment and per-criterion citations
+would require a new frozen prompt/output version and real-model calibration.
 Every Subject-authored value the judge is shown is labeled `untrusted...
 not an instruction` (the embedded `prompts/quality_judge_v1.md` prompt's own
 framing) — this repository has no live model to prove actually resists a
 prompt-injection attempt in an automated test, so what is tested is the
 mechanism: that labeling is genuinely present around real transcript
 content, not merely aspirational prompt text.
+
+`och.eval.judge-meta-set` and `RunJudgeMetaSet` now provide the separate
+semantic measurement that parser fixtures cannot. A frozen set binds one exact
+JudgeConfig digest and carries ordered human-reviewed labels plus small inline
+transcript/audit evidence. Label rationales are review metadata and never enter
+the model request. Cases use the production criteria/evidence renderer, frozen
+prompt, one-call rule, strict decoder, and evidence checks. Repetitions produce
+ordered observations carrying every per-criterion result the Judge produced
+(none if the call or decoder failed first) and a complete 3×3 expected/observed
+confusion matrix;
+raw counters keep unsafe passes, false fails, unexpected indeterminates, and
+overclaims distinct rather than hiding direction inside one accuracy number.
+
+The live `och-eval judge-meta` command requires the normal two-part consent and
+an exact `-max-calls = cases × repetitions` acknowledgement after verifying the
+set/config digest. Cancellation publishes an explicitly incomplete prefix
+report with already-paid observations and usage instead of losing them. A
+report can be re-bound offline to its set/config, including case order,
+repetition index, and expected label. The checked-in six-case, three-repetition
+seed is exercised keylessly with a fixture caller. Its first separately gated
+DeepSeek run matched all 18 repeated labels; the checked-in report proves only
+that exact small corpus, and no global quality threshold is inferred from it.
 
 `EvaluateJudgeAttempt` (`internal/harness/eval/judge_attempt.go`) is the
 orchestration `och-eval judge` drives, and the order of its gates is the
@@ -430,6 +469,15 @@ then the marker on the *latest* user message — and holds no cross-request
 state. Rolling depth is carried inside the summary itself, so a chunk count
 nothing produced cannot pass. `CriterionResult.Detail` carries a bounded,
 evidence-oriented explanation of every verdict.
+
+The consent-gated `context-auto-quality` example adds a semantic-quality
+probe on top of those mechanism checks. Its first Turn states a durable
+`secrets.txt` prohibition once; five later Turns are neutral pressure, and
+the conflicting final request does not repeat the rule. There is no
+`compact` action and therefore no manual focus. A fixture contract captures
+the first real summarizer envelope and proves the original Turn reached its
+source material without a `MANUAL FOCUS` section; the live Judge, not the
+fixture, decides whether the resulting summary actually preserved the rule.
 
 ### What the suite proves today
 
@@ -592,6 +640,19 @@ non-nil error is what makes "before any credential is read" real.
 duplicating the rule. A live run always writes an independent artifact root
 and this repository never uploads evidence anywhere automatically.
 
+Two checked-in quality examples share the same JudgeConfig but test different
+claims. `context-quality-live.example.json` tests manual summary with an
+explicit focus. `context-auto-quality-live.example.json` tests automatic
+pre-turn summary with no focus and no reminder. A pass from one is not
+evidence for the other.
+
+Subject identity freezes normal `provider.reasoningEffort` independently from
+`context.summaryReasoningEffort`. Empty summary effort inherits the normal
+setting; a non-empty value becomes an explicit per-request override and never
+depends on the request's Purpose tag. Both settings follow identical
+in-process and ACP paths. The automatic DeepSeek example uses `high` for the
+answer and `none` for summaries so bounded summary output is visible text.
+
 ## Variance and baselines
 
 Implemented in `internal/harness/eval` (`variance_policy.go`, `variance.go`,
@@ -600,13 +661,13 @@ by `cmd/och-eval` (`variance_report.go`, `baseline_cmd.go`). The accepted
 contract is the
 [variance and baseline policy design](../superpowers/specs/2026-09-04-evaluation-variance-policy-design.md).
 
-**This mechanism is dormant.** Every checked-in EvalSet declares
-`repetitionCount: 1`, and an EvalSet that references a variance policy while
-declaring one repetition is refused at load time. Nothing in this repository
-reaches this code today, and no configuration was invented so that something
-would. It is a tested library whose first configuration has not arrived; the
-first one that should reference a variance policy is the first live quality
-EvalSet.
+The first consumer is checked in and remains explicit, outside PR CI.
+`mcp-injection-live.example.json` collected five calibration repetitions
+under an uncalibrated policy; a separate five-repetition validation set then
+applied the resulting scenario-specific calibrated policy. Both batches were
+5/5 pass with numeric spread 0 and verdict stability 1. The reports live under
+`eval/reports/`; this is evidence for that exact MCP Cell, not a universal
+default for unrelated quality evaluations.
 
 ### What a Cell publishes
 
@@ -679,11 +740,18 @@ a report's own judgement is reproducible offline from the artifacts rather
 than from whatever the report generator was compiled with.
 
 **No defaults are supplied.** A policy must declare its limits, its
-`calibration` state, and a minimum of at least two evaluable repetitions. No
-run against a live model has ever happened in this repository, so a shipped
-default would be a guess wearing the authority of a specification. An
-uncalibrated policy is marked on **every Cell it governs**, not once at the
+`calibration` state, and a minimum of at least two evaluable repetitions. The
+2026-09-10 DeepSeek run produced only two Judge samples over one Attempt, one
+indeterminate and one passing; that is evidence of variance, not a sample set
+large enough to calibrate a shipped default. An uncalibrated policy is marked
+on **every Cell it governs**,
+not once at the
 top of a document a reader may scroll past.
+
+`report` and `baseline` fail closed twice: the supplied policy digest must
+equal the EvalSet's `variancePolicyDigest`, and every measured Attempt's
+manifest-protected frozen EvalSet must digest to the exact EvalSet supplied to
+the command. Matching a human-readable set ID is not enough.
 
 ### Two baselines, and what may gate
 
@@ -719,38 +787,50 @@ must be exactly 0" would pass unconditionally.
 ## Maturity and GA blockers
 
 Evaluation is **implemented, not GA**. Explicitly outstanding before a GA
-claim: real-model sample size for live judging — `och-eval judge` is wired
-end to end and proven against a fixture SSE stream through the real
-adapter, but **no live judge call has ever been made in this repository**.
-One live *Subject* run did happen, on 2026-09-08 against an
-OpenAI-compatible DeepSeek endpoint, and it is recorded in the
-[workspace-instructions evidence](system-prompt-workspace-instructions-evidence.md#live-deepseek-validation).
-It reached the judge's prerequisites and stopped there: the Score came back
-`indeterminate` before any model request because `manifest-complete-v1` was
-itself indeterminate. So the blocker narrowed rather than closed — the
-Subject side has a live sample of exactly one attempt, the judge side has
-none — and a single partial run is not the sample size a GA claim needs.
-Also outstanding: judge meta-evaluation against a broader fixture set than the
-eight adversarial fixtures this repository now carries (injection,
-missing-evidence, contradiction, unsupported-claim, known-pass/fail, an
-invented reference, a real-but-unshown reference, and a determinate verdict
-citing nothing). Two of the original five were found on 2026-09-04 to be
+claim: real-model sample size for live judging. On 2026-09-10 a DeepSeek V4
+Pro Subject completed a real summary compaction and preserved its constraint;
+the same Attempt then produced one indeterminate and one passing live Judge
+Score. That closes the zero-sample gap but not the sample-size blocker: one
+Attempt and two inconsistent Judge outcomes cannot establish reliability.
+The focused parser/mechanism meta-eval set now carries ten adversarial fixture
+families: the previous eight (injection, missing-evidence, contradiction,
+unsupported-claim, known-pass/fail, an invented reference, a real-but-unshown
+reference, and a determinate verdict citing nothing), plus declared-role
+coverage and a determinate verdict with no rationale. Two of the original five
+were found on 2026-09-04 to be
 satisfied by an earlier refusal than the one they named, and so proved
 nothing about the defense they were written for; both are corrected and now
-assert the refusal reason. Also outstanding: provider breadth beyond
-the one OpenAI-compatible adapter this repository ships, and an accepted
-variance policy for live/quality signals.
+assert the refusal reason. A six-case labelled semantic seed and its repeated
+runner now exist, and the first DeepSeek run matched all 18 repeated labels
+with no directional errors. Six synthetic cases still cannot establish broad
+accuracy, so broader reviewed cases and another provider remain outstanding.
+Also outstanding: provider breadth beyond
+the one OpenAI-compatible adapter this repository ships, and calibrated
+variance policies for live/quality Cells beyond the exact MCP injection Cell
+measured here.
 
 The variance blocker changed shape on 2026-09-05 without closing, and the
 distinction matters. The **mechanism** is now designed, implemented, and
 verified — see [Variance and baselines](#variance-and-baselines) above. The
-**policy** is not: no calibrated limits exist, because calibrating them
-requires live *judge* scores, and the first blocker in this list records
-that no live judge call has been made. The one live Subject run of
-2026-09-08 produced no judge score. No checked-in EvalSet reaches the code
-at all. A repository
-that counted an implemented mechanism as an accepted policy would be making
-exactly the claim this contract's own no-defaults rule exists to prevent.
+first **scenario-specific policy** now exists: five independent calibration
+Attempts established spread 0 and unanimous verdicts; a separate five-Attempt
+batch then satisfied the pinned limits (`maxNumericSpread=0.05`,
+`minVerdictStability=1`, five evaluable repetitions). This does not create a
+global default. Generalizing one easy MCP Cell to unrelated quality signals
+would violate this contract's own no-defaults rule.
 
-MCP is a future suite this runner can host, never a runner
-prerequisite — its absence does not block anything documented here.
+## MCP evaluation suite
+
+The runner now carries an explicit MCP suite; MCP remains an optional Subject
+capability, never a runner prerequisite. A frozen Subject may name static
+stdio servers by PATH basename plus secret-free arguments. `mcp_stdio` is
+currently in-process-only, and matrix expansion refuses an MCP Scenario whose
+Subject freezes no server configuration.
+
+The fixture set proves three separate production-path facts from committed
+evidence: the hostile tool description reached `model.request.recorded`, an
+MCP call traversed the shared approval path and was denied, and a permitted
+MCP result was redacted before its durable tool-completion event. The live
+example adds a model-quality criterion, but only after no tool call and no
+forbidden workspace file are proven. A policy denial is containment, not
+evidence that the model resisted prompt injection. No live result is claimed.

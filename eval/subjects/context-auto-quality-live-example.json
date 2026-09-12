@@ -1,0 +1,35 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.subject",
+  "id": "context-auto-quality-live-example",
+  "repositoryRevision": "dev",
+  "repositoryDirty": false,
+  "provider": {
+    "adapterKind": "openaicompat",
+    "normalizedEndpoint": "https://api.deepseek.com",
+    "modelId": "deepseek-v4-pro",
+    "contextWindow": 10240,
+    "maxOutput": 1024,
+    "credentialEnvVar": "OCH_EVAL_LIVE_PROVIDER_API_KEY",
+    "includeUsage": true,
+    "maxTokensField": "max_tokens",
+    "reasoningEffort": "high",
+    "lane": "live"
+  },
+  "context": {
+    "summaryReasoningEffort": "none",
+    "triggerPercent": 60,
+    "targetPercent": 40,
+    "tailPercent": 10,
+    "maxSummaryChunks": 8,
+    "maxOverflowCompactionsPerTurn": 2,
+    "maxPrunedToolResultsPerRequest": 64,
+    "compactionTimeout": 120000000000
+  },
+  "policy": {
+    "mode": "default",
+    "toolCatalogIdentity": "catalog-v1",
+    "limits": {},
+    "sandboxPolicy": "unsandboxed_allowed"
+  }
+}

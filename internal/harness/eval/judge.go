@@ -131,6 +131,13 @@ func RunJudge(ctx context.Context, reader *ArtifactReader, config JudgeConfig, c
 		outcome.MissingEvidence = bundle.MissingPaths
 		return outcome, nil
 	}
+	return runJudgeWithBundle(ctx, bundle, config, caller)
+}
+
+// runJudgeWithBundle is the single provider-call and response-validation path
+// shared by real Attempt evidence and labelled semantic meta-eval evidence.
+// Its caller must validate config and construct a complete bundle first.
+func runJudgeWithBundle(ctx context.Context, bundle judgeEvidenceBundle, config JudgeConfig, caller JudgeCaller) (JudgeOutcome, error) {
 	available := make(map[string]bool, len(bundle.AvailablePaths))
 	for _, path := range bundle.AvailablePaths {
 		available[path] = true
@@ -236,6 +243,32 @@ func RunJudge(ctx context.Context, reader *ArtifactReader, config JudgeConfig, c
 		}, nil
 	}
 
+	// Every declared role is required to build the question, so a
+	// determinate answer must cite at least one shown entry from every one
+	// of those roles. A global citation list that names only a transcript
+	// cannot support a separate audit-continuity conclusion merely because
+	// both files happened to be present in the prompt.
+	if ScoreVerdict(output.Verdict) != ScoreIndeterminate {
+		citedRoles := make(map[string]bool)
+		for _, ref := range output.EvidenceReferences {
+			for _, role := range bundle.PathRoles[ref] {
+				citedRoles[role] = true
+			}
+		}
+		for _, criterion := range config.Criteria {
+			for _, role := range criterion.EvidenceRoles {
+				if !citedRoles[role] {
+					return indeterminateJudgeOutcome(
+						fmt.Sprintf("judge output cited no evidence from required role %q", role), usage), nil
+				}
+			}
+		}
+		if !hasText(output.Rationale) {
+			return indeterminateJudgeOutcome(
+				fmt.Sprintf("judge output claimed verdict %q but carried no rationale", output.Verdict), usage), nil
+		}
+	}
+
 	return JudgeOutcome{
 		Verdict: ScoreVerdict(output.Verdict), NumericScore: output.Score, Criteria: resultCriteria,
 		EvidenceReferences: output.EvidenceReferences, MissingEvidence: output.MissingEvidence,
@@ -260,6 +293,7 @@ type judgeEvidenceEntry struct {
 type judgeEvidenceBundle struct {
 	Text           string
 	AvailablePaths []string
+	PathRoles      map[string][]string
 	MissingPaths   []string
 }
 
@@ -349,10 +383,29 @@ func buildJudgeEvidenceBundle(reader *ArtifactReader, config JudgeConfig) (judge
 	}
 	sort.Strings(missing)
 
+	rendered, err := renderJudgeEvidenceBundle(config, entries)
+	if err != nil {
+		return judgeEvidenceBundle{}, err
+	}
+	pathRoles := make(map[string][]string, len(availablePaths))
+	for _, role := range sortedRoles {
+		for _, manifestEntry := range reader.Entries(role) {
+			if !containsString(availablePaths, manifestEntry.Path) {
+				continue
+			}
+			pathRoles[manifestEntry.Path] = append(pathRoles[manifestEntry.Path], role)
+		}
+	}
+	return judgeEvidenceBundle{
+		Text: rendered, AvailablePaths: availablePaths, PathRoles: pathRoles, MissingPaths: missing,
+	}, nil
+}
+
+func renderJudgeEvidenceBundle(config JudgeConfig, entries []judgeEvidenceEntry) (string, error) {
 	var builder strings.Builder
 	criteriaJSON, err := json.Marshal(config.Criteria)
 	if err != nil {
-		return judgeEvidenceBundle{}, fmt.Errorf("encode criteria: %w", err)
+		return "", fmt.Errorf("encode criteria: %w", err)
 	}
 	builder.WriteString("<criteria>\n")
 	builder.Write(criteriaJSON)
@@ -366,5 +419,5 @@ func buildJudgeEvidenceBundle(reader *ArtifactReader, config JudgeConfig) (judge
 		builder.WriteString("\n")
 	}
 	builder.WriteString("</evidence>\n")
-	return judgeEvidenceBundle{Text: builder.String(), AvailablePaths: availablePaths, MissingPaths: missing}, nil
+	return builder.String(), nil
 }

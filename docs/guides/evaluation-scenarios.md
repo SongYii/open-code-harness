@@ -17,6 +17,7 @@ executes them. It assumes you have read the contract document above.
 | Executor | `eval/executors/<id>.json` | `in_process` or `acp_subprocess` identity |
 | EvalSet | `eval/sets/<id>.json` | A named Scenario × Subject × Executor product, plus limits/lane |
 | JudgeConfig | `eval/judges/<id>.json` | A live quality judge's model/prompt/criteria identity — **live-lane sets only** |
+| VariancePolicy | `eval/variance-policies/<id>.json` | Repetition sufficiency and provisional/calibrated spread limits pinned by a repeated EvalSet |
 
 A Scenario, Subject, or Executor's own `.json` file is never hand-edited
 after computing its digest without also recomputing that digest — every
@@ -134,6 +135,19 @@ the checked-in file). For the live lane, it is a real `https://` endpoint —
 see the live-lane section of the operations guide before ever pointing a
 Subject at one.
 
+Provider wire differences are frozen too. `provider.includeUsage` requests
+streaming usage data, while `provider.maxTokensField` is empty,
+`max_tokens`, or `max_completion_tokens`. A non-empty value is what makes the
+Subject's declared output limit reach the provider request; omitting it means
+the adapter deliberately omits both wire fields. `provider.reasoningEffort`
+controls normal responses and `context.summaryReasoningEffort` explicitly
+overrides it for compaction calls; each is empty or one of `none`, `minimal`,
+`low`, `medium`, `high`, `xhigh`, and `max`. Empty summary effort inherits the
+normal response setting. A provider may support only a subset and will reject
+unsupported values. The legacy provider-specific `thinkingMode` remains for
+compatibility but cannot be combined with either effort field. These values
+travel through both executors and are part of Subject identity.
+
 ## Writing an Executor
 
 `kind: "in_process"` needs no further identity fields.
@@ -191,3 +205,10 @@ example live sets) changes what runs on every pull request in this
 repository — keep that lane at exactly four Cells per design §23, and treat
 adding a fifth as a change that needs its own explicit justification, not a
 routine addition.
+
+A set declaring `variancePolicyDigest` must run at least twice. Compute the
+policy's canonical digest with `eval.VariancePolicyDigest`, pin it in the set,
+and pass the same document to `report`/`baseline`. Those consumers also verify
+that every Attempt carries the exact frozen EvalSet, so changing repetitions,
+limits, seed, or bindings after a run cannot relabel old artifacts. A policy
+must remain `uncalibrated` until it cites reviewed real-run evidence.

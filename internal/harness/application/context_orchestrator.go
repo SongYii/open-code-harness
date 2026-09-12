@@ -59,7 +59,8 @@ func (source contextEventStorePageSource) ReadPage(ctx context.Context, sessionI
 // attempts already use, but text-only, with no Tools, never entering
 // RunTurn or emitting assistant deltas.
 type EngineContextSummarizer struct {
-	runner *engine.TurnRunner
+	runner          *engine.TurnRunner
+	reasoningEffort engine.ReasoningEffort
 }
 
 var _ ContextSummarizer = (*EngineContextSummarizer)(nil)
@@ -69,11 +70,11 @@ var _ ContextSummarizer = (*EngineContextSummarizer)(nil)
 // path already holds (Service.runner) means a compaction attempt goes
 // through the identical Model/credential/transport as a normal attempt —
 // design §18's deliberate "no second Provider" choice.
-func NewEngineContextSummarizer(runner *engine.TurnRunner) (*EngineContextSummarizer, error) {
-	if runner == nil {
+func NewEngineContextSummarizer(runner *engine.TurnRunner, reasoningEffort engine.ReasoningEffort) (*EngineContextSummarizer, error) {
+	if runner == nil || !engine.IsReasoningEffort(reasoningEffort) {
 		return nil, applicationError(CategoryValidation, "invalid_configuration", false, nil)
 	}
-	return &EngineContextSummarizer{runner: runner}, nil
+	return &EngineContextSummarizer{runner: runner, reasoningEffort: reasoningEffort}, nil
 }
 
 func (summarizer *EngineContextSummarizer) Summarize(ctx context.Context, request ContextSummarizeRequest) (ContextSummarizeResult, error) {
@@ -88,6 +89,7 @@ func (summarizer *EngineContextSummarizer) Summarize(ctx context.Context, reques
 			Input:           request.Content,
 			Purpose:         engine.ModelRequestPurposeCompaction,
 			MaxOutputTokens: request.MaxOutputTokens,
+			ReasoningEffort: summarizer.reasoningEffort,
 		},
 		MaxOutputBytes: request.MaxOutputBytes,
 	})
@@ -1356,10 +1358,16 @@ func summaryFailureCode(err error) string {
 
 // safeFailureMessage never includes raw model output or provider detail —
 // design §13.2's "never embeds partial model output" for
-// ContextCompactionFailed.
+// ContextCompactionFailed. Summary validation failures are assembled only
+// from ValidateSummary's closed set of static reasons, so retaining that
+// reason makes a live failure diagnosable without publishing model text.
 func safeFailureMessage(err error) string {
 	switch summaryFailureCode(err) {
 	case CodeContextSummaryInvalid:
+		const prefix = CodeContextSummaryInvalid + ": "
+		if reason := strings.TrimPrefix(err.Error(), prefix); reason != err.Error() && reason != "" {
+			return "summary output failed validation: " + reason
+		}
 		return "summary output failed validation"
 	case CodeContextCompactionLimit:
 		return "source material exceeds the configured summary chunk limit"
@@ -1480,5 +1488,8 @@ func ModelRequestRecordedFromEnvelope(identity *engine.RequestIdentity, turnID d
 	recorded.MaxOutputTokens = identity.Profile.MaxOutputTokens
 	recorded.IncludeUsage = identity.IncludeUsage
 	recorded.MaxTokensField = identity.MaxTokensField
+	recorded.ResponseFormat = identity.ResponseFormat
+	recorded.ThinkingMode = identity.ThinkingMode
+	recorded.ReasoningEffort = string(identity.ReasoningEffort)
 	return recorded
 }

@@ -63,7 +63,8 @@ const maxFixtureRequestBytes = 8 << 20
 // parallel and a Scenario's behavior is a pure function of the envelope OCH
 // sent.
 type contextFixtureRequest struct {
-	Messages []contextFixtureMessage `json:"messages"`
+	Messages        []contextFixtureMessage `json:"messages"`
+	ReasoningEffort string                  `json:"reasoning_effort"`
 }
 
 type contextFixtureMessage struct {

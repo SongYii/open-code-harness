@@ -13,6 +13,34 @@ import (
 // field).
 type ModelRequestPurpose string
 
+// ReasoningEffort is the provider-neutral effort vocabulary shared by the
+// OpenAI-compatible providers OCH can address. An endpoint may support only a
+// subset; that remains a provider/model contract rather than something OCH can
+// infer safely.
+type ReasoningEffort string
+
+const (
+	ReasoningEffortNone    ReasoningEffort = "none"
+	ReasoningEffortMinimal ReasoningEffort = "minimal"
+	ReasoningEffortLow     ReasoningEffort = "low"
+	ReasoningEffortMedium  ReasoningEffort = "medium"
+	ReasoningEffortHigh    ReasoningEffort = "high"
+	ReasoningEffortXHigh   ReasoningEffort = "xhigh"
+	ReasoningEffortMax     ReasoningEffort = "max"
+)
+
+// IsReasoningEffort reports whether value is empty (provider default) or one
+// of the portable effort names OCH accepts.
+func IsReasoningEffort(value ReasoningEffort) bool {
+	switch value {
+	case "", ReasoningEffortNone, ReasoningEffortMinimal, ReasoningEffortLow,
+		ReasoningEffortMedium, ReasoningEffortHigh, ReasoningEffortXHigh, ReasoningEffortMax:
+		return true
+	default:
+		return false
+	}
+}
+
 const (
 	ModelRequestPurposeConversation ModelRequestPurpose = "conversation"
 	ModelRequestPurposeCompaction   ModelRequestPurpose = "compaction"
@@ -41,6 +69,10 @@ type ModelRequest struct {
 	// that route maximum. Zero means "use the route's own configured
 	// value," preserving every existing caller's current behavior.
 	MaxOutputTokens uint32
+	// ReasoningEffort optionally narrows or changes the route's configured
+	// default for this request. It is explicit request semantics: Purpose must
+	// never be used as a hidden proxy for it.
+	ReasoningEffort ReasoningEffort
 }
 
 type StreamEventType string

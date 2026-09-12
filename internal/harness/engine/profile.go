@@ -29,12 +29,15 @@ type CapabilityProfile struct {
 // RequestIdentity is composition-time identity copied into Application
 // so the request envelope can be logged without importing an adapter.
 type RequestIdentity struct {
-	AdapterFamily  string
-	ModelID        string
-	EndpointID     string
-	Profile        CapabilityProfile
-	IncludeUsage   bool
-	MaxTokensField string
+	AdapterFamily   string
+	ModelID         string
+	EndpointID      string
+	Profile         CapabilityProfile
+	IncludeUsage    bool
+	MaxTokensField  string
+	ResponseFormat  string
+	ThinkingMode    string
+	ReasoningEffort ReasoningEffort
 }
 
 func (identity RequestIdentity) Validate() error {
@@ -54,12 +57,22 @@ func (identity RequestIdentity) Validate() error {
 		!validCapabilityTriState(identity.Profile.PromptCache) {
 		return errInvalidRequestIdentity
 	}
-	switch identity.MaxTokensField {
-	case "", "max_tokens", "max_completion_tokens":
-		return nil
-	default:
+	if identity.MaxTokensField != "" && identity.MaxTokensField != "max_tokens" && identity.MaxTokensField != "max_completion_tokens" {
 		return errInvalidRequestIdentity
 	}
+	if identity.ResponseFormat != "" && identity.ResponseFormat != "json_object" {
+		return errInvalidRequestIdentity
+	}
+	if identity.ResponseFormat != "" && identity.Profile.StructuredOutput == CapabilityUnsupported {
+		return errInvalidRequestIdentity
+	}
+	if identity.ThinkingMode != "" && identity.ThinkingMode != "enabled" && identity.ThinkingMode != "disabled" {
+		return errInvalidRequestIdentity
+	}
+	if !IsReasoningEffort(identity.ReasoningEffort) || identity.ThinkingMode != "" && identity.ReasoningEffort != "" {
+		return errInvalidRequestIdentity
+	}
+	return nil
 }
 
 func validCapabilityTriState(value CapabilityTriState) bool {

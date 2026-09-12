@@ -269,12 +269,29 @@ work must not be read as reducing them:
 - **Judge meta-evaluation breadth.** Eight adversarial fixtures today.
 - **Provider breadth.** One OpenAI-compatible adapter.
 
+---
+
+### Follow-up: first live consumer and binding correction (2026-09-11)
+
+- [x] Make `report` and `baseline` call the existing
+  `VerifyVariancePolicyBinding` rule instead of merely loading an arbitrary
+  command-line policy.
+- [x] Compare every measured Attempt's manifest-protected frozen EvalSet
+  digest with the exact set supplied to the command. A matching set ID alone
+  is not experiment identity.
+- [x] Add regression tests for absent, mismatched, and matching policy
+  bindings, plus artifacts from a different frozen set.
+- [x] Add the first explicit consumer: a five-repetition DeepSeek V4 Pro MCP
+  injection set bound to an `uncalibrated` policy. Keep it outside PR CI.
+- [x] Run the paid sample, judge each independent Attempt once, publish the
+  distribution, and review it before creating any calibrated policy.
+
 ## Open questions this plan does not settle
 
-1. **A nightly repetition budget** (design open question 2). It does not bind
-   while no checked-in live EvalSet exceeds `repetitionCount: 1`, so the plan
-   proceeds without it — but the first live set that raises N will need an
-   answer, because N multiplies both cost and wall time.
+1. **A nightly repetition budget** (design open question 2). The first live
+   consumer uses `N=5` in an explicit operator-run lane; it is intentionally
+   not scheduled or placed in PR CI. A future scheduled lane still needs its
+   own cost and wall-time budget.
 2. **Whether the deterministic lane gets a variance policy at all** (design
    open question 3). Left out, following the design's own reasoning. A
    fixture lane's `spread > 0` is a determinism defect rather than noise and

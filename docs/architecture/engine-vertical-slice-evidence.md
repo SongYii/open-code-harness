@@ -5,6 +5,11 @@
 - Plan: [Industrial Engine vertical slice implementation plan](../superpowers/plans/2026-08-12-engine-vertical-slice.md)
 - Status: Tasks 1–10 implemented and locally verified; not GA
 
+> **Historical status notice (added 2026-09-10):** this ledger preserves the
+> repository state when the Engine slice completed. Its “not implemented” list
+> is not current project status. See [How the system works](how-it-works.md)
+> and the [current architecture](current-system.md) for today.
+
 This ledger is the public completion record. The plan remains the frozen
 implementation sequence and intentionally retains its original checkboxes; an
 unchecked plan box is not used as evidence. Commit history, executable gates,

@@ -54,6 +54,23 @@ func TestNormalizedArgvIncludesUnsandboxedFlagOnlyWhenAllowed(t *testing.T) {
 	}
 }
 
+func TestNormalizedArgvCarriesProviderWireHints(t *testing.T) {
+	subject := validSubject()
+	subject.Provider.IncludeUsage = true
+	subject.Provider.MaxTokensField = "max_tokens"
+	subject.Provider.ReasoningEffort = "high"
+	subject.Context.SummaryReasoningEffort = "none"
+	argv, err := NormalizedArgv(subject)
+	if err != nil {
+		t.Fatalf("NormalizedArgv() error = %v", err)
+	}
+	if !containsArg(argv, "-provider-include-usage") || !containsArg(argv, "-provider-max-tokens-field") || !containsArg(argv, "max_tokens") ||
+		!containsArg(argv, "-provider-reasoning-effort") || !containsArg(argv, "high") ||
+		!containsArg(argv, "-context-summary-reasoning-effort") || !containsArg(argv, "none") {
+		t.Fatalf("argv %v does not carry the frozen provider wire hints", argv)
+	}
+}
+
 // TestNormalizedArgvCarriesNoAttemptSpecificFlag confirms design's own
 // rule that Executor identity's normalized argv carries no Attempt-
 // specific path or launch mode: those are a launcher's job to append

@@ -24,6 +24,8 @@ func validJudgeConfig() JudgeConfig {
 			MaxOutput:          4096,
 			IncludeUsage:       true,
 			MaxTokensField:     "max_completion_tokens",
+			ResponseFormat:     "json_object",
+			ThinkingMode:       "disabled",
 		},
 		Prompt: JudgePrompt{ID: QualityJudgePromptID, Digest: QualityJudgePromptV1Digest()},
 		Criteria: []JudgeCriterion{{
@@ -70,6 +72,15 @@ func TestJudgeConfigDigestRefusesInvalidDocuments(t *testing.T) {
 	}
 }
 
+func TestJudgeConfigAcceptsReasoningEffortInsteadOfLegacyThinkingMode(t *testing.T) {
+	config := validJudgeConfig()
+	config.Provider.ThinkingMode = ""
+	config.Provider.ReasoningEffort = "high"
+	if err := config.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func TestDecodeJudgeConfigRejectsInvalidDocuments(t *testing.T) {
 	longRubric := strings.Repeat("r", maxJudgeRubricBytes+1)
 	cases := []struct {
@@ -103,6 +114,14 @@ func TestDecodeJudgeConfigRejectsInvalidDocuments(t *testing.T) {
 		}},
 		{"usage reporting disabled", func(config *JudgeConfig) { config.Provider.IncludeUsage = false }},
 		{"unknown max tokens field", func(config *JudgeConfig) { config.Provider.MaxTokensField = "maxTokens" }},
+		{"missing response format", func(config *JudgeConfig) { config.Provider.ResponseFormat = "" }},
+		{"unknown response format", func(config *JudgeConfig) { config.Provider.ResponseFormat = "json_schema" }},
+		{"enabled thinking mode", func(config *JudgeConfig) { config.Provider.ThinkingMode = "enabled" }},
+		{"unknown reasoning effort", func(config *JudgeConfig) {
+			config.Provider.ThinkingMode = ""
+			config.Provider.ReasoningEffort = "extreme"
+		}},
+		{"conflicting reasoning controls", func(config *JudgeConfig) { config.Provider.ReasoningEffort = "high" }},
 		{"unknown prompt id", func(config *JudgeConfig) { config.Prompt.ID = "och_quality_judge_v2" }},
 		{"prompt digest disagrees with embedded prompt", func(config *JudgeConfig) {
 			config.Prompt.Digest = mustDigest(t, 0x41)

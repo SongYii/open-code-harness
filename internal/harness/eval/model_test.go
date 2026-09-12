@@ -457,6 +457,39 @@ func TestSubjectValidateRejectsUnknownProviderLane(t *testing.T) {
 	}
 }
 
+func TestSubjectValidateRejectsUnknownMaxTokensField(t *testing.T) {
+	subject := validSubject()
+	subject.Provider.MaxTokensField = "limit"
+	if err := subject.Validate(); err == nil {
+		t.Fatal("Validate() accepted an unknown provider maxTokensField")
+	}
+}
+
+func TestSubjectValidateRejectsEnabledThinkingMode(t *testing.T) {
+	subject := validSubject()
+	subject.Provider.ThinkingMode = "enabled"
+	if err := subject.Validate(); err == nil {
+		t.Fatal("Validate() accepted enabled provider thinkingMode")
+	}
+}
+
+func TestSubjectValidateAcceptsIndependentReasoningEfforts(t *testing.T) {
+	subject := validSubject()
+	subject.Provider.ReasoningEffort = "high"
+	subject.Context.SummaryReasoningEffort = "none"
+	if err := subject.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestSubjectValidateRejectsUnknownReasoningEffort(t *testing.T) {
+	subject := validSubject()
+	subject.Context.SummaryReasoningEffort = "extreme"
+	if err := subject.Validate(); err == nil {
+		t.Fatal("Validate() accepted unknown summary reasoning effort")
+	}
+}
+
 func TestSubjectValidateRejectsInvertedContextPercentages(t *testing.T) {
 	subject := validSubject()
 	subject.Context.TargetPercent = subject.Context.TriggerPercent
@@ -470,6 +503,37 @@ func TestSubjectValidateRejectsUnknownSandboxPolicy(t *testing.T) {
 	subject.Policy.SandboxPolicy = "maybe"
 	if err := subject.Validate(); err == nil {
 		t.Fatal("Validate() accepted an unknown sandbox policy")
+	}
+}
+
+func TestDecodeSubjectRoundTripsMCPServers(t *testing.T) {
+	want := validSubject()
+	want.MCPServers = []SubjectMCPServer{{Name: "fixture", Command: "sh", Args: []string{"mcp-fixture.sh", "--mode=test"}}}
+	got, err := DecodeSubject(marshal(t, want))
+	if err != nil {
+		t.Fatalf("DecodeSubject: %v", err)
+	}
+	if !reflect.DeepEqual(got.MCPServers, want.MCPServers) {
+		t.Fatalf("MCPServers = %#v, want %#v", got.MCPServers, want.MCPServers)
+	}
+}
+
+func TestSubjectValidateRejectsUnsafeMCPServerShapes(t *testing.T) {
+	tests := map[string][]SubjectMCPServer{
+		"duplicate name":   {{Name: "same", Command: "sh"}, {Name: "same", Command: "sh"}},
+		"absolute command": {{Name: "fixture", Command: "/bin/sh"}},
+		"relative command": {{Name: "fixture", Command: "./server"}},
+		"empty argument":   {{Name: "fixture", Command: "sh", Args: []string{""}}},
+		"newline argument": {{Name: "fixture", Command: "sh", Args: []string{"bad\narg"}}},
+	}
+	for name, servers := range tests {
+		t.Run(name, func(t *testing.T) {
+			subject := validSubject()
+			subject.MCPServers = servers
+			if err := subject.Validate(); err == nil {
+				t.Fatal("Validate accepted an unsafe MCP server shape")
+			}
+		})
 	}
 }
 
@@ -532,6 +596,14 @@ func TestExecutorValidateRejectsDuplicateCapabilities(t *testing.T) {
 	executor.Capabilities = []string{"prompt", "prompt"}
 	if err := executor.Validate(); err == nil {
 		t.Fatal("Validate() accepted duplicate capabilities")
+	}
+}
+
+func TestExecutorValidateRejectsMCPStdioOnACPSubprocess(t *testing.T) {
+	executor := validExecutorACPSubprocess()
+	executor.Capabilities = append(executor.Capabilities, CapabilityMCPStdio)
+	if err := executor.Validate(); err == nil {
+		t.Fatal("Validate() accepted the in-process-only MCP capability on an ACP executor")
 	}
 }
 

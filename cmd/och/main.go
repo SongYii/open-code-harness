@@ -135,6 +135,10 @@ func bindAssemblyFlags(flags *flag.FlagSet, config *composition.Config, policyMo
 	flags.BoolVar(&config.Provider.AllowInsecureLoopback, "provider-allow-insecure-loopback", false, "permit a plain-HTTP provider-url when it resolves to loopback; for a local fixture server only, never a real endpoint")
 	flags.StringVar(&config.Provider.ModelID, "model", "", "provider model identifier (required)")
 	flags.StringVar(&config.Provider.APIKeyEnv, "api-key-env", "OCH_API_KEY", "environment variable holding the provider API key")
+	flags.BoolVar(&config.Provider.IncludeUsage, "provider-include-usage", false, "request provider usage data in streaming responses")
+	flags.StringVar(&config.Provider.MaxTokensField, "provider-max-tokens-field", "", "provider output-limit field: max_tokens or max_completion_tokens; empty omits it")
+	flags.StringVar(&config.Provider.ThinkingMode, "provider-thinking-mode", "", "provider thinking mode: disabled; empty uses the provider default")
+	flags.StringVar(&config.Provider.ReasoningEffort, "provider-reasoning-effort", "", "normal response reasoning effort: none, minimal, low, medium, high, xhigh, or max; empty uses the provider default")
 	*uintFlags = assemblyUintFlags{}
 	flags.UintVar(&uintFlags.ContextWindow, "context-window", 0, "provider context window in tokens (required)")
 	flags.UintVar(&uintFlags.MaxOutput, "max-output", 0, "provider maximum output in tokens (required)")
@@ -147,6 +151,7 @@ func bindAssemblyFlags(flags *flag.FlagSet, config *composition.Config, policyMo
 	flags.UintVar(&uintFlags.TargetPercent, "context-target-percent", 0, "percent of the context window compaction targets; 0 uses the Context Engine default")
 	flags.UintVar(&uintFlags.TailPercent, "context-tail-percent", 0, "percent of the context window protected as an uncompacted tail; 0 uses the Context Engine default")
 	flags.UintVar(&uintFlags.MaxSummaryChunks, "context-max-summary-chunks", 0, "maximum chunked summarizer calls one compaction may use; 0 uses the Context Engine default")
+	flags.StringVar(&config.Context.SummaryReasoningEffort, "context-summary-reasoning-effort", "", "summary reasoning effort override; empty inherits provider-reasoning-effort")
 	flags.UintVar(&uintFlags.MaxOverflowCompactionsPerTurn, "context-max-overflow-compactions-per-turn", 0, "maximum per-Turn Provider overflow recoveries; 0 uses the Context Engine default")
 	flags.UintVar(&uintFlags.MaxPrunedToolResultsPerRequest, "context-max-pruned-tool-results-per-request", 0, "maximum Tool Results one request may prune; 0 uses the Context Engine default")
 	flags.DurationVar(&config.Context.CompactionTimeout, "context-compaction-timeout", 0, "bound on one summarizer call within a compaction bracket; 0 uses the Context Engine default")

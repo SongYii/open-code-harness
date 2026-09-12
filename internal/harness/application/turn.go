@@ -682,6 +682,9 @@ func modelRequestSpec(identity *engine.RequestIdentity, input string, toolSchema
 		MaxOutputTokens:     identity.Profile.MaxOutputTokens,
 		IncludeUsage:        identity.IncludeUsage,
 		MaxTokensField:      identity.MaxTokensField,
+		ResponseFormat:      identity.ResponseFormat,
+		ThinkingMode:        identity.ThinkingMode,
+		ReasoningEffort:     string(identity.ReasoningEffort),
 		Messages:            []domain.ModelPromptMessage{{Role: domain.PromptRoleUser, Text: input}},
 		Tools:               toolSchemas,
 	}

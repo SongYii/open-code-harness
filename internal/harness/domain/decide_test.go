@@ -270,6 +270,21 @@ func TestDecideStartAssistantTurnRejectsRequestMessages(t *testing.T) {
 			spec.Messages = []ModelPromptMessage{{Role: PromptRoleUser, Text: string([]byte{0xff})}}
 			return spec
 		}()},
+		{name: "invalid response format", request: func() *ModelRequestSpec {
+			spec := validModelRequestSpec(input)
+			spec.ResponseFormat = "yaml"
+			return spec
+		}()},
+		{name: "response format conflicts with profile", request: func() *ModelRequestSpec {
+			spec := validModelRequestSpec(input)
+			spec.ResponseFormat = "json_object"
+			return spec
+		}()},
+		{name: "invalid thinking mode", request: func() *ModelRequestSpec {
+			spec := validModelRequestSpec(input)
+			spec.ThinkingMode = "auto"
+			return spec
+		}()},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

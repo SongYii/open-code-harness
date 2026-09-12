@@ -5,6 +5,13 @@
 - Design: [Tool Runtime, Policy, and minimal workspace tools](../superpowers/specs/2026-08-16-tool-runtime-policy-design.md)
 - Status: execute-plan PRs 1–9 implemented and locally verified; not GA
 
+> **Historical status notice (added 2026-09-10):** this ledger preserves the
+> original Tool Runtime slice. Statements below that the workspace/process
+> adapters were not sandboxed and later modules were missing describe that
+> date, not the current repository. See
+> [How the system works](how-it-works.md) and the
+> [current architecture](current-system.md) for today.
+
 This ledger is the public completion record. The design remains the frozen
 PR sequence (design PRs 1–7 plus this docs PR). Commit history, executable
 gates, and the commands below support the completion statement.

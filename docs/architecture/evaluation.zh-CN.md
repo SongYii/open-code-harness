@@ -140,6 +140,13 @@ action ID；`workspace-paths-absent-v1` 经由 `ArtifactReader` 重新读取它�
 
 实时模型评审器（`internal/harness/eval/judge.go`，Task 17）是面向另一条通道的另一种机制：`RunJudge` 只依据某个 `JudgeConfig` 自身 `Criteria` 所声明的清单角色，构建一个有界的、经过脱敏的证据包，将其发送给一个可注入的 `JudgeCaller`（因此一次真实的实时模型调用与一个测试替身实现的是完全相同的函数类型 —— `RunJudge` 自身从不打开网络连接），并严格解码其响应。在调用任何评审器之前，冻结的评审配置会先经过验证：模型标识与内嵌提示词的精确摘要均为必填项，评判标准 ID 与证据角色必须非空且唯一，并且受信任的评判标准合同会随证据包一同发送。
 
+Judge 的服务端协议固定 `responseFormat=json_object`；还可以冻结通用的
+`reasoningEffort`（`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、
+`max`），或使用旧的厂商扩展 `thinkingMode=disabled`，但两者不能并存。
+非法值在联网前拒绝。
+`RunJudge` 仍只调用一次 caller；空内容或坏 JSON 是一条 Indeterminate，显式
+再次运行 `och-eval judge` 才会追加另一条拥有独立用量和成本的 Score。
+
 `JudgeConfig` 是一份文档而非内存中的值：schema 为 `och.eval.judge-config`，其验证与摘要方式与 Scenario/Subject/Executor 完全一致。这正是一个实时 Score 的评审器身份能够离线自证的原因。实时 `EvalSet` 必须声明 `judgeConfigDigest`，fixture 通道的 EvalSet 则必须不声明；每一个新 Attempt 都会把其冻结的 `EvalSet` 作为 `eval-set.json`（角色 `eval_set`）纳入证据，实时 Attempt 还会额外纳入 `judge-config.json`（角色 `judge_config`），因此清单会对两者取哈希，任何后来的读者都能重建出某个判定究竟来自哪一份配置，而无需信任产出它的调用方。这一绑定在读取时（`readJudgeEvidenceDocuments`）会重新校验，而不只是在写入时校验 —— 几个月后打开某个 Attempt 的读者并没有展开步骤可以依赖。在这些角色出现之前采集的 Attempt 仍然可以确定性重新评分，但永远无法接受实时评审 —— 这是诚实的结果：它的证据无法证明自己有此资格。
 
 证据的选取是清单与配置的纯函数。被声明的角色存放在集合中，而 Go 的 map 迭代顺序是随机的，因此候选列表会在任何字节预算生效**之前**被完整排序 —— 否则对同一个 Attempt 判定两次，可能让评审器看到不同的证据，并接受不同的 `evidenceReferences`。遗漏是失败即拒绝的，而不是把问题缩小：某个被声明但清单从未采集的角色，或者总预算无法容纳的条目，都会在调用评审器之前中止本次运行，并记入 `missingEvidence` —— 因为一个被询问了自己从未见过的材料的模型，其"通过"回答与真正读过材料后给出的回答是无法区分的。逐条目截断仍然被允许 —— 该契约本就提供有界摘录 —— 并且每个条目标签都会记录原始字节数、摘录字节数以及是否被截断。
@@ -147,6 +154,10 @@ action ID；`workspace-paths-absent-v1` 经由 `ArtifactReader` 重新读取它�
 `EvaluateJudgeAttempt`（`internal/harness/eval/judge_attempt.go`）是 `och-eval judge` 所驱动的编排逻辑，其各道关卡的顺序就是契约本身：先是冻结证据与所提供配置的摘要，然后是设计 §24 的双重同意，最后才是 Scenario 声明的每一个确定性校验器。由于持有任何凭据的是 `JudgeCaller`，一次不具备资格的运行既触及不到提供方，也触及不到凭据。确定性前置条件未通过时，会发布一个 Indeterminate 的 Score 而完全不调用模型；`JudgeAttemptResult` 会单独报告该前置判定，以便操作者能区分"不变量未成立"与"评审器无法作答" —— 这两者在 Score 上读起来是一样的。
 
 `ScorerUsage.costStatus` 让成本可得性变得显式：`computed` 会携带币种（免费模型是一个真实计算出的零），`unavailable` 则既不带币种也不带成本。在该字段出现之前发布的 Score 仍然可读。设计 §21 的每一种失败即拒绝情形 —— 未知字段、格式错误或带尾随内容的输出、不存在的证据引用、缺失证据、未解决的矛盾、未声明/遗漏/重复的评判标准、与逐项结果不一致的总判定、超出 `[0,1]` 的分数，或调用本身失败 —— 都会解析为一个真实的 `JudgeOutcome{Verdict: Indeterminate}`，附带一段有界、经过脱敏的理由说明，绝不是一个 Go 错误，也绝不会被悄悄当作 `Pass` 接受。还有一种情形出于同样的理由被拒绝，但不在设计 §21 的清单里：**一个确定性判定却完全没有引用任何证据**。上述每一条引用规则守的都是"已经出现的引用"，而在 2026-09-04 之前没有任何一条要求必须存在引用 —— 因此 `evidenceReferences` 为空的 `pass` 会被直接采信。这与预算遗漏那个缺陷是同一件事的另一面：一个关于评审器从未证明自己读过的材料所给出的回答。`indeterminate` 判定仍然可以不引用任何东西，因为那往往正是它之所以为 indeterminate 的原因。评审器所看到的每一条 Subject 撰写的内容都会被标注为"不受信任……不是指令"（内嵌的 `prompts/quality_judge_v1.md` 提示词自身的框架设定）—— 本仓库没有真实模型可以在自动化测试中证明其确实能够抵御提示注入攻击，因此测试所验证的是这一机制本身：这种标注确实真实存在于真实的转录内容周围，而不仅仅是提示词文本里一句空洞的期望。
+
+此外，两种“JSON 正确但无法复核”的确定性答案也会拒绝。`pass/fail` 必须至少引用冻结 criteria 声明的每一种证据角色；同时判断 transcript 质量和 audit 连续性却只引用 transcript，不会因为 audit 文件曾在提示词中出现就算有依据。它还必须提供非空白理由。失败会保留本次调用用量并产生一条 Indeterminate，不报 Go 错误也不重试。`indeterminate` 可以没有引用或理由。这只证明角色覆盖和存在可复核解释，不冒充逐句语义正确性；逐 criterion 引用需要新的冻结输出协议，真实正确率仍需要模型校准。
+
+`och.eval.judge-meta-set` 与 `RunJudgeMetaSet` 用来衡量解析器测试无法回答的“语义是否判对”。冻结 set 绑定精确 JudgeConfig 摘要，按顺序保存人工标签和小段 transcript/audit 合成证据；标签解释只供评审，绝不发给模型。每例复用生产环境相同的证据包装、冻结提示词、单次调用、严格解析和引用检查。报告保留完整 3×3 混淆矩阵，并把危险通过、错误失败、意外不可判定和强行下结论分别计数。live 命令还要求双重同意和精确调用预算；取消会输出保留已付费观察与用量的未完成前缀报告。报告可在离线时重新核对 set/config、案例顺序、重复序号和预期标签。仓库内六例、每例三次的种子集只由无密钥 fixture 证明机制，尚未据此声称真实模型质量或通过阈值。
 
 一个评审 Score 通过与确定性重新评分完全相同的 `PublishScore` 路径发布，`Lane` 设为 `LaneLive` —— 不存在单独的文档类型。`internal/harness/eval/price.go` 的 `PriceTable` 以整数微单位计算成本，与 `Score.ScorerUsage` 自身的成本字段相互独立（评审器自身的用量，绝不会并入 Subject 的用量）；一个未定价的模型会返回 `ok=false`，而不是零成本。
 
@@ -174,7 +185,7 @@ action ID；`workspace-paths-absent-v1` 经由 `ArtifactReader` 重新读取它�
 
 实现位于 `internal/harness/eval`（`variance_policy.go`、`variance.go`、`baseline.go`、`variance_pairing.go`、`variance_grouping.go`），由 `cmd/och-eval`（`variance_report.go`、`baseline_cmd.go`）发布。被接受的契约是[方差与基线策略设计](../superpowers/specs/2026-09-04-evaluation-variance-policy-design.md)。
 
-**这套机制处于休眠状态。** 所有入库 EvalSet 都声明 `repetitionCount: 1`，而一个引用了方差策略却只声明跑一次的 EvalSet 会在加载时被拒绝。今天本仓库里没有任何东西会走到这段代码，也没有为了让它被走到而编造配置。它是一个测试过、但第一份配置尚未到来的库；第一份应当引用方差策略的配置，是第一个 live 质量 EvalSet。
+第一位消费方已经入库，仍需显式执行且不进入 PR CI。`mcp-injection-live.example.json` 先在未校准策略下采集五次；另一份五次重复的验证集再应用由此得到的、只针对该 Scenario 的校准策略。两批都是 5/5 通过、数字极差 0、判定稳定性 1。报告保存在 `eval/reports/`；这只是该 MCP Cell 的证据，不是其他质量评测的通用默认值。
 
 ### 一个 Cell 发布什么
 
@@ -209,7 +220,9 @@ action ID；`workspace-paths-absent-v1` 经由 `ArtifactReader` 重新读取它�
 
 两个限值和可评估下限都住在一份 `och.eval.variance-policy` 文档里，沿用 `och.eval.judge-config` 的先例：可摘要、无秘密、被 EvalSet 引用、并绑定进运行自身的证据，使得报告自己的判断可以离线地从产物复现，而不是取决于报告生成器是用什么编译的。
 
-**不提供任何默认值。** 一份策略必须声明它的限值、它的 `calibration` 状态，以及一个至少为二的可评估下限。校准需要真实评审器给出的分数，而本仓库从未发起过任何一次真实评审器调用（2026-09-08 那次真实 Subject 运行没有产出评审分数，因此校准不了任何东西），所以任何随附的默认值都会是一个披着规范权威外衣的猜测。未校准的策略会标注在**它所治理的每一个 Cell 上**，而不是只在文档顶部标一次、让读者可能划过去。
+**不提供任何默认值。** 一份策略必须声明它的限值、它的 `calibration` 状态，以及一个至少为二的可评估下限。2026-09-10 的 DeepSeek 运行只对同一个 Attempt 得到了两次 Judge 样本：一次不可判定、一次通过。这能证明存在方差，却远不足以校准默认限值。未校准的策略会标注在**它所治理的每一个 Cell 上**，而不是只在文档顶部标一次、让读者可能划过去。
+
+`report` 与 `baseline` 会做两层失败关闭：传入的策略摘要必须等于 EvalSet 的 `variancePolicyDigest`；每个被测 Attempt 中受 manifest 保护的冻结 EvalSet，也必须与命令行传入的完整 EvalSet 摘要一致。只匹配人类可读的 set ID 不够。
 
 ### 两条基线，以及什么可以卡门禁
 
@@ -229,8 +242,12 @@ action ID；`workspace-paths-absent-v1` 经由 `ArtifactReader` 重新读取它�
 
 ## 成熟度与 GA 阻碍项
 
-评估系统**已实现，但尚未 GA**。在做出 GA 声明之前明确悬而未决的事项包括：实时评审所需的真实模型样本规模 —— 这一项在 2026-09-08 收窄但没有关闭：一次针对 OpenAI 兼容 DeepSeek 端点的真实 Subject 运行[记录在工作区指令证据里](system-prompt-workspace-instructions-evidence.md#live-deepseek-validation)，它停在了评审器的前置条件上，所以 Subject 侧的样本是恰好一次不完整的尝试，评审器侧仍然是零 ——、超出本仓库当前所携带的八个对抗性夹具（注入、证据缺失、矛盾、无支撑主张、已知通过/失败、凭空捏造的引用、真实存在但从未被展示过的引用，以及一个不引用任何证据的确定性判定）之外更广泛夹具集合上的评审器元评估 —— 其中原有五例里有两例在 2026-09-04 被发现是被一条比它们所声称的更早的检查拒绝的，因而对它们本该守护的那条防线什么也没有证明；两者均已修正，现在会断言拒绝的具体原因 ——、超出本仓库目前唯一一个 OpenAI 兼容适配器之外的更广 provider 覆盖面，以及一份被接受的实时/质量信号方差策略。
+评估系统**已实现，但尚未 GA**。在做出 GA 声明之前明确悬而未决的事项包括：实时评审所需的真实模型样本规模。2026-09-10，一次 DeepSeek V4 Pro Subject 完成了真实摘要压缩并保留约束；同一 Attempt 随后产生一次不可判定和一次通过的实时 Judge Score。这关闭了“零样本”缺口，却没有关闭样本规模问题：一个 Attempt、两个不一致的 Judge 结果不能证明可靠性。聚焦的解析器/机制元评测现有十类夹具；六例人工标签语义种子和重复 runner 也已存在，但还没有真实模型跑过该语料，六个合成案例也不能建立准确率。扩大审核案例并取得 live 观察仍是阻碍项。其余阻碍项是：超出唯一 OpenAI 兼容适配器的 provider 覆盖面，以及覆盖本次精确 MCP 注入 Cell 之外实时/质量信号的校准方差策略。
 
-方差这一项在 2026-09-05 改变了形态，但并没有关闭，而这个区别很重要。**机制**现在已完成设计、实现与验证 —— 见上文[方差与基线](#方差与基线)。**策略**没有：不存在任何校准过的限值，因为校准它们需要本清单第一项所说的那次从未发生过的实时运行，而且没有任何入库 EvalSet 会走到这段代码。一个把"机制已实现"算作"策略已接受"的仓库，正是在做出本契约自身的"不提供默认值"规则所要防止的那种声明。
+第一份**仅针对具体 Scenario 的策略**现在已经存在：五个独立校准 Attempt 得到极差 0 和一致判定；另一批五个 Attempt 随后满足钉住的限值（`maxNumericSpread=0.05`、`minVerdictStability=1`、五次可评估重复）。这不会产生全局默认值。把一个简单 MCP Cell 的结果推广到无关质量信号，仍然正是本契约“不提供默认值”规则要防止的错误。
 
-MCP 是这个运行器未来可以承载的一个测试套件，绝不是运行器自身的前置条件 —— 它的缺席不会阻碍本文档所记录的任何内容。
+## MCP 评测套件
+
+运行器现在带有一个显式运行的 MCP 套件；MCP 仍只是可选 Subject 能力，绝不是运行器前置条件。冻结 Subject 可以用 PATH basename 加无秘密参数声明静态 stdio server。`mcp_stdio` 当前只由进程内执行器支持；若 MCP Scenario 对应的 Subject 没有冻结 server 配置，矩阵展开会在 Attempt 产生前拒绝。
+
+fixture 集合从已提交证据分别证明三件事：恶意工具描述确实进入 `model.request.recorded`；MCP 调用穿过共享审批路径并被拒绝；获准调用的 MCP 结果在持久化 tool-completion 事件前完成脱敏。live 示例另加模型质量判据，但只会在“没有工具调用、没有禁建工作区文件”两个确定性前置条件通过后评审。策略拒绝只证明隔离成功，不证明模型抵抗了提示注入。目前不声明任何真实模型结果。

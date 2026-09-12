@@ -47,6 +47,28 @@ func TestStreamCompactionPurposeIsAttributionOnly(t *testing.T) {
 	}
 }
 
+func TestStreamPerRequestReasoningEffortOverridesRouteDefault(t *testing.T) {
+	var seen *http.Request
+	transport := &scriptedTransport{roundTrip: func(req *http.Request) (*http.Response, error) {
+		seen = req
+		return sseResponse(http.StatusOK, loadSSE(t, "success.sse"), nil), nil
+	}}
+	cfg := validConfig(transport)
+	cfg.Hints.ReasoningEffort = engine.ReasoningEffortHigh
+	model := newTestModel(t, cfg)
+	request := modelRequest()
+	request.Purpose = engine.ModelRequestPurposeCompaction
+	request.ReasoningEffort = engine.ReasoningEffortNone
+	stream, err := model.Stream(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stream.Close() })
+	if got := decodeRequestBody(t, seen)["reasoning_effort"]; got != "none" {
+		t.Fatalf("reasoning_effort = %#v, want explicit per-request override", got)
+	}
+}
+
 // TestStreamMaxOutputTokensOverridesRouteDefault confirms a positive
 // per-request MaxOutputTokens overrides the route's own statically
 // configured maximum at the wire level.

@@ -4,13 +4,15 @@
 
 **See also:** [Evaluation System — Implemented Contract](../architecture/evaluation.md) for the underlying mechanism; [Authoring Evaluation Scenarios](evaluation-scenarios.md) if you also need to change what runs.
 
-## The four commands
+## The seven commands
 
 ```text
 och-eval run     -set PATH -artifacts PATH [-och-binary PATH] [-live] [-judge-config PATH]
 och-eval regrade -attempt PATH -scorer ID
-och-eval report  -set PATH [-artifacts PATH] [-output PATH]
+och-eval report  -set PATH [-artifacts PATH] [-output PATH] [-variance-policy PATH -variance-scorer ID]
 och-eval judge   -attempt PATH -judge-config PATH [-price-table PATH] [-live]
+och-eval judge-meta -set PATH -judge-config PATH -max-calls N [-price-table PATH] [-live]
+och-eval baseline -set PATH -artifacts PATH -variance-policy PATH -variance-scorer ID -id ID
 ```
 
 `run` expands and executes an EvalSet's every Cell, publishing Attempt
@@ -30,6 +32,14 @@ find) into one JSON document on stdout. `judge` runs one live quality
 judgement against an already-published live Attempt and appends the Score it
 produces; it is documented in full under
 [Live quality judging](#live-quality-judging) below.
+`judge-meta` does not run a Subject. It measures the frozen Judge against a
+human-reviewed labelled evidence corpus and emits one versioned report.
+
+When `report` or `baseline` receives a variance policy, the policy must match
+the EvalSet's pinned `variancePolicyDigest`, and every measured Attempt must
+carry that exact frozen EvalSet in its manifest-protected evidence. An
+artifact directory from a different run is refused even if its set ID happens
+to be the same.
 
 Every command's machine output is one versioned JSON document on stdout;
 human-readable diagnostics go to stderr. Exit codes distinguish validation
@@ -116,6 +126,69 @@ go run ./cmd/och-eval judge \
   -live
 ```
 
+To test the harder automatic path instead, run the separate frozen set. It
+states the protected rule only in the first Turn and relies on ordinary
+pre-turn compaction, without a `compact` action or manual focus:
+
+```bash
+export OCH_EVAL_LIVE_PROVIDER_API_KEY=...
+export OCH_EVAL_LIVE_CONFIRM=I_UNDERSTAND
+
+go run ./cmd/och-eval run \
+  -set eval/sets/context-auto-quality-live.example.json \
+  -artifacts .eval-artifacts-context-auto-quality-live \
+  -judge-config eval/judges/context-quality-judge.example.json \
+  -live
+```
+
+Then pass that run's Attempt directory to the same `och-eval judge` command.
+The deterministic score first proves automatic checkpoint creation/use and
+`secrets.txt` absence; only the later live Score measures whether the model
+summary retained the old rule.
+
+The MCP injection calibration example is the first checked-in repeated live
+set. It makes five independent Subject calls and then needs exactly one Judge
+call per resulting Attempt. Use a fresh artifact root; judging the same
+Attempt twice creates two Scores for the same scorer and is deliberately not
+silently reduced:
+
+```bash
+export OCH_EVAL_LIVE_PROVIDER_API_KEY=...
+export OCH_EVAL_LIVE_JUDGE_API_KEY=...
+export OCH_EVAL_LIVE_CONFIRM=I_UNDERSTAND
+artifact_root="$(mktemp -d)"
+
+go run ./cmd/och-eval run \
+  -set eval/sets/mcp-injection-live.example.json \
+  -artifacts "$artifact_root" \
+  -judge-config eval/judges/mcp-injection-judge.example.json \
+  -live
+
+for attempt in "$artifact_root"/*; do
+  go run ./cmd/och-eval judge \
+    -attempt "$attempt" \
+    -judge-config eval/judges/mcp-injection-judge.example.json \
+    -live
+done
+
+go run ./cmd/och-eval report \
+  -set eval/sets/mcp-injection-live.example.json \
+  -artifacts "$artifact_root" \
+  -variance-policy eval/variance-policies/mcp-injection-live-calibration-v1.json \
+  -variance-scorer mcp-injection-judge
+```
+
+The policy is intentionally `uncalibrated`: this collects the numbers that
+may justify a later policy; provisional limits cannot gate the run used to
+discover them.
+
+The checked-in 2026-09-11 calibration has now earned
+`mcp-injection-live-v1.json` for this exact Cell. To reproduce its independent
+validation, use `mcp-injection-live-validation.example.json` with a fresh
+artifact root, judge each of its five Attempts once, and report with the
+calibrated policy. Do not reuse the calibration artifacts: the commands will
+refuse them because their frozen EvalSet is different.
+
 There is deliberately **no** endpoint, model, prompt, or credential-value
 flag. Every one of those comes from the frozen JudgeConfig, and the command
 refuses unless that document is byte-identical to the one the Attempt's own
@@ -140,6 +213,45 @@ The order of the gates is the point:
 Only after all three does the provider call happen, and the credential the
 JudgeConfig names is read only inside that call. Anything refused above
 happens before a credential is ever looked up.
+
+JudgeConfigs freeze `responseFormat: "json_object"`; they may also freeze a
+`reasoningEffort`. The legacy DeepSeek example retains
+`thinkingMode: "disabled"`; the two controls are mutually exclusive. Strict JSON is not left
+to prompt compliance, and a bounded judge can explicitly avoid spending its
+output allowance on reasoning. Malformed or empty output still becomes
+Indeterminate. There is no hidden retry: running `judge` again appends another
+independently costed Score.
+
+## Judge semantic meta-evaluation
+
+The checked-in seed corpus asks whether the Judge agrees with six reviewed
+answers: clear pass, explicit fail, unsupported success, direct verdict
+injection, harmless quoted injection, and unresolved contradiction. It uses
+three repetitions per case, so the exact paid-call count is 18.
+
+```bash
+export OCH_EVAL_LIVE_JUDGE_API_KEY=...
+export OCH_EVAL_LIVE_CONFIRM=I_UNDERSTAND
+
+go run ./cmd/och-eval judge-meta \
+  -set eval/judge-meta/semantic-seed-v1.json \
+  -judge-config eval/judges/semantic-meta-judge.example.json \
+  -max-calls 18 \
+  -live > judge-meta-report.json
+```
+
+The command refuses before any provider call unless the set/config digest,
+both live confirmations, and the exact `-max-calls` value agree. Each call is
+one observation; there is no hidden retry. Cancellation writes an incomplete
+prefix report rather than discarding calls already paid for. Read
+`summary.unsafePasses` separately: a single average accuracy can hide the
+dangerous direction of an error. The seed has no calibrated threshold and is
+not an ordinary PR lane.
+
+The first checked-in live result is
+`eval/reports/judge-semantic-meta-deepseek-live-2026-09-11.json`: DeepSeek V4
+Pro matched all 18 repeated labels in the six-case seed. Treat that as one
+small-corpus observation, not a universal Judge threshold.
 
 Two more refusals are worth knowing about:
 

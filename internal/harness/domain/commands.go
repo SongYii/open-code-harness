@@ -112,6 +112,9 @@ type ModelRequestSpec struct {
 	MaxOutputTokens     uint32
 	IncludeUsage        bool
 	MaxTokensField      string
+	ResponseFormat      string
+	ThinkingMode        string
+	ReasoningEffort     string
 	Messages            []ModelPromptMessage
 	Tools               []ToolSchema
 }

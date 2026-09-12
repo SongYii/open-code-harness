@@ -242,6 +242,23 @@ func TestUnmarshalRecordedEventRejectsInvalidWire(t *testing.T) {
 	}
 }
 
+func TestModelRequestReasoningEffortRoundTripsAsOptionalEvidence(t *testing.T) {
+	event := validModelRequestRecorded("turn-1", "item-1", "hello")
+	event.ReasoningEffort = "high"
+	eventType, data, err := MarshalEventPayload(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := unmarshalEvent(eventType, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := decoded.(ModelRequestRecorded)
+	if got.ReasoningEffort != "high" {
+		t.Fatalf("ReasoningEffort = %q, want high", got.ReasoningEffort)
+	}
+}
+
 func TestUnmarshalRecordedEventRejectsNonStrictJSON(t *testing.T) {
 	t.Parallel()
 

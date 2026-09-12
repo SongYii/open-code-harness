@@ -5,6 +5,12 @@
 - Design: [Provider contract and first real adapter](../superpowers/specs/2026-08-15-provider-adapter-design.md)
 - Status: PR 1–5 implemented and locally verified; not GA
 
+> **Historical status notice (added 2026-09-10):** this ledger preserves the
+> repository state when the first Provider adapter completed. Its later-module
+> list is not current project status. See
+> [How the system works](how-it-works.md) and the
+> [current architecture](current-system.md) for today.
+
 This ledger is the public completion record. The design remains the frozen
 five-PR sequence. Commit history, executable gates, and the commands below
 support the completion statement.
@@ -152,3 +158,26 @@ GA remains blocked on those milestones.
 本里程碑只在其合同范围内完成。Tool/Policy、SQLite、JSONL、Runtime Host/
 恢复、ACP、TUI、Context Engine、Application 重试、厂商 SDK、连网 CI 和插件
 内核仍未实现，不能由本台账暗示。GA 仍被这些后续里程碑阻断。
+
+## 2026-09-10 structured-output extension
+
+Commit `3f57c00` adds static `ResponseFormat` and `ThinkingMode` wire hints to
+the existing adapter without adding a model-name or vendor-name branch.
+`TestStreamRequestMapping` observes their exact nested JSON shapes and
+`TestIdentityCopiesProfileAndHints` proves they remain part of reconstructable
+request identity. Invalid enum values and a structured-output hint paired with
+an unsupported capability profile are rejected by `New` before HTTP.
+
+The same full race/vet verification recorded in the evaluation evidence was
+run. No live provider call was used for this adapter extension.
+
+## 2026-09-11 reasoning-effort extension
+
+The adapter now emits the standard `reasoning_effort` field from a validated
+route default or an explicit `engine.ModelRequest` override. The override is
+caller-owned request semantics rather than a hidden branch on Purpose.
+`TestStreamRequestMapping` covers the default and
+`TestStreamPerRequestReasoningEffortOverridesRouteDefault` covers the override;
+identity and durable model-request evidence retain the configured normal
+response effort. Legacy `thinking.type` remains supported but is mutually
+exclusive with the new control.

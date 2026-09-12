@@ -38,6 +38,17 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 			cfg.MaxRequestBytes = minToolMaxRequestBytes - 1
 		}},
 		{name: "invalid max tokens field", mutate: func(cfg *Config) { cfg.Hints.MaxTokensField = "tokens" }},
+		{name: "invalid response format", mutate: func(cfg *Config) {
+			cfg.Profile.StructuredOutput = engine.CapabilityRequired
+			cfg.Hints.ResponseFormat = "yaml"
+		}},
+		{name: "response format with unsupported profile", mutate: func(cfg *Config) { cfg.Hints.ResponseFormat = "json_object" }},
+		{name: "invalid thinking mode", mutate: func(cfg *Config) { cfg.Hints.ThinkingMode = "auto" }},
+		{name: "invalid reasoning effort", mutate: func(cfg *Config) { cfg.Hints.ReasoningEffort = "extreme" }},
+		{name: "conflicting reasoning controls", mutate: func(cfg *Config) {
+			cfg.Hints.ThinkingMode = "disabled"
+			cfg.Hints.ReasoningEffort = engine.ReasoningEffortHigh
+		}},
 		{name: "negative idle", mutate: func(cfg *Config) { cfg.IdleTimeout = -1 }},
 		{name: "ftp scheme", mutate: func(cfg *Config) { cfg.BaseURL = "ftp://api.example.com/v1" }},
 	}
@@ -92,8 +103,9 @@ func TestNewAcceptsLoopbackHTTPWhenAllowed(t *testing.T) {
 func TestIdentityCopiesProfileAndHints(t *testing.T) {
 	cfg := validConfig(nil)
 	cfg.HTTPClient = nil
-	cfg.Hints = WireHints{IncludeUsage: true, MaxTokensField: "max_completion_tokens"}
+	cfg.Hints = WireHints{IncludeUsage: true, MaxTokensField: "max_completion_tokens", ResponseFormat: "json_object", ReasoningEffort: engine.ReasoningEffortHigh}
 	cfg.Profile = ProfileTextOnly(128000, 4096)
+	cfg.Profile.StructuredOutput = engine.CapabilityRequired
 	model := newTestModel(t, cfg)
 	got := model.Identity()
 	if err := got.Validate(); err != nil {
@@ -102,8 +114,8 @@ func TestIdentityCopiesProfileAndHints(t *testing.T) {
 	if got.AdapterFamily != adapterFamily || got.ModelID != "test-model" || got.EndpointID != "api.example.com/v1" {
 		t.Fatalf("Identity() = %#v", got)
 	}
-	if !got.IncludeUsage || got.MaxTokensField != "max_completion_tokens" {
-		t.Fatalf("Identity hints = include=%t field=%q", got.IncludeUsage, got.MaxTokensField)
+	if !got.IncludeUsage || got.MaxTokensField != "max_completion_tokens" || got.ResponseFormat != "json_object" || got.ReasoningEffort != engine.ReasoningEffortHigh {
+		t.Fatalf("Identity hints = %+v", got)
 	}
 	if got.Profile != cfg.Profile {
 		t.Fatalf("Identity profile = %#v, want %#v", got.Profile, cfg.Profile)
@@ -175,6 +187,8 @@ func TestStreamRequestMapping(t *testing.T) {
 		{name: "max tokens", hints: WireHints{MaxTokensField: "max_tokens"}, maxOutput: 32, wantMaxField: "max_tokens"},
 		{name: "max completion tokens", hints: WireHints{MaxTokensField: "max_completion_tokens"}, maxOutput: 16, wantMaxField: "max_completion_tokens"},
 		{name: "omit max when tokens zero", hints: WireHints{MaxTokensField: "max_tokens"}, wantMaxAbsent: true},
+		{name: "structured output and thinking", hints: WireHints{ResponseFormat: "json_object", ThinkingMode: "disabled"}, wantMaxAbsent: true},
+		{name: "reasoning effort", hints: WireHints{ReasoningEffort: engine.ReasoningEffortMax}, wantMaxAbsent: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -185,6 +199,9 @@ func TestStreamRequestMapping(t *testing.T) {
 			}}
 			cfg := validConfig(transport)
 			cfg.Hints = test.hints
+			if test.hints.ResponseFormat != "" {
+				cfg.Profile.StructuredOutput = engine.CapabilityRequired
+			}
 			cfg.Profile.MaxOutputTokens = test.maxOutput
 			model := newTestModel(t, cfg)
 			stream, err := model.Stream(context.Background(), modelRequest())
@@ -221,6 +238,21 @@ func TestStreamRequestMapping(t *testing.T) {
 				if _, ok := payload["max_completion_tokens"]; ok {
 					t.Fatalf("max_completion_tokens unexpectedly present")
 				}
+			}
+			if test.hints.ResponseFormat != "" {
+				format, ok := payload["response_format"].(map[string]any)
+				if !ok || format["type"] != "json_object" {
+					t.Fatalf("response_format = %#v", payload["response_format"])
+				}
+			}
+			if test.hints.ThinkingMode != "" {
+				thinking, ok := payload["thinking"].(map[string]any)
+				if !ok || thinking["type"] != "disabled" {
+					t.Fatalf("thinking = %#v", payload["thinking"])
+				}
+			}
+			if test.hints.ReasoningEffort != "" && payload["reasoning_effort"] != string(test.hints.ReasoningEffort) {
+				t.Fatalf("reasoning_effort = %#v", payload["reasoning_effort"])
 			}
 		})
 	}

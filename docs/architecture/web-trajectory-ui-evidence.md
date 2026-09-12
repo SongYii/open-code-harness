@@ -180,3 +180,16 @@ with its own stated reason, not an oversight discovered after the fact.
 - **Virtualized ledger rendering** for very long sessions is not
   implemented; every loaded record is mounted directly, an explicit
   plan-level narrowing of the design's own open scope.
+
+## 2026-09-10 determinism cold-start correction
+
+PR #193's determinism lane exposed the same precise failure on its original
+run and failed-job rerun: under the full `-race ./... -count=3` load, the first
+Chrome launch crossed chromedp's implicit 20-second DevTools-WebSocket startup
+limit, while the following two launches completed. This was not a product
+failure and excluding the browser proof from the flakiness lane would have
+discarded the evidence it found.
+
+The test now freezes a 60-second Chrome-startup bound and a 90-second complete
+browser-interaction bound. Both remain finite. The focused real-browser proof
+passed three consecutive race-enabled runs after the change.

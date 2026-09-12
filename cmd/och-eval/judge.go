@@ -109,14 +109,19 @@ func newOpenAICompatibleJudgeCaller(config eval.JudgeConfig, client *http.Client
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
+	profile := openaicompat.ProfileTextOnly(config.Provider.ContextWindow, config.Provider.MaxOutput)
+	profile.StructuredOutput = engine.CapabilityRequired
 	model, err := openaicompat.New(openaicompat.Config{
 		BaseURL: config.Provider.NormalizedEndpoint,
 		ModelID: config.Provider.ModelID,
 		APIKey:  openaicompat.EnvAPIKey{Name: config.Provider.CredentialEnvVar},
-		Profile: openaicompat.ProfileTextOnly(config.Provider.ContextWindow, config.Provider.MaxOutput),
+		Profile: profile,
 		Hints: openaicompat.WireHints{
-			IncludeUsage:   config.Provider.IncludeUsage,
-			MaxTokensField: config.Provider.MaxTokensField,
+			IncludeUsage:    config.Provider.IncludeUsage,
+			MaxTokensField:  config.Provider.MaxTokensField,
+			ResponseFormat:  config.Provider.ResponseFormat,
+			ThinkingMode:    config.Provider.ThinkingMode,
+			ReasoningEffort: engine.ReasoningEffort(config.Provider.ReasoningEffort),
 		},
 		HTTPClient:            client,
 		AllowInsecureLoopback: allowInsecureLoopback,

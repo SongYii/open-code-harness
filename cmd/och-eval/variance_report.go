@@ -95,7 +95,7 @@ type varianceInputs struct {
 // An unreadable or invalid policy is an error rather than a silent skip. A
 // caller who asked for a variance signal and received a report without one
 // would reasonably read the absence as "no variance problems".
-func loadVariancePolicy(inputs varianceInputs, stderr io.Writer) (eval.VariancePolicy, eval.Digest, bool, error) {
+func loadVariancePolicy(inputs varianceInputs, bound eval.Digest, stderr io.Writer) (eval.VariancePolicy, eval.Digest, bool, error) {
 	if inputs.policyPath == "" {
 		return eval.VariancePolicy{}, "", false, nil
 	}
@@ -105,6 +105,9 @@ func loadVariancePolicy(inputs varianceInputs, stderr io.Writer) (eval.VarianceP
 	}
 	policy, err := eval.DecodeVariancePolicy(data)
 	if err != nil {
+		return eval.VariancePolicy{}, "", false, fmt.Errorf("variance policy: %w", err)
+	}
+	if err := eval.VerifyVariancePolicyBinding(policy, bound); err != nil {
 		return eval.VariancePolicy{}, "", false, fmt.Errorf("variance policy: %w", err)
 	}
 	digest, err := eval.VariancePolicyDigest(policy)

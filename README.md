@@ -12,6 +12,13 @@ credible path to production adapters.
 The project is currently pre-v0 and architecture-first; it is not yet a general
 availability release. Start with the [documentation authority map](docs/README.md)
 and the [foundational architecture charter](docs/superpowers/specs/2026-08-11-open-code-harness-architecture-design.md).
+The charter describes intended direction; the
+[current system architecture](docs/architecture/current-system.md) records the
+as-built package map, control flow, state authorities, and enforced dependency
+boundaries. For a shorter module-by-module explanation of what was built, what
+went wrong, and what remains, start with
+[How the implemented system works](docs/architecture/how-it-works.md) or the
+[中文通俗导读](docs/architecture/how-it-works.zh-CN.md).
 To run something locally instead of reading about it, see
 [Getting Started](docs/getting-started.md).
 
@@ -166,7 +173,11 @@ The numbered milestone list lives in
   closed on an unreachable or duplicate-named server; and teardown escalates
   to the process group and proves it is gone. See the
   [MCP client adapter contract](docs/architecture/mcp-client.md) and its
-  [evidence ledger](docs/architecture/mcp-client-evidence.md).
+  [evidence ledger](docs/architecture/mcp-client-evidence.md). An explicit
+  MCP evaluation set now runs a real stdio fixture through Composition and
+  offline scoring to prove tool exposure, shared approval denial, and result
+  redaction; a separate DeepSeek-compatible live example keeps prompt-
+  injection resistance as an unproven model-quality claim.
 
 TUI and OpenTelemetry are not yet implemented. Evaluation
 (`internal/harness/eval`, `cmd/och-eval`) is implemented but not GA: frozen
@@ -178,15 +189,21 @@ design-verified executor parity, a four-Cell ordinary-PR lane, and a
 consent-gated live quality judge (`och-eval judge`, with its frozen
 JudgeConfig bound into an Attempt's own evidence so a Score's judge
 identity is provable offline) are all real and tested. Real-model live
-sample size — one live Subject run happened on 2026-09-08 and no live judge
-call ever has, so the sample is one partial attempt — judge
-meta-evaluation breadth, provider breadth, and an accepted variance policy
-are still outstanding before a GA claim. The variance *mechanism* is now
+sample size — one complete DeepSeek V4 Pro Subject-through-compaction run and
+two live Judge samples now exist from 2026-09-10, but one Judge sample was
+indeterminate after exhausting its output budget — judge meta-evaluation now
+has ten parser/mechanism fixture families and a six-case labelled semantic
+seed with a repeated runner. Its first DeepSeek run matched all 18 repeated
+labels with no directional errors, but the reviewed corpus is still small.
+Provider breadth also remains outstanding
+before a GA claim. The
+variance *mechanism* is now
 implemented and verified (distribution over repetitions, a structural
 reliability rule separated from an uncalibrated threshold one, two baselines,
-and derived readings that need no threshold at all), but it ships **dormant** —
-no checked-in EvalSet reaches it — and no calibrated limits exist, so the
-policy itself is not accepted. See the
+and derived readings that need no threshold at all). Its first checked-in
+consumer is the explicit five-repetition MCP injection calibration set. A
+second independent five-repetition batch passed the resulting MCP-specific
+calibrated policy; no global default is inferred from that one Cell. See the
 [Evaluation contract](docs/architecture/evaluation.md) and its
 [evidence ledger](docs/architecture/evaluation-evidence.md). The project
 remains pre-v0.

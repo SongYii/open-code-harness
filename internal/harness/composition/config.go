@@ -9,6 +9,7 @@ import (
 
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/mcp"
 	"github.com/SongYii/open-code-harness/internal/harness/contextengine"
+	"github.com/SongYii/open-code-harness/internal/harness/engine"
 	"github.com/SongYii/open-code-harness/internal/harness/policy"
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
 )
@@ -19,11 +20,17 @@ import (
 // fixtures, shell history, and process listings; the key is read from the
 // named environment variable at Open, and never stored on Config.
 type Provider struct {
-	BaseURL       string
-	ModelID       string
-	APIKeyEnv     string
-	ContextWindow uint32
-	MaxOutput     uint32
+	BaseURL        string
+	ModelID        string
+	APIKeyEnv      string
+	ContextWindow  uint32
+	MaxOutput      uint32
+	IncludeUsage   bool
+	MaxTokensField string
+	ThinkingMode   string
+	// ReasoningEffort is the normal conversation default. Empty delegates to
+	// the provider. Context.SummaryReasoningEffort may override it per summary.
+	ReasoningEffort string
 	// AllowInsecureLoopback permits a plain-HTTP base URL when it resolves to
 	// loopback. It exists for a local fixture server and must stay false
 	// against any real endpoint.
@@ -40,6 +47,11 @@ type Limits struct {
 	ApprovalTimeout     time.Duration
 }
 
+// MCPServerConfig is the composition-owned spelling of the adapter's static
+// server configuration. Callers configure the assembly without importing a
+// concrete adapter; composition remains the only package that joins them.
+type MCPServerConfig = mcp.ServerConfig
+
 // Context tunes the Context Engine (design §21), which Open always
 // constructs from Provider.ContextWindow/MaxOutput -- there is no Enabled
 // switch here, since a working Context Engine is this milestone's baseline
@@ -48,6 +60,9 @@ type Limits struct {
 // default, and Validate rejects an out-of-range or inverted relationship
 // before Open constructs any resource.
 type Context struct {
+	// SummaryReasoningEffort is the per-request override used only by rolling
+	// summary calls. Empty inherits Provider.ReasoningEffort.
+	SummaryReasoningEffort string
 	// TriggerPercent/TargetPercent/TailPercent derive contextengine.Budget
 	// (design §8) from Provider.ContextWindow/MaxOutput: the fraction of
 	// hardInput that triggers compaction, the fraction compaction targets,
@@ -202,7 +217,7 @@ type Config struct {
 	// there is deliberately no AllowUnsandboxedExec-style escape hatch,
 	// because starting without tools an operator asked for, while reporting
 	// success, is the more dangerous outcome.
-	MCPServers []mcp.ServerConfig
+	MCPServers []MCPServerConfig
 
 	// ShutdownTimeout bounds Close. Default 10s. This is the only bound this
 	// package introduces rather than forwards.
@@ -271,6 +286,23 @@ func (config Config) Validate() error {
 	}
 	if config.Provider.ContextWindow == 0 || config.Provider.MaxOutput == 0 {
 		return fmt.Errorf("%w: Provider.ContextWindow and Provider.MaxOutput must be greater than zero", errInvalidConfig)
+	}
+	switch config.Provider.MaxTokensField {
+	case "", "max_tokens", "max_completion_tokens":
+	default:
+		return fmt.Errorf("%w: Provider.MaxTokensField must be empty, %q, or %q", errInvalidConfig, "max_tokens", "max_completion_tokens")
+	}
+	if config.Provider.ThinkingMode != "" && config.Provider.ThinkingMode != "disabled" {
+		return fmt.Errorf("%w: Provider.ThinkingMode must be empty or %q", errInvalidConfig, "disabled")
+	}
+	if !engine.IsReasoningEffort(engine.ReasoningEffort(config.Provider.ReasoningEffort)) {
+		return fmt.Errorf("%w: Provider.ReasoningEffort is not supported", errInvalidConfig)
+	}
+	if !engine.IsReasoningEffort(engine.ReasoningEffort(config.Context.SummaryReasoningEffort)) {
+		return fmt.Errorf("%w: Context.SummaryReasoningEffort is not supported", errInvalidConfig)
+	}
+	if config.Provider.ThinkingMode != "" && (config.Provider.ReasoningEffort != "" || config.Context.SummaryReasoningEffort != "") {
+		return fmt.Errorf("%w: Provider.ThinkingMode cannot be combined with reasoning effort", errInvalidConfig)
 	}
 	if err := config.Context.validate(config.Provider.ContextWindow, config.Provider.MaxOutput); err != nil {
 		return err
