@@ -290,7 +290,10 @@ path, requires every evidence role to be covered, and requires Pass labels to
 show the task, a concrete completion fact, and a named verification fact. This
 does not certify that a reviewer is right, but it makes a weak assumption
 visible and digest-bound. V4 uses fresh cases and must not be replaced by an
-edited v3 set.
+edited v3 set. The authorized 2026-09-12 DeepSeek v4 run reached 18/18 on both
+calibration and the untouched holdout, with no directional errors; its frozen
+policy passed. A checked-in test pins and recomputes the four report/policy
+artifacts. This proves only the frozen DeepSeek cell; OpenAI remains unrun.
 
 Two more refusals are worth knowing about:
 

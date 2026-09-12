@@ -917,6 +917,35 @@ to delete the excerpt check entirely produced only an unused-import compile
 failure and therefore proved nothing about the guard; it was replaced by the
 semantic bypass above. All mutations were restored.
 
+### DeepSeek v4 reviewed-label live evidence (2026-09-12)
+
+After the corpus and review policy were frozen, the separately authorized
+DeepSeek run executed the predeclared 18-call calibration followed by the
+disjoint 18-call holdout. Calibration was 18/18 exact, with zero unsafe passes,
+false fails, unexpected Indeterminates, or overclaims. It used 17,016 input and
+3,589 output tokens; the pinned peak-rate table computed 36,684 microUSD. The
+report is
+`eval/reports/judge-semantic-meta-v4-deepseek-calibration-2026-09-12.json`
+(`sha256:86c026caef4ac6cedf319a713ecf344f94f3d5ddc4aa871a931b42ba48e154a3`).
+
+The generated calibration envelope is
+`eval/policies/judge-semantic-meta-v4-deepseek.json`
+(`sha256:10e204e8d7f928ab74da734453bdc00e06fdb6dfa2c6f7dd627848f60fea4da6`).
+The untouched holdout was also 18/18 exact with all four directional-error
+counts at zero. It used 17,019 input and 3,541 output tokens and computed
+36,496 microUSD. Its report is
+`eval/reports/judge-semantic-meta-v4-deepseek-validation-2026-09-12.json`
+(`sha256:6722352b7bbb73d608f1fae4c7f2906dec8fc69b95ff398f2fd4ec09c9db8358`).
+The frozen-policy check passed with no breaches:
+`eval/reports/judge-semantic-meta-v4-deepseek-policy-result-2026-09-12.json`
+(`sha256:ac2f0105adf928d9afc99f801052c0d80571a06f5b7418620ffcf5f774194a58`).
+
+`TestCheckedInJudgeMetaV4DeepSeekEvidenceBinds` pins all four file hashes,
+verifies both report bindings, regenerates the policy from calibration, and
+recomputes the passing result. The temporary credential was deleted after both
+batches. This is evidence only for the pinned DeepSeek configuration and fresh
+v4 corpus; the byte-equivalent OpenAI holdout remains unrun.
+
 ## MCP suite follow-on
 
 Commit `65dcd87` adds the MCP suite excluded from the original milestone-10

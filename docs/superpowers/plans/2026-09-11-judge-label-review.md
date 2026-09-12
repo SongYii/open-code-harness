@@ -14,3 +14,15 @@
    run mutations, race tests, vet, and PR CI.
 7. Run v4 DeepSeek calibration and predeclared holdout only after a new explicit
    18 + 18 call authorization; run OpenAI only when available.
+
+## Execution state
+
+Tasks 1–6 are implemented and verified. The separately authorized DeepSeek
+part of task 7 ran on 2026-09-12: calibration and the disjoint holdout each
+reached 18/18 exact matches, with zero unsafe passes, false fails, unexpected
+Indeterminates, or overclaims. Calibration used 17,016 input and 3,589 output
+tokens (36,684 microUSD at pinned conservative peak rates); holdout used 17,019
+input and 3,541 output tokens (36,496 microUSD). The calibration-frozen policy
+passed the untouched holdout. Reports, policy, result, and digest-pinning test
+are checked in; the temporary credential was deleted. The equivalent OpenAI
+run remains unexecuted because that provider is unavailable.

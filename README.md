@@ -206,8 +206,10 @@ failed because one sparsely evidenced Pass case was consistently judged
 Indeterminate. Resolved contradictions were no longer silently downgraded in
 the holdout; one calibration schema failure predates detailed diagnostics.
 New v4 inputs add digest-bound label reviews with exact evidence quotes,
-verdict-specific support facts, and counterfactuals; they have not yet been run
-against a live model.
+verdict-specific support facts, and counterfactuals. On 2026-09-12 their
+DeepSeek calibration and untouched holdout each reached 18/18, with no unsafe
+passes or other directional errors, so the frozen policy passed. The
+byte-equivalent OpenAI holdout remains unrun.
 Provider breadth also remains outstanding
 before a GA claim. The
 variance *mechanism* is now
