@@ -10,7 +10,7 @@ import (
 // realisticMCPSchema is the shape a published MCP tool actually ships: a
 // per-property description, a number type, and no additionalProperties. Every
 // one of those three is rejected by compileSchema, which was written for this
-// project's own four builtin tools and admits twelve keywords and four types.
+// project's own closed builtin tools and admits twelve keywords and four types.
 const realisticMCPSchema = `{
   "type": "object",
   "properties": {

@@ -44,6 +44,7 @@ const (
 type CreateSession struct {
 	SessionID     SessionID
 	WorkspaceRoot string
+	Parent        *SessionParent
 }
 
 func (CreateSession) CommandType() string          { return CommandCreateSession }

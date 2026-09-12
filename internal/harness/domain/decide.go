@@ -188,8 +188,38 @@ func deleteSessionEvents() []UncommittedEvent {
 	return []UncommittedEvent{{Event: SessionDeleted{}}}
 }
 
-func createSessionEvents(workspaceRoot string) []UncommittedEvent {
-	return []UncommittedEvent{{Event: SessionCreated{WorkspaceRoot: workspaceRoot}}}
+func createSessionEvents(workspaceRoot string, parent *SessionParent) []UncommittedEvent {
+	return []UncommittedEvent{{Event: SessionCreated{WorkspaceRoot: workspaceRoot, Parent: cloneSessionParent(parent)}}}
+}
+
+func cloneSessionParent(parent *SessionParent) *SessionParent {
+	if parent == nil {
+		return nil
+	}
+	clone := *parent
+	return &clone
+}
+
+func validateSessionParent(parent *SessionParent, childID SessionID) error {
+	if parent == nil {
+		return nil
+	}
+	if err := validateCommandSessionID(parent.SessionID); err != nil {
+		return err
+	}
+	if err := validateCommandTurnID(parent.TurnID); err != nil {
+		return err
+	}
+	if err := validateCommandItemID(parent.ItemID); err != nil {
+		return err
+	}
+	if err := validateID(parent.CallID); err != nil {
+		return err
+	}
+	if parent.SessionID == childID {
+		return domainError(CodeInvalidCommand, "parent session must differ from child session")
+	}
+	return nil
 }
 
 func validateAssistantInterruptionCode(code string) error {
@@ -315,7 +345,10 @@ func decideCreateSession(state Session, command CreateSession) ([]UncommittedEve
 	if err := validateCommandText(command.WorkspaceRoot, "workspace root is required"); err != nil {
 		return nil, err
 	}
-	return createSessionEvents(command.WorkspaceRoot), nil
+	if err := validateSessionParent(command.Parent, command.SessionID); err != nil {
+		return nil, err
+	}
+	return createSessionEvents(command.WorkspaceRoot, command.Parent), nil
 }
 
 func decideStartTurn(state Session, command StartTurn) ([]UncommittedEvent, error) {

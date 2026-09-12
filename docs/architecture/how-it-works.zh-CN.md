@@ -552,6 +552,34 @@ Checkpoint 继续。
 前述能力是 trace-only 切片有意排除的后续范围，不是尚未补齐的验收项。明显的二进制
 体积成本已经公开记录。
 
+<!-- contract: docs/architecture/local-subagent-delegation.md -->
+## 本地子代理委派
+
+### 解决什么问题
+
+大量探索性读文件会挤占主对话，而主模型往往只需要一条经过核对的结论。
+
+### 用户能看到什么
+
+开启 `-subagents` 后，模型可以调用 `delegate_task`，拿回子 Session ID 和最终回答；
+不开启时工具列表和模型请求完全不变。
+
+### 真实实现
+
+Application 新建真实持久 Session，再通过原有 Provider、Context、仓库指令、EventStore
+和 Trace 路径同步运行。子模型只看到 `read_file`/`list_dir`，执行入口还会独立拒绝隐藏
+的写入、命令、MCP 和递归委派。见[合同](local-subagent-delegation.md)和
+[证据](local-subagent-delegation-evidence.md)。
+
+### 遇到的问题与修复
+
+只隐藏 Schema 挡不住伪造调用；父子跨事件流也不能假装原子提交；原始子错误和 UTF-8
+截断各有泄漏或损坏风险。实现增加了执行白名单、完整持久关系、固定失败码和字符边界截取。
+
+### 仍未完成
+
+没有后台运行、继续旧孩子、复制父历史、子写入、角色/模型覆盖、远程 Agent 或蜂群调度。
+
 <!-- contract: docs/architecture/system-prompt-workspace-instructions.md -->
 ## System Prompt 与 Workspace Instructions
 

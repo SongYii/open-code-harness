@@ -268,7 +268,7 @@ func (service *Service) runStepLoop(ctx context.Context, owned *ownedTurn) (RunT
 				ItemID:    owned.assistantItem,
 				Input:     owned.request.Input,
 				Messages:  owned.projection.Messages(),
-				Tools:     service.catalog.Schemas(),
+				Tools:     service.toolSchemas(owned.state),
 			},
 			MaxAssistantBytes: service.config.MaxAssistantBytes,
 		})
@@ -393,7 +393,7 @@ func (service *Service) decideStartAssistantStep(owned *ownedTurn) ([]domain.Unc
 		return nil, errors.New("missing active turn")
 	}
 	preview.ActiveTurn.ActiveItem = &domain.Item{ID: owned.assistantItem, TurnID: owned.result.TurnID, Kind: domain.ItemKindAssistantMessage}
-	recorded := service.stepRequestRecorded(owned.result.TurnID, owned.assistantItem, owned.projection.Suffix())
+	recorded := service.stepRequestRecorded(owned.state, owned.result.TurnID, owned.assistantItem, owned.projection.Suffix())
 	requestEvents, err := domain.Decide(preview, domain.RecordModelRequest{SessionID: owned.result.SessionID, ModelRequestRecorded: recorded})
 	if err != nil {
 		return nil, err
@@ -428,7 +428,7 @@ func (service *Service) startNextStepWithContextEngine(ctx context.Context, owne
 
 	prepared, err := PrepareContext(ctx, service.contextOrchestratorDeps(), owned.state, PrepareContextInput{
 		SessionID: owned.result.SessionID, TurnID: owned.result.TurnID, ItemID: itemID,
-		Trigger: domain.ContextTriggerMidTurn, PrefixMessages: conversationPrefixMessages(), Tools: service.catalog.Schemas(),
+		Trigger: domain.ContextTriggerMidTurn, PrefixMessages: conversationPrefixMessages(), Tools: service.toolSchemas(owned.state),
 	})
 	if err != nil {
 		return true, cloneRunTurnResult(owned.result), err
@@ -479,12 +479,12 @@ func midTurnStepEvents(state domain.Session, sessionID domain.SessionID, turnID 
 	return append(startEvents, contextAndRequestEvents...), nil
 }
 
-func (service *Service) stepRequestRecorded(turnID domain.TurnID, itemID domain.ItemID, messages []domain.ModelPromptMessage) domain.ModelRequestRecorded {
+func (service *Service) stepRequestRecorded(state domain.Session, turnID domain.TurnID, itemID domain.ItemID, messages []domain.ModelPromptMessage) domain.ModelRequestRecorded {
 	identity := service.config.RequestIdentity
 	recorded := domain.ModelRequestRecorded{
 		TurnID: turnID, ItemID: itemID,
 		Messages: clonePromptMessages(messages),
-		Tools:    service.catalog.Schemas(),
+		Tools:    service.toolSchemas(state),
 	}
 	if identity == nil {
 		return recorded
@@ -508,7 +508,7 @@ func (service *Service) stepRequestRecorded(turnID domain.TurnID, itemID domain.
 }
 
 func (service *Service) ensureProjectionUnderCap(owned *ownedTurn) error {
-	size, err := serializedProjectionBytes(owned.projection.Messages(), service.catalog.Schemas())
+	size, err := serializedProjectionBytes(owned.projection.Messages(), service.toolSchemas(owned.state))
 	if err != nil {
 		return err
 	}

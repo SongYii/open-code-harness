@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	iofs "io/fs"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -97,6 +99,27 @@ func TestNewServiceToolComposition(t *testing.T) {
 			t.Fatalf("DefaultConfig() = %#v", config)
 		}
 	})
+	t.Run("subagent switch and catalog must agree", func(t *testing.T) {
+		delegateCatalog, err := tools.NewCatalog(append(tools.DefaultWorkspaceSpecs(), tools.DelegateTaskSpec()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		disabled := toolConfig(delegateCatalog, files, commands, nil)
+		_, err = application.NewService(store, ids, testkit.FixedClock{Time: toolClock()}, runner, v2Authority, disabled)
+		assertApplicationError(t, err, application.CategoryValidation, "invalid_configuration")
+
+		enabledWithoutSpec := toolConfig(catalog, files, commands, nil)
+		enabledWithoutSpec.Subagents.Enabled = true
+		_, err = application.NewService(store, ids, testkit.FixedClock{Time: toolClock()}, runner, v2Authority, enabledWithoutSpec)
+		assertApplicationError(t, err, application.CategoryValidation, "invalid_configuration")
+
+		enabled := toolConfig(delegateCatalog, files, commands, nil)
+		enabled.Subagents.Enabled = true
+		service, err := application.NewService(store, ids, testkit.FixedClock{Time: toolClock()}, runner, v2Authority, enabled)
+		if err != nil || service == nil {
+			t.Fatalf("NewService(enabled subagents) = (%v, %v)", service, err)
+		}
+	})
 }
 
 func TestTwoStepReadFileSuccess(t *testing.T) {
@@ -126,6 +149,96 @@ func TestTwoStepReadFileSuccess(t *testing.T) {
 	}
 	if result.ItemID != "item-1" || result.Text != "done" || result.Status != domain.TurnStatusCompleted || !result.TerminalCommitted {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestDelegateTaskCreatesReadOnlyDurableChild(t *testing.T) {
+	fs := testkit.NewMemFS("/workspace")
+	fs.AddFile("README.md", []byte("child evidence"))
+	model := newSequenceModel(
+		[]engine.StreamEvent{
+			{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "call-delegate", Name: tools.NameDelegateTask, Arguments: `{"task":"inspect README"}`}},
+			{Type: engine.StreamEventCompleted},
+		},
+		[]engine.StreamEvent{
+			{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "call-child-read", Name: tools.NameReadFile, Arguments: `{"path":"README.md"}`}},
+			{Type: engine.StreamEventCompleted},
+		},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "child answer"}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "parent done"}, {Type: engine.StreamEventCompleted}},
+	)
+	config := application.DefaultConfig()
+	config.Subagents.Enabled = true
+	service, _ := newToolService(t, model, fs, nil, nil, config)
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "request-parent", Input: "delegate it", Sink: &testkit.RecordingSink{}})
+	if err != nil || result.Text != "parent done" {
+		t.Fatalf("RunTurn() = (%#v, %v)", result, err)
+	}
+	child, err := service.LoadSession(context.Background(), "session-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantParent := &domain.SessionParent{SessionID: created.SessionID, TurnID: result.TurnID, ItemID: "item-2", CallID: "call-delegate"}
+	if !reflect.DeepEqual(child.Parent, wantParent) {
+		t.Fatalf("child parent = %#v, want %#v", child.Parent, wantParent)
+	}
+	calls := model.Calls()
+	if len(calls) != 4 {
+		t.Fatalf("provider calls = %d, want 4", len(calls))
+	}
+	for _, index := range []int{1, 2} {
+		if got := []string{calls[index].Tools[0].Name, calls[index].Tools[1].Name}; !reflect.DeepEqual(got, []string{tools.NameReadFile, tools.NameListDir}) || len(calls[index].Tools) != 2 {
+			t.Fatalf("child call %d tools = %#v, want read_file/list_dir only", index+1, calls[index].Tools)
+		}
+	}
+	if strings.Contains(fmt.Sprintf("%#v", calls[1].Messages), "delegate it") || !strings.Contains(fmt.Sprintf("%#v", calls[1].Messages), "inspect README") {
+		t.Fatalf("child request did not start from the fresh delegated task: %#v", calls[1].Messages)
+	}
+	if !reflect.DeepEqual(calls[0].Tools, calls[3].Tools) {
+		t.Fatal("parent tool schema changed between steps")
+	}
+	if got := lastToolMessage(calls[3].Messages).Text; got != "child session: session-2\nchild answer" {
+		t.Fatalf("parent tool result = %q", got)
+	}
+}
+
+func TestChildSessionRejectsHiddenWriteAtDispatch(t *testing.T) {
+	workspaceFS := testkit.NewMemFS("/workspace")
+	model := newSequenceModel(
+		[]engine.StreamEvent{
+			{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "call-write", Name: tools.NameWriteFile, Arguments: `{"path":"out.txt","content":"no"}`}},
+			{Type: engine.StreamEventCompleted},
+		},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "write refused"}, {Type: engine.StreamEventCompleted}},
+	)
+	config := application.DefaultConfig()
+	config.Subagents.Enabled = true
+	service, store := newToolService(t, model, workspaceFS, nil, nil, config)
+	parent, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace", Parent: &domain.SessionParent{SessionID: parent.SessionID, TurnID: "parent-turn", ItemID: "parent-item", CallID: "parent-call"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: child.SessionID, RequestID: "request-child", Input: "try writing", Sink: &testkit.RecordingSink{}}); err != nil {
+		t.Fatal(err)
+	}
+	records, err := application.ReadWholeStreamPinned(context.Background(), store, child.SessionID, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := lastToolFailed(records)
+	if failed.Code != application.CodeSubagentCapabilityDenied || failed.Message != application.ToolTextSubagentCapabilityDenied {
+		t.Fatalf("tool failure = %#v", failed)
+	}
+	if _, err := workspaceFS.Read(context.Background(), "/workspace/out.txt", 100); !errors.Is(err, iofs.ErrNotExist) {
+		t.Fatalf("hidden write changed workspace: %v", err)
 	}
 }
 
@@ -1757,7 +1870,11 @@ func newToolService(t *testing.T, model engine.Model, files tools.FileSystem, co
 
 func newToolServiceWithStore(t *testing.T, store application.EventStore, model engine.Model, files tools.FileSystem, commands tools.CommandRunner, approver tools.Approver, base application.Config) *application.Service {
 	t.Helper()
-	catalog, err := tools.NewCatalog(tools.DefaultWorkspaceSpecs())
+	specs := tools.DefaultWorkspaceSpecs()
+	if base.Subagents.Enabled {
+		specs = append(specs, tools.DelegateTaskSpec())
+	}
+	catalog, err := tools.NewCatalog(specs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1773,6 +1890,7 @@ func newToolServiceWithStore(t *testing.T, store application.EventStore, model e
 	config.PolicyStrategy = base.PolicyStrategy
 	config.PolicyIdentity = base.PolicyIdentity
 	config.Telemetry = base.Telemetry
+	config.Subagents = base.Subagents
 	if config.MaxSteps == 0 {
 		config.MaxSteps = application.DefaultMaxSteps
 	}

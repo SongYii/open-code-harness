@@ -123,6 +123,42 @@ func TestTelemetryToolApprovalTopology(t *testing.T) {
 	}
 }
 
+func TestTelemetryChildTurnIsNestedUnderDelegationTool(t *testing.T) {
+	recorder := &memory.Telemetry{}
+	model := newSequenceModel(
+		[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "call-delegate", Name: tools.NameDelegateTask, Arguments: `{"task":"inspect"}`}}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "child answer"}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "parent answer"}, {Type: engine.StreamEventCompleted}},
+	)
+	config := application.DefaultConfig()
+	config.Telemetry = recorder
+	config.Subagents.Enabled = true
+	service, _ := newToolService(t, model, testkit.NewMemFS("/workspace"), nil, nil, config)
+	parent, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: parent.SessionID, RequestID: "request-parent", Input: "delegate", Sink: &testkit.RecordingSink{}}); err != nil {
+		t.Fatal(err)
+	}
+	var toolID, childTurnID, childParent uint64
+	for _, record := range recorder.Records() {
+		if record.Start.Kind == telemetry.KindToolExecute && stringAttribute(record.Start.Attributes, telemetry.KeyToolName) == tools.NameDelegateTask {
+			toolID = record.ID
+		}
+		if record.Start.Kind == telemetry.KindTurn && stringAttribute(record.Start.Attributes, telemetry.KeySessionID) == "session-2" {
+			childTurnID = record.ID
+			childParent = record.Parent
+		}
+	}
+	if toolID == 0 || childTurnID == 0 {
+		t.Fatalf("trace records = %#v, want delegation tool and child Turn", recorder.Records())
+	}
+	if childParent != toolID {
+		t.Fatalf("child Turn parent = %d, want delegation tool %d", childParent, toolID)
+	}
+}
+
 func TestTelemetryFailureUsesStableCodeNotRawError(t *testing.T) {
 	const secretError = "provider failed with Authorization: Bearer sk-do-not-export"
 	store := newTurnMemoryStore(t)

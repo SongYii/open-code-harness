@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
@@ -198,7 +199,7 @@ func TestInvokeToolRoutesAnExternalSpecBySourceNotByName(t *testing.T) {
 	service := &Service{external: external}
 
 	text, _, code, _, err := service.invokeTool(
-		context.Background(), "session-test", externalSpec(), toolArgs{Raw: `{"query":"x"}`}, "")
+		context.Background(), &ownedTurn{result: RunTurnResult{SessionID: "session-test"}}, externalSpec(), toolArgs{Raw: `{"query":"x"}`}, "")
 	if err != nil {
 		t.Fatalf("invokeTool: %v", err)
 	}
@@ -236,14 +237,14 @@ func (stubFiles) List(context.Context, string, int, int) ([]string, bool, error)
 }
 
 // TestInvokeToolStillRoutesBuiltinsByName keeps the new source branch from
-// swallowing the four builtins.
+// swallowing the builtins.
 func TestInvokeToolStillRoutesBuiltinsByName(t *testing.T) {
 	external := &recordingExternalTools{result: tools.ExternalToolResult{Text: "must not be used"}}
 	service := &Service{external: external, files: stubFiles{}, observations: newFileObservations()}
 
 	builtin := tools.DefaultWorkspaceSpecs()[0] // read_file
 	text, _, code, _, err := service.invokeTool(
-		context.Background(), "session-test", builtin, toolArgs{Raw: `{"path":"x"}`, Path: "x"}, "/abs")
+		context.Background(), &ownedTurn{result: RunTurnResult{SessionID: "session-test"}}, builtin, toolArgs{Raw: `{"path":"x"}`, Path: "x"}, "/abs")
 	if err != nil {
 		t.Fatalf("invokeTool: %v", err)
 	}
@@ -255,5 +256,11 @@ func TestInvokeToolStillRoutesBuiltinsByName(t *testing.T) {
 	}
 	if external.calls != 0 {
 		t.Fatalf("a builtin was dispatched to the external port %d times", external.calls)
+	}
+}
+
+func TestTruncateValidUTF8DoesNotSplitRune(t *testing.T) {
+	if got := truncateValidUTF8("ab界", 4); got != "ab" || !utf8.ValidString(got) {
+		t.Fatalf("truncateValidUTF8() = %q", got)
 	}
 }

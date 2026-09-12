@@ -19,7 +19,9 @@ type RecordedEvent struct {
 func CloneEvent(event Event) (Event, error) {
 	switch event := event.(type) {
 	case SessionCreated:
-		return event, nil
+		cloned := event
+		cloned.Parent = cloneSessionParent(event.Parent)
+		return cloned, nil
 	case TurnStarted:
 		return event, nil
 	case TurnCompleted:

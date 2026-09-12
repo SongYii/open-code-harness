@@ -166,6 +166,8 @@ func bindAssemblyFlags(flags *flag.FlagSet, config *composition.Config, policyMo
 	flags.StringVar(&config.Telemetry.OTLPTraceEndpoint, "otel-traces-endpoint", "", "OTLP/HTTP /v1/traces URL; empty disables telemetry")
 	flags.Float64Var(&config.Telemetry.SampleRatio, "otel-traces-sample-ratio", 0, "trace head-sampling ratio in (0,1]; 0 uses 1.0 when telemetry is enabled")
 	flags.BoolVar(&config.Telemetry.AllowInsecureLoopback, "otel-allow-insecure-loopback", false, "permit plain HTTP telemetry only to a literal loopback IP")
+	flags.BoolVar(&config.Subagents.Enabled, "subagents", false, "enable synchronous read-only delegate_task child sessions")
+	flags.DurationVar(&config.Subagents.Timeout, "subagent-timeout", 0, "maximum duration of one delegated task; 0 uses two minutes when enabled")
 	flags.DurationVar(&config.ShutdownTimeout, "shutdown-timeout", composition.DefaultShutdownTimeout, "how long shutdown may wait for the host's loops")
 	flags.BoolVar(&config.AllowUnsandboxedExec, "allow-unsandboxed-exec", false, "proceed even if no OS-level exec sandbox (bwrap, sandbox-exec) is available on this host; logs which guarantee is absent")
 }

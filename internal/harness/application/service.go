@@ -25,6 +25,9 @@ const (
 	MaxExecTimeout                       = 120 * time.Second
 	MaxProjectionBytes                   = 4 << 20
 	MaxToolResultBytes                   = 64 << 10
+	DefaultSubagentTimeout               = 2 * time.Minute
+	MinSubagentTimeout                   = 5 * time.Second
+	MaxSubagentTimeout                   = 10 * time.Minute
 	loggedEnvelopeToolSchemaSlack        = 64 << 10
 )
 
@@ -49,6 +52,14 @@ type Config struct {
 	Approver      tools.Approver
 	Context       ContextConfig
 	Telemetry     telemetry.Tracer
+	Subagents     SubagentConfig
+}
+
+// SubagentConfig enables the bounded, synchronous, read-only child-session
+// slice. The zero value is disabled and preserves the previous tool catalog.
+type SubagentConfig struct {
+	Enabled bool
+	Timeout time.Duration
 }
 
 // ContextConfig configures the Context Engine (design 2026-09-01). The
@@ -208,6 +219,17 @@ func NewService(store EventStore, ids IDGenerator, clock Clock, runner *engine.T
 	catalogEnabled := catalogHasSpecs(config.Catalog)
 	if err := validateToolComposition(config, catalogEnabled); err != nil {
 		return nil, err
+	}
+	_, hasDelegateTask := config.Catalog.Spec(tools.NameDelegateTask)
+	if config.Subagents.Enabled {
+		if config.Subagents.Timeout == 0 {
+			config.Subagents.Timeout = DefaultSubagentTimeout
+		}
+		if !hasDelegateTask || config.Subagents.Timeout <= 0 || config.Subagents.Timeout > MaxSubagentTimeout {
+			return nil, applicationError(CategoryValidation, "invalid_configuration", false, nil)
+		}
+	} else if hasDelegateTask || config.Subagents.Timeout != 0 {
+		return nil, applicationError(CategoryValidation, "invalid_configuration", false, nil)
 	}
 	if config.Context.Enabled {
 		if isNilValue(config.Context.Summarizer) || isNilValue(config.Context.CheckpointStore) || isNilValue(config.Context.Meter) || config.Context.Budget.HardInput == 0 {

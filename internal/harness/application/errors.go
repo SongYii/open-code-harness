@@ -43,7 +43,10 @@ const (
 	// failure, as distinct from a call that could not reach it. The first is
 	// an ordinary event inside a Turn that the model can read and react to;
 	// the second ends the Turn.
-	CodeExternalToolFailed = "external_tool_failed"
+	CodeExternalToolFailed       = "external_tool_failed"
+	CodeSubagentCapabilityDenied = "subagent_capability_denied"
+	CodeSubagentFailed           = "subagent_failed"
+	CodeSubagentTimeout          = "subagent_timeout"
 )
 
 // Filesystem guard codes. Each mirrors a tools.ErrorCode one-for-one, and
@@ -84,17 +87,20 @@ const (
 )
 
 const (
-	ToolTextPolicyDenied    = "policy denied this tool"
-	ToolTextApprovalDenied  = "approval denied this tool"
-	ToolTextApprovalTimeout = "approval timed out"
-	ToolTextScopeDenied     = "path is outside the workspace"
-	ToolTextUnknownTool     = "unknown tool"
-	ToolTextInvalidArgs     = "invalid tool arguments"
-	ToolTextOutputLimit     = "tool output exceeded the size limit"
-	ToolTextExecTimeout     = "command timed out"
-	ToolTextResourceLimit   = "command exceeded a resource limit"
-	ToolTextExternalFailed  = "external tool reported a failure"
-	TruncationMarker        = "\n[truncated]"
+	ToolTextPolicyDenied             = "policy denied this tool"
+	ToolTextApprovalDenied           = "approval denied this tool"
+	ToolTextApprovalTimeout          = "approval timed out"
+	ToolTextScopeDenied              = "path is outside the workspace"
+	ToolTextUnknownTool              = "unknown tool"
+	ToolTextInvalidArgs              = "invalid tool arguments"
+	ToolTextOutputLimit              = "tool output exceeded the size limit"
+	ToolTextExecTimeout              = "command timed out"
+	ToolTextResourceLimit            = "command exceeded a resource limit"
+	ToolTextExternalFailed           = "external tool reported a failure"
+	ToolTextSubagentCapabilityDenied = "child sessions may only read files and list directories"
+	ToolTextSubagentFailed           = "delegated task failed"
+	ToolTextSubagentTimeout          = "delegated task timed out"
+	TruncationMarker                 = "\n[truncated]"
 )
 
 // Filesystem guard messages.

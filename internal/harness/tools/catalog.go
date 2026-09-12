@@ -8,11 +8,12 @@ import (
 )
 
 const (
-	NameReadFile  = "read_file"
-	NameWriteFile = "write_file"
-	NameEditFile  = "edit_file"
-	NameListDir   = "list_dir"
-	NameExec      = "exec"
+	NameReadFile     = "read_file"
+	NameWriteFile    = "write_file"
+	NameEditFile     = "edit_file"
+	NameListDir      = "list_dir"
+	NameExec         = "exec"
+	NameDelegateTask = "delegate_task"
 
 	SourceBuiltin = "builtin"
 	SourceMCP     = "mcp"
@@ -24,6 +25,7 @@ const (
 	MaxListDirEntries    = 256
 	MaxListDirDepth      = 2
 	DefaultListDirDepth  = 1
+	MaxDelegateTaskBytes = 16384
 )
 
 const (
@@ -34,15 +36,29 @@ const (
 	// rather than inventing one. replace_all is the only matching option there
 	// is: no regular expressions, no globs, nothing whose behaviour a reader
 	// has to simulate to predict.
-	schemaEditFile = `{"type":"object","additionalProperties":false,"required":["path","old_string","new_string"],"properties":{"path":{"type":"string","minLength":1,"maxLength":4096},"old_string":{"type":"string","minLength":1,"maxLength":32768},"new_string":{"type":"string","maxLength":32768},"replace_all":{"type":"boolean"}}}`
-	schemaListDir  = `{"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string","minLength":1,"maxLength":4096},"depth":{"type":"integer","minimum":1,"maximum":2}}}`
-	schemaExec     = `{"type":"object","additionalProperties":false,"required":["argv"],"properties":{"argv":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"string","maxLength":4096}},"cwd":{"type":"string","minLength":1,"maxLength":4096}}}`
+	schemaEditFile     = `{"type":"object","additionalProperties":false,"required":["path","old_string","new_string"],"properties":{"path":{"type":"string","minLength":1,"maxLength":4096},"old_string":{"type":"string","minLength":1,"maxLength":32768},"new_string":{"type":"string","maxLength":32768},"replace_all":{"type":"boolean"}}}`
+	schemaListDir      = `{"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string","minLength":1,"maxLength":4096},"depth":{"type":"integer","minimum":1,"maximum":2}}}`
+	schemaExec         = `{"type":"object","additionalProperties":false,"required":["argv"],"properties":{"argv":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"string","maxLength":4096}},"cwd":{"type":"string","minLength":1,"maxLength":4096}}}`
+	schemaDelegateTask = `{"type":"object","additionalProperties":false,"required":["task"],"properties":{"task":{"type":"string","minLength":1,"maxLength":16384}}}`
 )
 
 // Catalog is an immutable name-unique ToolSpec set.
 type Catalog struct {
 	specs  []domain.ToolSpec
 	byName map[string]int
+}
+
+// DelegateTaskSpec is opt-in so a disabled deployment preserves its previous
+// tool schema bytes and provider prompt-cache identity.
+func DelegateTaskSpec() domain.ToolSpec {
+	return domain.ToolSpec{
+		Name:        NameDelegateTask,
+		Description: "Delegate a bounded research task to a fresh read-only child session and return its final answer.",
+		InputSchema: []byte(schemaDelegateTask),
+		Source:      SourceBuiltin,
+		Risk:        domain.RiskRead,
+		Mutates:     false,
+	}
 }
 
 func NewCatalog(specs []domain.ToolSpec) (*Catalog, error) {

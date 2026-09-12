@@ -65,6 +65,7 @@ type HistoricalSession struct {
 	Status        SessionStatus
 	Version       uint64
 	WorkspaceRoot string
+	Parent        *SessionParent
 	ActiveTurnID  TurnID
 	TurnOrder     []TurnID
 	Turns         map[TurnID]HistoricalTurn
@@ -74,6 +75,7 @@ func (s HistoricalSession) Exists() bool { return s.ID != "" }
 
 func (s HistoricalSession) Clone() HistoricalSession {
 	clone := s
+	clone.Parent = cloneSessionParent(s.Parent)
 	if s.TurnOrder != nil {
 		clone.TurnOrder = make([]TurnID, len(s.TurnOrder))
 		copy(clone.TurnOrder, s.TurnOrder)
@@ -92,6 +94,7 @@ func (s HistoricalSession) isPristine() bool {
 		s.Status == "" &&
 		s.Version == 0 &&
 		s.WorkspaceRoot == "" &&
+		s.Parent == nil &&
 		s.ActiveTurnID == "" &&
 		s.TurnOrder == nil &&
 		s.Turns == nil
@@ -742,12 +745,16 @@ func historical_applySessionCreated(state HistoricalSession, record RecordedEven
 	if !hasRequiredText(event.WorkspaceRoot) {
 		return HistoricalSession{}, domainError(CodeInvalidEvent, "workspace root is required")
 	}
+	if err := validateSessionParent(event.Parent, record.SessionID); err != nil {
+		return HistoricalSession{}, domainError(CodeInvalidEvent, "session parent is invalid")
+	}
 
 	return HistoricalSession{
 		ID:            record.SessionID,
 		Status:        SessionStatusActive,
 		Version:       record.Sequence,
 		WorkspaceRoot: event.WorkspaceRoot,
+		Parent:        cloneSessionParent(event.Parent),
 		TurnOrder:     make([]TurnID, 0),
 		Turns:         make(map[TurnID]HistoricalTurn),
 	}, nil
@@ -1071,7 +1078,10 @@ func historical_decideCreateSession(state HistoricalSession, command CreateSessi
 	if err := validateCommandText(command.WorkspaceRoot, "workspace root is required"); err != nil {
 		return nil, err
 	}
-	return createSessionEvents(command.WorkspaceRoot), nil
+	if err := validateSessionParent(command.Parent, command.SessionID); err != nil {
+		return nil, err
+	}
+	return createSessionEvents(command.WorkspaceRoot, command.Parent), nil
 }
 
 func historical_decideStartTurn(state HistoricalSession, command StartTurn) ([]UncommittedEvent, error) {

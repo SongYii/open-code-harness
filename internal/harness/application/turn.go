@@ -118,10 +118,7 @@ func (service *Service) runTurnOwned(ctx context.Context, request RunTurnRequest
 	if err != nil {
 		return RunTurnResult{}, applicationError(CategoryInternal, "emitter_construction_failed", false, err)
 	}
-	var schemas []domain.ToolSchema
-	if service.catalogEnabled() {
-		schemas = service.catalog.Schemas()
-	}
+	schemas := service.toolSchemas(state)
 	if service.contextEnabled() {
 		return service.runTurnOwnedWithContextEngine(ctx, request, requestDigest, lease, state, turnID, itemID, commandID, emitter, schemas)
 	}

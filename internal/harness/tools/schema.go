@@ -563,7 +563,7 @@ const MaxMCPSchemaBytes = 32768
 // from an MCP server.
 //
 // It deliberately does not require compileSchema to succeed. That compiler
-// was written for this project's own four builtin tools: twelve keywords
+// was written for this project's own closed builtin tools: twelve keywords
 // applied recursively, four permitted type values, and a mandatory
 // additionalProperties:false. Published MCP tools use full JSON Schema, so
 // requiring it here refused a per-property description, "type":"number",

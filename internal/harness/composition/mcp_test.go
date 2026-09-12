@@ -13,6 +13,7 @@ import (
 
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/mcp"
 	"github.com/SongYii/open-code-harness/internal/harness/composition"
+	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
 )
 
@@ -79,6 +80,27 @@ func TestOpenWithNoMCPServersIsUnchanged(t *testing.T) {
 		if spec.Source != tools.SourceBuiltin {
 			t.Fatalf("spec %q has source %q in an assembly with no MCP servers", spec.Name, spec.Source)
 		}
+	}
+}
+
+func TestOpenAddsDelegateTaskOnlyWhenSubagentsEnabled(t *testing.T) {
+	config := validConfig(t)
+	t.Setenv(config.Provider.APIKeyEnv, "contract-key")
+	config.Subagents.Enabled = true
+
+	assembly, err := composition.Open(t.Context(), config)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = assembly.Close() }()
+
+	specs := assembly.Catalog().Specs()
+	if len(specs) != len(tools.DefaultWorkspaceSpecs())+1 {
+		t.Fatalf("catalog holds %d specs, want builtins plus delegate_task", len(specs))
+	}
+	spec, ok := assembly.Catalog().Spec(tools.NameDelegateTask)
+	if !ok || spec.Risk != domain.RiskRead || spec.Mutates {
+		t.Fatalf("delegate_task spec = %#v, found %v", spec, ok)
 	}
 }
 

@@ -651,6 +651,41 @@ real ACP Turn, and the implemented Turn, context, failure, cancellation,
 approval, tool, append, and recovery topologies are covered. The binary-size
 increase is material and published.
 
+<!-- contract: docs/architecture/local-subagent-delegation.md -->
+## Local subagent delegation
+
+### Problem
+
+Exploratory repository reading can consume the parent conversation even when
+the parent needs only one bounded conclusion.
+
+### Visible result
+
+With `-subagents`, the model can call `delegate_task` and receives a child
+Session ID plus its final answer. Without the flag, the tool catalog and model
+request remain unchanged.
+
+### Implementation
+
+Application creates a fresh durable Session and synchronously runs its Turn
+through the existing Provider, Context, instruction, EventStore, and trace
+paths. The child sees only `read_file` and `list_dir`; an independent dispatch
+guard rejects hidden write, exec, MCP, and recursive calls. See the
+[contract](local-subagent-delegation.md) and
+[evidence](local-subagent-delegation-evidence.md).
+
+### Problems found and fixes
+
+Schema hiding alone did not stop a forged call, cross-stream atomicity was not
+honest, raw child failures could have entered the parent, and byte truncation
+could split UTF-8. Dispatch enforcement, durable all-or-nothing lineage,
+stable failure codes, and rune-safe truncation close those gaps.
+
+### Still missing
+
+There is no background work, continuation, parent-history fork, child writes,
+role/model override, remote agent, or swarm scheduler.
+
 <!-- contract: docs/architecture/system-prompt-workspace-instructions.md -->
 ## System prompt and workspace instructions
 

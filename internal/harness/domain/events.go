@@ -86,10 +86,20 @@ const (
 )
 
 type SessionCreated struct {
-	WorkspaceRoot string `json:"workspaceRoot"`
+	WorkspaceRoot string         `json:"workspaceRoot"`
+	Parent        *SessionParent `json:"parent,omitempty"`
 }
 
 func (SessionCreated) EventType() string { return EventSessionCreated }
+
+// SessionParent durably identifies the parent tool invocation that created a
+// child session. It is all-or-nothing: partially populated lineage is invalid.
+type SessionParent struct {
+	SessionID SessionID `json:"sessionID"`
+	TurnID    TurnID    `json:"turnID"`
+	ItemID    ItemID    `json:"itemID"`
+	CallID    string    `json:"callID"`
+}
 
 type TurnStarted struct {
 	TurnID TurnID `json:"turnID"`
