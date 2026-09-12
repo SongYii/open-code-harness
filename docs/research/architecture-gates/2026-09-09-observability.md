@@ -203,3 +203,9 @@ losslessly and locally" — and to say what that second view buys.
    nothing reached it, and that is recorded as the anomaly it was. Naming who
    reads these traces — and whether that reader exists today — belongs in the
    design's first paragraph, not its risk table.
+
+The follow-up
+[Observability and OpenTelemetry Design-Readiness Review](2026-09-12-observability-design-readiness.md)
+checks current official OTel sources, measures the Go dependency footprint,
+and gives evidence-backed recommendations for all seven questions. Those
+recommendations remain research, not an accepted normative design.
