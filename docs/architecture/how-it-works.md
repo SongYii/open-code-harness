@@ -550,8 +550,11 @@ The tests were strengthened and the end path now always closes safely.
 ### Still missing
 
 There are no native metrics/logs, dashboard, bundled Collector, or remote
-propagation. External Collector evidence and several trace-topology variants
-remain open; the binary-size increase is material and published.
+propagation. Those are deliberate exclusions from the trace-only slice, not
+missing acceptance evidence: an exact-pinned official Collector accepted a
+real ACP Turn, and the implemented Turn, context, failure, cancellation,
+approval, tool, append, and recovery topologies are covered. The binary-size
+increase is material and published.
 
 <!-- contract: docs/architecture/system-prompt-workspace-instructions.md -->
 ## System prompt and workspace instructions

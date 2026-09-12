@@ -470,7 +470,9 @@ Checkpoint 继续。
 ### 仍未完成
 
 没有原生 Metrics/Logs、Dashboard、内置 Collector 或跨进程传播。外部 Collector
-证据和几种 Trace 拓扑还需补齐；明显的二进制体积成本已经公开记录。
+互操作和已实现的 Turn、Context、失败、取消、审批、工具、写入与恢复拓扑都已有证据；
+前述能力是 trace-only 切片有意排除的后续范围，不是尚未补齐的验收项。明显的二进制
+体积成本已经公开记录。
 
 <!-- contract: docs/architecture/system-prompt-workspace-instructions.md -->
 ## System Prompt 与 Workspace Instructions
