@@ -82,6 +82,7 @@ repository uses throughout.
 | `f554442` | Quality Judge v2 correction | Versioned prompt/wire semantics for resolved vs. unresolved contradictions, authoritative evidence scope, fresh v3 blind sets, provider-equivalence and no-reuse guards |
 | `9b54f21` | Quality Judge v3 DeepSeek evidence | Bound 17/18 calibration and 15/18 disjoint holdout, honest sparse-evidence gate failure, diagnostic decode reason, cost bounds, and artifact guards |
 | `56fc0a1` | Auditable label review | Evidence-v1 label support facts, exact excerpts, counterfactuals, verdict-specific gates, twelve fresh v4 cases, and no-reuse/provider-equivalence guards |
+| `722e956` | Reviewed-label DeepSeek evidence | Bound 18/18 calibration and 18/18 disjoint holdout, passing frozen policy, conservative cost accounting, and artifact guards |
 
 ## Post-merge review findings closed
 
