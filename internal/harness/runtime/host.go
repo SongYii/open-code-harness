@@ -9,6 +9,7 @@ import (
 
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/sqlite"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
+	"github.com/SongYii/open-code-harness/internal/harness/telemetry"
 )
 
 // ErrNotReady reports that reconciliation has not completed; commands are
@@ -27,6 +28,8 @@ func (err *ErrLeaseHeld) Error() string {
 // Config bounds one host. Zero values take documented defaults.
 type Config struct {
 	SQLite sqlite.Config
+	// Telemetry observes startup reconciliation. Nil is the no-op behavior.
+	Telemetry telemetry.Tracer
 
 	// AuditDirectory enables the background exporter after readiness; empty
 	// disables it (export lag never blocks readiness either way).
@@ -110,10 +113,21 @@ func Launch(ctx context.Context, config Config) (*Host, error) {
 	if err != nil {
 		return nil, classifyOpenError(err)
 	}
-	rec := &reconciler{store: store, authority: store}
-	if err := reconcileAll(ctx, rec, store); err != nil {
+	reconcileCtx, reconcileSpan := telemetry.SafeStart(config.Telemetry, ctx, telemetry.Start{Kind: telemetry.KindRuntimeReconcile})
+	rec := &reconciler{store: store, authority: store, telemetry: config.Telemetry}
+	candidates, recovered, reconcileErr := reconcileAll(reconcileCtx, rec, store)
+	reconcileEnd := telemetry.End{Outcome: telemetry.OutcomeOK, Attributes: []telemetry.Attribute{
+		telemetry.Int64(telemetry.KeyRuntimeCandidates, int64(candidates)),
+		telemetry.Int64(telemetry.KeyRuntimeRecovered, int64(recovered)),
+	}}
+	if reconcileErr != nil {
+		reconcileEnd.Outcome = telemetry.OutcomeFailed
+		reconcileEnd.Code = "reconcile_failed"
+	}
+	reconcileSpan.End(reconcileEnd)
+	if reconcileErr != nil {
 		_ = store.Close()
-		return nil, err
+		return nil, reconcileErr
 	}
 
 	workCtx, workCancel := context.WithCancel(context.WithoutCancel(ctx))
@@ -141,14 +155,14 @@ func Launch(ctx context.Context, config Config) (*Host, error) {
 // pre-turn compaction crash session_heads alone cannot surface, since
 // compaction activity never updates it -- and confirms each by
 // authoritative stream replay.
-func reconcileAll(ctx context.Context, rec *reconciler, store *sqlite.Store) error {
+func reconcileAll(ctx context.Context, rec *reconciler, store *sqlite.Store) (candidateCount int, recoveredCount int, returnErr error) {
 	running, err := store.ActiveSessions(ctx)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	compacting, err := store.SessionsWithActiveCompaction(ctx)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	seen := make(map[domain.SessionID]bool, len(running)+len(compacting))
 	candidates := make([]domain.SessionID, 0, len(running)+len(compacting))
@@ -162,11 +176,15 @@ func reconcileAll(ctx context.Context, rec *reconciler, store *sqlite.Store) err
 		}
 	}
 	for _, session := range candidates {
-		if _, err := rec.reconcileSession(ctx, session); err != nil {
-			return fmt.Errorf("reconcile %s: %w", session, err)
+		recovered, err := rec.reconcileSession(ctx, session)
+		if err != nil {
+			return len(candidates), recoveredCount, fmt.Errorf("reconcile %s: %w", session, err)
+		}
+		if recovered {
+			recoveredCount++
 		}
 	}
-	return nil
+	return len(candidates), recoveredCount, nil
 }
 
 // Ready reports whether reconciliation completed and commands are accepted.

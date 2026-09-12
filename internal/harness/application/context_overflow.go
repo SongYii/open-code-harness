@@ -27,7 +27,7 @@ const contextOverflowFailureCode = "context_overflow"
 // for the caller's existing terminalizeExecutionFailure path -- exactly
 // as if this function were absent.
 func (service *Service) runProviderAttempt(ctx context.Context, owned *ownedTurn, request engine.RunRequest) (engine.RunResult, error) {
-	runResult, err := service.runner.Run(ctx, request, owned.emitter)
+	runResult, err := service.runModel(ctx, request, owned.emitter)
 	for err != nil && service.overflowRecoveryEligible(ctx, owned, err) {
 		recovered, ok, recoverErr := service.recoverFromOverflow(ctx, owned, request)
 		if recoverErr != nil {
@@ -38,7 +38,7 @@ func (service *Service) runProviderAttempt(ctx context.Context, owned *ownedTurn
 		}
 		owned.overflowRecoveries++
 		request = recovered
-		runResult, err = service.runner.Run(ctx, request, owned.emitter)
+		runResult, err = service.runModel(ctx, request, owned.emitter)
 	}
 	return runResult, err
 }

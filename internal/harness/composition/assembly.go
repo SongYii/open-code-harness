@@ -12,6 +12,7 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/acp"
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/localexec"
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/openaicompat"
+	oteladapter "github.com/SongYii/open-code-harness/internal/harness/adapters/otel"
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/sqlite"
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/system"
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/workspacefs"
@@ -19,6 +20,7 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/contextengine"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
 	"github.com/SongYii/open-code-harness/internal/harness/runtime"
+	"github.com/SongYii/open-code-harness/internal/harness/telemetry"
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
 )
 
@@ -34,6 +36,7 @@ type Assembly struct {
 	workspace string
 	catalog   *tools.Catalog
 	mcp       mcpServers
+	telemetry *oteladapter.Adapter
 
 	timeout  time.Duration
 	closeErr error
@@ -101,11 +104,32 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 		log.Printf("composition: AllowUnsandboxedExec is true - proceeding without OS-level exec confinement: %s", reason)
 	}
 
+	var tracer telemetry.Tracer = telemetry.Noop()
+	var traceAdapter *oteladapter.Adapter
+	if config.Telemetry.OTLPTraceEndpoint != "" {
+		candidate, err := oteladapter.New(ctx, oteladapter.Config{
+			Endpoint: config.Telemetry.OTLPTraceEndpoint, SampleRatio: config.Telemetry.SampleRatio,
+			AllowInsecureLoopback: config.Telemetry.AllowInsecureLoopback,
+			InstanceID:            config.RuntimeID, Diagnostics: os.Stderr,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("composition: telemetry adapter: %w", err)
+		}
+		traceAdapter = candidate
+		tracer = traceAdapter
+	}
+
 	host, err := runtime.Launch(ctx, runtime.Config{
 		SQLite:         sqlite.Config{Path: config.DatabasePath, RuntimeID: config.RuntimeID},
 		AuditDirectory: config.AuditDirectory,
+		Telemetry:      tracer,
 	})
 	if err != nil {
+		if traceAdapter != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), config.ShutdownTimeout)
+			traceAdapter.Shutdown(shutdownCtx)
+			cancel()
+		}
 		return nil, fmt.Errorf("composition: launch runtime host: %w", err)
 	}
 	// From here on every failure path must release the host, which owns the
@@ -113,7 +137,11 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 	release := func(cause error) (*Assembly, error) {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), config.ShutdownTimeout)
 		defer cancel()
-		if shutdownErr := host.Shutdown(shutdownCtx); shutdownErr != nil {
+		shutdownErr := host.Shutdown(shutdownCtx)
+		if traceAdapter != nil {
+			traceAdapter.Shutdown(shutdownCtx)
+		}
+		if shutdownErr != nil {
 			return nil, errors.Join(cause, fmt.Errorf("composition: release after failure: %w", shutdownErr))
 		}
 		return nil, cause
@@ -165,7 +193,7 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 	if err != nil {
 		return release(fmt.Errorf("composition: context budget: %w", err))
 	}
-	contextSummarizer, err := application.NewEngineContextSummarizer(runner, engine.ReasoningEffort(config.Context.SummaryReasoningEffort))
+	contextSummarizer, err := application.NewEngineContextSummarizerWithTelemetry(runner, engine.ReasoningEffort(config.Context.SummaryReasoningEffort), tracer)
 	if err != nil {
 		return release(fmt.Errorf("composition: context summarizer: %w", err))
 	}
@@ -236,6 +264,7 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 		MaxSummaryChunks:               config.Context.MaxSummaryChunks,
 		MaxPrunedToolResultsPerRequest: config.Context.MaxPrunedToolResultsPerRequest,
 	}
+	appConfig.Telemetry = tracer
 
 	// Pass the store itself as the AuthoritySource: the Service then reads
 	// the live fencing token per append, so an expired-takeover rotation is
@@ -253,6 +282,7 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 		workspace: config.WorkspaceRoot,
 		catalog:   catalog,
 		mcp:       mcpConnected,
+		telemetry: traceAdapter,
 		timeout:   config.ShutdownTimeout,
 	}, nil
 }
@@ -293,5 +323,8 @@ func (assembly *Assembly) Close() error {
 	// writer's own lease release.
 	mcpErr := assembly.mcp.close()
 	assembly.closeErr = errors.Join(mcpErr, assembly.host.Shutdown(ctx))
+	if assembly.telemetry != nil {
+		assembly.telemetry.Shutdown(ctx)
+	}
 	return assembly.closeErr
 }

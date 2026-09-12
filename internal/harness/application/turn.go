@@ -7,6 +7,7 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/agentinstructions"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
+	"github.com/SongYii/open-code-harness/internal/harness/telemetry"
 )
 
 type RunTurnRequest struct {
@@ -33,6 +34,17 @@ func (service *Service) RunTurn(ctx context.Context, request RunTurnRequest) (re
 	if err := contextError(ctx); err != nil {
 		return RunTurnResult{}, err
 	}
+	traceCtx, turnSpan := telemetry.SafeStart(service.telemetry, ctx, telemetry.Start{
+		Kind: telemetry.KindTurn, Attributes: traceString(telemetry.KeySessionID, string(request.SessionID)),
+	})
+	ctx = traceCtx
+	role := ""
+	defer func() {
+		attributes := traceIDs(result.SessionID, result.TurnID, result.ItemID)
+		attributes = append(attributes, traceString(telemetry.KeyTurnRole, role)...)
+		attributes = append(attributes, traceString(telemetry.KeyTerminalStatus, string(result.Status))...)
+		turnSpan.End(traceEnd(returnErr, attributes...))
+	}()
 	requestDigest, err := DigestRunTurnRequestV1(request.SessionID, request.Input)
 	if err != nil {
 		return RunTurnResult{}, applicationError(CategoryValidation, "invalid_request", false, err)
@@ -46,6 +58,7 @@ func (service *Service) RunTurn(ctx context.Context, request RunTurnRequest) (re
 	}
 	switch lookup.Kind {
 	case CommandRequestLookupFound:
+		role = "replayed"
 		return service.runTurnFound(ctx, request, requestDigest, *lookup.Record, true)
 	case CommandRequestLookupIdentityMismatch:
 		return RunTurnResult{}, applicationError(CategoryConflict, CodeCommandIdentityMismatch, false, nil)
@@ -58,9 +71,11 @@ func (service *Service) RunTurn(ctx context.Context, request RunTurnRequest) (re
 		return RunTurnResult{}, applicationError(CategoryConflict, CodeCommandIdentityMismatch, false, acquireErr)
 	}
 	if !owner {
+		role = "joined"
 		defer lease.release()
 		return lease.wait(ctx)
 	}
+	role = "owner"
 	defer func() {
 		if !isAppendOutcomeUnknown(returnErr) {
 			_ = lease.publish(result, returnErr)
@@ -123,14 +138,17 @@ func (service *Service) runTurnOwned(ctx context.Context, request RunTurnRequest
 	if err := lease.retainIntent(admissionIntent); err != nil {
 		return RunTurnResult{}, storeContractViolation(err)
 	}
-	runningState, admissionRecords, err := CommitAppendIntent(ctx, service.store, state, admissionIntent)
+	appendCtx, appendTrace := startAppendTrace(ctx, service.telemetry, admissionIntent)
+	runningState, admissionRecords, err := CommitAppendIntent(appendCtx, service.store, state, admissionIntent)
 	if err != nil {
 		if isAppendOutcomeUnknown(err) {
 			if retainErr := lease.retainUnknown(executionPhaseAdmissionUnknown); retainErr != nil {
+				appendTrace.end(retainErr)
 				return RunTurnResult{}, storeContractViolation(retainErr)
 			}
-			return service.resolveAdmissionUnknown(ctx, request, requestDigest, lease, state, admissionIntent, commandID, emitter, nil, false)
+			return service.resolveAdmissionUnknown(appendCtx, request, requestDigest, lease, state, admissionIntent, commandID, emitter, nil, false, appendTrace)
 		}
+		appendTrace.end(err)
 		if IsStoreCode(err, StoreCodeCommandRequestConflict) {
 			lookup, lookupErr := service.store.FindCommandRequest(ctx, FindCommandRequestRequest{RunTurnRequestID: request.RequestID, SessionID: request.SessionID, RequestDigest: requestDigest})
 			if !isNilValue(lookupErr) {
@@ -149,6 +167,7 @@ func (service *Service) runTurnOwned(ctx context.Context, request RunTurnRequest
 		}
 		return RunTurnResult{}, err
 	}
+	appendTrace.end(nil)
 	if err := lease.setPhase(executionPhaseRunning); err != nil {
 		return RunTurnResult{}, storeContractViolation(err)
 	}
@@ -203,14 +222,17 @@ func (service *Service) runTurnOwnedWithContextEngine(ctx context.Context, reque
 		return RunTurnResult{}, storeContractViolation(err)
 	}
 	contextPrefix := contextHistoryPrefix(prepared)
-	runningState, admissionRecords, err := CommitAppendIntent(ctx, service.store, state, admissionIntent)
+	appendCtx, appendTrace := startAppendTrace(ctx, service.telemetry, admissionIntent)
+	runningState, admissionRecords, err := CommitAppendIntent(appendCtx, service.store, state, admissionIntent)
 	if err != nil {
 		if isAppendOutcomeUnknown(err) {
 			if retainErr := lease.retainUnknown(executionPhaseAdmissionUnknown); retainErr != nil {
+				appendTrace.end(retainErr)
 				return RunTurnResult{}, storeContractViolation(retainErr)
 			}
-			return service.resolveAdmissionUnknown(ctx, request, requestDigest, lease, state, admissionIntent, commandID, emitter, contextPrefix, true)
+			return service.resolveAdmissionUnknown(appendCtx, request, requestDigest, lease, state, admissionIntent, commandID, emitter, contextPrefix, true, appendTrace)
 		}
+		appendTrace.end(err)
 		if IsStoreCode(err, StoreCodeCommandRequestConflict) {
 			lookup, lookupErr := service.store.FindCommandRequest(ctx, FindCommandRequestRequest{RunTurnRequestID: request.RequestID, SessionID: request.SessionID, RequestDigest: requestDigest})
 			if !isNilValue(lookupErr) {
@@ -229,6 +251,7 @@ func (service *Service) runTurnOwnedWithContextEngine(ctx context.Context, reque
 		}
 		return RunTurnResult{}, err
 	}
+	appendTrace.end(nil)
 	if err := lease.setPhase(executionPhaseRunning); err != nil {
 		return RunTurnResult{}, storeContractViolation(err)
 	}
@@ -320,14 +343,16 @@ func durableRequestTerminalError(result RunTurnResult) error {
 	}
 }
 
-func (service *Service) resolveAdmissionUnknown(ctx context.Context, request RunTurnRequest, requestDigest Digest, lease *executionLease, state domain.Session, intent AppendIntent, commandID domain.CommandID, emitter *engine.Emitter, contextPrefix []domain.ModelPromptMessage, usedContextEngine bool) (RunTurnResult, error) {
+func (service *Service) resolveAdmissionUnknown(ctx context.Context, request RunTurnRequest, requestDigest Digest, lease *executionLease, state domain.Session, intent AppendIntent, commandID domain.CommandID, emitter *engine.Emitter, contextPrefix []domain.ModelPromptMessage, usedContextEngine bool, appendTrace *logicalAppendTrace) (RunTurnResult, error) {
 	resolveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), service.config.AppendResolutionTimeout)
 	defer cancel()
 	receipt, err := ResolveAppendIntent(resolveCtx, service.store, intent, service.appendResolutionConfig())
 	if err != nil {
+		appendTrace.end(err)
 		return RunTurnResult{}, err
 	}
 	runningState, admissionRecords, err := ApplyCommittedIntent(state, intent, receipt)
+	appendTrace.end(err)
 	if err != nil {
 		return RunTurnResult{}, err
 	}
@@ -368,16 +393,20 @@ func (service *Service) abandonAdmittedTurn(ctx context.Context, lease *executio
 	}
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), service.config.TerminalCommitTimeout)
 	defer cancel()
-	_, terminalRecords, err := CommitAppendIntent(cleanupCtx, service.store, state, intent)
+	appendCtx, appendTrace := startAppendTrace(cleanupCtx, service.telemetry, intent)
+	_, terminalRecords, err := CommitAppendIntent(appendCtx, service.store, state, intent)
 	if err != nil {
 		if isAppendOutcomeUnknown(err) || cleanupCtx.Err() != nil {
 			if retainErr := lease.retainUnknown(executionPhaseTerminalUnknown); retainErr != nil {
+				appendTrace.end(retainErr)
 				return cloneRunTurnResult(runningResult), storeContractViolation(retainErr)
 			}
-			return service.resolveTerminalUnknown(ctx, lease, state, runningResult, intent, runningResult.Records, emitter)
+			return service.resolveTerminalUnknown(ctx, lease, state, runningResult, intent, runningResult.Records, emitter, appendTrace)
 		}
+		appendTrace.end(err)
 		return cloneRunTurnResult(runningResult), err
 	}
+	appendTrace.end(nil)
 	result := runningResult
 	result.Status = domain.TurnStatusInterrupted
 	result.TerminalCommitted = true
@@ -389,14 +418,16 @@ func (service *Service) abandonAdmittedTurn(ctx context.Context, lease *executio
 	return cloneRunTurnResult(result), committed
 }
 
-func (service *Service) resolveTerminalUnknown(ctx context.Context, lease *executionLease, state domain.Session, runningResult RunTurnResult, intent AppendIntent, prior []domain.RecordedEvent, emitter *engine.Emitter) (RunTurnResult, error) {
+func (service *Service) resolveTerminalUnknown(ctx context.Context, lease *executionLease, state domain.Session, runningResult RunTurnResult, intent AppendIntent, prior []domain.RecordedEvent, emitter *engine.Emitter, appendTrace *logicalAppendTrace) (RunTurnResult, error) {
 	resolveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), service.config.AppendResolutionTimeout)
 	defer cancel()
 	receipt, err := ResolveAppendIntent(resolveCtx, service.store, intent, service.appendResolutionConfig())
 	if err != nil {
+		appendTrace.end(err)
 		return cloneRunTurnResult(runningResult), err
 	}
 	_, terminalRecords, err := ApplyCommittedIntent(state, intent, receipt)
+	appendTrace.end(err)
 	if err != nil {
 		return cloneRunTurnResult(runningResult), err
 	}
@@ -532,19 +563,23 @@ func (service *Service) terminalizeExecutionFailure(cleanupCtx context.Context, 
 	if err := lease.retainIntent(terminalIntent); err != nil {
 		return cloneRunTurnResult(runningResult), storeContractViolation(err)
 	}
-	_, terminalRecords, err := CommitAppendIntent(cleanupCtx, service.store, runningState, terminalIntent)
+	appendCtx, appendTrace := startAppendTrace(cleanupCtx, service.telemetry, terminalIntent)
+	_, terminalRecords, err := CommitAppendIntent(appendCtx, service.store, runningState, terminalIntent)
 	if err != nil {
 		if isAppendOutcomeUnknown(err) {
 			if retainErr := lease.retainUnknown(executionPhaseTerminalUnknown); retainErr != nil {
+				appendTrace.end(retainErr)
 				return cloneRunTurnResult(runningResult), storeContractViolation(retainErr)
 			}
-			return service.resolveTerminalUnknown(deliveryCtx, lease, runningState, runningResult, terminalIntent, runningResult.Records, emitter)
+			return service.resolveTerminalUnknown(deliveryCtx, lease, runningState, runningResult, terminalIntent, runningResult.Records, emitter, appendTrace)
 		}
+		appendTrace.end(err)
 		if cleanupCtx.Err() != nil && IsCategory(err, CategoryCanceled) {
 			err = applicationError(CategoryPersistence, "append_failed", false, err)
 		}
 		return cloneRunTurnResult(runningResult), terminalizationError(err, executionCause)
 	}
+	appendTrace.end(nil)
 	terminalResult := runningResult
 	terminalResult.Status = status
 	terminalResult.Text = ""

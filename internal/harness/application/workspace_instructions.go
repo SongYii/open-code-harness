@@ -59,7 +59,7 @@ func (registry *workspaceInstructionRegistry) forget(id domain.SessionID) {
 // reconcileWorkspaceInstructions treats touched paths as directories whose
 // lexical ancestor chain was reached by a successful structured filesystem
 // operation. Callers translate file targets to their parent directory first.
-func (service *Service) reconcileWorkspaceInstructions(ctx context.Context, session domain.Session, touched []string) (domain.Session, error) {
+func (service *Service) reconcileWorkspaceInstructions(ctx context.Context, session domain.Session, touched []string) (result domain.Session, returnErr error) {
 	if service == nil || service.files == nil || service.instructions == nil {
 		return session, nil
 	}
@@ -146,9 +146,11 @@ func (service *Service) reconcileWorkspaceInstructions(ctx context.Context, sess
 	if err != nil {
 		return domain.Session{}, err
 	}
-	nextSession, _, err := CommitAppendIntent(ctx, service.store, session, intent)
+	traceCtx, trace := startAppendTrace(ctx, service.telemetry, intent)
+	defer func() { trace.end(returnErr) }()
+	nextSession, _, err := CommitAppendIntent(traceCtx, service.store, session, intent)
 	if isAppendOutcomeUnknown(err) {
-		resolveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), service.config.AppendResolutionTimeout)
+		resolveCtx, cancel := context.WithTimeout(context.WithoutCancel(traceCtx), service.config.AppendResolutionTimeout)
 		defer cancel()
 		receipt, resolveErr := ResolveAppendIntent(resolveCtx, service.store, intent, service.appendResolutionConfig())
 		if resolveErr != nil {

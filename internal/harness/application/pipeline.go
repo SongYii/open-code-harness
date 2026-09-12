@@ -14,6 +14,7 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
 	"github.com/SongYii/open-code-harness/internal/harness/policy"
 	"github.com/SongYii/open-code-harness/internal/harness/redact"
+	"github.com/SongYii/open-code-harness/internal/harness/telemetry"
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
 )
 
@@ -122,6 +123,12 @@ func (service *Service) executeOneTool(ctx context.Context, owned *ownedTurn, ca
 		}
 	}
 
+	policyAttributes := traceIDs(owned.result.SessionID, owned.result.TurnID, itemID)
+	policyAttributes = append(policyAttributes, traceString(telemetry.KeyCallID, call.ID)...)
+	policyAttributes = append(policyAttributes, traceString(telemetry.KeyToolName, spec.Name)...)
+	policyAttributes = append(policyAttributes, traceString(telemetry.KeyToolSource, string(spec.Source))...)
+	policyAttributes = append(policyAttributes, traceString(telemetry.KeyToolRisk, string(spec.Risk))...)
+	_, policySpan := telemetry.SafeStart(service.telemetry, ctx, telemetry.Start{Kind: telemetry.KindPolicyDecide, Attributes: policyAttributes})
 	decision, decideErr := service.policy.Decide(policy.Input{
 		Name: spec.Name, Risk: spec.Risk, Mutates: spec.Mutates,
 		WorkspaceIn: workspaceIn, PathLiteral: args.pathLiteral(),
@@ -129,6 +136,13 @@ func (service *Service) executeOneTool(ctx context.Context, owned *ownedTurn, ca
 	if decideErr != nil {
 		decision = policy.Decision{Effect: policy.EffectDeny, RuleID: policy.RuleUnknownRisk, Reason: policy.ReasonUnknownRisk}
 	}
+	policyEndAttributes := traceString(telemetry.KeyPolicyEffect, string(decision.Effect))
+	policyEndAttributes = append(policyEndAttributes, traceString(telemetry.KeyPolicyRule, decision.RuleID)...)
+	policyEnd := traceEnd(decideErr, policyEndAttributes...)
+	if decideErr == nil && decision.Effect == policy.EffectDeny {
+		policyEnd.Outcome = telemetry.OutcomeDenied
+	}
+	policySpan.End(policyEnd)
 	recorded, err := domain.Decide(owned.state, domain.RecordPolicyDecision{
 		SessionID: owned.result.SessionID, TurnID: owned.result.TurnID, ItemID: itemID,
 		CallID: call.ID, Name: spec.Name, Effect: string(decision.Effect), RuleID: decision.RuleID, Reason: decision.Reason,
@@ -192,11 +206,17 @@ func (service *Service) waitApproval(ctx context.Context, owned *ownedTurn, call
 
 	waitCtx, cancel := context.WithTimeout(ctx, service.config.ApprovalTimeout)
 	defer cancel()
-	answer, approveErr := service.approver.Decide(waitCtx, tools.ApprovalRequest{
+	approvalAttributes := traceIDs(owned.result.SessionID, owned.result.TurnID, owned.toolItemID)
+	approvalAttributes = append(approvalAttributes, traceString(telemetry.KeyCallID, call.ID)...)
+	approvalAttributes = append(approvalAttributes, traceString(telemetry.KeyApprovalID, string(approvalID))...)
+	approvalAttributes = append(approvalAttributes, traceString(telemetry.KeyToolName, call.Name)...)
+	approvalCtx, approvalSpan := telemetry.SafeStart(service.telemetry, waitCtx, telemetry.Start{Kind: telemetry.KindApprovalWait, Attributes: approvalAttributes})
+	answer, approveErr := service.approver.Decide(approvalCtx, tools.ApprovalRequest{
 		SessionID: owned.result.SessionID, TurnID: owned.result.TurnID, ApprovalID: approvalID,
 		Name: call.Name, CallID: call.ID, Arguments: call.Arguments, Reason: decision.Reason,
 	})
 	if contextError(ctx) != nil {
+		approvalSpan.End(traceEnd(contextError(ctx)))
 		result, err := service.cancelOwnedTurn(ctx, owned, domain.InterruptionCallerCanceled)
 		return false, true, result, err
 	}
@@ -209,6 +229,18 @@ func (service *Service) waitApproval(ctx context.Context, owned *ownedTurn, call
 	} else if approveErr == nil && answer.Granted {
 		resolvedDecision = domain.ApprovalDecisionGranted
 	}
+	approvalOutcome := telemetry.OutcomeDenied
+	if resolvedDecision == domain.ApprovalDecisionGranted {
+		approvalOutcome = telemetry.OutcomeOK
+	} else if resolvedDecision == domain.ApprovalDecisionTimeout {
+		approvalOutcome = telemetry.OutcomeTimeout
+	}
+	approvalEnd := telemetry.End{Outcome: approvalOutcome, Attributes: traceString(telemetry.KeyApprovalDecision, resolvedDecision)}
+	if approveErr != nil && resolvedDecision != domain.ApprovalDecisionTimeout {
+		approvalEnd.Outcome = telemetry.OutcomeFailed
+		approvalEnd.Code = "approver_failed"
+	}
+	approvalSpan.End(approvalEnd)
 	resolved, err := domain.Decide(owned.state, domain.ResolveApproval{
 		SessionID: owned.result.SessionID, TurnID: owned.result.TurnID, ItemID: owned.toolItemID,
 		ApprovalID: approvalID, Decision: resolvedDecision,
@@ -241,7 +273,25 @@ func (service *Service) runToolBody(ctx context.Context, owned *ownedTurn, spec 
 	}
 	owned.executed[owned.toolItemID] = struct{}{}
 
-	content, truncated, failCode, failText, execErr := service.invokeTool(ctx, owned.result.SessionID, spec, args, resolved)
+	toolAttributes := traceIDs(owned.result.SessionID, owned.result.TurnID, owned.toolItemID)
+	toolAttributes = append(toolAttributes, traceString(telemetry.KeyCallID, call.ID)...)
+	toolAttributes = append(toolAttributes, traceString(telemetry.KeyToolName, spec.Name)...)
+	toolAttributes = append(toolAttributes, traceString(telemetry.KeyToolSource, string(spec.Source))...)
+	toolAttributes = append(toolAttributes, traceString(telemetry.KeyToolRisk, string(spec.Risk))...)
+	toolCtx, toolSpan := telemetry.SafeStart(service.telemetry, ctx, telemetry.Start{Kind: telemetry.KindToolExecute, Attributes: toolAttributes})
+	content, truncated, failCode, failText, execErr := service.invokeTool(toolCtx, owned.result.SessionID, spec, args, resolved)
+	toolEnd := traceEnd(execErr,
+		telemetry.Int64(telemetry.KeyResultBytes, int64(len(content))),
+		telemetry.Bool(telemetry.KeyResultTruncated, truncated),
+	)
+	if failCode != "" {
+		toolEnd.Outcome = telemetry.OutcomeFailed
+		toolEnd.Code = failCode
+		if failCode == CodeExecTimeout {
+			toolEnd.Outcome = telemetry.OutcomeTimeout
+		}
+	}
+	toolSpan.End(toolEnd)
 	if isCancelCause(execErr) || contextError(ctx) != nil {
 		result, err := service.cancelOwnedTurn(ctx, owned, domain.InterruptionCallerCanceled)
 		return true, result, err

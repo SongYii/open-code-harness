@@ -8,6 +8,7 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
 	"github.com/SongYii/open-code-harness/internal/harness/policy"
+	"github.com/SongYii/open-code-harness/internal/harness/telemetry"
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
 )
 
@@ -44,6 +45,7 @@ type Config struct {
 	ExternalTools tools.ExternalTools
 	Approver      tools.Approver
 	Context       ContextConfig
+	Telemetry     telemetry.Tracer
 }
 
 // ContextConfig configures the Context Engine (design 2026-09-01). The
@@ -133,6 +135,7 @@ type Service struct {
 	files      tools.FileSystem
 	commands   tools.CommandRunner
 	approver   tools.Approver
+	telemetry  telemetry.Tracer
 
 	// observations is what each session has actually read. It is what turns
 	// "write this file" into a guarded promise, and it is process-local by
@@ -159,6 +162,9 @@ func NewService(store EventStore, ids IDGenerator, clock Clock, runner *engine.T
 	}
 	if config.PolicyMode == "" {
 		config.PolicyMode = policy.ModeDefault
+	}
+	if config.Telemetry == nil {
+		config.Telemetry = telemetry.Noop()
 	}
 	if isNilValue(store) || isNilValue(ids) || isNilValue(clock) || runner == nil || isNilValue(authority) || authority.CurrentAuthority().Validate() != nil || config.MaxAssistantBytes <= 0 || config.TerminalCommitTimeout <= 0 || config.AppendResolutionTimeout <= 0 || config.AppendResolutionMaxOperations == 0 || config.MaxSteps < 1 || config.MaxToolCallsPerStep < 1 {
 		return nil, applicationError(CategoryValidation, "invalid_configuration", false, nil)
@@ -202,7 +208,7 @@ func NewService(store EventStore, ids IDGenerator, clock Clock, runner *engine.T
 	service := &Service{
 		store: store, ids: ids, clock: clock, runner: runner, authority: authority,
 		config: config, executions: newExecutionRegistry(), policy: policyEngine,
-		approver: approver, files: config.Files, observations: newFileObservations(),
+		approver: approver, telemetry: config.Telemetry, files: config.Files, observations: newFileObservations(),
 		instructions: newWorkspaceInstructionRegistry(),
 	}
 	if catalogEnabled {
@@ -293,6 +299,7 @@ func (service *Service) contextOrchestratorDeps() ContextOrchestratorDeps {
 		MaxSummaryChunks:               service.config.Context.MaxSummaryChunks,
 		MaxPrunedToolResultsPerRequest: service.config.Context.MaxPrunedToolResultsPerRequest,
 		Identity:                       service.config.RequestIdentity,
+		Telemetry:                      service.telemetry,
 	}
 }
 
