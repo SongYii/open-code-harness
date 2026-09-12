@@ -217,6 +217,10 @@ PR 中量精确依赖和二进制基线；设计接受后再实现。
 如果现实中没人准备读取 OTLP 数据，就停在调研阶段。做一个没人消费的 exporter，会
 重复项目已经记录过的“机制休眠装船”问题。
 
+**2026-09-12 采纳：** 操作者确认继续，首个消费者定义为显式配置并运行自管
+Collector/backend 的开发者或运维人员。随后形成的 [trace-only 规范设计](../../superpowers/specs/2026-09-12-observability-otel-design.zh-CN.md)
+采纳了这份建议，但不把本调研记录改写成设计。
+
 ## 来源
 
 完整的一手来源、访问日期和链接见英文正本的 [Sources](2026-09-12-observability-design-readiness.md#sources)。核心来源包括 OpenTelemetry 官方 Go 状态、trace SDK、GenAI/MCP 语义约定、敏感数据与 context propagation 安全指南、Collector resiliency 和 span-metrics connector，以及本仓库 2026-09-09 的六项目固定 commit 调研。

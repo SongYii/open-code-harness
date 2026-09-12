@@ -404,6 +404,12 @@ If no operator actually intends to run an OTLP consumer, stop after research.
 Adding an exporter that nobody reads would repeat the dormant-mechanism mistake
 already documented by the evaluation variance work.
 
+**Adopted 2026-09-12:** the operator confirmed continuation with the first
+consumer defined as a developer or operator running an explicitly configured,
+operator-managed Collector/backend. The resulting [trace-only normative
+design](../../superpowers/specs/2026-09-12-observability-otel-design.md) adopts
+the recommendation without changing this research record into a design.
+
 ## Sources
 
 1. OpenTelemetry. [Semantic conventions for generative AI systems](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/README.md). Status: Development; accessed 2026-09-12.
