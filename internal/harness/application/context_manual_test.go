@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/memory"
+	"github.com/SongYii/open-code-harness/internal/harness/agentinstructions"
 	"github.com/SongYii/open-code-harness/internal/harness/application"
 	"github.com/SongYii/open-code-harness/internal/harness/contextengine"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
@@ -309,5 +310,89 @@ func TestCompactSessionValidatesRequestAndRequiresContextEngine(t *testing.T) {
 	}
 	if _, err := legacyService.CompactSession(context.Background(), application.CompactSessionRequest{SessionID: state.ID}); !application.IsCategory(err, application.CategoryValidation) {
 		t.Fatalf("Context.Enabled:false error = %v, want CategoryValidation", err)
+	}
+}
+
+// TestCompactSessionBudgetsTheSystemPromptIntoTheProtectedTail is the
+// regression test for a real bug CompactSession had from the versioned
+// system prompt's own milestone until this task: it was the one Context
+// trigger that never passed PrefixMessages into its PlanInput, while the
+// pre-turn (turn.go), mid-turn (loop.go) and overflow-retry
+// (context_overflow.go) paths all did.
+//
+// The consequence is not an under-count in a report: SelectCutPoint walks
+// backward from the newest unit until the protected tail is *paid for*, so
+// a missing prefix makes history alone owe the whole tail budget. Whenever
+// the history left after the previous checkpoint is smaller than
+// ProtectedTail -- routine, since automatic compaction had just trimmed it
+// to Target -- the walk consumed every remaining unit, covered nothing, and
+// CompactSession reported Ran=false. An operator asking for compaction got
+// a silent no-op, and the deterministic Context evaluation lane turned that
+// into `compact_not_run` on three of its four core scenarios.
+//
+// The fixture below reconstructs exactly that shape and asserts its own
+// preconditions, so it fails loudly rather than silently stopping to
+// reproduce the bug if the prompt, the meter, or the fixture's turn sizes
+// ever change.
+func TestCompactSessionBudgetsTheSystemPromptIntoTheProtectedTail(t *testing.T) {
+	store, state, scan, historyIDs := buildHistorySession(t, 3)
+	meter := contextengine.WireEstimateMeter{}
+
+	cut := -1
+	for index, unit := range scan.Units {
+		if unit.Kind == contextengine.UnitKindTurn {
+			cut = index
+		}
+	}
+	if cut <= 0 {
+		t.Fatalf("fixture units = %d with newest Turn boundary at %d; this test needs at least one complete Turn before the newest one", len(scan.Units), cut)
+	}
+	var coverableTokens, retainedTokens uint64
+	for index, unit := range scan.Units {
+		if index < cut {
+			coverableTokens += meter.EstimateMessages(unit.Messages)
+			continue
+		}
+		retainedTokens += meter.EstimateMessages(unit.Messages)
+	}
+	promptTokens := meter.EstimateMessages([]domain.ModelPromptMessage{agentinstructions.SystemPromptMessage()})
+	if promptTokens <= coverableTokens {
+		t.Fatalf("system prompt = %d tokens, coverable history = %d tokens: this fixture only isolates the prefix's own contribution while the prompt alone can pay for the part of the tail budget the covered prefix would otherwise have to", promptTokens, coverableTokens)
+	}
+
+	// One token more than the entire remaining history: history alone can
+	// never satisfy this tail budget, so a planner that ignores the system
+	// prompt must retain every unit and cover nothing.
+	protectedTail := coverableTokens + retainedTokens + 1
+	summarizer := &scriptedSummarizer{text: validSummaryText()}
+	runner, err := engine.NewTurnRunner(&acceptanceSuccessModel{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := application.DefaultConfig()
+	config.Context = application.ContextConfig{
+		Enabled:         true,
+		Budget:          contextengine.Budget{HardInput: 1_000_000, Trigger: 1_000_000, Target: 500_000, ProtectedTail: protectedTail, SummaryOutputCap: 4_000},
+		Meter:           meter,
+		Summarizer:      summarizer,
+		CheckpointStore: &fakeCheckpointStore{},
+	}
+	service, err := application.NewService(store, historyIDs, testkit.FixedClock{Time: acceptanceTime}, runner, application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.CompactSession(context.Background(), application.CompactSessionRequest{SessionID: state.ID})
+	if err != nil {
+		t.Fatalf("CompactSession() error = %v", err)
+	}
+	if !result.Ran {
+		t.Fatalf("result = %#v, want Ran=true: with the system prompt budgeted into the protected tail, the %d tokens before the newest Turn are still safely coverable", result, coverableTokens)
+	}
+	if want := scan.Units[cut-1].LastSequence; result.ThroughSequence != want {
+		t.Fatalf("result.ThroughSequence = %d, want %d (the newest Turn's own boundary)", result.ThroughSequence, want)
+	}
+	if result.CoveredTurnCount == 0 || result.CoveredEventCount == 0 {
+		t.Fatalf("result = %#v, want a checkpoint that actually covered canonical history", result)
 	}
 }

@@ -239,6 +239,38 @@ whose output it records. Before PR creation it is checked with docsguard,
 format/diff cleanliness, and the same final branch verification; this ledger
 does not pretend a Git commit can contain its own not-yet-created object ID.
 
+## Follow-up defect: the manual compaction trigger never budgeted the prefix
+
+Date: 2026-09-13. This milestone added `PlanInput.PrefixMessages` and wired it
+into the pre-turn (`turn.go`), mid-turn (`loop.go`), and overflow-retry
+(`context_overflow.go`) triggers. It did not wire it into the fourth,
+`Service.CompactSession` (manual). That contradicted this contract's own
+"fixed-prefix tokens participate in fit" statement, and it was not a reporting
+error: `contextengine.SelectCutPoint` walks backward from the newest unit until
+`Budget.ProtectedTail` is paid for, so an absent prefix makes history alone owe
+the entire tail budget. Whenever the history remaining after the previous
+checkpoint was smaller than `ProtectedTail` — the ordinary state, since
+automatic compaction had just trimmed it toward `Target` — the walk consumed
+every remaining unit, `CoveredUnits` came back empty, and `CompactSession`
+returned `Ran: false`. An operator's explicit compaction request became a
+silent no-op.
+
+The scheduled Context evaluation lane caught it and nothing else did. From
+2026-09-09 (this milestone's own merge) the nightly `context-matrix` job failed
+every night with `compact_not_run` on three of `context-core-inprocess.json`'s
+four Scenarios; the ordinary pull-request lane carries one representative
+Context Cell and stayed green. Every existing manual-compaction unit test
+configured `ProtectedTail: 1`, so none of them could reach the condition.
+
+| Claim | Executable evidence |
+| --- | --- |
+| The manual trigger budgets the versioned prompt like every other trigger | `application.TestCompactSessionBudgetsTheSystemPromptIntoTheProtectedTail`, which measures the fixture's own unit tokens and prompt tokens, asserts its preconditions, and sets `ProtectedTail` one token above the entire remaining history so history alone can never satisfy it |
+| The whole scheduled matrix executes again | `OCH_EVAL_SCHEDULED_CONTEXT_MATRIX=1 go test -race ./cmd/och-eval -run '^TestContextScheduledLane' -count=1` — PASS, 77.8s, all nine EvalSets |
+
+Observed: the new test fails on the pre-fix implementation with
+`Ran=false ... ThroughSequence:0x0` and passes after it; `go test -race ./...
+-count=1` is otherwise unchanged.
+
 ## Exclusions
 
 - Windows-specific runtime behavior is outside this module.
