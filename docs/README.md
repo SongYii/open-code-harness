@@ -279,6 +279,16 @@ samples it and two flaky tests reached `main` that way;
 citations are recorded in the test with what was found and when, never
 deleted.
 
+A gate nobody reads is not a gate. Because these lanes run on a schedule,
+their failures appear on no pull request, and between 2026-09-07 and
+2026-09-12 every scheduled run failed unnoticed — one of them on a real
+product defect that reached `main` and stayed there for four nights. The
+`nightly-report` job therefore opens a single labelled tracking issue naming
+the failing lanes, comments on it each night the failure persists, and closes
+it on the next green scheduled run
+(`scripts/report-nightly-result.sh`). A skipped lane never counts as either
+outcome.
+
 A rule that cannot be checked without judgement stays prose and stays below.
 Synchronization of translated *content* is one of those: the gates prove a
 reading copy exists and declares its authority, not that it is current.

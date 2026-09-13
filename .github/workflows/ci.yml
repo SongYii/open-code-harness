@@ -216,3 +216,53 @@ jobs:
         env:
           DOCSGUARD_CHECK_EXTERNAL_LINKS: "1"
         run: go test ./internal/docsguard -run TestExternalCitations -count=1 -v
+
+  # Scheduled CI is the only place several gates run at all: the full Context
+  # evaluation matrix, the repeated and soaked race suites, and the
+  # network-dependent citation check. A failure there is visible only to
+  # whoever opens the Actions tab, and nothing makes anyone do that.
+  #
+  # This is not hypothetical. Every scheduled run between 2026-09-07 and
+  # 2026-09-12 failed. One of those failures was a real product defect --
+  # manual compaction silently covering nothing -- that reached main and
+  # stayed there for four nights while every pull request went green, because
+  # the pull-request lane carries one representative Context Cell and not the
+  # matrix that caught it. Fixing that defect without fixing its silence
+  # would leave the next one to be found the same way.
+  #
+  # The logic lives in scripts/report-nightly-result.sh rather than inline
+  # here so it can be exercised against a stubbed gh, which is how its four
+  # paths (open, comment, close, no-op) were checked.
+  nightly-report:
+    if: always() && github.event_name == 'schedule'
+    needs: [go, exec-sandbox, cross-build, vulncheck, determinism, context-matrix, soak]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report the scheduled run's outcome
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RESULTS: >-
+            go:${{ needs.go.result }}
+            exec-sandbox:${{ needs.exec-sandbox.result }}
+            cross-build:${{ needs.cross-build.result }}
+            vulncheck:${{ needs.vulncheck.result }}
+            determinism:${{ needs.determinism.result }}
+            context-matrix:${{ needs.context-matrix.result }}
+            soak:${{ needs.soak.result }}
+        run: |
+          # Only an outright failure counts. A skipped job is a lane that did
+          # not apply to this run, not a regression, and must never close a
+          # tracking issue by looking like success.
+          failed=()
+          for entry in $RESULTS; do
+            if [ "${entry#*:}" = "failure" ]; then
+              failed+=("${entry%%:*}")
+            fi
+          done
+          scripts/report-nightly-result.sh \
+            "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            "${failed[@]}"
