@@ -17,16 +17,39 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
 )
 
-func TestEnforcementReportsNoneWithoutAPlatformBackend(t *testing.T) {
+// TestEnforcementAgreesWithThisEnvironmentsOwnBackends checks the half of
+// the reporting claim that a derivation table cannot: that a real Runner's
+// report is wired to what this host actually has, in whichever direction
+// that happens to be.
+//
+// Its predecessor hard-coded all-none, which made it an assertion about the
+// machine rather than about the code: it passed on CI (no bwrap installed)
+// and failed on any developer machine with bwrap, even though the Runner was
+// correct in both. Every combination of backends is now covered
+// deterministically by enforcement_test.go's own table; what remains here is
+// the wiring between the probe and the report.
+func TestEnforcementAgreesWithThisEnvironmentsOwnBackends(t *testing.T) {
 	runner, _ := newTestRunner(t)
-	want := localexec.Enforcement{
-		Filesystem: localexec.EnforcementNone,
-		Network:    localexec.EnforcementNone,
-		Memory:     localexec.EnforcementNone,
-		CPU:        localexec.EnforcementNone,
+	got := runner.Enforcement()
+
+	sandboxed, reason := localexec.Availability()
+	want := localexec.EnforcementNone
+	if sandboxed {
+		want = localexec.EnforcementFull
 	}
-	if got := runner.Enforcement(); got != want {
-		t.Fatalf("Enforcement() = %+v, want %+v", got, want)
+	if got.Filesystem != want || got.Network != want {
+		t.Fatalf("Enforcement() filesystem/network = %s/%s, want %s/%s: Availability() reports available=%v (%q)",
+			got.Filesystem, got.Network, want, want, sandboxed, reason)
+	}
+	// Memory and CPU have no equivalent exported probe to compare
+	// against, so the only claim assertable here is the one that would
+	// actually be dangerous to get wrong: a level is never invented.
+	for name, level := range map[string]localexec.EnforcementLevel{"memory": got.Memory, "CPU": got.CPU} {
+		switch level {
+		case localexec.EnforcementFull, localexec.EnforcementPartial, localexec.EnforcementNone:
+		default:
+			t.Fatalf("Enforcement() %s = %q, want one of full/partial/none", name, level)
+		}
 	}
 }
 

@@ -385,6 +385,51 @@ ok
   file amended in this task instead) and `SECURITY.md` directly. The
   plan's own File Map entry was wrong.
 
+## Continuous verification of confinement (2026-09-13)
+
+Until this date nothing in CI had ever executed the confinement tests this
+ledger's own tables cite. `ubuntu-latest` ships no bubblewrap, so
+`probeBwrap` failed on every run and `TestBwrapConfinementDeniesWritesOutsideWorkspace`,
+`TestBwrapConfinementDeniesNetwork`, and `TestBwrapConfinementHidesHostProcesses`
+skipped every time while the job reported green. The three cgroup quota tests
+skipped for their own separate reason. `SECURITY.md`'s "Enforced" list was
+therefore backed by local runs recorded here and by nothing continuous.
+
+The same environment coupling ran in the opposite direction on developer
+machines that *do* have bwrap installed, where two tests failed outright:
+
+- `TestEnforcementReportsNoneWithoutAPlatformBackend` asserted one
+  environment's answer. This ledger's own "Remaining" list had already named
+  it as inconsistent and deliberately left unfixed; it is now fixed rather
+  than carried forward.
+- `TestRunKillsOnResourceLimitSignal` read the child's `$$`, which is the
+  namespace-local pid 2 under `--unshare-pid`, and then signalled and
+  probed that number rather than the host-side process group leader `Run`
+  actually registered and must kill.
+
+| Change | Executable evidence |
+| --- | --- |
+| Enforcement derivation is a pure function, so every backend combination is asserted on any host | `localexec.TestEnforcementForReportsOnlyWhatABackendProvides` — seven cases including "nothing available reports none for every effect", the claim the deleted test could only make where bwrap was absent |
+| A real Runner's report is wired to this host's actual backends | `localexec.TestEnforcementAgreesWithThisEnvironmentsOwnBackends`, compared against exported `Availability()` |
+| The kill path is asserted through the pid `Run` registered, not the child's own view of itself | `localexec.TestRunKillsOnResourceLimitSignal` via `waitForSoleRegistration` |
+| CI executes confinement for real, and cannot silently stop doing so | `.github/workflows/ci.yml` job `exec-sandbox`: installs bubblewrap, lifts the AppArmor unprivileged-userns restriction best-effort, and runs the package with `OCH_REQUIRE_EXEC_SANDBOX=1`, which converts "no usable backend" from a skip into a failure |
+
+Observed on a Linux host with bwrap present: `go test -race ./... -count=1`
+passes with no failures, the three confinement tests among them; the three
+cgroup quota tests still skip. With bwrap hidden from `PATH`, the same command
+also passes, with the three confinement tests skipping instead — the two
+configurations together cover both the confined path and the
+`AllowUnsandboxedExec` escape hatch. With `OCH_REQUIRE_EXEC_SANDBOX=1` and no
+bwrap on `PATH`, all three confinement tests fail with
+`"OCH_REQUIRE_EXEC_SANDBOX is set, but this environment has no usable exec
+sandbox backend: Availability() = false, \"bwrap not found on PATH\""`, which is
+the behavior the CI job depends on.
+
+Scope, stated rather than implied: the `exec-sandbox` job proves filesystem
+and network confinement. It does not prove the memory or CPU quota — those
+tests keep their own environment guard and may still skip there, so no
+continuous quota claim is made.
+
 ## Remaining
 
 - No macOS or Windows CI/dev host has run any part of this slice —
@@ -409,12 +454,12 @@ ok
   suggested), and file-descriptor limits face the same
   no-pre-exec-hook constraint as CPU on macOS with no Linux cgroup
   fallback (`pids.max` bounds process count, not descriptors).
-- `TestEnforcementReportsNoneWithoutAPlatformBackend` (tagged `unix`,
+- ~~`TestEnforcementReportsNoneWithoutAPlatformBackend` (tagged `unix`,
   nominally covering Darwin) asserts an all-`"none"` `Enforcement` that
   was already inconsistent with `rlimitEnforcementLevel`'s unconditional
-  `"partial"` for `Memory` on Darwin *before* the CPU quota extension;
-  that extension's own unconditional `"full"` for `CPU` inherits the
-  same pre-existing, never-caught-for-real gap rather than introducing a
-  new one. Noted here, not fixed — out of scope for a CPU-quota-focused
-  plan.
+  `"partial"` for `Memory` on Darwin.~~ Closed on 2026-09-13; see
+  "Continuous verification of confinement" above. The derivation is now a
+  pure function with an exhaustive table, and the Darwin shape
+  (`Seatbelt` + partial `RLIMIT_AS` + full `RLIMIT_CPU`) is one of its
+  asserted cases rather than an unreachable inconsistency.
 - Surfaces remain `experimental`; not GA.
