@@ -270,6 +270,7 @@ this file. The rules that can be checked without judgement are now tests in
 | `TestReadingCopiesNameTheirNormativeSource` | Every reading copy names the document that wins when the copies diverge |
 | `TestEveryImplementedContractHasEvidence` | Every implemented contract has an evidence ledger, with exemptions named in the test rather than left implicit |
 | `TestPlainLanguageGuidesCoverImplementedContracts` | Both plain-language guides contain one five-question entry for every implemented contract |
+| `TestIsNonRoutableExampleSeparatesIllustrationsFromCitations` | The citation gate probes real citations and excuses only illustrations — placeholder authorities and the names RFC 2606/6761 reserve — so it can neither fail on a documentation example nor go green by excusing too much |
 
 Two further gates run outside the pull-request path, in the nightly lane:
 `determinism` repeats the whole race suite, because a single green run only

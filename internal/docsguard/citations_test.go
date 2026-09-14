@@ -53,14 +53,24 @@ func externalCitations(t *testing.T, root string) map[string][]string {
 // citation. The provider design names http://169.254.169.254 as an address
 // the adapter must never be allowed to reach; probing it would test this
 // runner's own cloud metadata service, not a source. Loopback and private
-// ranges appear the same way, in configuration examples.
+// ranges appear the same way, in configuration examples, as do the names
+// RFC 2606 and RFC 6761 reserve for documentation.
+//
+// A URL that does not parse is deliberately NOT treated as an illustration on
+// that ground alone: a typo in a real citation also fails to parse, and
+// catching it is this gate's job. Only a placeholder-shaped authority --
+// http://127.0.0.1:<port>, http://host:port/ -- is excused, because a
+// non-numeric port is not a value any reader was meant to dial.
 func isNonRoutableExample(target string) bool {
 	parsed, err := url.Parse(target)
 	if err != nil {
-		return false
+		return hasPlaceholderAuthority(target)
 	}
-	host := parsed.Hostname()
-	if host == "localhost" {
+	return isIllustrationHost(parsed.Hostname())
+}
+
+func isIllustrationHost(host string) bool {
+	if host == "localhost" || reservedForDocumentation(host) {
 		return true
 	}
 	address := net.ParseIP(host)
@@ -68,6 +78,56 @@ func isNonRoutableExample(target string) bool {
 		return false
 	}
 	return address.IsLoopback() || address.IsPrivate() || address.IsLinkLocalUnicast() || address.IsUnspecified()
+}
+
+// reservedForDocumentation reports whether host is a name RFC 2606 and
+// RFC 6761 reserve for examples. Such a name is guaranteed never to resolve,
+// which is why documentation uses it and why probing it proves nothing --
+// before this check, https://api.example.com/v1 and https://provider.invalid/v1
+// failed the gate for doing exactly what they were written to do.
+func reservedForDocumentation(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	for _, name := range []string{"example.com", "example.net", "example.org"} {
+		if host == name || strings.HasSuffix(host, "."+name) {
+			return true
+		}
+	}
+	for _, label := range []string{"example", "invalid", "test", "localhost"} {
+		if host == label || strings.HasSuffix(host, "."+label) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasPlaceholderAuthority reports whether an unparseable URL's authority is a
+// documentation placeholder: a port the reader is meant to substitute, or an
+// illustration host. It reads the authority textually because url.Parse has
+// already refused the string.
+func hasPlaceholderAuthority(target string) bool {
+	_, authority, found := strings.Cut(target, "://")
+	if !found {
+		return false
+	}
+	authority = strings.TrimRight(authority, "/")
+	if cut := strings.IndexAny(authority, "/?#"); cut >= 0 {
+		authority = authority[:cut]
+	}
+	host, port, found := strings.Cut(authority, ":")
+	if !found {
+		return false
+	}
+	if port == "" {
+		return false
+	}
+	for _, digit := range port {
+		if digit < '0' || digit > '9' {
+			// A non-numeric port cannot be dialled by anyone, so the URL
+			// was never a citation: <port>, :port, ${PORT}.
+			return true
+		}
+	}
+	return isIllustrationHost(host)
 }
 
 func contains(values []string, want string) bool {
@@ -149,6 +209,13 @@ func TestExternalCitationsResolve(t *testing.T) {
 		switch {
 		case result.err != nil:
 			t.Errorf("citation %s (cited by %s) could not be reached: %v", result.url, where, result.err)
+		case result.status == http.StatusUnauthorized:
+			// The host answered, so the citation can be followed; what is
+			// behind it needs a credential this gate must not hold. An
+			// endpoint that disappears returns 404, not 401, so excusing
+			// this status does not hide rot.
+			t.Logf("citation %s (cited by %s) requires credentials (HTTP 401); reachable, content not verified here",
+				result.url, where)
 		case result.status >= 400:
 			t.Errorf("citation %s (cited by %s) returned HTTP %d", result.url, where, result.status)
 		case result.finalURL != "" && result.finalURL != result.url:
