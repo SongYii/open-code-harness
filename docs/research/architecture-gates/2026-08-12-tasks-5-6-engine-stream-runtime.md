@@ -11,7 +11,7 @@
 | Project | Primary evidence | Relevant behavior | Decision for Open Code Harness |
 | --- | --- | --- | --- |
 | OpenAI Codex | [`app-server/README.md`](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md), [`common.rs`](https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/common.rs), [`responses_websocket.rs`](https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/endpoint/responses_websocket.rs), [`compact.rs`](https://github.com/openai/codex/blob/main/codex-rs/core/src/compact.rs) | An item has `started -> zero or more deltas -> completed`; completed is authoritative. The typed response stream reports an error if transport ends before `response.completed`, and consumers stop on explicit completion. Codex also uses internal channels, transport tasks, retries, and fallback. | Adopt explicit completion and premature-EOF failure. Do not infer that Engine should expose push callbacks, channels, detached work, or hidden retries. |
-| Kimi Code | [`AGENTS.md`](https://github.com/MoonshotAI/kimi-code/blob/main/AGENTS.md), [`packages/transcript/AGENTS.md`](https://github.com/MoonshotAI/kimi-code/blob/main/packages/transcript/AGENTS.md), [wire mode](https://moonshotai.github.io/kimi-cli/en/customization/wire-mode.html) | Transcript owns its contract and cold rebuild source; recorded operations retain order and scoped sequence. Wire replay is read-only and ordered. On interruption `TurnEnd` may be absent, and retry can supersede partial output. | Adopt contract ownership, scoped monotonic order, and transcript/runtime separation. Reject its permissive interrupted ending and retry semantics for the strict ModelStream grammar. |
+| Kimi Code | [`AGENTS.md`](https://github.com/MoonshotAI/kimi-code/blob/main/AGENTS.md), [`packages/transcript/AGENTS.md`](https://github.com/MoonshotAI/kimi-code/blob/ab565e081/packages/transcript/AGENTS.md), [wire mode](https://moonshotai.github.io/kimi-cli/en/customization/wire-mode.html) | Transcript owns its contract and cold rebuild source; recorded operations retain order and scoped sequence. Wire replay is read-only and ordered. On interruption `TurnEnd` may be absent, and retry can supersede partial output. | Adopt contract ownership, scoped monotonic order, and transcript/runtime separation. Reject its permissive interrupted ending and retry semantics for the strict ModelStream grammar. |
 | Maka | [`ARCHITECTURE.md`](https://github.com/maka-agent/maka-agent/blob/main/ARCHITECTURE.md) | Runtime Host is the execution authority; the Runtime Event Log is canonical for messages, tool results, and termination facts, while UI, recovery, and context are projections. | Adopt one execution authority and durable facts versus transient delivery signals. The source does not define pull streaming, Close, UTF-8, or byte limits. |
 | Pi | [`agent-loop.ts`](https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/agent-loop.ts), [`types.ts`](https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/types.ts), [`agent-session.ts`](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/agent-session.ts) | The loop injects its stream function, propagates `AbortSignal`, consumes an async iterable, and awaits internal lifecycle delivery. The public wrapper starts detached async work; AgentSession also owns retries, compaction, and listeners with different awaiting rules. | Adopt dependency injection, explicit cancellation, ordered lifecycle, and awaited delivery. Reject the detached push wrapper and broad session policy from the synchronous Engine boundary. |
 | MiniMax Mini-Agent | [`MiniMax-AI/Mini-Agent`](https://github.com/MiniMax-AI/Mini-Agent), [`agent.py`](https://github.com/MiniMax-AI/Mini-Agent/blob/main/mini_agent/agent.py) | The official MiniMax demo injects an LLM client and runs a bounded step loop, but uses provider-specific unary `generate`; cancellation is checked at step boundaries. | Keep only the small, injectable, bounded-loop lesson. It supplies no ModelStream, Close, UTF-8, or delivery contract. |
@@ -183,3 +183,19 @@ carry these amendments:
    Engine milestone.
 
 With these amendments incorporated, the gate is **READY**.
+
+## Citation repair, 2026-09-14
+
+Two citations in this gate were written as mutable `blob/main/` paths, before
+documentation rule 8 required a commit. Upstream has since moved the files and
+those paths now return 404, so they have been re-pinned to a commit where the
+file exists:
+
+- `packages/transcript/AGENTS.md` -> [`MoonshotAI/kimi-code` at `ab565e081`](https://github.com/MoonshotAI/kimi-code/blob/ab565e081/packages/transcript/AGENTS.md)
+
+This is a repair of an unfollowable link, not a claim about what was read in
+2026-08-12. The original reading was by mutable path and cannot be
+reconstructed; what is asserted here is narrower and was checked on
+2026-09-14 — the file at the pinned commit still shows the behaviour this
+gate's table describes. A later gate that needs this evidence must re-verify
+it at its own then-current commit, as rule 7 requires.

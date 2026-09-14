@@ -21,7 +21,7 @@
 
 | 系统 | 一手资料 | 已观察到的设计 | 采用 | 不推导或不照搬 |
 | --- | --- | --- | --- | --- |
-| OpenAI Codex | [thread-store README](https://github.com/openai/codex/blob/main/codex-rs/thread-store/README.md)、[live writer](https://github.com/openai/codex/blob/main/codex-rs/thread-store/src/local/live_writer.rs)、[writer lock](https://github.com/openai/codex/blob/main/codex-rs/thread-store/src/local/writer_lock.rs)、[state migrations](https://github.com/openai/codex/blob/main/codex-rs/state/src/migrations.rs) | 规范 rollout JSONL 在可重建 SQLite 元数据视图之前写入并 flush；per-thread 跨进程锁、回填与 migration checksum 支撑这一选择。 | 保留人类可读的无损历史、显式 writer 所有权、带 checksum 的 migration 和可重建投影。 | JSONL 权威并不天然是精确 CAS、lost ACK 重试和三平台行为下最好的绿地选择。锁、扫描、漂移和修复机制都是它的成本。 |
+| OpenAI Codex | [thread-store README](https://github.com/openai/codex/blob/main/codex-rs/thread-store/README.md)、[live writer](https://github.com/openai/codex/blob/main/codex-rs/thread-store/src/local/live_writer.rs)、[writer lock](https://github.com/openai/codex/blob/67cc3c318d/codex-rs/thread-store/src/local/writer_lock.rs)、[state migrations](https://github.com/openai/codex/blob/main/codex-rs/state/src/migrations.rs) | 规范 rollout JSONL 在可重建 SQLite 元数据视图之前写入并 flush；per-thread 跨进程锁、回填与 migration checksum 支撑这一选择。 | 保留人类可读的无损历史、显式 writer 所有权、带 checksum 的 migration 和可重建投影。 | JSONL 权威并不天然是精确 CAS、lost ACK 重试和三平台行为下最好的绿地选择。锁、扫描、漂移和修复机制都是它的成本。 |
 | OpenCode | [Session Schema](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/session.sql.ts)、[CLI 数据库与 Session 命令](https://opencode.ai/docs/cli/) | SQLite 保存规范化的 Session、Message、Part、Todo、Session Message 和 Permission 记录，是 Session 列表、导出和数据库检查背后的持久恢复来源。Runtime Bus 与 SSE Event 用于通知 Consumer，但本身不是持久历史。 | 显式数据库工具、规范化产品投影、服务端统一拥有持久状态，以及与持久事实分离的瞬态交付 Event。 | 可变 Message/Part Row 和通知 Event 不能证明不可变领域事件权威、精确 Append Receipt、Fencing 或 Lost-ACK Recovery 合同。快速变化的 `dev` Schema 必须在实施复用前重新核验。 |
 | Goose | [Session Manager 与 SQLite Storage](https://github.com/aaif-goose/goose/blob/main/crates/goose/src/session/session_manager.rs) | `SessionManager` 将 Session、Conversation 和 Usage Ledger 的读写统一路由到 SQLite。Schema 初始化使用 `BEGIN IMMEDIATE` 串行化并发首次启动的 Writer，并把旧 Session 导入数据库。 | 串行化 Writer Admission、有界数据库等待、面向 WAL 的运行方式、事务内 Message/Session 更新、显式 Migration 和单向 Legacy Import。 | `replace_conversation` 与可变 Transcript CRUD 属于产品持久化语义，不是 Append-only Audit 或领域事件合同。 |
 | Crush | [仓库架构](https://github.com/charmbracelet/crush/blob/main/AGENTS.md)、[Session Service](https://github.com/charmbracelet/crush/blob/main/internal/session/session.go) | Go Service 通过 sqlc 和 Migration 对 SQLite 执行 Session CRUD；Session 从数据库读取，多表删除使用事务。明确仅用于 UI 的 Estimated Usage 保留在内存中，不与持久事实竞争。 | Go/sqlc Repository 边界、Migration 纪律、事务范围内多表变更，以及持久事实与瞬态 UI 状态的明确区分。 | 可变 Session CRUD、内部 Pub/Sub 和事务删除不提供不可变 Event Replay、Expected-Version Append 或不确定副作用协调。 |
@@ -109,3 +109,16 @@ Grok Build 还提供了积极的运维范例：工具 timeout 与 byte limit、�
 - Pi 的仓库和 package identity 曾发生变化；上述链接标明本次评审使用的源码路径。
 - OpenCode 的公开 `dev` Branch 变化很快；链接 Schema 是带日期的证据，不承诺每个发布版本都具有相同 Table。
 - 所有参考项目都不是默认代码来源。复用任何实现之前仍必须完成 license 与 provenance 审查。
+
+## 引用修复（2026-09-14）
+
+本门禁中有两条引用当初写成了可变路径 `blob/main/`，早于文档规则 8 要求钉住
+commit。上游此后移动了文件，这些路径现在返回 404，因此已重新钉到文件确实存在的
+commit：
+
+- `codex-rs/thread-store/src/local/writer_lock.rs` → [`openai/codex` 的 `67cc3c318d`](https://github.com/openai/codex/blob/67cc3c318d/codex-rs/thread-store/src/local/writer_lock.rs)
+
+这是对"打不开的链接"的修复，并不声称 2026-08-13 当时读的就是这个 commit。原始引用
+按可变路径书写，读到的具体版本已无法复原；这里主张的范围更窄，且已于 2026-09-14
+核对：钉住 commit 处的文件内容仍然支撑本门禁表格中的描述。后续门禁若需要这条证据，
+须按规则 7 在其自身的当时 commit 上重新核验。

@@ -23,7 +23,7 @@
 | 项目 | 观察到的证据 | 对 Open Code Harness 的推论 |
 | --- | --- | --- |
 | OpenAI Codex | [app-server 合同](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)定义 `Thread -> Turn -> Item`、显式 `turn/started` 与终态 `turn/completed`，以及 `item/started -> delta* -> item/completed`；中断也以 `turn/completed(status=interrupted)` 收束，客户端应以该终态通知为准。`clientUserMessageId` 只被描述为回显字段，并未声明为幂等键。[rollout recorder](https://github.com/openai/codex/blob/main/codex-rs/rollout/src/recorder.rs)通过单 writer 排序 canonical items，并提供可等待的 flush；其 idempotent 描述针对 recorder materialization/retry，不等于 `turn/start` 恰好一次。 | 采用显式终态、单一生命周期权威、有序 canonical 记录，以及“持久后再发终态通知”。不得据此臆推 CAS、Turn 多事件原子提交或命令幂等。 |
-| Kimi Code | [仓库包图](https://github.com/MoonshotAI/kimi-code/blob/main/AGENTS.md)分离 app/server/SDK、agent engine、provider、execution environment 与 transcript。[transcript 合同](https://github.com/MoonshotAI/kimi-code/blob/main/packages/transcript/AGENTS.md)拥有幂等 projection operation、per-session/agent 单调批序号，以及从持久 `wire.jsonl` 冷重建；同时明确部分 live-only 字段不能冷重建。 | 采用消费方拥有 projection 合同、scope 内序号和 live/rebuildable 证据边界。transcript operation 幂等不能证明领域命令或 EventStore 幂等。 |
+| Kimi Code | [仓库包图](https://github.com/MoonshotAI/kimi-code/blob/main/AGENTS.md)分离 app/server/SDK、agent engine、provider、execution environment 与 transcript。[transcript 合同](https://github.com/MoonshotAI/kimi-code/blob/ab565e081/packages/transcript/AGENTS.md)拥有幂等 projection operation、per-session/agent 单调批序号，以及从持久 `wire.jsonl` 冷重建；同时明确部分 live-only 字段不能冷重建。 | 采用消费方拥有 projection 合同、scope 内序号和 live/rebuildable 证据边界。transcript operation 幂等不能证明领域命令或 EventStore 幂等。 |
 | Pi | 当前 [agent loop](https://github.com/earendil-works/pi/blob/main/packages/agent/src/agent-loop.ts)等待生命周期事件发送、传递 abort signal 并产生终态 agent/turn 事件。[AgentSession](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/agent-session.ts)被 interactive/print/RPC 共用，在事件处理器中持久化 completed message，abort 后等待 idle，并拥有 auto-retry/compaction 策略。 | 采用所有界面共用一个应用入口、等待式取消和可注入执行；拒绝把持久化做成 UI/event listener 的偶然副作用，并把自动重试留在本里程碑之外。 |
 | Maka | Maka 明确采用 [log-first、projection-driven](https://github.com/maka-agent/maka-agent/blob/main/ARCHITECTURE.md)，Runtime 保持执行权威，已提交事件保持事实权威。当前 [resume 架构](https://github.com/maka-agent/maka-agent/blob/main/docs/architecture/runtime-resume-architecture.md)区分 repair、continuation 与 retry；要求 terminal semantic fact 先于 terminal header；continuation 使用新执行身份；不确定时禁止盲目重放；exact retry 必须匹配 bytes 与 identity；外部副作用前后使用短事务，而非长事务包住外部工作。 | 采用副作用前后短提交、持久终态先于 projection/signal、显式 running/不确定状态和禁止盲重试。本阶段不引入 Maka 的恢复子系统。 |
 | MiniMax | [MiniMax Code](https://github.com/MiniMax-AI/minimax-code) 明确只是桌面应用 issue 收集仓库，没有实现证据。官方 [Mini-Agent](https://github.com/MiniMax-AI/Mini-Agent) 自称 demo；其 [loop](https://github.com/MiniMax-AI/Mini-Agent/blob/main/mini_agent/agent.py) 有步数上限、在安全点检查取消、记录请求/结果、捕获 provider error 并返回用户错误字符串。 | 保留执行有界与可运行测试。不能从 MiniMax Code 或 Mini-Agent 推导事务、终态持久性、错误归一化或幂等合同。 |
@@ -319,3 +319,16 @@ eligibility predicate；明确 Task 7 修改既有 `application/ports.go`、`por
 barrier 证明 no-ambiguous-error 合同；append acceptance 采用 option B（exact returned
 records、ordered Apply success、final Version），不引入独立 state oracle；一手证据只采用
 官方来源，DeepSeek-Reasonix 仅保留为明确标注的非权威社区上下文。
+
+## 引用修复（2026-09-14）
+
+本门禁中有两条引用当初写成了可变路径 `blob/main/`，早于文档规则 8 要求钉住
+commit。上游此后移动了文件，这些路径现在返回 404，因此已重新钉到文件确实存在的
+commit：
+
+- `packages/transcript/AGENTS.md` → [`MoonshotAI/kimi-code` 的 `ab565e081`](https://github.com/MoonshotAI/kimi-code/blob/ab565e081/packages/transcript/AGENTS.md)
+
+这是对"打不开的链接"的修复，并不声称 2026-08-12 当时读的就是这个 commit。原始引用
+按可变路径书写，读到的具体版本已无法复原；这里主张的范围更窄，且已于 2026-09-14
+核对：钉住 commit 处的文件内容仍然支撑本门禁表格中的描述。后续门禁若需要这条证据，
+须按规则 7 在其自身的当时 commit 上重新核验。
