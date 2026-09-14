@@ -67,10 +67,10 @@ func TestOpenAndCloseRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
-	if assembly.Service() == nil || assembly.Host() == nil || assembly.Store() == nil {
+	if assembly.Service() == nil || assembly.Done() == nil || assembly.Store() == nil {
 		t.Fatal("Open() returned an assembly with a missing component")
 	}
-	if !assembly.Host().Ready() {
+	if !assembly.Ready() {
 		t.Fatal("Open() returned before the host was ready")
 	}
 	if _, statErr := os.Stat(config.DatabasePath); statErr != nil {
@@ -101,7 +101,7 @@ func TestOpenSucceedsWithDefaultFlagWhenSandboxIsAvailable(t *testing.T) {
 	if err := assembly.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
-	if assembly.Host().Ready() {
+	if assembly.Ready() {
 		t.Fatal("Close() left the host admitting work")
 	}
 }

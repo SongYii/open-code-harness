@@ -369,63 +369,66 @@ func assertProductionDependencyBoundaries(t *testing.T) {
 	fileSet := token.NewFileSet()
 	violations := make([]string, 0)
 
-	err := filepath.WalkDir(harnessRoot, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		relative, err := filepath.Rel(repositoryRoot, path)
-		if err != nil {
-			return err
-		}
-		directory := filepath.ToSlash(filepath.Dir(relative))
-		if !shouldInspectProductionDirectory(directory) {
-			return nil
-		}
-		owner, hasOwner := packageOwnership(directory)
-		if !hasOwner {
-			violations = append(violations, directory+": "+productionOwnershipViolation(directory))
-			return nil
-		}
-		parsed, err := parser.ParseFile(fileSet, path, nil, 0)
-		if err != nil {
-			return err
-		}
-		for _, spec := range parsed.Imports {
-			importPath, err := strconv.Unquote(spec.Path.Value)
+	var err error
+	for _, root := range []string{harnessRoot, filepath.Join(repositoryRoot, "internal", "launcher"), filepath.Join(repositoryRoot, "sdk")} {
+		err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			relative, err := filepath.Rel(repositoryRoot, path)
 			if err != nil {
 				return err
 			}
-			reason := forbiddenImport(owner, importPath)
-			if reason != "" {
-				position := fileSet.Position(spec.Pos())
-				violations = append(violations, position.String()+": "+reason+" "+strconv.Quote(importPath))
+			directory := filepath.ToSlash(filepath.Dir(relative))
+			if !shouldInspectProductionDirectory(directory) {
+				return nil
 			}
-		}
-		appendAllowAllViolations(fileSet, path, relative, parsed, &violations)
-		ast.Inspect(parsed, func(node ast.Node) bool {
-			switch node := node.(type) {
-			case *ast.IfStmt:
-				appendScriptedViolation(fileSet, path, node.Cond, "ScriptedModel branch", &violations)
-			case *ast.SwitchStmt:
-				appendScriptedViolation(fileSet, path, node.Tag, "ScriptedModel switch", &violations)
-			case *ast.TypeSwitchStmt:
-				appendScriptedViolation(fileSet, path, node.Assign, "ScriptedModel type switch", &violations)
-			case *ast.CaseClause:
-				for _, expression := range node.List {
-					appendScriptedViolation(fileSet, path, expression, "ScriptedModel case", &violations)
+			owner, hasOwner := packageOwnership(directory)
+			if !hasOwner {
+				violations = append(violations, directory+": "+productionOwnershipViolation(directory))
+				return nil
+			}
+			parsed, err := parser.ParseFile(fileSet, path, nil, 0)
+			if err != nil {
+				return err
+			}
+			for _, spec := range parsed.Imports {
+				importPath, err := strconv.Unquote(spec.Path.Value)
+				if err != nil {
+					return err
 				}
-			case *ast.TypeAssertExpr:
-				appendScriptedViolation(fileSet, path, node.Type, "ScriptedModel type assertion", &violations)
+				reason := forbiddenImport(owner, importPath)
+				if reason != "" {
+					position := fileSet.Position(spec.Pos())
+					violations = append(violations, position.String()+": "+reason+" "+strconv.Quote(importPath))
+				}
 			}
-			return true
+			appendAllowAllViolations(fileSet, path, relative, parsed, &violations)
+			ast.Inspect(parsed, func(node ast.Node) bool {
+				switch node := node.(type) {
+				case *ast.IfStmt:
+					appendScriptedViolation(fileSet, path, node.Cond, "ScriptedModel branch", &violations)
+				case *ast.SwitchStmt:
+					appendScriptedViolation(fileSet, path, node.Tag, "ScriptedModel switch", &violations)
+				case *ast.TypeSwitchStmt:
+					appendScriptedViolation(fileSet, path, node.Assign, "ScriptedModel type switch", &violations)
+				case *ast.CaseClause:
+					for _, expression := range node.List {
+						appendScriptedViolation(fileSet, path, expression, "ScriptedModel case", &violations)
+					}
+				case *ast.TypeAssertExpr:
+					appendScriptedViolation(fileSet, path, node.Type, "ScriptedModel type assertion", &violations)
+				}
+				return true
+			})
+			return nil
 		})
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if len(violations) > 0 {
 		t.Fatalf("production dependency boundary violations:\n%s", strings.Join(violations, "\n"))
@@ -459,6 +462,9 @@ const (
 	ownerRedact            packageOwner = "redact"
 	ownerTelemetry         packageOwner = "telemetry"
 	ownerOTel              packageOwner = "otel"
+	ownerLauncher          packageOwner = "launcher"
+	ownerSDKOch            packageOwner = "sdk_och"
+	ownerContextPolicy     packageOwner = "contextpolicy"
 )
 
 var excludedTestSupportDirectories = []string{
@@ -473,6 +479,9 @@ var ownedPackageRoots = []struct {
 	root  string
 	owner packageOwner
 }{
+	{root: "internal/launcher", owner: ownerLauncher},
+	{root: "sdk/och", owner: ownerSDKOch},
+	{root: "sdk/contextpolicy", owner: ownerContextPolicy},
 	{root: "internal/harness/domain", owner: ownerDomain},
 	{root: "internal/harness/engine", owner: ownerEngine},
 	{root: "internal/harness/application", owner: ownerApplication},
@@ -504,7 +513,7 @@ func shouldInspectProductionDirectory(directory string) bool {
 			return false
 		}
 	}
-	return directoryWithin(directory, "internal/harness")
+	return directoryWithin(directory, "internal/harness") || directoryWithin(directory, "internal/launcher") || directoryWithin(directory, "sdk")
 }
 
 func packageOwnership(directory string) (packageOwner, bool) {
@@ -531,6 +540,9 @@ func productionOwnershipViolation(directory string) string {
 // package roots, so an owner may also import a subpackage below a named root.
 // An owner's own root is always allowed to support internal subpackages.
 var allowedHarnessImports = map[packageOwner][]string{
+	ownerLauncher:          {modulePath + "/internal/harness/application", modulePath + "/internal/harness/composition", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/policy", modulePath + "/sdk/contextpolicy"},
+	ownerSDKOch:            {modulePath + "/internal/launcher", modulePath + "/sdk/contextpolicy"},
+	ownerContextPolicy:     {},
 	ownerDomain:            {},
 	ownerEngine:            {modulePath + "/internal/harness/domain"},
 	ownerApplication:       {modulePath + "/internal/harness/agentinstructions", modulePath + "/internal/harness/contextengine", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/engine", modulePath + "/internal/harness/policy", modulePath + "/internal/harness/redact", modulePath + "/internal/harness/telemetry", modulePath + "/internal/harness/tools"},
@@ -585,7 +597,13 @@ func withinPackage(importPath, prefix string) bool {
 }
 
 func forbiddenImport(owner packageOwner, importPath string) string {
-	if withinPackage(importPath, modulePath+"/internal/harness") && !allowedHarnessImport(owner, importPath) {
+	if importPath == modulePath+"/sdk/contextpolicy" && (owner == ownerContextEngine || owner == ownerApplication || owner == ownerComposition || owner == ownerEval) {
+		return ""
+	}
+	if owner == ownerContextPolicy && (strings.Contains(strings.Split(importPath, "/")[0], ".") || importPath == "os" || strings.HasPrefix(importPath, "net") || importPath == "unsafe" || importPath == "plugin") {
+		return "context policy SDK must be a standard-library-only data contract"
+	}
+	if (withinPackage(importPath, modulePath+"/internal/harness") || withinPackage(importPath, modulePath+"/internal/launcher") || withinPackage(importPath, modulePath+"/sdk")) && !allowedHarnessImport(owner, importPath) {
 		return "forbidden package dependency outside the owner's allowlist"
 	}
 

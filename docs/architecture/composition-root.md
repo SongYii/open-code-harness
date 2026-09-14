@@ -14,8 +14,9 @@
 
 `composition` is the single place where concrete implementations are named and
 wired into a running assembly. It is a library, so assembly is asserted by
-tests rather than by launching a process; `cmd/och` is a thin binary over it
-containing only flag parsing and signal handling.
+tests rather than only by launching a process. `cmd/och` handles signals and
+calls `sdk/och.Run`; `internal/launcher` owns the shared flag/command pipeline.
+See [startup extensibility](startup-extensibility.md) for the public boundary.
 
 The package constructs. It contains no domain transition, no retry or
 admission policy, and no branch that exists only for tests. Every bound it
@@ -30,11 +31,13 @@ order: Runtime Host — which opens the SQLite store and completes startup
 reconciliation — then the provider model and turn runner, then the workspace
 filesystem and command runner, then the tool catalog, then the Application
 service. The service receives the SQLite store as an `AuthoritySource`, not
-a `WriterAuthority` snapshot, so an expired-takeover fencing-token rotation
-is visible on the next append.
+a `WriterAuthority` snapshot, and reads authority per append. Lease loss never
+reopens the same host instance.
 
 `Open` never returns a non-nil `Assembly` with a non-nil error. Every failure
-after the host has launched releases the host before returning, so a failed
+after the host has launched attempts reverse-order cleanup before returning.
+If teardown cannot be proven, it stops renewal without releasing ownership
+and requires process termination. With successful cleanup, a failed
 assembly never leaves a lease held or a database locked. When a release itself
 fails, both errors are joined rather than one replacing the other.
 
@@ -71,9 +74,9 @@ Three behaviors are fail-closed and tested as such:
 - A failure part-way through **tears down the servers already connected**
   before returning, so a partial assembly leaks no subprocess.
 
-`Close` stops every connected server before shutting the host down — they are
-leaves of the assembly, and stopping them first means a slow server cannot
-delay the writer's own lease release. Errors from both are joined.
+After admitted work drains, `Close` stops connected servers and the command
+runner before shutting down the host. Unproven leaf teardown prevents lease
+release; a single configured bound covers drain and the leaf phase.
 
 Teardown runs the SDK's own stdio shutdown first, then escalates to the
 server's **process group** and proves the group is gone before reporting
@@ -91,22 +94,28 @@ kill-only-the-parent substitute. A Windows build therefore gets the SDK's
 ladder alone, and a server that spawns children can leave them running. The
 limitation is stated, not hidden.
 
-`Assembly` exposes `Service()`, `Host()`, and `Store()` as read-only
-accessors. It owns every resource it returns. `ServeACP` speaks ACP v1
+`Assembly` exposes a lifecycle-managed `Service()` interface and external
+`Store()` facade. Lifecycle observation is limited to `Ready()` and receive-only
+`Done()`; the former `Host()` accessor is removed so callers cannot obtain its
+raw store or invoke host-only teardown. `Done()` signals stopped admission, not
+completed cleanup: callers still own calling `Close()`. The assembly owns every
+resource it returns. `ServeACP` follows host cancellation and speaks ACP v1
 JSON-RPC on a caller-supplied duplex; the writer receives only ACP frames.
 The Application service is constructed with a `tools.Slot` Approver so an
 ACP server can attach without rebuilding the service.
 
-`Close()` stops admission, waits for the host's loops within
-`Config.ShutdownTimeout` (default 10s), releases the lease, and closes the
-store. It is idempotent: a second call returns the first result rather than
-shutting down again, which would release a lease the assembly no longer owns.
+`Close()` stops admission, cancels/drains operations while retaining heartbeat,
+closes MCP and localexec, stops host loops, releases the matching lease, closes
+store, then shuts down the existing telemetry adapter. `Config.ShutdownTimeout`
+(default 10s) bounds shutdown; timeout reports unproven teardown, stops renewal,
+and requires process termination rather than same-instance restart. Concurrent
+callers share the first result. Startup rollback also owns command-runner cleanup.
 Abandoning an `Assembly` without `Close` leaks the SQLite handle and the host
 goroutines; this is stated, not defended against.
 
 ## Configuration
 
-`Config.Validate` is total and fail-closed: every field is checked before any
+`Config.Validate` and startup policy resolution fail closed before any
 resource is constructed, so a rejected configuration creates no database file
 and acquires no lease. Errors name the field and are not wrapped in an adapter
 error type, because they are the caller's mistake rather than a component's
@@ -151,7 +160,8 @@ identifiers carry admission and append identity.
   package cannot inherit the composition exception by not being listed.
 - `composition` may not import `testkit`. Production wiring must not reach for
   a double.
-- `cmd/och` imports `composition` and the standard library only.
+- `cmd/och` imports `sdk/och` and the standard library. SDK/launcher ownership
+  and import allowlists are also covered by the dependency gate.
 
 ## Verification
 

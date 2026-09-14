@@ -113,10 +113,11 @@ type AttemptStats struct {
 // and a nil ToolCall; RunResult may still carry both concatenated text
 // and ToolCalls.
 type StreamEvent struct {
-	Type     StreamEventType
-	Text     string
-	Usage    *TokenUsage // nil except optionally on completed
-	ToolCall *ToolCall   // non-nil iff Type == tool_call
+	ProviderState *domain.ProviderState // nil except on a successfully completed stream
+	Type          StreamEventType
+	Text          string
+	Usage         *TokenUsage // nil except optionally on completed
+	ToolCall      *ToolCall   // non-nil iff Type == tool_call
 }
 
 // AttemptObserver is optional. HTTP streams report finish, request id, and

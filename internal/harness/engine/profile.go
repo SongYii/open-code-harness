@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/SongYii/open-code-harness/internal/harness/domain"
 )
 
 type CapabilityTriState string
@@ -69,7 +71,7 @@ func (identity RequestIdentity) Validate() error {
 	if identity.ThinkingMode != "" && identity.ThinkingMode != "enabled" && identity.ThinkingMode != "disabled" {
 		return errInvalidRequestIdentity
 	}
-	if !IsReasoningEffort(identity.ReasoningEffort) || identity.ThinkingMode != "" && identity.ReasoningEffort != "" {
+	if !IsReasoningEffort(identity.ReasoningEffort) || identity.ThinkingMode != "" && identity.ReasoningEffort != "" && identity.AdapterFamily != domain.DeepSeekThinkingV1 {
 		return errInvalidRequestIdentity
 	}
 	return nil

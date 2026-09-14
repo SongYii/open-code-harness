@@ -15,7 +15,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
+	"github.com/SongYii/open-code-harness/internal/harness/redact"
 )
 
 var (
@@ -36,25 +38,30 @@ type assembledCall struct {
 }
 
 type chatStream struct {
-	mu          sync.Mutex
-	body        *onceCloser
-	scanner     *bufio.Scanner
-	cancel      context.CancelFunc
-	started     time.Time
-	idleTimeout time.Duration
-	idleExpired atomic.Bool
-	stats       engine.AttemptStats
-	pending     []engine.StreamEvent
-	dataLines   []string
-	sawText     bool
-	finish      string
-	completed   bool
-	closed      bool
-	done        bool
-	terminalErr error
-	nativeTools engine.CapabilityTriState
-	content     []string
-	calls       map[int]*assembledCall
+	providerState *domain.ProviderState
+	reasoning     strings.Builder
+	sawReasoning  bool
+	sawDone       bool
+	mu            sync.Mutex
+	body          *onceCloser
+	scanner       *bufio.Scanner
+	cancel        context.CancelFunc
+	started       time.Time
+	idleTimeout   time.Duration
+	idleExpired   atomic.Bool
+	stats         engine.AttemptStats
+	pending       []engine.StreamEvent
+	dataLines     []string
+	dataBytes     int
+	sawText       bool
+	finish        string
+	completed     bool
+	closed        bool
+	done          bool
+	terminalErr   error
+	nativeTools   engine.CapabilityTriState
+	content       []string
+	calls         map[int]*assembledCall
 }
 
 func newChatStream(_ context.Context, body io.ReadCloser, cancel context.CancelFunc, started time.Time, requestID string, idle time.Duration, maxLine int, nativeTools engine.CapabilityTriState) *chatStream {
@@ -180,6 +187,13 @@ func (s *chatStream) consumeLine(line string) error {
 	}
 	switch field {
 	case "data":
+		if s.providerState != nil {
+			// Bound multiline SSE events as well as individual scanner lines.
+			if len(s.dataLines) >= 1024 || len(value)+1 > (1<<20)-s.dataBytes {
+				return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "invalid_stream", httpStatusOK, s.stats.ProviderRequestID, "provider event too large")
+			}
+			s.dataBytes += len(value) + 1
+		}
 		s.dataLines = append(s.dataLines, value)
 	}
 	return nil
@@ -191,7 +205,9 @@ func (s *chatStream) dispatchEvent() error {
 	}
 	payload := strings.Join(s.dataLines, "\n")
 	s.dataLines = nil
+	s.dataBytes = 0
 	if payload == "[DONE]" {
+		s.sawDone = true
 		return s.finishStream()
 	}
 	return s.consumePayload(payload)
@@ -217,6 +233,12 @@ func (s *chatStream) finishStream() error {
 	if s.completed {
 		return nil
 	}
+	if s.providerState != nil {
+		if !s.sawDone || !s.sawReasoning || (s.finish != "stop" && s.finish != "tool_calls") || redact.Text(s.reasoning.String()) != s.reasoning.String() {
+			return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "invalid_stream", httpStatusOK, s.stats.ProviderRequestID, "incomplete or invalid provider protocol state")
+		}
+		s.providerState.ReasoningContent = s.reasoning.String()
+	}
 	if s.assemblesTools() {
 		return s.emitAssembled()
 	}
@@ -236,6 +258,9 @@ func (s *chatStream) assemblesTools() bool {
 }
 
 func (s *chatStream) consumePayload(payload string) error {
+	if s.providerState != nil && !losslessReplayJSON(payload) {
+		return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "invalid_stream", httpStatusOK, s.stats.ProviderRequestID, "invalid stream")
+	}
 	var root map[string]any
 	if err := json.Unmarshal([]byte(payload), &root); err != nil {
 		return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "invalid_stream", httpStatusOK, s.stats.ProviderRequestID, "invalid stream")
@@ -280,6 +305,11 @@ func (s *chatStream) consumeChoice(choice map[string]any) error {
 		}
 	}
 	if message, ok := choice["message"].(map[string]any); ok {
+		if s.providerState != nil {
+			// This contract is streaming delta replay only. A message snapshot
+			// mixed with deltas has ambiguous concatenation semantics.
+			return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "invalid_stream", httpStatusOK, s.stats.ProviderRequestID, "invalid stream")
+		}
 		if err := s.consumeToolCallsField(message["tool_calls"]); err != nil {
 			return err
 		}
@@ -288,6 +318,16 @@ func (s *chatStream) consumeChoice(choice map[string]any) error {
 }
 
 func (s *chatStream) consumeDelta(delta map[string]any) error {
+	if s.providerState != nil {
+		if raw, ok := delta["reasoning_content"]; ok && raw != nil {
+			value, valid := raw.(string)
+			if !valid || len(value) > domain.MaxProviderReasoningBytes-s.reasoning.Len() {
+				return streamFailure(engine.CodeInvalidStream, engine.FailureClassPermanent, "invalid_stream", httpStatusOK, s.stats.ProviderRequestID, "invalid provider protocol state")
+			}
+			s.sawReasoning = true
+			s.reasoning.WriteString(value)
+		}
+	}
 	if err := s.consumeToolCallsField(delta["tool_calls"]); err != nil {
 		return err
 	}
@@ -379,8 +419,9 @@ func (s *chatStream) emitCompleted(reason string) {
 	s.completed = true
 	s.stats.FinishReason = reason
 	s.pending = append(s.pending, engine.StreamEvent{
-		Type:  engine.StreamEventCompleted,
-		Usage: copyUsage(s.stats.Usage),
+		ProviderState: domain.CloneProviderState(s.providerState),
+		Type:          engine.StreamEventCompleted,
+		Usage:         copyUsage(s.stats.Usage),
 	})
 }
 

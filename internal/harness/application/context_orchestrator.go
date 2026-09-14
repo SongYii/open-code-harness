@@ -13,6 +13,7 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
 	"github.com/SongYii/open-code-harness/internal/harness/telemetry"
+	"github.com/SongYii/open-code-harness/sdk/contextpolicy"
 )
 
 // defaultContextPageLimit mirrors ReadWholeStreamPinned's own bound
@@ -138,6 +139,8 @@ func (summarizer *EngineContextSummarizer) Summarize(ctx context.Context, reques
 // than shipping this orchestrator complete and tested on its own, and
 // wiring it into turn.go/loop.go together as one later, atomic change.
 type ContextOrchestratorDeps struct {
+	Policy          contextpolicy.Policy
+	PolicyIdentity  *domain.ContextPolicyIdentity
 	Store           EventStore
 	IDs             IDGenerator
 	Clock           Clock
@@ -284,6 +287,7 @@ type PrepareContextInput struct {
 // ModelRequestRecorded pair (design §7.4) once it has allocated an
 // AttemptIndex and ContextDecisionID.
 type PrepareContextResult struct {
+	PolicyIdentity    *domain.ContextPolicyIdentity
 	State             domain.Session
 	CompactionRan     bool
 	SourceHeadVersion uint64
@@ -348,7 +352,7 @@ func PrepareContext(ctx context.Context, deps ContextOrchestratorDeps, state dom
 		return PrepareContextResult{}, mapContextEngineScanError(err)
 	}
 
-	plan, err := contextengine.SelectCutPoint(contextengine.PlanInput{
+	plan, err := planContext(ctx, deps, previous, input.Trigger, contextengine.PlanInput{
 		PrefixMessages: input.PrefixMessages, Units: scan.Units, Budget: deps.Budget, Meter: deps.Meter, Tools: input.Tools, CurrentInput: input.CurrentInput, Force: input.Force,
 	})
 	if err != nil {
@@ -377,7 +381,7 @@ func PrepareContext(ctx context.Context, deps ContextOrchestratorDeps, state dom
 			if err != nil {
 				return PrepareContextResult{}, mapContextEngineScanError(err)
 			}
-			plan, err = contextengine.SelectCutPoint(contextengine.PlanInput{
+			plan, err = planContext(ctx, deps, previous, input.Trigger, contextengine.PlanInput{
 				PrefixMessages: input.PrefixMessages, Units: scan.Units, Budget: deps.Budget, Meter: deps.Meter, Tools: input.Tools, CurrentInput: input.CurrentInput, Force: input.Force,
 			})
 			if err != nil {
@@ -388,8 +392,8 @@ func PrepareContext(ctx context.Context, deps ContextOrchestratorDeps, state dom
 
 	// Design §8's non-lowering provider-usage anchor: budgetEstimate =
 	// max(wireEstimate, anchoredEstimate?). It only ever matters here --
-	// SelectCutPoint above already decided NeedsCompaction from the plain
-	// wireEstimate alone, so this can only ever turn a "no compaction
+	// The selected policy above decided NeedsCompaction, so the anchor can
+	// only ever turn a "no compaction
 	// needed" decision into a forced one, never the reverse (Force already
 	// means "always attempt a cut," so there is nothing left for the
 	// anchor to add once it is true). Reconstructing the anchor costs one
@@ -414,7 +418,7 @@ func PrepareContext(ctx context.Context, deps ContextOrchestratorDeps, state dom
 			anchorEstimate := contextengine.EvaluateUsageAnchor(anchor, deps.Meter,
 				deps.Identity.AdapterFamily, deps.Identity.ModelID, deps.Identity.EndpointID, deps.Meter.ID(), input.Tools, currentMessages)
 			if anchorEstimate.Eligible && anchorEstimate.Tokens > deps.Budget.Trigger {
-				plan, err = contextengine.SelectCutPoint(contextengine.PlanInput{
+				plan, err = planContext(ctx, deps, previous, input.Trigger, contextengine.PlanInput{
 					PrefixMessages: input.PrefixMessages, Units: scan.Units, Budget: deps.Budget, Meter: deps.Meter, Tools: input.Tools, CurrentInput: input.CurrentInput, Force: true,
 				})
 				if err != nil {
@@ -427,7 +431,8 @@ func PrepareContext(ctx context.Context, deps ContextOrchestratorDeps, state dom
 	}
 
 	result = PrepareContextResult{
-		State: state, SourceHeadVersion: scan.HeadVersion, Budget: deps.Budget,
+		PolicyIdentity: deps.PolicyIdentity,
+		State:          state, SourceHeadVersion: scan.HeadVersion, Budget: deps.Budget,
 		UsageAnchorApplied: usageAnchorApplied, UsageAnchorTokens: usageAnchorTokens,
 	}
 	activeCheckpoint := previous
@@ -445,17 +450,14 @@ func PrepareContext(ctx context.Context, deps ContextOrchestratorDeps, state dom
 		}
 	}
 
-	// When a checkpoint is active (whether it was already valid, or this
-	// round just built/rolled one forward), plan.RetainedUnits is already
-	// exclusive of whatever the checkpoint now covers, so it alone is the
-	// raw tail to send. With no usable checkpoint at all -- none ever
-	// existed, or compaction could not produce one and the request still
-	// fits under HardInput uncompacted (design §16's "summary failure
-	// below hard budget" policy) -- send the complete, uncompacted unit
-	// set instead.
-	retainedUnits := plan.RetainedUnits
-	if activeCheckpoint == nil {
-		retainedUnits = scan.Units
+	// A proposed cut is not evidence of coverage. In particular, a failed
+	// rolling summary leaves the OLD checkpoint active: every unit after
+	// its committed boundary must remain in the request.
+	retainedUnits := scan.Units
+	if activeCheckpoint != nil {
+		for len(retainedUnits) > 0 && retainedUnits[0].LastSequence <= activeCheckpoint.Coverage.ThroughSequence {
+			retainedUnits = retainedUnits[1:]
+		}
 	}
 
 	var checkpointArg *contextengine.ContextCheckpoint
@@ -784,7 +786,8 @@ func startCompaction(ctx context.Context, deps ContextOrchestratorDeps, state do
 		priorCheckpointID = previous.ID
 	}
 	started := domain.ContextCompactionStarted{
-		ID: compactionID, Trigger: input.Trigger, Strategy: strategy, BaseSourceHead: headVersion,
+		Policy: deps.PolicyIdentity,
+		ID:     compactionID, Trigger: input.Trigger, Strategy: strategy, BaseSourceHead: headVersion,
 		PriorCheckpointID: priorCheckpointID, PromptVersion: contextengine.SummaryPromptVersion,
 		SourceSchema: contextengine.SourceSchemaVersion, MeterID: deps.Meter.ID(),
 	}
@@ -1438,6 +1441,8 @@ func mapDomainDecideError(err error) error {
 
 func mapContextEngineScanError(err error) error {
 	switch {
+	case errors.Is(err, contextengine.ErrPolicy):
+		return applicationError(CategoryInternal, CodeContextPolicyInvalid, false, err)
 	case errors.Is(err, contextengine.ErrProjectionInvalid):
 		return applicationError(CategoryInternal, CodeContextProjectionInvalid, false, err)
 	case errors.Is(err, contextengine.ErrHeadMismatch):
@@ -1500,6 +1505,7 @@ func contextPreparationAndRequestEvents(preview domain.Session, sessionID domain
 func ContextPreparedRecordedFromResult(result PrepareContextResult, trigger string, attemptIndex uint32, decisionID domain.ContextDecisionID, turnID domain.TurnID, itemID domain.ItemID) domain.ContextPreparedRecorded {
 	prepared := result.Prepared
 	return domain.ContextPreparedRecorded{
+		Policy: result.PolicyIdentity,
 		TurnID: turnID, ItemID: itemID, AttemptIndex: attemptIndex, ContextDecisionID: decisionID,
 		Trigger: trigger, SourceHeadVersion: result.SourceHeadVersion,
 		CheckpointID: prepared.CheckpointID, CheckpointKind: string(prepared.CheckpointKind),

@@ -134,21 +134,23 @@ func (StartAssistantMessage) CommandType() string          { return CommandStart
 func (c StartAssistantMessage) TargetSessionID() SessionID { return c.SessionID }
 
 type CompleteAssistantMessage struct {
-	SessionID SessionID
-	TurnID    TurnID
-	ItemID    ItemID
-	Text      string
-	ToolCalls []ToolCallOffer
+	ProviderState *ProviderState
+	SessionID     SessionID
+	TurnID        TurnID
+	ItemID        ItemID
+	Text          string
+	ToolCalls     []ToolCallOffer
 }
 
 func (CompleteAssistantMessage) CommandType() string          { return CommandCompleteAssistantMessage }
 func (c CompleteAssistantMessage) TargetSessionID() SessionID { return c.SessionID }
 
 type CompleteAssistantTurn struct {
-	SessionID SessionID
-	TurnID    TurnID
-	ItemID    ItemID
-	Text      string
+	ProviderState *ProviderState
+	SessionID     SessionID
+	TurnID        TurnID
+	ItemID        ItemID
+	Text          string
 }
 
 func (CompleteAssistantTurn) CommandType() string          { return CommandCompleteAssistantTurn }

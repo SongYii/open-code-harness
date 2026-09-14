@@ -101,13 +101,14 @@ func projectPriorTurns(records []domain.RecordedEvent, current domain.TurnID) []
 			if event.TurnID == current {
 				continue
 			}
-			if len(event.ToolCalls) == 0 && event.Text == "" {
+			if len(event.ToolCalls) == 0 && event.Text == "" && event.ProviderState == nil {
 				continue
 			}
 			messages = append(messages, domain.ModelPromptMessage{
-				Role:      domain.PromptRoleAssistant,
-				Text:      event.Text,
-				ToolCalls: cloneToolCallOffers(event.ToolCalls),
+				ProviderState: domain.CloneProviderState(event.ProviderState),
+				Role:          domain.PromptRoleAssistant,
+				Text:          event.Text,
+				ToolCalls:     cloneToolCallOffers(event.ToolCalls),
 			})
 		case domain.ToolCallStarted:
 			if event.TurnID == current {
@@ -162,9 +163,10 @@ func (projection *turnProjection) applyRecords(records []domain.RecordedEvent) {
 			}
 			projection.suffixStart = len(projection.messages)
 			projection.messages = append(projection.messages, domain.ModelPromptMessage{
-				Role:      domain.PromptRoleAssistant,
-				Text:      event.Text,
-				ToolCalls: cloneToolCallOffers(event.ToolCalls),
+				ProviderState: domain.CloneProviderState(event.ProviderState),
+				Role:          domain.PromptRoleAssistant,
+				Text:          event.Text,
+				ToolCalls:     cloneToolCallOffers(event.ToolCalls),
 			})
 		case domain.ToolCallStarted:
 			projection.names[event.CallID] = event.Name
@@ -275,6 +277,9 @@ func (service *Service) runStepLoop(ctx context.Context, owned *ownedTurn) (RunT
 			defer cancel()
 			return service.terminalizeExecutionFailure(cleanupCtx, ctx, owned.state, owned.result, owned.assistantItem, owned.commandID, owned.emitter, owned.lease, mapRunError(err), err, runResult.Stats)
 		}
+		if !service.acceptProviderState(runResult.ProviderState) {
+			return service.failOwnedTurn(ctx, owned, string(engine.CodeInvalidStream), displayFailureSentence(string(engine.CodeInvalidStream)))
+		}
 		if len(runResult.ToolCalls) == 0 {
 			return service.completeAssistantTurn(ctx, owned, runResult)
 		}
@@ -283,11 +288,12 @@ func (service *Service) runStepLoop(ctx context.Context, owned *ownedTurn) (RunT
 		}
 		runResult.Text = redact.Text(runResult.Text)
 		decided, err := service.decideTurnTerminal(owned.state, owned.result.SessionID, owned.result.TurnID, owned.assistantItem, runResult.Stats, domain.CompleteAssistantMessage{
-			SessionID: owned.result.SessionID,
-			TurnID:    owned.result.TurnID,
-			ItemID:    owned.assistantItem,
-			Text:      runResult.Text,
-			ToolCalls: toolCallOffers(runResult.ToolCalls),
+			ProviderState: runResult.ProviderState,
+			SessionID:     owned.result.SessionID,
+			TurnID:        owned.result.TurnID,
+			ItemID:        owned.assistantItem,
+			Text:          runResult.Text,
+			ToolCalls:     toolCallOffers(runResult.ToolCalls),
 		})
 		if err != nil {
 			return cloneRunTurnResult(owned.result), applicationError(CategoryInternal, "domain_transition_failed", false, err)
@@ -345,12 +351,16 @@ func (service *Service) runStepLoop(ctx context.Context, owned *ownedTurn) (RunT
 }
 
 func (service *Service) completeAssistantTurn(ctx context.Context, owned *ownedTurn, runResult engine.RunResult) (RunTurnResult, error) {
+	if !service.acceptProviderState(runResult.ProviderState) {
+		return service.failOwnedTurn(ctx, owned, string(engine.CodeInvalidStream), displayFailureSentence(string(engine.CodeInvalidStream)))
+	}
 	runResult.Text = redact.Text(runResult.Text)
 	decided, err := service.decideTurnTerminal(owned.state, owned.result.SessionID, owned.result.TurnID, owned.assistantItem, runResult.Stats, domain.CompleteAssistantTurn{
-		SessionID: owned.result.SessionID,
-		TurnID:    owned.result.TurnID,
-		ItemID:    owned.assistantItem,
-		Text:      runResult.Text,
+		ProviderState: runResult.ProviderState,
+		SessionID:     owned.result.SessionID,
+		TurnID:        owned.result.TurnID,
+		ItemID:        owned.assistantItem,
+		Text:          runResult.Text,
 	})
 	if err != nil {
 		return cloneRunTurnResult(owned.result), applicationError(CategoryInternal, "domain_transition_failed", false, err)
@@ -710,7 +720,24 @@ func clonePromptMessages(messages []domain.ModelPromptMessage) []domain.ModelPro
 	cloned := make([]domain.ModelPromptMessage, len(messages))
 	for index, message := range messages {
 		cloned[index] = message
+		cloned[index].ProviderState = domain.CloneProviderState(message.ProviderState)
 		cloned[index].ToolCalls = cloneToolCallOffers(message.ToolCalls)
 	}
 	return cloned
+}
+
+// Protocol state cannot be redacted without corrupting replay. Reject a result
+// that violates the route binding or hits the existing secret-shape scanner.
+// This is intentionally not a promise to detect arbitrary sensitive content.
+func (service *Service) acceptProviderState(state *domain.ProviderState) bool {
+	identity := service.config.RequestIdentity
+	if identity == nil {
+		return state == nil
+	}
+	if state == nil {
+		return identity.AdapterFamily != domain.DeepSeekThinkingV1
+	}
+	return domain.ValidateProviderState(state) == nil && state.Protocol == identity.AdapterFamily &&
+		state.ModelID == identity.ModelID && state.EndpointID == identity.EndpointID &&
+		redact.Text(state.ReasoningContent) == state.ReasoningContent
 }

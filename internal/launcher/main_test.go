@@ -1,4 +1,4 @@
-package main
+package launcher
 
 import (
 	"bytes"
@@ -380,6 +380,7 @@ func TestBindAssemblyFlagsMatchesBuildConfig(t *testing.T) {
 		fromInProcess any
 	}{
 		{"Provider.BaseURL", parsedConfig.Provider.BaseURL, inProcess.Provider.BaseURL},
+		{"Provider.AdapterKind", parsedConfig.Provider.AdapterKind, inProcess.Provider.AdapterKind},
 		{"Provider.ModelID", parsedConfig.Provider.ModelID, inProcess.Provider.ModelID},
 		{"Provider.APIKeyEnv", parsedConfig.Provider.APIKeyEnv, inProcess.Provider.APIKeyEnv},
 		{"Provider.ContextWindow", parsedConfig.Provider.ContextWindow, inProcess.Provider.ContextWindow},

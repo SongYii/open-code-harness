@@ -82,6 +82,11 @@ func (WireEstimateMeter) EstimateMessages(messages []domain.ModelPromptMessage) 
 	for _, message := range messages {
 		total += perMessageFraming
 		total += textTokens(message.Text)
+		if message.ProviderState != nil {
+			// Only the reasoning string is model-visible, not our replay binding.
+			// Legacy shapes are unchanged; this prices the new optional surface.
+			total += perMessageFraming + textTokens(message.ProviderState.ReasoningContent)
+		}
 		if message.ToolCallID != "" {
 			total += perToolCallOrResult
 		}

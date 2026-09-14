@@ -1,4 +1,4 @@
-package main
+package launcher
 
 import (
 	"bytes"
@@ -78,9 +78,18 @@ func TestCompactSessionNothingToCompactIsNotAnError(t *testing.T) {
 	if output.SessionID != string(sessionID) || output.Strategy != domain.ContextStrategySummary {
 		t.Fatalf("output = %+v, want sessionId=%s strategy=summary", output, sessionID)
 	}
+	// The no-op diagnostic must be the CLI's last word on stderr, not
+	// stderr's only word: on a host with no OS-level exec sandbox backend,
+	// composition.Open legitimately prints its AllowUnsandboxedExec escape-
+	// hatch warning first. Asserting exact equality made this test pass
+	// only on machines that happen to have bwrap installed, which is the
+	// opposite of the environments CI runs in.
 	wantStderr := fmt.Sprintf("och: nothing to compact for session %s\n", sessionID)
-	if stderr.String() != wantStderr {
-		t.Fatalf("stderr = %q, want %q", stderr.String(), wantStderr)
+	if !strings.HasSuffix(stderr.String(), wantStderr) {
+		t.Fatalf("stderr = %q, want it to end with %q", stderr.String(), wantStderr)
+	}
+	if count := strings.Count(stderr.String(), "och: "); count != 1 {
+		t.Fatalf("stderr = %q, want exactly one och: diagnostic, got %d", stderr.String(), count)
 	}
 }
 

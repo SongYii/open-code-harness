@@ -55,21 +55,27 @@ immediately: admission stops, local work is cancelled through the work
 context, and the exporter stops — nothing is deleted and no takeover is
 attempted while ownership is uncertain. Transient store unavailability
 within the deadline does not revoke ownership: the per-append store
-predicate is the authority, not the renewal round-trip. After quiescence
-the loop may re-acquire through the normal expired-takeover path (next
-monotonic token) and resume admission. The Application service does not
-snapshot `WriterAuthority` at construction: it holds an `AuthoritySource`
-and reads the live fencing token per append, so the rotated token is
-visible on the next write instead of fencing every subsequent append.
+predicate is the authority, not the renewal round-trip. One renewal worker
+and an independent watchdog measure time since the last confirmation, so a
+blocked SQLite mutex cannot delay fencing. Lease loss is permanent for the
+instance; late renewal success cannot reopen admission. A new process must
+acquire ownership and reconcile. Application still reads `AuthoritySource`
+per append. See [startup extensibility](startup-extensibility.md).
 
 ## Shutdown and exporter ownership
 
-`Shutdown` stops admission, cancels in-flight work, waits for the loops
-within the caller's bound, and releases the lease by expiring it — the
+`Admit` atomically registers operations against readiness; composition's
+managed facade retains that registration through application cleanup.
+`Drain` stops admission, cancels work and waits while heartbeat stays alive
+for terminal appends. `Shutdown` then waits for loops within the caller's
+bound, and releases the lease by expiring it — the
 update matches the owning runtime ID and fencing token exactly, so a
 stale host can never release a successor's lease (the Pi rule). The
 background exporter starts only after readiness on a bounded cadence and
-stops at shutdown.
+stops when work is cancelled. Concurrent shutdown is idempotent. A timeout
+does not release the lease or close a possibly-in-use store; renewal stops,
+admission stays closed, and the caller must terminate the old process before
+starting another. Natural lease expiry is unchanged.
 
 ## Exclusions
 
