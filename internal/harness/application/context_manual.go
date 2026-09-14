@@ -106,7 +106,16 @@ func (service *Service) CompactSession(ctx context.Context, request CompactSessi
 	// Force: true -- design §15.4's own "below trigger, manual summary is
 	// still allowed if a safe prefix exists." No CurrentInput/Tools:
 	// manual compaction has no upcoming dispatch to plan around.
-	plan, err := contextengine.SelectCutPoint(contextengine.PlanInput{Units: scan.Units, Budget: deps.Budget, Meter: deps.Meter, Force: true})
+	//
+	// PrefixMessages, unlike CurrentInput/Tools, is not a property of an
+	// upcoming dispatch: the versioned system prompt precedes every
+	// Context-enabled request this Session will ever make, so it is part
+	// of the protected tail the same way it is on the pre-turn, mid-turn
+	// and overflow-retry paths. Omitting it here made SelectCutPoint pay
+	// for the whole tail budget out of history alone, which silently
+	// consumed every remaining unit -- and therefore covered nothing --
+	// whenever the post-checkpoint tail was smaller than ProtectedTail.
+	plan, err := contextengine.SelectCutPoint(contextengine.PlanInput{PrefixMessages: conversationPrefixMessages(), Units: scan.Units, Budget: deps.Budget, Meter: deps.Meter, Force: true})
 	if err != nil {
 		return CompactSessionResult{}, mapContextEngineScanError(err)
 	}
@@ -127,7 +136,7 @@ func (service *Service) CompactSession(ctx context.Context, request CompactSessi
 	if err != nil {
 		return CompactSessionResult{}, applicationError(CategoryInternal, "id_generation_failed", false, err)
 	}
-	input := PrepareContextInput{SessionID: request.SessionID, TurnID: syntheticTurnID, ItemID: syntheticItemID, Trigger: domain.ContextTriggerManual}
+	input := PrepareContextInput{SessionID: request.SessionID, TurnID: syntheticTurnID, ItemID: syntheticItemID, Trigger: domain.ContextTriggerManual, PrefixMessages: conversationPrefixMessages()}
 
 	compactionID, err := deps.IDs.NewContextCompactionID()
 	if err != nil {

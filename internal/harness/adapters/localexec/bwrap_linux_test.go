@@ -130,12 +130,11 @@ func newInternalTestRunner(t *testing.T, root string) *Runner {
 // bwrap cannot actually confine a process (missing binary, WSL1, or a
 // probe that runs but fails — for example unprivileged user namespaces
 // blocked by AppArmor, which is the case on some hardened hosts even when
-// the bwrap binary itself is installed).
+// the bwrap binary itself is installed) — unless the lane set
+// OCH_REQUIRE_EXEC_SANDBOX, in which case the absence is the failure.
 func requireFunctionalBwrap(t *testing.T, runner *Runner) {
 	t.Helper()
-	if runner.Enforcement().Filesystem != EnforcementFull {
-		t.Skip("bwrap is not functionally available in this environment")
-	}
+	requireFunctionalSandbox(t, runner)
 }
 
 func TestBwrapConfinementDeniesWritesOutsideWorkspace(t *testing.T) {

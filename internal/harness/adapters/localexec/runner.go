@@ -68,40 +68,15 @@ func New(workspace string) (*Runner, error) {
 		return nil, errInvalidWorkspace
 	}
 	bwrapAvailable, bwrapReason := probeBwrap()
-	enforcement := Enforcement{
-		Filesystem: EnforcementNone,
-		Network:    EnforcementNone,
-		Memory:     EnforcementNone,
-		CPU:        EnforcementNone,
-	}
-	if bwrapAvailable {
-		// --unshare-net denies all network access outright (design §3.2);
-		// the read-only host with only the workspace rebound read-write
-		// gives the same guarantee for filesystem writes.
-		enforcement.Filesystem = EnforcementFull
-		enforcement.Network = EnforcementFull
-	}
 	cgroup, cgroupReason, cpuReason := newCgroupQuota(DefaultMemoryHighBytes, DefaultMemoryHighBytes+DefaultMemoryHeadroomBytes, DefaultCPUPeriodMicros, DefaultCPUQuotaMicros)
-	if cgroup != nil {
-		enforcement.Memory = EnforcementFull
-		// cpu delegation fails independently of memory (CPU quota
-		// design §3): a cpu.max write failure never undoes the memory
-		// quota that already succeeded.
-		if cpuReason == "" {
-			enforcement.CPU = EnforcementFull
-		}
-	}
 	seatbeltAvailable, seatbeltReason := probeSeatbelt()
-	if seatbeltAvailable {
-		enforcement.Filesystem = EnforcementFull
-		enforcement.Network = EnforcementFull
-	}
-	if level := rlimitEnforcementLevel(); level != EnforcementNone {
-		enforcement.Memory = level
-	}
-	if level := cpuRlimitEnforcementLevel(); level != EnforcementNone {
-		enforcement.CPU = level
-	}
+	enforcement := enforcementFor(backendAvailability{
+		Sandbox:      bwrapAvailable || seatbeltAvailable,
+		MemoryCgroup: cgroup != nil,
+		CPUCgroup:    cgroup != nil && cpuReason == "",
+		MemoryRlimit: rlimitEnforcementLevel(),
+		CPURlimit:    cpuRlimitEnforcementLevel(),
+	})
 	return &Runner{
 		workspace:         real,
 		enforcement:       enforcement,

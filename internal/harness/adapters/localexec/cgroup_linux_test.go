@@ -237,8 +237,15 @@ func TestRunKillsOnResourceLimitSignal(t *testing.T) {
 		done <- outcome{result, err}
 	}()
 
-	pid := waitForPIDFile(t, childPath)
-	ch := waitForRegisteredChannel(t, runner.cgroup, pid)
+	// The child announces itself so the test knows sh actually reached
+	// exec, but its own $$ is deliberately not used as the pid to signal
+	// or to check for death: under bwrap's --unshare-pid the child sees a
+	// namespace-local pid (2), while Run registers, and must kill, the
+	// host-side process group leader it started. Reading the registration
+	// itself is the only way to name that process from here, and it works
+	// identically whether or not this host has a sandbox backend.
+	waitForPIDFile(t, childPath)
+	pid, ch := waitForSoleRegistration(t, runner.cgroup)
 	ch <- struct{}{}
 
 	got := <-done
@@ -346,20 +353,33 @@ func waitForPIDFile(t *testing.T, path string) int {
 	return 0
 }
 
-func waitForRegisteredChannel(t *testing.T, q *cgroupQuota, pid int) chan struct{} {
+// waitForSoleRegistration returns the one pid Run registered with the
+// quota, and its channel. One in-flight Run means exactly one
+// registration, so the test never has to guess the pid: asking the quota
+// is what makes this work on a host with bwrap (where the process Run
+// started is the sandbox leader) and on one without it alike.
+func waitForSoleRegistration(t *testing.T, q *cgroupQuota) (int, chan struct{}) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		q.mu.Lock()
-		ch, ok := q.notify[pid]
+		registered := len(q.notify)
+		var pid int
+		var ch chan struct{}
+		for registeredPID, registeredCh := range q.notify {
+			pid, ch = registeredPID, registeredCh
+		}
 		q.mu.Unlock()
-		if ok {
-			return ch
+		if registered > 1 {
+			t.Fatalf("cgroup quota has %d registrations, want exactly the one in-flight Run", registered)
+		}
+		if registered == 1 {
+			return pid, ch
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("Run() never registered pid %d with the cgroup quota", pid)
-	return nil
+	t.Fatalf("Run() never registered a pid with the cgroup quota")
+	return 0, nil
 }
 
 func assertProcessGroupDead(t *testing.T, pid int) {
