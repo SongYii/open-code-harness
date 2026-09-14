@@ -15,6 +15,9 @@
 
 ## 问题
 
+2026-09-12 补充：本历史门禁不等于全面禁止启动时组合。[已实现的启动扩展合同](../../architecture/startup-extensibility.zh-CN.md)
+采用自定义编译 Go 启动器与狭窄的上下文策略端口，不采用 DeepSeek 的运行时类型、插件内核或客户端形态。
+
 1. 在 Engine 纵切和生产 Runtime 设计之后，Open Code Harness 的产品目标是否仍然正确？
 2. EventStore v2 是否仍应作为当前实现 Slice？
 3. 官方 DeepSeek Harness 开源后，哪些对照来源是一手证据，哪些只是非权威上下文？

@@ -458,7 +458,7 @@ func decideCompleteAssistantMessage(state Session, command CompleteAssistantMess
 	if err := validateToolCallOffers(command.ToolCalls, CodeInvalidCommand); err != nil {
 		return nil, err
 	}
-	return completeAssistantMessageEvents(command.TurnID, command.ItemID, command.Text, command.ToolCalls), nil
+	return completeAssistantEventsWithProviderState(completeAssistantMessageEvents(command.TurnID, command.ItemID, command.Text, command.ToolCalls), command.ProviderState)
 }
 
 func decideCompleteAssistantTurn(state Session, command CompleteAssistantTurn) ([]UncommittedEvent, error) {
@@ -468,7 +468,17 @@ func decideCompleteAssistantTurn(state Session, command CompleteAssistantTurn) (
 	if err := validateCommandUTF8(command.Text, "assistant message text must be valid UTF-8"); err != nil {
 		return nil, err
 	}
-	return completeAssistantTurnEvents(command.TurnID, command.ItemID, command.Text), nil
+	return completeAssistantEventsWithProviderState(completeAssistantTurnEvents(command.TurnID, command.ItemID, command.Text), command.ProviderState)
+}
+
+func completeAssistantEventsWithProviderState(events []UncommittedEvent, state *ProviderState) ([]UncommittedEvent, error) {
+	if err := validateProviderState(state, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
+	completed := events[0].Event.(AssistantMessageCompleted)
+	completed.ProviderState = CloneProviderState(state)
+	events[0].Event = completed
+	return events, nil
 }
 
 func decideFailAssistantTurn(state Session, command FailAssistantTurn) ([]UncommittedEvent, error) {

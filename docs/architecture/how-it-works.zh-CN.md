@@ -1,7 +1,7 @@
 # 项目实现通俗导读
 
 - 状态：持续维护的通俗导读
-- 最后核对：2026-09-12
+- 最后核对：2026-09-13
 - 英文规范真源：[how-it-works.md](how-it-works.md)
 - 整体地图：[当前系统架构](current-system.zh-CN.md)
 
@@ -139,6 +139,35 @@ OpenAI 兼容流会变成统一模型流，并记录用量、限制输入输出�
 
 目前只有一类 OpenAI 兼容 Provider，没有多 Provider 路由或真实密钥 CI。
 
+<!-- contract: docs/architecture/provider-replay.md -->
+## Provider 协议状态回放
+
+### 解决什么问题
+
+厂商可能要求隐式响应状态才能继续工具回合。只存可见正文会丢掉这种状态，重启后也无法补回。
+
+### 用户能看到什么
+
+Experimental 的 `-provider-adapter deepseek` 路线可在工具续接、SQLite 重启、压缩后回传
+thinking 状态。默认兼容路线不变；启用前请验证备份，并使用新会话。
+
+### 真实实现
+
+Adapter 分开拼接 reasoning，Engine 只在完成事件接受状态，Application 验证后与
+assistant 事件原子提交。Context 保留尾部状态，但不混进摘要正文。
+见[合同](provider-replay.zh-CN.md)和[证据](provider-replay-evidence.md)。
+
+### 遇到的问题与修复
+
+不能把缺失 reasoning 伪造成空值；命中 secret 形状的状态不能改写脱敏，只能拒绝。
+测试还须证明在输出前就拒绝，而不是靠最后 EOF 报错通过。四个删除/破坏防线的变异
+都使对应回归测试失败。
+
+### 仍未完成
+
+没有线上接受性测试、加密、有损迁移、Claude native Messages 或公开 Provider SDK。
+旧严格 reader 不能读取 opt-in 状态字段；展示 transcript 不是回放备份。
+
 <!-- contract: docs/architecture/tool-runtime.md -->
 ## Tool Runtime
 
@@ -263,6 +292,37 @@ SQLite 在事件事务内维护审计链；Exporter 依次暂存、封口、发�
 ### 仍未完成
 
 Kill-9、时钟跳变和长时间真实租约测试仍需扩大。
+
+<!-- contract: docs/architecture/startup-extensibility.md -->
+## 启动时扩展
+
+### 解决什么问题
+
+让仓库外的 Go 项目通过支持的接口扩展行为，不接管事件存储，也不复制 agent loop。
+
+### 用户能看到什么
+
+[自定义编译启动器](../../examples/keep-last-n/README.md) 可通过正常 flags 选择上下文
+保留策略，使用原来的 ACP 协议。
+两个 SDK 包均为 experimental，暂不承诺源码兼容；仓库自写示例不是实际外部采用证据。
+
+### 真实实现
+
+`sdk/och` 复用 CLI，`sdk/contextpolicy` 只交付独立元数据与核心生成的候选。
+Host 负责准入、取消和排空；摘要、checkpoint 校验与持久事实仍由核心拥有。
+
+### 遇到的问题与修复
+
+滚动摘要失败可能遗漏旧 checkpoint 之后的历史，现改为只采用已提交覆盖。
+续租阻塞由独立 watchdog 处理，失租实例不再原地恢复接单。严格事件编解码和
+外部模块编译都有真实测试，而非只依赖内部 mock。
+
+### 仍未完成
+
+没有热加载、不可信代码沙箱或 provider/环境扩展。转稳定需要两个真实实现和一个
+真实外部消费者，目前尚未满足；SDK 实验性不降低持久化完整性要求。旧严格 reader 不能读取新增
+自定义策略事实；兼容性和基线测试限制见[合同](startup-extensibility.zh-CN.md)及
+[证据台账](startup-extensibility-evidence.md)。
 
 <!-- contract: docs/architecture/composition-root.md -->
 ## Composition Root

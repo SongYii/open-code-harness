@@ -154,6 +154,9 @@ func marshalEvent(event Event) (json.RawMessage, string, error) {
 		}
 		return marshalEventData(event, EventAssistantMessageStarted)
 	case AssistantMessageCompleted:
+		if err := validateProviderState(event.ProviderState, CodeInvalidEvent); err != nil {
+			return nil, "", err
+		}
 		if err := validateAssistantMessageIDs(event.TurnID, event.ItemID); err != nil {
 			return nil, "", err
 		}
@@ -295,7 +298,7 @@ func unmarshalEvent(eventType string, data json.RawMessage) (Event, error) {
 	case EventAssistantMessageCompleted:
 		event = AssistantMessageCompleted{}
 		required = []string{"turnID", "itemID", "text"}
-		optional = []string{"toolCalls"}
+		optional = []string{"toolCalls", "providerState"}
 	case EventAssistantMessageFailed:
 		event = AssistantMessageFailed{}
 		required = []string{"turnID", "itemID", "code", "message"}
@@ -334,7 +337,7 @@ func unmarshalEvent(eventType string, data json.RawMessage) (Event, error) {
 	case EventContextCompactionStarted:
 		event = ContextCompactionStarted{}
 		required = []string{"id", "trigger", "strategy", "baseSourceHead", "sourceSchema", "meterID"}
-		optional = []string{"priorCheckpointID", "promptVersion", "plannedRoute"}
+		optional = []string{"priorCheckpointID", "promptVersion", "plannedRoute", "policy"}
 	case EventContextCompactionCompleted:
 		event = ContextCompactionCompleted{}
 		required = []string{"id", "checkpoint"}
@@ -351,7 +354,7 @@ func unmarshalEvent(eventType string, data json.RawMessage) (Event, error) {
 		}
 		optional = []string{
 			"checkpointID", "checkpointKind", "rawTailFromSequence", "rawTailThroughSequence",
-			"usageAnchorApplied", "usageAnchorTokens", "prunedToolResultCount",
+			"usageAnchorApplied", "usageAnchorTokens", "prunedToolResultCount", "policy",
 		}
 	case EventWorkspaceInstructionsRecorded:
 		event = WorkspaceInstructionsRecorded{}
@@ -408,6 +411,9 @@ func unmarshalEvent(eventType string, data json.RawMessage) (Event, error) {
 		}
 		event = target
 	case AssistantMessageCompleted:
+		if err := validateProviderStateJSON(data); err != nil {
+			return nil, err
+		}
 		if err := validateOptionalObjectArray(data, "toolCalls", []string{"id", "name", "arguments"}); err != nil {
 			return nil, err
 		}
@@ -477,6 +483,9 @@ func unmarshalEvent(eventType string, data json.RawMessage) (Event, error) {
 		}
 		event = target
 	case ContextCompactionStarted:
+		if err := validateContextPolicyJSON(data); err != nil {
+			return nil, err
+		}
 		if err := decoder.Decode(&target); err != nil {
 			return nil, invalidEventError("invalid event data")
 		}
@@ -495,6 +504,9 @@ func unmarshalEvent(eventType string, data json.RawMessage) (Event, error) {
 		}
 		event = target
 	case ContextPreparedRecorded:
+		if err := validateContextPolicyJSON(data); err != nil {
+			return nil, err
+		}
 		if err := decoder.Decode(&target); err != nil {
 			return nil, invalidEventError("invalid event data")
 		}
@@ -844,7 +856,7 @@ func validateModelRequestBody(
 	default:
 		return domainError(code, "model request reasoning effort is invalid")
 	}
-	if thinkingMode != "" && reasoningEffort != "" {
+	if thinkingMode != "" && reasoningEffort != "" && adapterFamily != DeepSeekThinkingV1 {
 		return domainError(code, "model request thinking mode conflicts with reasoning effort")
 	}
 	if err := validateModelPromptMessages(messages, code); err != nil {
@@ -858,6 +870,12 @@ func validateModelPromptMessages(messages []ModelPromptMessage, code ErrorCode) 
 		return domainError(code, "model request messages are required")
 	}
 	for _, message := range messages {
+		if message.ProviderState != nil && message.Role != PromptRoleAssistant {
+			return domainError(code, "provider state requires assistant role")
+		}
+		if err := validateProviderState(message.ProviderState, code); err != nil {
+			return err
+		}
 		if !utf8.ValidString(message.Text) {
 			return domainError(code, "model prompt text must be valid UTF-8")
 		}
@@ -919,7 +937,10 @@ func validateModelRequestMessagesJSON(data json.RawMessage) error {
 		return invalidEventError("model request messages are required")
 	}
 	for _, message := range parent.Messages {
-		if err := validateJSONObjectKeys(message, []string{"role", "text"}, []string{"toolCalls", "toolCallID", "name"}); err != nil {
+		if err := validateJSONObjectKeys(message, []string{"role", "text"}, []string{"toolCalls", "toolCallID", "name", "providerState"}); err != nil {
+			return err
+		}
+		if err := validateProviderStateJSON(message); err != nil {
 			return err
 		}
 		if err := validateOptionalObjectArray(message, "toolCalls", []string{"id", "name", "arguments"}); err != nil {
@@ -1198,6 +1219,9 @@ func validateContextStrategy(strategy string) error {
 }
 
 func validateContextCompactionStartedPayload(event ContextCompactionStarted, code ErrorCode) error {
+	if err := validateContextPolicyIdentity(event.Policy, code); err != nil {
+		return err
+	}
 	if err := validateContextCompactionID(event.ID); err != nil {
 		if code == CodeInvalidCommand {
 			return domainError(CodeInvalidCommand, "context compaction ID is invalid")
@@ -1347,6 +1371,9 @@ func validateContextCompactionFailedPayload(event ContextCompactionFailed, code 
 }
 
 func validateContextPreparedPayload(event ContextPreparedRecorded, code ErrorCode) error {
+	if err := validateContextPolicyIdentity(event.Policy, code); err != nil {
+		return err
+	}
 	if err := validateAssistantMessageIDs(event.TurnID, event.ItemID); err != nil {
 		if code == CodeInvalidCommand {
 			return domainError(CodeInvalidCommand, "turn ID is invalid")

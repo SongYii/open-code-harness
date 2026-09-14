@@ -16,6 +16,11 @@ reading copy.
 
 ## Questions
 
+2026-09-12 clarification: this historical gate is not a blanket prohibition on
+startup composition. The [implemented startup-extension contract](../../architecture/startup-extensibility.md)
+adopts a custom compiled Go launcher and a narrow context policy port; it does
+not adopt DeepSeek's runtime types, plugin kernel or client surface.
+
 1. Is the Open Code Harness product goal still correct after the Engine slice
    and the production-runtime design?
 2. Should EventStore v2 remain the current implementation slice?

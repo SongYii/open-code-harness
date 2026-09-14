@@ -87,6 +87,7 @@ func clonePromptMessages(messages []domain.ModelPromptMessage) []domain.ModelPro
 		cloned[index] = message
 		if message.ToolCalls != nil {
 			cloned[index].ToolCalls = append([]domain.ToolCallOffer(nil), message.ToolCalls...)
+			cloned[index].ProviderState = domain.CloneProviderState(message.ProviderState)
 		}
 	}
 	return cloned

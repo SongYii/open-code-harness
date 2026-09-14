@@ -28,6 +28,7 @@ The numbered milestone list lives in
 [docs/README.md](docs/README.md#milestone-status). Completed slices so far:
 
 - Domain events and the Session/Turn state machine: implemented and verified.
+- Startup-composed Go extensions: an [experimental public launcher SDK and context policy contract](docs/architecture/startup-extensibility.md), with an [independent-module launcher example](examples/keep-last-n/README.md). Source compatibility is not yet promised; the example proves integration, not external adoption. No hot loading; existing summaries/checkpoints stay core-owned.
 - Industrial Engine vertical slice: implemented and verified through reusable
   scenario, replay, concurrency, race, and dependency-boundary gates.
 - EventStore v2 contract: implemented and verified. The memory adapter is a
@@ -35,6 +36,9 @@ The numbered milestone list lives in
 - Provider adapter (`adapters/openaicompat`): implemented and verified; not GA.
   Thin OpenAI-compatible Chat Completions SSE client behind `engine.Model`,
   not a vendor SDK or plugin kernel.
+  An opt-in [DeepSeek thinking replay slice](docs/architecture/provider-replay.md)
+  preserves protocol state across tools, restart and compaction; experimental,
+  fixture-verified, not a public Provider SDK or live-provider certification.
 - Tool Runtime, Policy, and five builtin workspace tools: implemented and
   verified; not GA. Application-owned Step loop and a pure Policy Decide
   table behind ports; not a plugin kernel. Every destructive file operation

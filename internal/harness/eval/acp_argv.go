@@ -2,6 +2,7 @@ package eval
 
 import (
 	"fmt"
+	"github.com/SongYii/open-code-harness/sdk/contextpolicy"
 	"strconv"
 )
 
@@ -43,6 +44,9 @@ func NormalizedArgv(subject Subject) ([]string, error) {
 	if subject.Provider.Lane == ProviderLaneFixture {
 		argv = append(argv, "-provider-allow-insecure-loopback")
 	}
+	if subject.Provider.AdapterKind == "deepseek" {
+		argv = append(argv, "-provider-adapter", "deepseek")
+	}
 	if subject.Provider.IncludeUsage {
 		argv = append(argv, "-provider-include-usage")
 	}
@@ -77,6 +81,13 @@ func NormalizedArgv(subject Subject) ([]string, error) {
 	// positive, so they are always emitted -- never conditionally, unlike
 	// the Limits fields above.
 	context := subject.Context
+	if context.Policy != nil {
+		canonical, _, err := contextpolicy.CanonicalConfig(context.Policy.Config)
+		if err != nil {
+			return nil, err
+		}
+		argv = append(argv, "-context-policy", context.Policy.ID, "-context-policy-version", context.Policy.Version, "-context-policy-config", string(canonical))
+	}
 	if context.SummaryReasoningEffort != "" {
 		argv = append(argv, "-context-summary-reasoning-effort", context.SummaryReasoningEffort)
 	}

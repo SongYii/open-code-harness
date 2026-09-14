@@ -1,7 +1,7 @@
 # How the Implemented System Works
 
 - Status: Maintained plain-language guide
-- Last reconciled: 2026-09-12
+- Last reconciled: 2026-09-13
 - Chinese reading copy: [项目实现通俗导读](how-it-works.zh-CN.md)
 - Architecture map: [Current system architecture](current-system.md)
 
@@ -163,6 +163,40 @@ secret redaction without moving vendor logic into Application.
 Only one OpenAI-compatible provider family exists. There is no provider
 routing, vendor SDK layer, or live-key CI.
 
+<!-- contract: docs/architecture/provider-replay.md -->
+## Provider protocol replay
+
+### Problem
+
+A provider can require hidden response state to continue a tool conversation.
+Saving only visible assistant text loses that state, including after restart.
+
+### Visible result
+
+The experimental `-provider-adapter deepseek` route replays thinking state across
+tools, SQLite restart and compaction. Default OpenAI-compatible behavior stays
+unchanged. Enable it on a new session after making a verified backup.
+
+### Implementation
+
+The adapter assembles separate reasoning; Engine accepts it only on completion;
+Application validates and commits it with the assistant event. Context preserves
+retained state but excludes it from summary text. See the [contract](provider-replay.md)
+and [evidence](provider-replay-evidence.md).
+
+### Problems found and fixes
+
+Missing reasoning must not become invented empty reasoning. Secret-shaped state
+cannot be redacted without changing the protocol, so it is rejected. Tests now
+also assert early rejection, rather than accepting a later EOF error as proof.
+Four removed/corrupted safeguards each made the intended regression test fail.
+
+### Still missing
+
+No live-provider acceptance test, encryption, lossy migration, Claude native
+Messages, or public Provider SDK. Old strict readers cannot read the opt-in
+state field; display transcripts are not replay backups.
+
 <!-- contract: docs/architecture/tool-runtime.md -->
 ## Tool runtime
 
@@ -312,6 +346,43 @@ adapter, so tests that open SQLite alone cannot assume renewal.
 
 Kill-9 recovery, clock jumps, and long real-time lease soak need broader
 evidence.
+
+<!-- contract: docs/architecture/startup-extensibility.md -->
+## Startup extensions
+
+### Problem
+
+An external Go project needs an extension point to try, without owning
+our event store or duplicating the agent loop.
+
+### Visible result
+
+A [custom compiled launcher](../../examples/keep-last-n/README.md) can select a
+context retention policy with normal och flags and speak the same ACP protocol.
+Both SDK packages are experimental, without a source-compatibility promise;
+this project-owned example is not evidence of real external adoption.
+
+### Implementation
+
+`sdk/och` shares the internal CLI; `sdk/contextpolicy` exposes detached metadata
+and core-approved candidates. The host admits, cancels and drains service calls.
+Summary generation, checkpoint validation and committed facts stay in the core.
+
+### Problems found and fixes
+
+A failed rolling summary could discard history after an old checkpoint.
+Materialization now uses committed coverage only. Blocked renewals have an
+independent watchdog; lost leases never reopen the same instance. Strict event
+decoding and external compilation are tested, not inferred from local mocks.
+
+### Still missing
+
+No hot reload or untrusted-code sandbox; provider/environment extensions are
+future slices. Stable promotion requires two real implementations and a real
+external consumer; that adoption gate is not yet met. Experimental SDK status
+does not relax durable integrity. Old strict readers cannot read custom-policy evidence. Details
+and baseline test limitations are in the [contract](startup-extensibility.md)
+and [evidence ledger](startup-extensibility-evidence.md).
 
 <!-- contract: docs/architecture/composition-root.md -->
 ## Composition root

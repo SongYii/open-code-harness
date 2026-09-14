@@ -36,6 +36,7 @@ func CloneEvent(event Event) (Event, error) {
 		return event, nil
 	case AssistantMessageCompleted:
 		cloned := event
+		cloned.ProviderState = CloneProviderState(event.ProviderState)
 		cloned.ToolCalls = cloneToolCallOffers(event.ToolCalls)
 		return cloned, nil
 	case AssistantMessageFailed:
@@ -64,6 +65,7 @@ func CloneEvent(event Event) (Event, error) {
 	case ApprovalResolved:
 		return event, nil
 	case ContextCompactionStarted:
+		event.Policy = cloneContextPolicy(event.Policy)
 		return event, nil
 	case ContextCompactionCompleted:
 		cloned := event
@@ -72,6 +74,7 @@ func CloneEvent(event Event) (Event, error) {
 	case ContextCompactionFailed:
 		return event, nil
 	case ContextPreparedRecorded:
+		event.Policy = cloneContextPolicy(event.Policy)
 		return event, nil
 	case WorkspaceInstructionsRecorded:
 		return cloneWorkspaceInstructionsRecorded(event), nil
@@ -105,6 +108,7 @@ func cloneModelPromptMessages(messages []ModelPromptMessage) []ModelPromptMessag
 	cloned := make([]ModelPromptMessage, len(messages))
 	for index, message := range messages {
 		cloned[index] = message
+		cloned[index].ProviderState = CloneProviderState(message.ProviderState)
 		cloned[index].ToolCalls = cloneToolCallOffers(message.ToolCalls)
 	}
 	return cloned

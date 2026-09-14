@@ -50,6 +50,9 @@ test-only production branches for the capabilities it does deliver.
 | Implemented | Implemented contract | [EventStore v2](architecture/eventstore-v2.md) | Current four-method Store, identity ownership, digest, pagination, admission, compact state, resolution, and exclusions |
 | Implemented | Reading copy | [已实现 EventStore v2 合同](architecture/eventstore-v2.zh-CN.md) | 与已实现 EventStore v2 合同同步的中文语义阅读版 |
 | Implemented | Implemented contract | [Provider adapter](architecture/provider-adapter.md) | Current `engine.Model` HTTP adapter, Chat Completions SSE, capability profiles, classified `ProviderFailure`, reconstructable request/usage facts, and exclusions |
+| Implemented | Implemented contract | [Provider protocol replay](architecture/provider-replay.md) | Experimental DeepSeek thinking/tools slice: completion-only state, durable route binding, restart/compaction, bounds, sensitive-data handling and opt-in rollback limits; not a public Provider SDK |
+| Implemented | Reading copy | [Provider 协议状态回放](architecture/provider-replay.zh-CN.md) | DeepSeek 首个内部切片；状态回传、重启/压缩、敏感信息、兼容回滚与第二协议门槛 |
+| Complete | Evidence ledger | [Provider replay evidence](architecture/provider-replay-evidence.md) | Local fixture, strict codec, lifecycle/compaction, race and mutation evidence; no live-provider claim |
 | Implemented | Reading copy | [已实现 Provider Adapter 合同](architecture/provider-adapter.zh-CN.md) | 中文阅读版；该副本早于 native-tool send/assemble，以英文 [provider-adapter.md](architecture/provider-adapter.md) 和 [tool-runtime.md](architecture/tool-runtime.md) 为准 |
 | Implemented | Implemented contract | [Tool runtime](architecture/tool-runtime.md) | Current Application-owned Step loop, Policy Decide table, five builtin workspace tools, mid-loop ResolveAppend, workspace jail, and exclusions |
 | Implemented | Reading copy | [已实现 Tool Runtime 合同](architecture/tool-runtime.zh-CN.md) | 与已实现 Tool Runtime 合同同步的中文语义阅读版 |
@@ -63,6 +66,9 @@ test-only production branches for the capabilities it does deliver.
 | Implemented | Implemented contract | [Runtime Host and crash recovery](architecture/runtime-host.md) | Single host: startup reconciliation with deterministic recovery appends, bounded heartbeat with fencing reaction, matching-pair lease release, exporter ownership |
 | Implemented | Reading copy | [已实现 Runtime Host 与崩溃恢复合同](architecture/runtime-host.zh-CN.md) | 与已实现 Runtime Host 与崩溃恢复合同同步的中文语义阅读版 |
 | Implemented | Implemented contract | [Composition root](architecture/composition-root.md) | Current single tested composition root, system Clock and IDGenerator, enforced adapter-import owner, lifecycle and shutdown, and exclusions |
+| Implemented | Implemented contract | [Startup extensibility](architecture/startup-extensibility.md) | Experimental Go launcher/context-policy APIs without source compatibility promises; managed admission/drain, terminal fencing, durable compatibility and stability-promotion gate |
+| Implemented | Reading copy | [启动时可插拔架构](architecture/startup-extensibility.zh-CN.md) | Experimental 启动/策略 API，暂不承诺源码兼容；受管生命周期、永久 fencing、持久化兼容与转稳定门槛 |
+| Complete | Evidence ledger | [Startup extensibility evidence](architecture/startup-extensibility-evidence.md) | Regression/race and external-module ACP proof, review mutations, experimental API limits, environment-specific validation observations |
 | Implemented | Reading copy | [已实现组合根合同](architecture/composition-root.zh-CN.md) | 与已实现组合根合同同步的中文语义阅读版 |
 | Implemented | Implemented contract | [ACP v1 adapter](architecture/acp-v1.md) | Current ACP v1 JSON-RPC adapter: initialize, session/new/load/prompt/cancel, live and load tool cards, clip bounds, workspace admission, fail-closed permission slot, keyless in-memory duplex |
 | Implemented | Reading copy | [已实现 ACP v1 Adapter 合同](architecture/acp-v1.zh-CN.md) | 与已实现 ACP v1 Adapter 合同同步的中文语义阅读版 |

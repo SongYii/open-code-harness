@@ -5,12 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/acp"
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/localexec"
+	"github.com/SongYii/open-code-harness/internal/harness/adapters/mcp"
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/openaicompat"
 	oteladapter "github.com/SongYii/open-code-harness/internal/harness/adapters/otel"
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/sqlite"
@@ -18,6 +19,7 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/workspacefs"
 	"github.com/SongYii/open-code-harness/internal/harness/application"
 	"github.com/SongYii/open-code-harness/internal/harness/contextengine"
+	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
 	"github.com/SongYii/open-code-harness/internal/harness/runtime"
 	"github.com/SongYii/open-code-harness/internal/harness/telemetry"
@@ -29,7 +31,7 @@ import (
 // policy engine. Accessors are read-only; the assembly owns every resource it
 // returns and releases them in Close.
 type Assembly struct {
-	service   *application.Service
+	service   Service
 	host      *runtime.Host
 	store     application.EventStore
 	approver  *tools.Slot
@@ -37,10 +39,11 @@ type Assembly struct {
 	catalog   *tools.Catalog
 	mcp       mcpServers
 	telemetry *oteladapter.Adapter
+	commands  *localexec.Runner
 
-	timeout  time.Duration
-	closeErr error
-	closed   bool
+	timeout   time.Duration
+	closeErr  error
+	closeOnce sync.Once
 }
 
 // Catalog is the single tool catalog this assembly built: the four builtin
@@ -56,13 +59,21 @@ func (assembly *Assembly) Catalog() *tools.Catalog {
 }
 
 // Service is the command authority for Session and Turn use cases.
-func (assembly *Assembly) Service() *application.Service { return assembly.service }
+func (assembly *Assembly) Service() Service { return assembly.service }
 
-// Host owns lifecycle: readiness, heartbeat, and lease ownership.
-func (assembly *Assembly) Host() *runtime.Host { return assembly.host }
+// Ready reports whether the assembly currently admits work. It is an
+// observation, not a reservation; Service and Store still admit each call.
+func (assembly *Assembly) Ready() bool { return assembly.host.Ready() }
+
+// Done closes when admission stops, including shutdown or lease loss. It
+// signals cancellation, not completed teardown; Close must still be called.
+// Only observation is exposed: callers cannot obtain the Host or its raw store.
+func (assembly *Assembly) Done() <-chan struct{} { return assembly.host.WorkContext().Done() }
 
 // Store is the canonical event stream.
-func (assembly *Assembly) Store() application.EventStore { return assembly.store }
+func (assembly *Assembly) Store() application.EventStore {
+	return &managedStore{host: assembly.host, inner: assembly.store}
+}
 
 // checkSandboxAvailability is a seam over localexec.Availability so a test
 // can force "unavailable" without needing to actually break the host's
@@ -84,10 +95,20 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("%w: context is required", errInvalidConfig)
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
 	config = config.withDefaults()
+	if config.Diagnostics == nil {
+		config.Diagnostics = os.Stderr
+	}
+	contextPolicy, policyIdentity, err := resolveContextPolicy(config)
+	if err != nil {
+		return nil, err
+	}
 
 	apiKey := os.Getenv(config.Provider.APIKeyEnv)
 	if apiKey == "" {
@@ -101,7 +122,7 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 		if !config.AllowUnsandboxedExec {
 			return nil, fmt.Errorf("%w: exec sandbox is unavailable and AllowUnsandboxedExec is false: %s", errInvalidConfig, reason)
 		}
-		log.Printf("composition: AllowUnsandboxedExec is true - proceeding without OS-level exec confinement: %s", reason)
+		fmt.Fprintf(config.Diagnostics, "composition: AllowUnsandboxedExec is true - proceeding without OS-level exec confinement: %s\n", reason)
 	}
 
 	var tracer telemetry.Tracer = telemetry.Noop()
@@ -110,7 +131,7 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 		candidate, err := oteladapter.New(ctx, oteladapter.Config{
 			Endpoint: config.Telemetry.OTLPTraceEndpoint, SampleRatio: config.Telemetry.SampleRatio,
 			AllowInsecureLoopback: config.Telemetry.AllowInsecureLoopback,
-			InstanceID:            config.RuntimeID, Diagnostics: os.Stderr,
+			InstanceID:            config.RuntimeID, Diagnostics: config.Diagnostics,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("composition: telemetry adapter: %w", err)
@@ -146,6 +167,15 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 		}
 		return nil, cause
 	}
+	abandon := func(cause error) (*Assembly, error) {
+		host.Abandon()
+		if traceAdapter != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), config.ShutdownTimeout)
+			traceAdapter.Shutdown(shutdownCtx)
+			cancel()
+		}
+		return nil, fmt.Errorf("composition: startup teardown unproven; terminate process before restarting: %w", cause)
+	}
 
 	// The concrete store is retained only long enough to read the writer
 	// authority the lease assigned; everything downstream sees the port.
@@ -155,10 +185,15 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 	}
 	var store application.EventStore = sqliteStore
 
+	protocol := ""
+	if config.Provider.AdapterKind == "deepseek" {
+		protocol = domain.DeepSeekThinkingV1
+	}
 	model, err := openaicompat.New(openaicompat.Config{
-		BaseURL: config.Provider.BaseURL,
-		ModelID: config.Provider.ModelID,
-		APIKey:  openaicompat.StaticAPIKey{Value: apiKey},
+		Protocol: protocol,
+		BaseURL:  config.Provider.BaseURL,
+		ModelID:  config.Provider.ModelID,
+		APIKey:   openaicompat.StaticAPIKey{Value: apiKey},
 		// The assembly always enables the workspace tool catalog, and
 		// Application refuses a catalog whose provider profile does not
 		// support native tools. Text-only would make every assembly invalid.
@@ -215,13 +250,16 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 		config.MCPServers,
 		confinedCommandFactory{runner: commands, workspace: config.WorkspaceRoot})
 	if err != nil {
-		return release(err)
+		if errors.Is(err, mcp.ErrTeardownUnproven) {
+			return abandon(err)
+		}
+		return release(errors.Join(err, commands.Close()))
 	}
 	releaseWithMCP := func(cause error) (*Assembly, error) {
 		if closeErr := mcpConnected.close(); closeErr != nil {
-			cause = errors.Join(cause, closeErr)
+			return abandon(errors.Join(cause, closeErr))
 		}
-		return release(cause)
+		return release(errors.Join(cause, commands.Close()))
 	}
 
 	catalog, err := tools.NewCatalog(append(tools.DefaultWorkspaceSpecs(), mcpSpecs...))
@@ -254,6 +292,7 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 		appConfig.ApprovalTimeout = config.Limits.ApprovalTimeout
 	}
 	appConfig.Context = application.ContextConfig{
+		Policy: contextPolicy, PolicyIdentity: policyIdentity,
 		Enabled:                        true,
 		Budget:                         contextBudget,
 		Meter:                          contextMeter,
@@ -273,9 +312,16 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 	if err != nil {
 		return releaseWithMCP(fmt.Errorf("composition: application service: %w", err))
 	}
+	if !host.Ready() {
+		return releaseWithMCP(fmt.Errorf("composition: lease lost during startup; restart required"))
+	}
+	if err := ctx.Err(); err != nil {
+		return releaseWithMCP(err)
+	}
 
 	return &Assembly{
-		service:   service,
+		service:   &managedService{host: host, inner: service},
+		commands:  commands,
 		host:      host,
 		store:     store,
 		approver:  approver,
@@ -297,9 +343,14 @@ func (assembly *Assembly) ServeACP(ctx context.Context, in io.ReadCloser, out io
 	if assembly == nil {
 		return fmt.Errorf("composition: serve acp: assembly is nil")
 	}
-	return acp.Serve(ctx, acp.Config{
+	work, finish, err := assembly.host.Admit(ctx)
+	if err != nil {
+		return err
+	}
+	defer finish()
+	return acp.Serve(work, acp.Config{
 		Sessions:  assembly.service,
-		History:   assembly.store,
+		History:   assembly.Store(),
 		Workspace: assembly.workspace,
 		Approver:  assembly.approver,
 	}, in, out)
@@ -312,19 +363,42 @@ func (assembly *Assembly) Close() error {
 	if assembly == nil {
 		return nil
 	}
-	if assembly.closed {
-		return assembly.closeErr
-	}
-	assembly.closed = true
-	ctx, cancel := context.WithTimeout(context.Background(), assembly.timeout)
-	defer cancel()
-	// Servers are torn down before the host: they are leaves of this
-	// assembly, and stopping them first means a slow server cannot delay the
-	// writer's own lease release.
-	mcpErr := assembly.mcp.close()
-	assembly.closeErr = errors.Join(mcpErr, assembly.host.Shutdown(ctx))
-	if assembly.telemetry != nil {
-		assembly.telemetry.Shutdown(ctx)
-	}
+	assembly.closeOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), assembly.timeout)
+		defer cancel()
+		if err := assembly.host.Drain(ctx); err != nil {
+			assembly.closeErr = err
+			return // Resources still in use cannot safely be destroyed.
+		}
+		// One accounted-for teardown worker bounds the whole leaf phase,
+		// including multiple MCP servers. On timeout it may still be reaping;
+		// never release ownership or start a successor on that assumption.
+		leaves := make(chan error, 1)
+		go func() {
+			if err := assembly.mcp.close(); err != nil {
+				leaves <- err
+				return
+			}
+			var err error
+			if assembly.commands != nil {
+				err = assembly.commands.Close()
+			}
+			leaves <- err
+		}()
+		select {
+		case err := <-leaves:
+			assembly.closeErr = err
+		case <-ctx.Done():
+			assembly.closeErr = fmt.Errorf("composition: resource teardown unproven: %w", ctx.Err())
+		}
+		if assembly.closeErr != nil {
+			assembly.host.Abandon()
+			return
+		}
+		assembly.closeErr = assembly.host.Shutdown(ctx)
+		if assembly.telemetry != nil {
+			assembly.telemetry.Shutdown(ctx)
+		}
+	})
 	return assembly.closeErr
 }

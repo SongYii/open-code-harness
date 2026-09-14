@@ -115,7 +115,7 @@ func (service *Service) CompactSession(ctx context.Context, request CompactSessi
 	// for the whole tail budget out of history alone, which silently
 	// consumed every remaining unit -- and therefore covered nothing --
 	// whenever the post-checkpoint tail was smaller than ProtectedTail.
-	plan, err := contextengine.SelectCutPoint(contextengine.PlanInput{PrefixMessages: conversationPrefixMessages(), Units: scan.Units, Budget: deps.Budget, Meter: deps.Meter, Force: true})
+	plan, err := planContext(ctx, deps, previous, domain.ContextTriggerManual, contextengine.PlanInput{PrefixMessages: conversationPrefixMessages(), Units: scan.Units, Budget: deps.Budget, Meter: deps.Meter, Force: true})
 	if err != nil {
 		return CompactSessionResult{}, mapContextEngineScanError(err)
 	}

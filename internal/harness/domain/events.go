@@ -135,10 +135,11 @@ type AssistantMessageStarted struct {
 func (AssistantMessageStarted) EventType() string { return EventAssistantMessageStarted }
 
 type AssistantMessageCompleted struct {
-	TurnID    TurnID          `json:"turnID"`
-	ItemID    ItemID          `json:"itemID"`
-	Text      string          `json:"text"`
-	ToolCalls []ToolCallOffer `json:"toolCalls,omitempty"`
+	ProviderState *ProviderState  `json:"providerState,omitempty"`
+	TurnID        TurnID          `json:"turnID"`
+	ItemID        ItemID          `json:"itemID"`
+	Text          string          `json:"text"`
+	ToolCalls     []ToolCallOffer `json:"toolCalls,omitempty"`
 }
 
 func (AssistantMessageCompleted) EventType() string { return EventAssistantMessageCompleted }
@@ -192,11 +193,12 @@ type ToolSpec struct {
 }
 
 type ModelPromptMessage struct {
-	Role       string          `json:"role"`
-	Text       string          `json:"text"`
-	ToolCalls  []ToolCallOffer `json:"toolCalls,omitempty"`
-	ToolCallID string          `json:"toolCallID,omitempty"`
-	Name       string          `json:"name,omitempty"`
+	ProviderState *ProviderState  `json:"providerState,omitempty"`
+	Role          string          `json:"role"`
+	Text          string          `json:"text"`
+	ToolCalls     []ToolCallOffer `json:"toolCalls,omitempty"`
+	ToolCallID    string          `json:"toolCallID,omitempty"`
+	Name          string          `json:"name,omitempty"`
 }
 
 type InstructionScope struct {
@@ -416,15 +418,16 @@ type InstructionSnapshotRecord struct {
 // plans against; PriorCheckpointID is "" for a Session's first compaction.
 // PlannedRoute is a non-secret route identity only (never a credential).
 type ContextCompactionStarted struct {
-	ID                ContextCompactionID `json:"id"`
-	Trigger           string              `json:"trigger"`
-	Strategy          string              `json:"strategy"`
-	BaseSourceHead    uint64              `json:"baseSourceHead"`
-	PriorCheckpointID string              `json:"priorCheckpointID,omitempty"`
-	PromptVersion     string              `json:"promptVersion,omitempty"`
-	SourceSchema      string              `json:"sourceSchema"`
-	MeterID           string              `json:"meterID"`
-	PlannedRoute      string              `json:"plannedRoute,omitempty"`
+	Policy            *ContextPolicyIdentity `json:"policy,omitempty"`
+	ID                ContextCompactionID    `json:"id"`
+	Trigger           string                 `json:"trigger"`
+	Strategy          string                 `json:"strategy"`
+	BaseSourceHead    uint64                 `json:"baseSourceHead"`
+	PriorCheckpointID string                 `json:"priorCheckpointID,omitempty"`
+	PromptVersion     string                 `json:"promptVersion,omitempty"`
+	SourceSchema      string                 `json:"sourceSchema"`
+	MeterID           string                 `json:"meterID"`
+	PlannedRoute      string                 `json:"plannedRoute,omitempty"`
 }
 
 func (ContextCompactionStarted) EventType() string { return EventContextCompactionStarted }
@@ -454,23 +457,24 @@ func (ContextCompactionFailed) EventType() string { return EventContextCompactio
 // ContextPreparedRecorded is design §7.4's per-attempt evidence: what the
 // Context Engine decided before this ModelRequestRecorded was dispatched.
 type ContextPreparedRecorded struct {
-	TurnID                    TurnID            `json:"turnID"`
-	ItemID                    ItemID            `json:"itemID"`
-	AttemptIndex              uint32            `json:"attemptIndex"`
-	ContextDecisionID         ContextDecisionID `json:"contextDecisionID"`
-	Trigger                   string            `json:"trigger"`
-	SourceHeadVersion         uint64            `json:"sourceHeadVersion"`
-	CheckpointID              string            `json:"checkpointID,omitempty"`
-	CheckpointKind            string            `json:"checkpointKind,omitempty"`
-	RawTailFromSequence       uint64            `json:"rawTailFromSequence,omitempty"`
-	RawTailThroughSequence    uint64            `json:"rawTailThroughSequence,omitempty"`
-	BudgetHardInput           uint64            `json:"budgetHardInput"`
-	BudgetTrigger             uint64            `json:"budgetTrigger"`
-	BudgetTarget              uint64            `json:"budgetTarget"`
-	EstimatedMessageTokens    uint64            `json:"estimatedMessageTokens"`
-	EstimatedToolSchemaTokens uint64            `json:"estimatedToolSchemaTokens"`
-	EstimatedTotalTokens      uint64            `json:"estimatedTotalTokens"`
-	MeterID                   string            `json:"meterID"`
+	Policy                    *ContextPolicyIdentity `json:"policy,omitempty"`
+	TurnID                    TurnID                 `json:"turnID"`
+	ItemID                    ItemID                 `json:"itemID"`
+	AttemptIndex              uint32                 `json:"attemptIndex"`
+	ContextDecisionID         ContextDecisionID      `json:"contextDecisionID"`
+	Trigger                   string                 `json:"trigger"`
+	SourceHeadVersion         uint64                 `json:"sourceHeadVersion"`
+	CheckpointID              string                 `json:"checkpointID,omitempty"`
+	CheckpointKind            string                 `json:"checkpointKind,omitempty"`
+	RawTailFromSequence       uint64                 `json:"rawTailFromSequence,omitempty"`
+	RawTailThroughSequence    uint64                 `json:"rawTailThroughSequence,omitempty"`
+	BudgetHardInput           uint64                 `json:"budgetHardInput"`
+	BudgetTrigger             uint64                 `json:"budgetTrigger"`
+	BudgetTarget              uint64                 `json:"budgetTarget"`
+	EstimatedMessageTokens    uint64                 `json:"estimatedMessageTokens"`
+	EstimatedToolSchemaTokens uint64                 `json:"estimatedToolSchemaTokens"`
+	EstimatedTotalTokens      uint64                 `json:"estimatedTotalTokens"`
+	MeterID                   string                 `json:"meterID"`
 	// UsageAnchorApplied/UsageAnchorTokens record whether the non-lowering
 	// usage anchor (design §8, CE-04) raised the estimate this decision
 	// used, and by how much — omitted (both zero-valued) when no anchor

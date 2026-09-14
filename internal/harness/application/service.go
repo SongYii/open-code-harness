@@ -10,6 +10,7 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/policy"
 	"github.com/SongYii/open-code-harness/internal/harness/telemetry"
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
+	"github.com/SongYii/open-code-harness/sdk/contextpolicy"
 )
 
 const (
@@ -57,6 +58,8 @@ type Config struct {
 // construction to opt into early (this package's own tests, and Task 9
 // Step 2's own new tests).
 type ContextConfig struct {
+	Policy          contextpolicy.Policy
+	PolicyIdentity  *domain.ContextPolicyIdentity
 	Enabled         bool
 	Budget          contextengine.Budget
 	Meter           contextengine.Meter
@@ -292,6 +295,7 @@ func (service *Service) maxOverflowRecoveriesPerTurn() uint32 {
 
 func (service *Service) contextOrchestratorDeps() ContextOrchestratorDeps {
 	return ContextOrchestratorDeps{
+		Policy: service.config.Context.Policy, PolicyIdentity: service.config.Context.PolicyIdentity,
 		Store: service.store, IDs: service.ids, Clock: service.clock, Authority: service.authority,
 		CheckpointStore: service.config.Context.CheckpointStore, Summarizer: service.config.Context.Summarizer,
 		Meter: service.config.Context.Meter, Budget: service.config.Context.Budget, PageLimit: service.config.Context.PageLimit,

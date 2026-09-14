@@ -43,6 +43,9 @@ func Apply(state Session, record RecordedEvent) (Session, error) {
 	case AssistantMessageStarted:
 		return applyAssistantMessageStarted(state, record, event)
 	case AssistantMessageCompleted:
+		if err := validateProviderState(event.ProviderState, CodeInvalidEvent); err != nil {
+			return Session{}, err
+		}
 		if !utf8.ValidString(event.Text) {
 			return Session{}, domainError(CodeInvalidEvent, "assistant message text must be valid UTF-8")
 		}
