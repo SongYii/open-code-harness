@@ -6,6 +6,64 @@ provider certification. The dated live addendum below is bounded acceptance
 evidence, not a stable-release claim. No changes to OTel or the localexec
 backend were made for this slice.
 
+## Multi-session recovery and native Messages context boundaries (2026-09-15)
+
+The preceding slice was committed locally as `2355f0d`. This follow-up changes
+tests and documentation, not production behavior or API stability.
+
+`TestRecoveryProcessKilledBetweenSessions` puts four unfinished sessions and one
+idle session in the same SQLite database. The production candidate enumeration
+visits three active Turns (assistant, active compaction, tool), then the manual
+compaction; the active compaction is present in both candidate sources but must
+be reconciled once. Four kills and four identical-hook release controls stop
+before/after the second and fourth recovery COMMIT. Read-only WAL inspection
+checks exact per-session committed prefixes, pending work and untouched idle
+history. The real successor Launch waits for natural 3s lease expiry and completes
+all remaining recovery before returning ready; a third Launch changes no records.
+No database-wide atomic recovery is claimed: already committed session recovery
+survives, while unfinished sessions are rediscovered. The killed child still uses
+the production `reconcileAll` seam, not a hook injected into full Launch.
+
+`TestMessagesProcessCrashRecovery` now also kills before and after the checkpoint
+COMMIT of a **mid-turn** summary. These two kills and two release controls use
+real Composition, Messages HTTP/SSE, two preceding history turns, `read_file`,
+Context Engine, SQLite and Runtime Host. The tool has completed and the next
+assistant has not started. Before-COMMIT recovery adds a compaction failure and
+Turn interruption; after-COMMIT recovery preserves the checkpoint and adds only
+Turn interruption. Controls must complete exactly one tool, one mid-turn summary
+and five HTTP requests including the seed turns. Natural default-lease expiry,
+cold original-request replay against the dead provider, repeated startup and
+independent audit verification reuse the existing process matrix. The fixture
+uses supported 30% target / 10% tail settings without weakening shrink guards.
+
+An important limit was confirmed: **the native Messages route does not currently
+classify HTTP context overflow**. Its adapter intentionally closes rejected HTTP
+responses without reading their bodies. Status 400, 413 or 422 alone is not a
+model-context diagnosis. `TestMessagesHTTPFailureDurableReplay` sends these
+statuses over local HTTP with an explicit overflow-shaped error body and a private
+canary. The route commits a permanent failure, makes one request, starts no
+compaction/tool and leaks no body to events or runtime output. Cold replay keeps
+that terminal without another request or append. The adapter's unreadable-body
+test also covers all three statuses, one close and no retry. The earlier scripted
+Application overflow tests are **not** native Messages overflow-retry evidence.
+Adding such classification requires an explicit, bounded error-recognition
+contract and privacy tests; arbitrary 400/413 responses must not be relabeled.
+
+Verification: full `go test ./...` and `go vet ./...`, the expanded process
+matrix under race, two repeated race runs of the new multi-session/mid-turn/HTTP
+cases, Windows amd64 cross-vet for Runtime/Composition/Messages, documentation
+and architecture guards, and `git diff --check` passed. Private Go overlays
+provide negative controls without editing production files: skipping recovery
+between Items leaves both native mid-turn cases active and fails their recovery
+assertions; omitting compaction-only candidates leaves only three recovered
+sessions and fails the fourth-commit multi-session control. These are local
+checks, not remote CI or a release certification.
+
+Remaining gates include other full Launch stages, native Messages overflow
+classification/retry, exporter file-publication substeps, power loss/corrupt disk
+and arbitrary external-tool effects. No remote provider, credential, paid budget,
+OTel change, schema migration or public SDK expansion is involved.
+
 ## Recovery interrupted again and context retries (2026-09-15)
 
 The preceding slice was committed locally as `035e12d`.
@@ -64,7 +122,7 @@ documentation/architecture guards and `git diff --check` all passed. The final
 recovery matrix and focused request tests also passed their `-race -count=2`
 runs. These are local checks; no remote CI or merge is implied.
 
-Remaining gates: full Launch/multi-candidate crash injection, native HTTP overflow
+Remaining gates at that slice: full Launch/multi-candidate crash injection, native HTTP overflow
 and mid-turn-compaction crash combinations, exporter publication substeps,
 power-loss/corrupt-disk recovery and arbitrary external-tool effects. No schema
 change, public SDK expansion, paid request, real credential or OTel modification

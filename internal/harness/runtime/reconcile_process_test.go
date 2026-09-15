@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	goruntime "runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -113,10 +114,19 @@ func seedRecoveryProcess(t *testing.T, path, kind string) []domain.RecordedEvent
 		t.Fatal(err)
 	}
 	defer store.Close()
+	before := seedRecoverySession(t, store, "session-kill", kind)
+	if err := store.ReleaseLease(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return before
+}
+
+func seedRecoverySession(t *testing.T, store *sqlite.Store, session domain.SessionID, kind string) []domain.RecordedEvent {
+	t.Helper()
 	events := []domain.Event{domain.SessionCreated{WorkspaceRoot: "/synthetic"}}
 	if kind == "manual_compaction" {
 		events = append(events, validContextCompactionStarted("compaction-kill", domain.ContextTriggerManual))
-	} else {
+	} else if kind != "idle" {
 		events = append(events, domain.TurnStarted{TurnID: "turn-kill", Input: "synthetic"}, domain.AssistantMessageStarted{TurnID: "turn-kill", ItemID: "assistant-kill"})
 		if kind == "tool" {
 			events = append(events, domain.AssistantMessageCompleted{TurnID: "turn-kill", ItemID: "assistant-kill", Text: "calling", ToolCalls: []domain.ToolCallOffer{{ID: "call-kill", Name: "read_file", Arguments: `{"path":"synthetic"}`}}}, domain.ToolCallStarted{TurnID: "turn-kill", ItemID: "tool-kill", CallID: "call-kill", Name: "read_file", Arguments: `{"path":"synthetic"}`, StepIndex: 1})
@@ -127,37 +137,38 @@ func seedRecoveryProcess(t *testing.T, path, kind string) []domain.RecordedEvent
 	}
 	var proposedEvents []application.ProposedEvent
 	for i, event := range events {
-		proposedEvents = append(proposedEvents, proposed(fmt.Sprintf("seed-%d", i), event))
+		proposedEvents = append(proposedEvents, proposed(fmt.Sprintf("%s-seed-%d", session, i), event))
 	}
-	hostAppend(t, store, application.AppendRequest{AppendID: "seed-session", SessionID: "session-kill", CommandID: "session-command", Authority: store.Authority(), Events: proposedEvents[:1]})
+	hostAppend(t, store, application.AppendRequest{AppendID: domain.AppendID(string(session) + "-seed-session"), SessionID: session, CommandID: domain.CommandID(string(session) + "-session-command"), Authority: store.Authority(), Events: proposedEvents[:1]})
 	end := len(proposedEvents)
 	if kind == "manual_compaction" || kind == "active_compaction" {
 		end--
 	}
 	if end > 1 {
-		hostAppend(t, store, application.AppendRequest{AppendID: "seed-turn", SessionID: "session-kill", ExpectedVersion: 1, CommandID: "command-kill", Authority: store.Authority(), Events: proposedEvents[1:end]})
+		hostAppend(t, store, application.AppendRequest{AppendID: domain.AppendID(string(session) + "-seed-turn"), SessionID: session, ExpectedVersion: 1, CommandID: domain.CommandID(string(session) + "-command-kill"), Authority: store.Authority(), Events: proposedEvents[1:end]})
 	}
 	if end < len(proposedEvents) {
-		hostAppend(t, store, application.AppendRequest{AppendID: "seed-compaction", SessionID: "session-kill", ExpectedVersion: uint64(end), CommandID: "compaction-command", Authority: store.Authority(), Events: proposedEvents[end:]})
+		hostAppend(t, store, application.AppendRequest{AppendID: domain.AppendID(string(session) + "-seed-compaction"), SessionID: session, ExpectedVersion: uint64(end), CommandID: domain.CommandID(string(session) + "-compaction-command"), Authority: store.Authority(), Events: proposedEvents[end:]})
 	}
-	before := readAllRuntime(t, store, "session-kill")
+	before := readAllRuntime(t, store, session)
 	if _, err := domain.Replay(before); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.ReleaseLease(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	return before
 }
 
 func readRecoveryProcess(t *testing.T, path string) []domain.RecordedEvent {
+	return readRecoverySession(t, path, "session-kill")
+}
+
+func readRecoverySession(t *testing.T, path string, session domain.SessionID) []domain.RecordedEvent {
 	t.Helper()
 	reader, err := sqlite.OpenReader(context.Background(), sqlite.ReaderConfig{Path: path})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer reader.Close()
-	page, err := reader.ReadStream(context.Background(), application.ReadStreamRequest{SessionID: "session-kill", Limit: 256})
+	page, err := reader.ReadStream(context.Background(), application.ReadStreamRequest{SessionID: session, Limit: 256})
 	if err != nil || uint64(len(page.Records)) != page.HeadVersion {
 		t.Fatalf("read complete recovery fixture: %v", err)
 	}
@@ -166,6 +177,7 @@ func readRecoveryProcess(t *testing.T, path string) []domain.RecordedEvent {
 
 func assertProcessRecovery(t *testing.T, before, after []domain.RecordedEvent, kind string) {
 	t.Helper()
+	session := before[0].SessionID
 	want := []domain.Event{domain.AssistantMessageInterrupted{TurnID: "turn-kill", ItemID: "assistant-kill", Code: processCrashCode}, domain.TurnInterrupted{TurnID: "turn-kill", Reason: processCrashCode}}
 	failed := domain.ContextCompactionFailed{ID: "compaction-kill", Code: runtimeRecoveredCode, Message: runtimeRecoveredMessage}
 	item := "assistant-kill"
@@ -182,11 +194,10 @@ func assertProcessRecovery(t *testing.T, before, after []domain.RecordedEvent, k
 	if len(after) != len(before)+len(want) || !reflect.DeepEqual(before, after[:len(before)]) {
 		t.Fatal("recovery changed prefix or duplicated/missed terminal facts")
 	}
-	appendID := recoveryAppendID("session-kill", "turn-kill", item)
-	lineage := domain.CommandID("command-kill")
+	appendID := recoveryAppendID(session, "turn-kill", item)
+	lineage := before[1].CommandID
 	if kind == "manual_compaction" {
-		appendID = recoveryCompactionAppendID("session-kill", "compaction-kill")
-		lineage = "compaction-command"
+		appendID = recoveryCompactionAppendID(session, "compaction-kill")
 	}
 	for i, event := range want {
 		got := after[len(before)+i]
@@ -199,18 +210,18 @@ func assertProcessRecovery(t *testing.T, before, after []domain.RecordedEvent, k
 		t.Fatalf("recovered state invalid: %v", err)
 	}
 	if kind != "manual_compaction" {
-		digest, err := application.DigestRunTurnRequestV1("session-kill", "synthetic")
+		digest, err := application.DigestRunTurnRequestV1(session, "synthetic")
 		if err != nil {
 			t.Fatal(err)
 		}
-		result, err := application.ReconstructRequestResult(application.CommandRequestRecord{RunTurnRequestID: "request-kill", RequestDigest: digest, SessionID: "session-kill", CommandID: "command-kill", TurnID: "turn-kill", ItemID: "assistant-kill", AdmissionAppendID: "seed-turn"}, after)
+		result, err := application.ReconstructRequestResult(application.CommandRequestRecord{RunTurnRequestID: "request-kill", RequestDigest: digest, SessionID: session, CommandID: lineage, TurnID: "turn-kill", ItemID: "assistant-kill", AdmissionAppendID: domain.AppendID(string(session) + "-seed-turn")}, after)
 		if err != nil || result.Status != domain.TurnStatusInterrupted || !result.TerminalCommitted {
 			t.Fatalf("recovered request cannot be reconstructed: %v", err)
 		}
 	}
 }
 
-func runRecoveryProcess(t *testing.T, path, side string, kill bool) {
+func runRecoveryProcess(t *testing.T, path, side string, kill bool, fixtureEnv ...string) {
 	t.Helper()
 	executable, err := os.Executable()
 	if err != nil {
@@ -220,6 +231,7 @@ func runRecoveryProcess(t *testing.T, path, side string, kill bool) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, executable, "-test.run=^TestRecoveryProcessHelper$", "-test.timeout=12s")
 	cmd.Env = append(os.Environ(), "OCH_RECOVERY_KILL_DB="+path, "OCH_RECOVERY_KILL_SIDE="+side)
+	cmd.Env = append(cmd.Env, fixtureEnv...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -250,6 +262,9 @@ func runRecoveryProcess(t *testing.T, path, side string, kill bool) {
 				default:
 				}
 			}
+		}
+		if err := scanner.Err(); err != nil {
+			output.WriteString(err.Error())
 		}
 		done <- output.String()
 	}()
@@ -300,9 +315,24 @@ func TestRecoveryProcessHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
+	positiveEnv := func(name string) int {
+		value := os.Getenv(name)
+		if value == "" {
+			return 1
+		}
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 {
+			t.Fatalf("invalid fixture %s", name)
+		}
+		return n
+	}
+	stopAt, wantCandidates := positiveEnv("OCH_RECOVERY_KILL_AT"), positiveEnv("OCH_RECOVERY_CANDIDATES")
 	hits := 0
 	hook := func() {
 		hits++
+		if hits != stopAt {
+			return
+		}
 		fmt.Println("RECOVERY_COMMIT_BOUNDARY")
 		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
 		if err != nil || line != "continue\n" {
@@ -321,7 +351,7 @@ func TestRecoveryProcessHelper(t *testing.T) {
 	// readiness/heartbeat/exporter construction. This local test seam avoids a
 	// production startup callback solely for fault injection.
 	candidates, recovered, err := reconcileAll(ctx, &reconciler{store: store, authority: store}, store)
-	if err != nil || candidates != 1 || recovered != 1 || hits != 1 {
+	if err != nil || candidates != wantCandidates || recovered != wantCandidates || hits != wantCandidates || stopAt > hits {
 		t.Fatalf("reconciliation control: candidates=%d recovered=%d hooks=%d err=%v", candidates, recovered, hits, err)
 	}
 	if err := store.ReleaseLease(ctx); err != nil {

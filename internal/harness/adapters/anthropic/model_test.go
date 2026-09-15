@@ -171,7 +171,7 @@ func TestSDKUsageNormalizesTotalInput(t *testing.T) {
 }
 
 func TestSDKHTTPRejectsWithoutReadingErrorBodiesOrRetrying(t *testing.T) {
-	for _, status := range []int{200, 204, 307, 401, 429, 503} {
+	for _, status := range []int{200, 204, 307, 400, 401, 413, 422, 429, 503} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			body := &countedBody{Reader: errorReader{t: t}}
 			var calls atomic.Int32
@@ -183,6 +183,9 @@ func TestSDKHTTPRejectsWithoutReadingErrorBodiesOrRetrying(t *testing.T) {
 			var failure *engine.ProviderFailure
 			if stream != nil || !errors.As(err, &failure) || failure.HTTPStatus != status || calls.Load() != 1 || body.closes.Load() != 1 {
 				t.Fatal("HTTP gate/retry/close invariant failed")
+			}
+			if (status == 400 || status == 413 || status == 422) && (failure.Code != "provider_permanent" || failure.Class != engine.FailureClassPermanent || failure.Retryable) {
+				t.Fatal("ambiguous HTTP status was promoted to recoverable context overflow")
 			}
 		})
 	}

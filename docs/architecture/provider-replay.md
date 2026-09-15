@@ -169,9 +169,13 @@ assistant interruption for a tool Item, and request reconstruction rejecting
 `context.prepared` / `process_crash`. An ambiguous tool result is interrupted,
 never automatically re-executed; external exactly-once effects are not promised.
 Follow-up evidence adds kills during the recovery transaction and scripted
-Application mid-turn compaction/overflow-retry reconstruction. Native HTTP fault
-combinations, other startup boundaries and export-publication substeps remain
-separate gates. See the
+Application mid-turn compaction/overflow-retry reconstruction. Further coverage
+adds mixed multi-session recovery kills and native Messages mid-turn checkpoint
+kills. Native Messages **HTTP overflow classification is not implemented**: the
+unread-error-body boundary treats 400/413/422 as permanent failures, not signals
+to compact/retry. Local HTTP rejection and cold replay tests lock that limit down.
+Other startup stages, overflow recognition/retry and export-publication substeps
+remain separate gates. See the
 [evidence ledger](provider-replay-evidence.md) for scope and negative controls.
 
 ## DeepSeek Messages route (2026-09-14)

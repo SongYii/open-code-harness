@@ -26,6 +26,7 @@ func TestMessagesProcessCrashHelper(t *testing.T) {
 	if root == "" || boundary == "" {
 		t.Skip("subprocess fixture only")
 	}
+	midTurn := strings.HasPrefix(boundary, "midturn_")
 	config := Config{
 		WorkspaceRoot: filepath.Join(root, "workspace"),
 		DatabasePath:  filepath.Join(root, "harness.db"),
@@ -39,6 +40,12 @@ func TestMessagesProcessCrashHelper(t *testing.T) {
 	config.Diagnostics = io.Discard
 	config.Policy = policy.ModeAllowWrites
 	config.Context.TailPercent = 10
+	if midTurn {
+		config.Context.TargetPercent = 30
+		if err := os.WriteFile(filepath.Join(config.WorkspaceRoot, "large.txt"), []byte(strings.Repeat("bounded tool result\n", 200)), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	config.Provider.AdapterKind = "deepseek-messages"
 	config.Provider.AllowInsecureLoopback = true
 	config.Provider.APIKeyEnv = crashKeyEnv
@@ -76,15 +83,16 @@ func TestMessagesProcessCrashHelper(t *testing.T) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		r.Body.Close()
 		target := armed.CompareAndSwap(true, false)
-		if target && (boundary == "assistant_before_commit" || strings.HasPrefix(boundary, "summary_")) {
+		summaryRequest := r.Header.Get("X-Och-Request-Purpose") == "compaction"
+		if target && (boundary == "assistant_before_commit" || strings.HasPrefix(boundary, "summary_")) || midTurn && summaryRequest {
 			want := domain.EventAssistantMessageCompleted
-			if strings.HasPrefix(boundary, "summary_") {
+			if strings.HasPrefix(boundary, "summary_") || midTurn {
 				want = domain.EventContextCompactionCompleted
 				if r.Header.Get("X-Och-Request-Purpose") != "compaction" {
 					t.Error("wrong request purpose")
 				}
 			}
-			if boundary == "summary_after_commit" {
+			if boundary == "summary_after_commit" || boundary == "midturn_after_commit" {
 				store.SetCommitHook("after_publish", func() {
 					if !hit.Load() {
 						records := messagesLifecycleRecords(t, store, point.Session)
@@ -104,14 +112,18 @@ func TestMessagesProcessCrashHelper(t *testing.T) {
 		}
 		text := "Synthetic completed response."
 		tool := target && strings.HasPrefix(boundary, "tool_")
-		if target && strings.HasPrefix(boundary, "summary_") {
+		if summaryRequest {
 			var summary strings.Builder
 			for _, heading := range []string{"Objective", "User Constraints", "Established Facts", "Work Completed", "Files and Commands", "Open Work", "Risks and Unknowns", "Continuation"} {
 				fmt.Fprintf(&summary, "## %s\nSynthetic fact.\n", heading)
 			}
 			text = summary.String()
 		}
-		writeCrashMessages(t, w, config.Provider.ModelID, text, tool)
+		if midTurn && target && !summaryRequest {
+			writeCrashMessagesTool(t, w, config.Provider.ModelID, text, "read_file", map[string]string{"path": "large.txt"})
+		} else {
+			writeCrashMessages(t, w, config.Provider.ModelID, text, tool)
+		}
 	}))
 	defer server.Close()
 	config.Provider.BaseURL = server.URL + "/anthropic"
@@ -128,10 +140,10 @@ func TestMessagesProcessCrashHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.HasPrefix(boundary, "summary_") {
+	if strings.HasPrefix(boundary, "summary_") || midTurn {
 		for i := 0; i < 2; i++ {
 			out, err := assembly.Service().RunTurn(ctx, application.RunTurnRequest{SessionID: created.SessionID, RequestID: domain.RunTurnRequestID(fmt.Sprintf("seed-%d", i)), Input: strings.Repeat("synthetic source material ", 160), Sink: &testkit.RecordingSink{}})
-			if err != nil || out.Status != domain.TurnStatusCompleted {
+			if err != nil || out.Status != domain.TurnStatusCompleted || hit.Load() {
 				t.Fatalf("summary seed: %v", err)
 			}
 		}
@@ -186,6 +198,11 @@ func TestMessagesProcessCrashHelper(t *testing.T) {
 		}
 	}
 	if !hit.Load() || expectedCommit != "" {
+		for _, record := range messagesLifecycleRecords(t, store, created.SessionID) {
+			if e, ok := record.Event.(domain.ContextPreparedRecorded); ok {
+				t.Logf("preparation: trigger=%s tokens=%d", e.Trigger, e.EstimatedTotalTokens)
+			}
+		}
 		t.Fatal("operation missed intended commit boundary")
 	}
 	wantRequests := int32(1)
@@ -194,6 +211,18 @@ func TestMessagesProcessCrashHelper(t *testing.T) {
 	}
 	if strings.HasPrefix(boundary, "summary_") {
 		wantRequests = 3
+	}
+	if midTurn {
+		wantRequests = 5 // Two history turns, tool offer, summary, final answer.
+		records := messagesLifecycleRecords(t, store, created.SessionID)[point.Baseline:]
+		if crashEventCount(records, domain.EventContextCompactionStarted) != 1 || crashEventCount(records, domain.EventContextCompactionCompleted) != 1 || crashEventCount(records, domain.EventToolCallCompleted) != 1 {
+			t.Fatal("mid-turn control missed compaction/tool bracket")
+		}
+		for _, record := range records {
+			if e, ok := record.Event.(domain.ContextCompactionStarted); ok && e.Trigger != domain.ContextTriggerMidTurn {
+				t.Fatal("fixture compacted outside mid-turn boundary")
+			}
+		}
 	}
 	if requests.Load() != wantRequests {
 		t.Fatalf("unexpected requests: %d want %d", requests.Load(), wantRequests)
@@ -204,6 +233,15 @@ func TestMessagesProcessCrashHelper(t *testing.T) {
 }
 
 func writeCrashMessages(t *testing.T, w http.ResponseWriter, model, text string, tool bool) {
+	t.Helper()
+	name := ""
+	if tool {
+		name = "write_file"
+	}
+	writeCrashMessagesTool(t, w, model, text, name, map[string]string{"path": "effect.txt", "content": crashEffect})
+}
+
+func writeCrashMessagesTool(t *testing.T, w http.ResponseWriter, model, text, tool string, arguments map[string]string) {
 	t.Helper()
 	w.Header().Set("Content-Type", "text/event-stream")
 	frame := func(name string, fields map[string]any) {
@@ -225,10 +263,10 @@ func writeCrashMessages(t *testing.T, w http.ResponseWriter, model, text string,
 	frame("content_block_start", map[string]any{"index": 1, "content_block": map[string]any{"type": "text", "text": text}})
 	frame("content_block_stop", map[string]any{"index": 1})
 	reason := "end_turn"
-	if tool {
+	if tool != "" {
 		reason = "tool_use"
-		frame("content_block_start", map[string]any{"index": 2, "content_block": map[string]any{"type": "tool_use", "id": "crash-tool", "name": "write_file", "input": map[string]any{}}})
-		args, _ := json.Marshal(map[string]string{"path": "effect.txt", "content": crashEffect})
+		frame("content_block_start", map[string]any{"index": 2, "content_block": map[string]any{"type": "tool_use", "id": "crash-tool", "name": tool, "input": map[string]any{}}})
+		args, _ := json.Marshal(arguments)
 		frame("content_block_delta", map[string]any{"index": 2, "delta": map[string]any{"type": "input_json_delta", "partial_json": string(args)}})
 		frame("content_block_stop", map[string]any{"index": 2})
 	}

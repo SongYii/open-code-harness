@@ -47,10 +47,10 @@ type crashedMessages struct {
 // in for process death. Controls release the SAME hook and must complete.
 func TestMessagesProcessCrashRecovery(t *testing.T) {
 	t.Setenv(crashKeyEnv, "local-fixture-only")
-	boundaries := []string{"assistant_before_commit", "tool_before_execution", "tool_after_effect", "summary_before_commit", "summary_after_commit", "audit_before_export"}
+	boundaries := []string{"assistant_before_commit", "tool_before_execution", "tool_after_effect", "summary_before_commit", "summary_after_commit", "midturn_before_commit", "midturn_after_commit", "audit_before_export"}
 	var crashed []crashedMessages
 	// Kill all children before recovery so their real 30s leases age together.
-	// This avoids both parallel global-env mutation and six serial lease waits.
+	// This avoids both parallel global-env mutation and serial lease waits.
 	for _, boundary := range boundaries {
 		for _, kill := range []bool{false, true} {
 			root := t.TempDir()
@@ -215,7 +215,7 @@ func assertMessagesCrashBoundary(t *testing.T, point crashCheckpoint, records []
 		t.Fatal(err)
 	}
 	tail := records[point.Baseline:]
-	wantAssistant, wantTool, wantSummary, wantTurn := 0, 0, 0, 0
+	wantAssistant, wantTool, wantToolDone, wantSummary, wantTurn := 0, 0, 0, 0, 0
 	switch point.Boundary {
 	case "assistant_before_commit":
 		if crashEventCount(tail, domain.EventModelRequestRecorded) != 1 {
@@ -232,11 +232,24 @@ func assertMessagesCrashBoundary(t *testing.T, point crashCheckpoint, records []
 		}
 	case "audit_before_export":
 		wantAssistant, wantTurn = 1, 1
+	case "midturn_before_commit", "midturn_after_commit":
+		wantAssistant, wantTool, wantToolDone = 1, 1, 1
+		if point.Boundary == "midturn_after_commit" {
+			wantSummary = 1
+		}
+		if crashEventCount(tail, domain.EventContextCompactionStarted) != 1 || crashEventCount(tail, domain.EventModelRequestRecorded) != 1 {
+			t.Fatal("mid-turn crash missed summary bracket or started next assistant")
+		}
+		for _, record := range tail {
+			if e, ok := record.Event.(domain.ContextCompactionStarted); ok && e.Trigger != domain.ContextTriggerMidTurn {
+				t.Fatal("crash did not occur in mid-turn compaction")
+			}
+		}
 	}
 	for kind, want := range map[string]int{
 		domain.EventAssistantMessageCompleted:  wantAssistant,
 		domain.EventToolCallStarted:            wantTool,
-		domain.EventToolCallCompleted:          0,
+		domain.EventToolCallCompleted:          wantToolDone,
 		domain.EventContextCompactionCompleted: wantSummary,
 		domain.EventTurnCompleted:              wantTurn,
 	} {
@@ -348,6 +361,9 @@ func recoverMessagesCrash(t *testing.T, fixture crashedMessages) {
 	}
 	if point.Boundary == "summary_after_commit" || point.Boundary == "audit_before_export" {
 		wantNew = 0
+	}
+	if point.Boundary == "midturn_after_commit" {
+		wantNew = 1 // Tool finished; next assistant has not started yet.
 	}
 	if len(records) != len(fixture.records)+wantNew {
 		t.Fatalf("recovery appended %d events, want %d", len(records)-len(fixture.records), wantNew)

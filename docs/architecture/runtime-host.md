@@ -60,7 +60,10 @@ durable request retry and cold audit checks) are recorded in the
 cover every startup boundary. A follow-up adds eight process kills and eight
 release controls inside the production recovery transaction (`reconcileAll`),
 with actual Launch for successors. It covers assistant/tool/compaction recovery
-before and after COMMIT; multi-candidate and other Launch boundaries remain open.
+before and after COMMIT. A further four kills/four controls interrupt the second
+and fourth recovery in a mixed multi-session database; already published recovery
+survives, pending sessions are rediscovered, and idle history stays untouched.
+Other full Launch stages remain open; no database-wide atomic recovery is claimed.
 
 ## Heartbeat and fencing reaction
 
@@ -98,7 +101,7 @@ starting another. Natural lease expiry is unchanged.
 - Automatic model or tool retries; `retryOfTurnID` lineage recording
   belongs to the Application command layer.
 - ACP and TUI surfaces.
-- GA blockers: not every Launch/multi-candidate recovery boundary has process-kill coverage; heartbeat
+- GA blockers: not every full Launch stage has process-kill coverage; heartbeat
   evidence is deterministic-time (`testing/synctest`) plus scripted lease
   outcomes, not wall-clock soak; no multi-machine lease anomaly
   (clock-jump) evidence beyond the store's safety-biased predicate.
