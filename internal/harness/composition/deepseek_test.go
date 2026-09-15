@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -23,9 +24,20 @@ import (
 // Real composition, SQLite, HTTP/SSE, workspace tool, rolling summary, restart,
 // and recorded request comparison. No live model or paid API is used.
 func TestDeepSeekThinkingToolsRestartAndCompaction(t *testing.T) {
+	runDeepSeekToolsRestartAndCompaction(t, false)
+}
+
+func TestDeepSeekMessagesToolsRestartAndCompaction(t *testing.T) {
+	runDeepSeekToolsRestartAndCompaction(t, true)
+}
+
+func runDeepSeekToolsRestartAndCompaction(t *testing.T, messagesRoute bool) {
 	ctx := context.Background()
 	config := validConfig(t)
 	config.Provider.AdapterKind = "deepseek"
+	if messagesRoute {
+		config.Provider.AdapterKind = "deepseek-messages"
+	}
 	config.Provider.ReasoningEffort = "high"
 	config.Context.SummaryReasoningEffort = "low"
 	config.Context.TailPercent = 10
@@ -41,7 +53,10 @@ func TestDeepSeekThinkingToolsRestartAndCompaction(t *testing.T) {
 			Thinking struct {
 				Type string `json:"type"`
 			} `json:"thinking"`
-			Effort string `json:"reasoning_effort"`
+			Effort       string `json:"reasoning_effort"`
+			OutputConfig struct {
+				Effort string `json:"effort"`
+			} `json:"output_config"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Error(err)
@@ -51,10 +66,62 @@ func TestDeepSeekThinkingToolsRestartAndCompaction(t *testing.T) {
 		if body.Thinking.Type != "enabled" {
 			t.Error("thinking not explicitly enabled")
 		}
+		if messagesRoute {
+			if r.URL.Path != "/anthropic/v1/messages" {
+				t.Error("wrong Messages endpoint")
+			}
+			body.Effort = body.OutputConfig.Effort
+			// Normalize only the observation used by this shared lifecycle test.
+			// Adapter tests independently assert native block/result order and JSON.
+			for _, msg := range body.Messages {
+				if msg["role"] != "assistant" {
+					continue
+				}
+				blocks, ok := msg["content"].([]any)
+				if !ok {
+					t.Error("missing native replay blocks")
+					continue
+				}
+				var reasoning strings.Builder
+				for _, raw := range blocks {
+					b, _ := raw.(map[string]any)
+					if b["type"] == "thinking" {
+						thinking, _ := b["thinking"].(string)
+						reasoning.WriteString(thinking)
+					}
+				}
+				msg["reasoning_content"] = reasoning.String()
+			}
+		}
 		mu.Lock()
 		defer mu.Unlock()
 		w.Header().Set("Content-Type", "text/event-stream")
+		if messagesRoute {
+			writeMessagesFrame(w, "message_start", map[string]any{"message": map[string]any{"id": "msg_fixture", "type": "message", "role": "assistant", "model": config.Provider.ModelID, "content": []any{}, "usage": map[string]int{"input_tokens": 12, "output_tokens": 1}}})
+			writeMessagesFrame(w, "content_block_start", map[string]any{"index": 0, "content_block": map[string]any{"type": "thinking", "thinking": ""}})
+		}
 		writeDelta := func(delta map[string]any, finish any) {
+			if messagesRoute {
+				if reasoning, ok := delta["reasoning_content"]; ok {
+					writeMessagesFrame(w, "content_block_delta", map[string]any{"index": 0, "delta": map[string]any{"type": "thinking_delta", "thinking": reasoning}})
+					return
+				}
+				writeMessagesFrame(w, "content_block_stop", map[string]any{"index": 0})
+				reason := "end_turn"
+				if calls, ok := delta["tool_calls"].([]any); ok {
+					call := calls[0].(map[string]any)
+					function := call["function"].(map[string]any)
+					writeMessagesFrame(w, "content_block_start", map[string]any{"index": 1, "content_block": map[string]any{"type": "tool_use", "id": call["id"], "name": function["name"], "input": map[string]any{}}})
+					writeMessagesFrame(w, "content_block_delta", map[string]any{"index": 1, "delta": map[string]any{"type": "input_json_delta", "partial_json": function["arguments"]}})
+					reason = "tool_use"
+				} else {
+					writeMessagesFrame(w, "content_block_start", map[string]any{"index": 1, "content_block": map[string]any{"type": "text", "text": delta["content"]}})
+				}
+				writeMessagesFrame(w, "content_block_stop", map[string]any{"index": 1})
+				writeMessagesFrame(w, "message_delta", map[string]any{"delta": map[string]any{"stop_reason": reason}, "usage": map[string]int{"output_tokens": 17}})
+				writeMessagesFrame(w, "message_stop", nil)
+				return
+			}
 			data, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": delta, "finish_reason": finish}}})
 			fmt.Fprintf(w, "data: %s\n\n", data)
 		}
@@ -102,6 +169,9 @@ func TestDeepSeekThinkingToolsRestartAndCompaction(t *testing.T) {
 	}))
 	defer provider.Close()
 	config.Provider.BaseURL = provider.URL
+	if messagesRoute {
+		config.Provider.BaseURL += "/anthropic"
+	}
 	assembly, err := composition.Open(ctx, config)
 	if err != nil {
 		t.Fatal(err)
@@ -120,6 +190,9 @@ func TestDeepSeekThinkingToolsRestartAndCompaction(t *testing.T) {
 		sink := &testkit.RecordingSink{}
 		result, err := assembly.Service().RunTurn(ctx, application.RunTurnRequest{SessionID: created.SessionID, RequestID: domain.RunTurnRequestID(id), Input: strings.Repeat("user fixture input ", 45), Sink: sink})
 		if err != nil || result.Status != domain.TurnStatusCompleted {
+			for cause := errors.Unwrap(err); cause != nil; cause = errors.Unwrap(cause) {
+				t.Logf("failure cause: %v", cause)
+			}
 			t.Fatalf("RunTurn %s: %v (%s)", id, err, result.Status)
 		}
 		for _, event := range sink.Delivered() {
@@ -175,7 +248,15 @@ func TestDeepSeekThinkingToolsRestartAndCompaction(t *testing.T) {
 	var expected []string
 	for _, record := range records {
 		if event, ok := record.Event.(domain.AssistantMessageCompleted); ok && record.Sequence > compacted.ThroughSequence && event.TurnID != result.TurnID {
-			expected = append(expected, event.ProviderState.ReasoningContent)
+			if messagesRoute {
+				var reasoning strings.Builder
+				for _, b := range event.ProviderState.MessagesContent {
+					reasoning.WriteString(b.Thinking)
+				}
+				expected = append(expected, reasoning.String())
+			} else {
+				expected = append(expected, event.ProviderState.ReasoningContent)
+			}
 		}
 	}
 	mu.Lock()
@@ -216,10 +297,25 @@ func TestDeepSeekThinkingToolsRestartAndCompaction(t *testing.T) {
 	}
 }
 
+func writeMessagesFrame(w http.ResponseWriter, typ string, fields map[string]any) {
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	fields["type"] = typ
+	encoded, _ := json.Marshal(fields)
+	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", typ, encoded)
+}
+
 func TestDeepSeekConfigValidation(t *testing.T) {
+	for _, kind := range []string{"deepseek", "deepseek-messages"} {
+		t.Run(kind, func(t *testing.T) { testDeepSeekConfigValidation(t, kind) })
+	}
+}
+
+func testDeepSeekConfigValidation(t *testing.T, kind string) {
 	for _, effort := range []string{"", "low", "high", "max"} {
 		config := validConfig(t)
-		config.Provider.AdapterKind = "deepseek"
+		config.Provider.AdapterKind = kind
 		config.Provider.ThinkingMode = "enabled"
 		config.Provider.ReasoningEffort = effort
 		if err := config.Validate(); err != nil {
@@ -228,14 +324,14 @@ func TestDeepSeekConfigValidation(t *testing.T) {
 	}
 	for _, effort := range []string{"none", "medium", "xhigh"} {
 		config := validConfig(t)
-		config.Provider.AdapterKind = "deepseek"
+		config.Provider.AdapterKind = kind
 		config.Context.SummaryReasoningEffort = effort
 		if err := config.Validate(); err == nil {
 			t.Fatal("unsupported summary effort accepted")
 		}
 	}
 	config := validConfig(t)
-	config.Provider.AdapterKind = "deepseek"
+	config.Provider.AdapterKind = kind
 	config.Provider.ThinkingMode = "disabled"
 	if err := config.Validate(); err == nil {
 		t.Fatal("thinking replay may not be silently disabled")

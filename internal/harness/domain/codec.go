@@ -154,7 +154,7 @@ func marshalEvent(event Event) (json.RawMessage, string, error) {
 		}
 		return marshalEventData(event, EventAssistantMessageStarted)
 	case AssistantMessageCompleted:
-		if err := validateProviderState(event.ProviderState, CodeInvalidEvent); err != nil {
+		if err := validateProviderProjection(event.ProviderState, event.Text, event.ToolCalls, CodeInvalidEvent); err != nil {
 			return nil, "", err
 		}
 		if err := validateAssistantMessageIDs(event.TurnID, event.ItemID); err != nil {
@@ -856,7 +856,7 @@ func validateModelRequestBody(
 	default:
 		return domainError(code, "model request reasoning effort is invalid")
 	}
-	if thinkingMode != "" && reasoningEffort != "" && adapterFamily != DeepSeekThinkingV1 {
+	if thinkingMode != "" && reasoningEffort != "" && adapterFamily != DeepSeekThinkingV1 && adapterFamily != DeepSeekMessagesV1 {
 		return domainError(code, "model request thinking mode conflicts with reasoning effort")
 	}
 	if err := validateModelPromptMessages(messages, code); err != nil {
@@ -873,7 +873,7 @@ func validateModelPromptMessages(messages []ModelPromptMessage, code ErrorCode) 
 		if message.ProviderState != nil && message.Role != PromptRoleAssistant {
 			return domainError(code, "provider state requires assistant role")
 		}
-		if err := validateProviderState(message.ProviderState, code); err != nil {
+		if err := validateProviderProjection(message.ProviderState, message.Text, message.ToolCalls, code); err != nil {
 			return err
 		}
 		if !utf8.ValidString(message.Text) {

@@ -124,7 +124,7 @@ func bindAssemblyFlags(flags *flag.FlagSet, config *composition.Config, policyMo
 	flags.StringVar(&config.Provider.APIKeyEnv, "api-key-env", "OCH_API_KEY", "environment variable holding the provider API key")
 	flags.BoolVar(&config.Provider.IncludeUsage, "provider-include-usage", false, "request provider usage data in streaming responses")
 	flags.StringVar(&config.Provider.MaxTokensField, "provider-max-tokens-field", "", "provider output-limit field: max_tokens or max_completion_tokens; empty omits it")
-	flags.StringVar(&config.Provider.AdapterKind, "provider-adapter", "", "provider adapter: openaicompat (default) or deepseek (experimental thinking replay)")
+	flags.StringVar(&config.Provider.AdapterKind, "provider-adapter", "", "provider adapter: openaicompat (default), deepseek, or deepseek-messages (experimental replay)")
 	flags.StringVar(&config.Provider.ThinkingMode, "provider-thinking-mode", "", "provider thinking mode: disabled for openaicompat, enabled for deepseek; empty uses the adapter default")
 	flags.StringVar(&config.Provider.ReasoningEffort, "provider-reasoning-effort", "", "normal response reasoning effort: none, minimal, low, medium, high, xhigh, or max; empty uses the provider default")
 	*uintFlags = assemblyUintFlags{}

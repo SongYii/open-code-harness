@@ -148,12 +148,13 @@ OpenAI 兼容流会变成统一模型流，并记录用量、限制输入输出�
 
 ### 用户能看到什么
 
-Experimental 的 `-provider-adapter deepseek` 路线可在工具续接、SQLite 重启、压缩后回传
+Experimental 的 `-provider-adapter deepseek` 和 `deepseek-messages` 路线可在工具续接、SQLite 重启、压缩后回传
 thinking 状态。默认兼容路线不变；启用前请验证备份，并使用新会话。
 
 ### 真实实现
 
-Adapter 分开拼接 reasoning，Engine 只在完成事件接受状态，Application 验证后与
+Chat Completions Adapter 分开拼接 reasoning；Messages Adapter 使用固定 SDK，保留
+原始块顺序，并在 SDK 前验证原始输入/HTTP。Engine 只在完成事件接受状态并核对正文/工具投影，Application 验证后与
 assistant 事件原子提交。Context 保留尾部状态，但不混进摘要正文。
 见[合同](provider-replay.zh-CN.md)和[证据](provider-replay-evidence.md)。
 
@@ -162,6 +163,8 @@ assistant 事件原子提交。Context 保留尾部状态，但不混进摘要�
 不能把缺失 reasoning 伪造成空值；命中 secret 形状的状态不能改写脱敏，只能拒绝。
 测试还须证明在输出前就拒绝，而不是靠最后 EOF 报错通过。四个删除/破坏防线的变异
 都使对应回归测试失败。
+Messages SDK 会修复损坏工具参数，也可能在缺少终止标记时无错 EOF；OCH 在输出前拒绝，
+不把 SDK 成功当作审计完成保证。
 
 ### 仍未完成
 

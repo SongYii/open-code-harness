@@ -44,8 +44,8 @@ func NormalizedArgv(subject Subject) ([]string, error) {
 	if subject.Provider.Lane == ProviderLaneFixture {
 		argv = append(argv, "-provider-allow-insecure-loopback")
 	}
-	if subject.Provider.AdapterKind == "deepseek" {
-		argv = append(argv, "-provider-adapter", "deepseek")
+	if subject.Provider.AdapterKind == "deepseek" || subject.Provider.AdapterKind == "deepseek-messages" {
+		argv = append(argv, "-provider-adapter", subject.Provider.AdapterKind)
 	}
 	if subject.Provider.IncludeUsage {
 		argv = append(argv, "-provider-include-usage")

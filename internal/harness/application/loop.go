@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
@@ -735,7 +736,18 @@ func (service *Service) acceptProviderState(state *domain.ProviderState) bool {
 		return state == nil
 	}
 	if state == nil {
-		return identity.AdapterFamily != domain.DeepSeekThinkingV1
+		return identity.AdapterFamily != domain.DeepSeekThinkingV1 && identity.AdapterFamily != domain.DeepSeekMessagesV1
+	}
+	var visible, thinking strings.Builder
+	for _, block := range state.MessagesContent {
+		visible.WriteString(block.Text)
+		thinking.WriteString(block.Thinking)
+		if redact.Text(block.Text) != block.Text || redact.Text(block.Thinking) != block.Thinking {
+			return false
+		}
+	}
+	if redact.Text(visible.String()) != visible.String() || redact.Text(thinking.String()) != thinking.String() {
+		return false
 	}
 	return domain.ValidateProviderState(state) == nil && state.Protocol == identity.AdapterFamily &&
 		state.ModelID == identity.ModelID && state.EndpointID == identity.EndpointID &&

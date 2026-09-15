@@ -1,6 +1,7 @@
 package application
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -14,7 +15,7 @@ func TestProviderStateSurvivesLegacyProjectionButNotSummaryRendering(t *testing.
 	event := domain.AssistantMessageCompleted{TurnID: "old", ItemID: "item", Text: "visible", ProviderState: state}
 	records := []domain.RecordedEvent{{Event: event}}
 	messages := projectPriorTurns(records, "current")
-	if len(messages) != 1 || messages[0].ProviderState == nil || *messages[0].ProviderState != *state || messages[0].ProviderState == state {
+	if len(messages) != 1 || messages[0].ProviderState == nil || !reflect.DeepEqual(messages[0].ProviderState, state) || messages[0].ProviderState == state {
 		t.Fatal("prior-turn projection dropped/shared state")
 	}
 	var b strings.Builder
@@ -31,7 +32,7 @@ func TestProviderStateSurvivesLegacyProjectionButNotSummaryRendering(t *testing.
 	event.ToolCalls = []domain.ToolCallOffer{{ID: "call", Name: "read_file", Arguments: "{}"}}
 	projection := &turnProjection{}
 	projection.applyRecords([]domain.RecordedEvent{{Event: event}})
-	if len(projection.messages) != 1 || projection.messages[0].ProviderState == nil || *projection.messages[0].ProviderState != *state {
+	if len(projection.messages) != 1 || projection.messages[0].ProviderState == nil || !reflect.DeepEqual(projection.messages[0].ProviderState, state) {
 		t.Fatal("mid-turn projection dropped state")
 	}
 }

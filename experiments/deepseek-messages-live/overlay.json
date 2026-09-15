@@ -1,0 +1,5 @@
+{
+  "Replace": {
+    "internal/harness/adapters/anthropic/live_probe_test.go": "experiments/deepseek-messages-live/live_probe_test.go"
+  }
+}

@@ -23,7 +23,7 @@ import (
 // fixtures, shell history, and process listings; the key is read from the
 // named environment variable at Open, and never stored on Config.
 type Provider struct {
-	// AdapterKind is empty/openaicompat (legacy) or deepseek (experimental
+	// AdapterKind is empty/openaicompat (legacy), deepseek or deepseek-messages (experimental
 	// thinking replay). Switching routes does not migrate existing history.
 	AdapterKind    string
 	BaseURL        string
@@ -332,10 +332,13 @@ func (config Config) Validate() error {
 	default:
 		return fmt.Errorf("%w: Provider.MaxTokensField must be empty, %q, or %q", errInvalidConfig, "max_tokens", "max_completion_tokens")
 	}
-	if config.Provider.AdapterKind != "" && config.Provider.AdapterKind != "openaicompat" && config.Provider.AdapterKind != "deepseek" {
+	if config.Provider.AdapterKind != "" && config.Provider.AdapterKind != "openaicompat" && config.Provider.AdapterKind != "deepseek" && config.Provider.AdapterKind != "deepseek-messages" {
 		return fmt.Errorf("%w: Provider.AdapterKind is not supported", errInvalidConfig)
 	}
-	deepSeek := config.Provider.AdapterKind == "deepseek"
+	deepSeek := config.Provider.AdapterKind == "deepseek" || config.Provider.AdapterKind == "deepseek-messages"
+	if config.Provider.AdapterKind == "deepseek-messages" && (config.Provider.IncludeUsage || config.Provider.MaxTokensField != "" && config.Provider.MaxTokensField != "max_tokens") {
+		return fmt.Errorf("%w: Messages uses native usage and max_tokens, not Chat Completions hints", errInvalidConfig)
+	}
 	if deepSeek {
 		if config.Provider.ThinkingMode != "" && config.Provider.ThinkingMode != "enabled" {
 			return fmt.Errorf("%w: DeepSeek ThinkingMode must be empty or enabled", errInvalidConfig)

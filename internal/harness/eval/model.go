@@ -665,13 +665,13 @@ func (subject Subject) Validate() error {
 	if err := subject.Context.validate(); err != nil {
 		return err
 	}
-	if subject.Provider.AdapterKind == "deepseek" {
+	if subject.Provider.AdapterKind == "deepseek" || subject.Provider.AdapterKind == "deepseek-messages" {
 		effort := subject.Context.SummaryReasoningEffort
 		if effort != "" && effort != "low" && effort != "high" && effort != "max" {
 			return fmt.Errorf("%w: DeepSeek summary reasoning effort must be empty, low, high, or max", errInvalidDocument)
 		}
 	}
-	if subject.Provider.AdapterKind != "deepseek" && subject.Provider.ThinkingMode != "" && subject.Context.SummaryReasoningEffort != "" {
+	if subject.Provider.AdapterKind != "deepseek" && subject.Provider.AdapterKind != "deepseek-messages" && subject.Provider.ThinkingMode != "" && subject.Context.SummaryReasoningEffort != "" {
 		return fmt.Errorf("%w: provider.thinkingMode cannot be combined with context.summaryReasoningEffort", errInvalidDocument)
 	}
 	if err := subject.Policy.validate(); err != nil {
@@ -718,7 +718,7 @@ func (provider SubjectProvider) validate() error {
 	if !hasText(provider.AdapterKind) {
 		return fmt.Errorf("%w: provider.adapterKind is required", errInvalidDocument)
 	}
-	if provider.AdapterKind != "openaicompat" && provider.AdapterKind != "deepseek" {
+	if provider.AdapterKind != "openaicompat" && provider.AdapterKind != "deepseek" && provider.AdapterKind != "deepseek-messages" {
 		return fmt.Errorf("%w: provider.adapterKind is not supported", errInvalidDocument)
 	}
 	if err := validateNormalizedEndpoint(provider.NormalizedEndpoint); err != nil {
@@ -738,7 +738,10 @@ func (provider SubjectProvider) validate() error {
 	default:
 		return fmt.Errorf("%w: provider.maxTokensField must be empty, %q, or %q", errInvalidDocument, "max_tokens", "max_completion_tokens")
 	}
-	deepSeek := provider.AdapterKind == "deepseek"
+	deepSeek := provider.AdapterKind == "deepseek" || provider.AdapterKind == "deepseek-messages"
+	if provider.AdapterKind == "deepseek-messages" && (provider.IncludeUsage || provider.MaxTokensField != "" && provider.MaxTokensField != "max_tokens") {
+		return fmt.Errorf("%w: Messages does not support Chat Completions wire hints", errInvalidDocument)
+	}
 	if deepSeek && (provider.ThinkingMode != "" && provider.ThinkingMode != "enabled" || provider.ReasoningEffort != "" && provider.ReasoningEffort != "low" && provider.ReasoningEffort != "high" && provider.ReasoningEffort != "max") {
 		return fmt.Errorf("%w: invalid DeepSeek thinking controls", errInvalidDocument)
 	}
