@@ -6,6 +6,89 @@ provider certification. The dated live addendum below is bounded acceptance
 evidence, not a stable-release claim. No changes to OTel or the localexec
 backend were made for this slice.
 
+## Process-kill persistence boundaries (2026-09-15)
+
+`TestMessagesProcessCrashRecovery` adds six real process-death boundaries, each
+with a control that releases the identical SQLite hook and must finish normally:
+
+| Boundary | Required durable state after death |
+| --- | --- |
+| Complete response, before assistant completion COMMIT | Request exists; no assistant completion or tool execution |
+| Tool start COMMIT, before execution | Offer and tool start exist; no filesystem effect |
+| Filesystem effect, before tool-result COMMIT | Real `write_file` effect exists; no tool completion |
+| Summary checkpoint before COMMIT | Compaction start exists; no completed checkpoint |
+| Summary checkpoint after COMMIT, before acknowledgement | Exactly one completed checkpoint survives |
+| Turn COMMIT before audit export | Completed turn survives; replica remains at its verified baseline |
+
+The parent launches the actual test executable as a child. Each child builds
+real Composition, Messages HTTP/SSE, Application, workspace tools, Context Engine,
+SQLite and Runtime Host. It announces a commit-hook checkpoint and blocks until
+the parent releases it or calls `Process.Kill` (SIGKILL on Unix). Neither deferred
+Close nor cancellation substitutes for death. Before-publish controls also verify
+the very next published batch contains the intended event, excluding an accidental
+stop at an unrelated append. Only existing SQLite conformance hooks are used;
+there is no new production seam or public API.
+
+After each kill, a read-only WAL reader checks the committed stream and actual
+filesystem effect. An early successor is refused while the dead child's lease
+is live. Later takeover waits for **natural expiry** of the default 30s lease;
+there is no lease-row editing or synthetic clock. Recovery preserves the committed
+prefix, closes only unfinished work and leaves no active turn/compaction. Repeating
+the original request ID returns its durable terminal result without contacting the
+now-dead provider. Interrupted results retain the `process_crash` cancellation
+error; completed results remain successful.
+
+For the ambiguous-effect window, file identity and modification time must remain
+unchanged after recovery/retry. Recovery does not synthesize a tool success/failure
+or execute it again. It records `tool.call.interrupted` with the original CallID,
+then `turn.interrupted`, both `process_crash`. This is deliberately **not an
+exactly-once guarantee** for arbitrary external effects.
+
+Two production exporter passes and independent cold replica verification must
+reproduce every canonical event. The audit-lag fixture leaves periodic export
+disabled after a real baseline export; it does not kill within the exporter's
+file-publication state machine. A second restart must append no further recovery
+facts, and the successor must still commit a fresh session.
+
+The first run exposed production defects:
+
+- Recovery always emitted an assistant interruption, even for an active tool.
+  Both killed-tool cases produced histories rejected by Domain replay. Recovery
+  now selects the terminal by Item kind and obtains CallID from the matching
+  canonical start. Existing assistant recovery bytes, deterministic append IDs
+  and timestamps are unchanged.
+- Request reconstruction rejected ordinary `context.prepared` evidence and the
+  host's `process_crash` reason. It now recognizes preparation at the correct
+  assistant boundary, checks matching request decision/attempt metadata and
+  accepts the existing recovery reason. Unknown/misplaced events still fail
+  closed. No new event type, schema migration or error category was introduced.
+
+The six kill cases, six completion controls and six recovery checks passed with
+the race detector. Focused Runtime/Application regressions passed. Replacing each
+fixed production file with its pre-fix version through private Go overlays makes
+the corresponding tests fail at the intended assertions; production files are
+not edited by these negative checks. The context negative fixtures explicitly
+validate event codecs first, preventing malformed messages from making lifecycle
+checks pass for an unrelated reason. Verification results:
+
+- `go test ./...`: passed, including localexec on this host.
+- `go vet ./...`: passed.
+- The full kill/control/recovery matrix passed two repeated race runs
+  (`-count=2`). After adding exact SIGKILL and completed-request cold replay
+  assertions, the final matrix passed with race again.
+- `go test -race ./internal/harness/runtime ./internal/harness/application
+  ./internal/harness/composition -run 'Test(Reconcile|Reconstruct|MessagesProcessCrashRecovery)' -count=1`:
+  passed.
+- Documentation/architecture guards and `git diff --check`: passed.
+
+Limits: killing **during reconciliation**, mid-turn compaction/overflow-retry
+request reconstruction, export-publication substeps, power-loss/disk corruption,
+non-cooperative drivers and arbitrary external-tool reconciliation remain separate
+obligations. This fix does not rewrite already malformed historical recovery
+batches or their audit chains. No remote calls, real credentials, paid budget, OTel
+changes or stable SDK claims are involved. The earlier uncaptured live failure
+remains unexplained.
+
 ## In-flight Messages lifecycle fault matrix (2026-09-15)
 
 `TestMessagesInFlightLifecycle` runs eight local Composition scenarios: ordinary

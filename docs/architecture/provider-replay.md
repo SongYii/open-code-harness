@@ -160,6 +160,18 @@ fencing after SQLite lease expiry. It checks late-output isolation, canceled
 requests, durable termination/recovery and successor ownership. This does not
 replace process-kill tests at persistence boundaries; see the evidence ledger.
 
+Six real process-kill boundaries and matching completion controls now cover
+pre-commit assistant completion, tool execution before/after its side effect,
+summary checkpoint COMMIT before/after, and canonical COMMIT before audit export.
+Natural-expiry takeover, durable request retry, repeated restart and cold audit
+comparison passed with race. The tests exposed and fixed recovery emitting an
+assistant interruption for a tool Item, and request reconstruction rejecting
+`context.prepared` / `process_crash`. An ambiguous tool result is interrupted,
+never automatically re-executed; external exactly-once effects are not promised.
+Kill-during-reconciliation, mid-turn compaction/overflow-retry reconstruction and
+export-publication substeps remain separate gates. See the
+[evidence ledger](provider-replay-evidence.md) for scope and negative controls.
+
 ## DeepSeek Messages route (2026-09-14)
 
 Select `-provider-adapter deepseek-messages` and

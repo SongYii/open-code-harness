@@ -109,6 +109,15 @@ Messages 还通过了 8 个本地在途生命周期场景：普通对话和手�
 取消、宿主关闭与 SQLite 租约到期后的真实心跳失租。验证迟到输出隔离、请求取消、持久
 终止/恢复及继任者租约保护；这不能替代持久化边界逐点杀进程验证。详见证据台账。
 
+后续已补六个真实进程强杀边界及同切点放行对照，覆盖模型完成提交前、工具
+执行前及副作用后、摘要 checkpoint 提交前后、规范提交后审计尚未导出。
+自然租约过期后的恢复、原请求 ID 重试、重复重启和冷审计比对已通过 race。
+实测同时修复工具 Item 被错误恢复为 assistant 中断，以及持久请求重建器
+不识别 `context.prepared` / `process_crash` 的问题。工具结果未知时只记录
+中断，不自动重做；这不承诺外部副作用 exactly-once。恢复期间再次强杀、
+回合内压缩/overflow retry 的请求重建及导出发布子步骤仍需独立验证。
+完整范围和反向验证见[证据台账](provider-replay-evidence.md)。
+
 ## DeepSeek Messages 路线（2026-09-14）
 
 使用 `-provider-adapter deepseek-messages`、

@@ -47,6 +47,18 @@ namespace. An active Item referencing a different turn refuses; a missing
 TurnStarted lineage refuses. No automatic model or tool replay of any
 kind.
 
+An active Tool Item instead closes with `tool.call.interrupted` followed by
+`turn.interrupted`, both `process_crash`. Its CallID comes from the matching
+canonical `tool.call.started`, not the bounded aggregate. A committed start
+does not prove whether the side effect happened; recovery never invents a tool
+result or automatically executes it again. This is not external exactly-once
+execution. Existing malformed histories are not rewritten by recovery.
+
+Six real process-kill boundaries (with release controls, natural lease expiry,
+durable request retry and cold audit checks) are recorded in the
+[provider replay evidence ledger](provider-replay-evidence.md). This does not
+replace the separate kill-during-reconciliation gate below.
+
 ## Heartbeat and fencing reaction
 
 Renewal runs on a bounded interval with a deadline strictly shorter than

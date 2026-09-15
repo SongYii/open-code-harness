@@ -60,6 +60,7 @@ type requestWalk struct {
 	seenItems        map[domain.ItemID]struct{}
 	sawRequest       bool
 	sawUsage         bool
+	preparation      *domain.ContextPreparedRecorded
 	sawPolicy        bool
 	sawApprovalReq   bool
 	sawApprovalRes   bool
@@ -135,6 +136,15 @@ func (walk *requestWalk) step(records []domain.RecordedEvent, index int) (int, e
 
 func (walk *requestWalk) stepOpenAssistant(records []domain.RecordedEvent, index int) (int, error) {
 	switch event := records[index].Event.(type) {
+	case domain.ContextPreparedRecorded:
+		if err := walk.matchOpenItem(event.TurnID, event.ItemID); err != nil {
+			return 0, fmt.Errorf("context preparation does not match open assistant")
+		}
+		if walk.preparation != nil || walk.sawRequest || walk.sawUsage {
+			return 0, fmt.Errorf("duplicate or misplaced context preparation")
+		}
+		walk.preparation = &event
+		return index + 1, nil
 	case domain.ModelRequestRecorded:
 		if err := walk.matchOpenItem(event.TurnID, event.ItemID); err != nil {
 			return 0, fmt.Errorf("model request identity does not match open assistant")
@@ -144,6 +154,9 @@ func (walk *requestWalk) stepOpenAssistant(records []domain.RecordedEvent, index
 		}
 		if walk.sawUsage {
 			return 0, fmt.Errorf("model request follows usage on the same item")
+		}
+		if prepared := walk.preparation; prepared != nil && (event.ContextDecisionID != prepared.ContextDecisionID || event.AttemptIndex != prepared.AttemptIndex) {
+			return 0, fmt.Errorf("model request does not match context preparation")
 		}
 		walk.sawRequest = true
 		return index + 1, nil
@@ -364,6 +377,7 @@ func (walk *requestWalk) closeItem() {
 	walk.openItem = ""
 	walk.sawRequest = false
 	walk.sawUsage = false
+	walk.preparation = nil
 	walk.resetToolCompanions()
 }
 
@@ -451,7 +465,7 @@ func allowedFailureCode(code string) bool {
 
 func allowedInterruptionCode(code string) bool {
 	switch code {
-	case domain.InterruptionCallerCanceled, domain.InterruptionDeliveryFailed, domain.InterruptionRequestAbandoned:
+	case domain.InterruptionCallerCanceled, domain.InterruptionDeliveryFailed, domain.InterruptionRequestAbandoned, "process_crash":
 		return true
 	default:
 		return false

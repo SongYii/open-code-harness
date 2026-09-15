@@ -41,6 +41,16 @@ Application 服务与 SQLite 存储之上的唯一 Runtime Host：带确定性�
 Item 的遗留运行 Turn 仅以哨兵关闭 turn。活动 Item 引用其他 Turn
 拒绝；缺失 TurnStarted 血统拒绝。绝不自动重放模型或工具。
 
+活动 Tool Item 则以 `tool.call.interrupted`、`turn.interrupted` 依次关闭，
+两者均使用 `process_crash`。CallID 从匹配的规范 `tool.call.started` 中取回，
+不是从有界聚合猜测。已提交 start 不代表副作用已经发生或尚未发生；恢复
+不伪造工具结果，也不自动重做。这不是外部副作用的 exactly-once 承诺，
+也不会改写已经损坏的历史恢复批次。
+
+六个真实进程强杀切点已覆盖放行对照、自然租约过期、持久请求重试与冷审计
+验证，详见[回放证据台账](provider-replay-evidence.md)。它们不替代下文单列的
+“调和期间再次杀进程”门禁。
+
 ## 心跳与 fencing 反应
 
 续约按有界间隔运行，截止期严格短于租约期限（启动时校验）。被
