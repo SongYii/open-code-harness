@@ -6,6 +6,58 @@ provider certification. The dated live addendum below is bounded acceptance
 evidence, not a stable-release claim. No changes to OTel or the localexec
 backend were made for this slice.
 
+## In-flight Messages lifecycle fault matrix (2026-09-15)
+
+`TestMessagesInFlightLifecycle` runs eight local Composition scenarios: ordinary
+turn and manual summary, each with successful completion, caller cancellation,
+assembly Close and actual lease-expiry/heartbeat fencing. It uses real `Open`,
+the Messages adapter and HTTP client, Application, Context Engine, SQLite and
+Runtime Host. No production model/host replacement, public injection API,
+OTel changes, credentials or paid calls are involved.
+
+The loopback server flushes valid thinking/signature/text blocks (and a valid
+`list_dir` offer for the turn case), but withholds the terminal frames. Tests
+require HTTP cancellation and operation termination **before** releasing those
+frames. Close must also finish while the server is still waiting. Only then
+does the server attempt the late completion. Assertions cover:
+
+- No partial/late text or hidden canaries enter canonical events or the runtime
+  text sink; no assistant completion, tool start or checkpoint may be committed.
+- Caller cancellation leaves the host ready and preserves a durable interrupted
+  turn. Assembly Close/lease loss close `Done` and reject cached Service/Store
+  calls; old facades stay rejected after a successor starts.
+- The fixture expires only its temporary database's lease using the existing
+  SQLite test seam. The **real heartbeat** detects lost ownership; the test does
+  not directly invoke `Abandon` or the fencing reaction.
+- A new host recovers the unfinished turn/summary using `process_crash` or
+  `runtime_recovered`. Closing the old host reports `writer_fenced`, does not
+  release the successor's lease, and the successor can commit a new session.
+- The same withheld responses complete successfully in positive controls: one
+  real workspace tool execution or one valid summary checkpoint. Exact HTTP
+  request counts exclude hidden retries. Interrupted histories pass canonical
+  replay, with no active work remaining after cleanup/recovery.
+
+All eight cases passed with `-race`; the initial matrix also passed two repeated
+race runs. After strengthening the durable terminal-event assertions, the full
+matrix passed with race again. Root `go test ./...`, `go vet ./...`, the separate
+example module, documentation/architecture checks and whitespace checks passed.
+
+Two production-source mutations were tested only through private temporary Go
+overlays, not by editing production files. Removing `Host.Admit`'s host-cancel
+subscription makes the close case fail waiting for HTTP cancellation before
+server release. Removing `ReleaseLease`'s runtime/token ownership predicate makes
+the lease-loss case fail because stale Close returns success instead of fencing.
+Both failures hit the intended assertions, not compilation errors; restored
+source passes. This second change adds tests/evidence only; the Messages route
+was checkpointed separately as `d4ada6e`.
+
+Limits: the server attempts late frames after client cancellation; this does not
+claim canceled clients consumed those frames. These are local stream/lease
+integration checks, not process-kill injection at every persistence boundary,
+non-cooperative driver shutdown, an HTTP/2 or TLS fault matrix, general leak
+certification, or provider reliability measurements. Those remain separate
+evidence obligations; the earlier uncaptured live failure is still unexplained.
+
 ## Nonempty retained-tail live gate passed (2026-09-15)
 
 After the operator re-supplied the private key and authorized continuation within

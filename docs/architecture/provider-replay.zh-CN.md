@@ -105,6 +105,10 @@ ACP、runtime 正文、展示 transcript、metrics 和 trace attributes 不应�
 下一步是独立审查 Claude 的模型级请求前缀约束，并在早先流失败复现时诊断。
 公开 Provider SDK 仍延期；转 stable 需要真实外部消费者，仓库自写 example 不算。
 
+Messages 还通过了 8 个本地在途生命周期场景：普通对话和手动摘要各覆盖正常完成、调用方
+取消、宿主关闭与 SQLite 租约到期后的真实心跳失租。验证迟到输出隔离、请求取消、持久
+终止/恢复及继任者租约保护；这不能替代持久化边界逐点杀进程验证。详见证据台账。
+
 ## DeepSeek Messages 路线（2026-09-14）
 
 使用 `-provider-adapter deepseek-messages`、

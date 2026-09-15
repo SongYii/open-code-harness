@@ -154,6 +154,12 @@ and investigate the earlier stream failure if it recurs. Neither fixtures nor
 this bounded live run certify general service reliability. A public Provider SDK remains deferred;
 stable promotion still requires an actual external consumer, not our own example.
 
+The Messages route also has an eight-case local in-flight lifecycle matrix for
+turns/manual summaries: success, caller cancellation, Close and real heartbeat
+fencing after SQLite lease expiry. It checks late-output isolation, canceled
+requests, durable termination/recovery and successor ownership. This does not
+replace process-kill tests at persistence boundaries; see the evidence ledger.
+
 ## DeepSeek Messages route (2026-09-14)
 
 Select `-provider-adapter deepseek-messages` and

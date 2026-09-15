@@ -178,7 +178,7 @@ without echoing provider bodies; this codec does not yet provide that taxonomy.
 | Durable replay | Versioned payload, strict variant codec, clones, legacy bytes, visible/tool consistency, atomic admission | `deepseek_messages_v1` implemented; native Claude-specific contract still separate |
 | Native request/HTTP adapter | System mapping, grouped results, binding, auth/redirect/errors, cancellation/deadlines | DeepSeek implementation and local tests complete; Claude prefix validation not implemented |
 | Context semantics | Wire accounting, pruning/instruction/tool changes and compaction | DeepSeek existing full-turn/summary path fixture-verified; Claude prefix-preserving transforms still open |
-| Production wiring | Composition/CLI/eval identity, parity, tools, SQLite, audit and teardown | DeepSeek selectable experimental route; tool/restart/compaction/audit fixtures pass; no route-specific lease-loss fault campaign |
+| Production wiring | Composition/CLI/eval identity, parity, tools, SQLite, audit and teardown | DeepSeek experimental route; tools/restart/compaction/audit plus in-flight turn/manual-summary cancellation, close and real lease-expiry fencing matrix pass; process-kill/commit-boundary campaign remains open |
 | Live validation | Named endpoint/model, controlled budget, explicit permission, privately supplied credentials | DeepSeek Messages follow-up passed: eight new bounded calls, nonempty signed tail across summary/reopen, exact wire replay and audit; 20 calls total, first-run uncaptured failure still unexplained |
 | Public Provider SDK | Two complete real protocols, actual external consumer, reviewed stability level | Deferred |
 
