@@ -71,7 +71,7 @@ func (identity RequestIdentity) Validate() error {
 	if identity.ThinkingMode != "" && identity.ThinkingMode != "enabled" && identity.ThinkingMode != "disabled" {
 		return errInvalidRequestIdentity
 	}
-	if !IsReasoningEffort(identity.ReasoningEffort) || identity.ThinkingMode != "" && identity.ReasoningEffort != "" && identity.AdapterFamily != domain.DeepSeekThinkingV1 {
+	if !IsReasoningEffort(identity.ReasoningEffort) || identity.ThinkingMode != "" && identity.ReasoningEffort != "" && identity.AdapterFamily != domain.DeepSeekThinkingV1 && identity.AdapterFamily != domain.DeepSeekMessagesV1 {
 		return errInvalidRequestIdentity
 	}
 	return nil

@@ -36,9 +36,10 @@ The numbered milestone list lives in
 - Provider adapter (`adapters/openaicompat`): implemented and verified; not GA.
   Thin OpenAI-compatible Chat Completions SSE client behind `engine.Model`,
   not a vendor SDK or plugin kernel.
-  An opt-in [DeepSeek thinking replay slice](docs/architecture/provider-replay.md)
-  preserves protocol state across tools, restart and compaction; experimental,
-  fixture-verified, not a public Provider SDK or live-provider certification.
+  Opt-in [DeepSeek Chat Completions and Messages replay routes](docs/architecture/provider-replay.md)
+  preserve protocol state across tools, restart and compaction; experimental,
+  fixture-verified with bounded Messages live evidence, not a public Provider SDK
+  or general live-provider certification.
 - Tool Runtime, Policy, and five builtin workspace tools: implemented and
   verified; not GA. Application-owned Step loop and a pure Policy Decide
   table behind ports; not a plugin kernel. Every destructive file operation

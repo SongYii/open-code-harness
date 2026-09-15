@@ -35,6 +35,7 @@ Runtime 可以依赖 SQLite，因为 Runtime Host 负责规范 Store 的租约�
 | `telemetry` | 固定字段、只含元数据的 Trace 端口 | 无 |
 | `application` | Turn/Step 编排和事务边界 | 上述服务包、`domain` 与 `telemetry` |
 | `adapters/otel` | 有上限的 OTLP/HTTP 导出，唯一可引用 OTel SDK 的包 | `telemetry` |
+| `adapters/anthropic` | experimental `deepseek-messages` Provider；SDK 原生请求、受限流校验与回放准入 | `domain`、`engine`、`redact`；Anthropic SDK 仅限此边界 |
 | `adapters/*` | ACP、Provider、文件、进程、MCP、存储等外部 I/O | 各自明确列出的端口；Adapter 之间禁止互相导入 |
 | `runtime` | 租约、恢复、心跳、Exporter 生命周期 | `application`、`domain`、仅 `adapters/sqlite` 例外 |
 | `transcript` | Session 只读投影/导出 | `application`、`domain` |

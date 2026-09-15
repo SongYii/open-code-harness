@@ -1,6 +1,6 @@
-# Provider 协议状态回放：DeepSeek 首个切片
+# Provider 协议状态回放：DeepSeek Chat Completions 与 Messages
 
-状态：已实现内部切片，experimental，非 GA。日期：2026-09-13。
+状态：已实现内部路线，experimental，非 GA。更新：2026-09-14。
 英文[合同](provider-replay.md)是规范正文；本文是同一合同的中文阅读版。
 这是 [Provider adapter](provider-adapter.md) 与[启动扩展架构](startup-extensibility.zh-CN.md)
 的增量，不是公开 Provider SDK。
@@ -45,7 +45,7 @@ Eval digest 绑定 adapter 选择；ACP argv 与 in-process 配置一致。
 6. 下次带 tools 的请求回传每条保留 assistant 的 reasoning。缺失、未知版本、
    不同模型/endpoint 的状态在 HTTP 前拒绝；不伪造空 reasoning，也不剥字段切换路线。
 
-`ProviderState` 仅含 `protocol`、`modelID`、`endpointID`、`reasoningContent`。
+Chat Completions 路线的 `ProviderState` 仅含 `protocol`、`modelID`、`endpointID`、`reasoningContent`。
 没有任意 JSON bag、事件指针、执行能力或新公开 SDK 类型。路由绑定不发送给模型。
 明确返回的空 reasoning 有合法表示；字段缺失不等于空字符串。
 
@@ -97,10 +97,68 @@ ACP、runtime 正文、展示 transcript、metrics 和 trace attributes 不应�
 工作区工具、滚动摘要与两次关闭重开；压缩后逐项核对回传集合等于 checkpoint 覆盖之外的
 已提交历史，同时断言摘要与展示导出隔离。最终命令结果见[证据台账](provider-replay-evidence.md)。
 冷一致性 audit 导出经独立验证后，与 SQLite 规范历史逐事件比较，包含携带协议状态的请求。
-没有调用付费或线上 DeepSeek；fixture 只证明 harness 行为，不证明远端当前接受性、
-tokenizer、延迟或模型质量。
+2026-09-14 的受限 Messages 线上调用只取得部分验收证据；2026-09-15 经授权续测，
+非空原始 assistant blocks 跨压缩、重开后逐字节回传、远端续接和独立审计门禁均通过。
+这仍不是通用可靠性、tokenizer、延迟或模型质量认证；首轮一次未捕获响应的流失败原因
+尚未确定，不能用本轮通过倒推其根因。Chat Completions 仍只有 fixture 证据。
 
-下一刀是 Claude native Messages，保留它自己的原始 block、signature 关联和各模型历史约束，
-不能硬塞进 `reasoningContent`。[官方依据](https://platform.claude.com/docs/en/about-claude/models/extended-thinking-models)。
-两个真实协议实现后再确定共享 replay envelope、考虑公开 Provider SDK。
-转 stable 仍需要真实外部消费者，仓库自写 example 不算。
+下一步是独立审查 Claude 的模型级请求前缀约束，并在早先流失败复现时诊断。
+公开 Provider SDK 仍延期；转 stable 需要真实外部消费者，仓库自写 example 不算。
+
+Messages 还通过了 8 个本地在途生命周期场景：普通对话和手动摘要各覆盖正常完成、调用方
+取消、宿主关闭与 SQLite 租约到期后的真实心跳失租。验证迟到输出隔离、请求取消、持久
+终止/恢复及继任者租约保护；这不能替代持久化边界逐点杀进程验证。详见证据台账。
+
+## DeepSeek Messages 路线（2026-09-14）
+
+使用 `-provider-adapter deepseek-messages`、
+`-provider-url https://api.deepseek.com/anthropic`；实际请求追加 `/v1/messages`。
+模型名、密钥环境变量、上下文/输出预算按实际配置，首次启用先验证备份并新建会话。
+Composition、CLI、eval、ACP/in-process 使用同一显式选择；默认路线不变。
+
+主模块固定 `anthropic-sdk-go v1.72.0`（MIT），复用请求类型、HTTP 执行和按 index 累积
+内容；SDK 类型禁止越过 Adapter 边界。关闭 SDK 环境凭据、自动重试和重定向，不引入其
+工具运行器或第二份历史。只接受 HTTP 200 + `text/event-stream`；错误正文不读取，直接关闭，
+带请求/响应对象的 SDK 错误被转换为固定安全分类。私有 HTTP transport 的 header/TLS 超时
+分别为 30/10 秒，响应 header 上限 64 KiB；body 单次读取空闲超时 60 秒。取消会关闭响应，
+Close 仅执行一次且失败不允许提交完成；没有后台 decoder goroutine。
+
+原始 SSE 校验保留：单行 256 KiB、event 1 MiB / 1,024 data 行、总流 8 MiB；重复字段、
+损坏 Unicode、不支持的 shape、错误生命周期和损坏工具参数在 SDK 修复之前拒绝。
+正文/thinking/signature 由 SDK 累积；仅工具原始 JSON 分片独立缓冲，因为 SDK 会修复
+损坏输入、也可能用 `{}` 哨兵重置合法分片。支持多个未结束 block 按 index 交错更新。
+必须所有 block 结束、有 `end_turn`/`tool_use` 和 `message_stop`，且响应关闭成功后才向
+Engine 输出。统计停止原因映射到已有 `stop`/`tool_calls`，不扩大旧统计事件词汇。
+
+持久化使用独立版本 `deepseek_messages_v1` 和封闭的 `messagesContent` 类型：按序保存
+`text`、`thinking`、`tool_use`。签名区分缺失与真实空串，不伪造；此路线拒绝
+`redacted_thinking`。这是 DeepSeek 兼容 profile，不代表实现 Claude 的签名/前缀绑定。
+[官方兼容表](https://api-docs.deepseek.com/guides/anthropic_api/)。
+旧 `reasoningContent` 字段仍保留但此路线必须为空；旧 Chat Completions 字节不变，
+也不能混入 `messagesContent`。
+
+每次完成最多 256 块、总内容 1 MiB、thinking/签名合计 256 KiB、单工具输入 32 KiB、
+JSON 深度 64；请求上限 5 MiB。超限失败，不截断。Domain 在命令、事件、Apply 和记录请求上
+验证封闭变体、正文投影，以及工具 ID/名称/JSON 值投影；数字不经 float64 舍入。
+数组、原始参数、签名指针均深拷贝。Engine 完成准入也检查投影；工具仍在 Application
+提交完成事件之后才执行。
+
+请求采用顶层 system、原序 assistant blocks、下一条 user 中成组的 tool results。
+缺失/异源状态、投影不一致、工具结果无匹配调用、响应模型别名都 fail closed。
+thinking 显式 enabled；effort 仅空/low/high/max，使用 `output_config.effort`。
+DeepSeek 忽略 `budget_tokens`，所以不虚构预算。始终发送 `max_tokens`；拒绝仅用于
+Chat Completions 的 include_usage/max_completion_tokens 提示。
+
+保留原有完整 Turn 切割、摘要/reset 机制；预算增加 hidden thinking/签名与 block framing，
+不重复计入正文/工具参数，不声称是原生 tokenizer。摘要和展示导出不包含 replay blocks；
+规范 SQLite、请求记录与 audit 按现有保护方式明文保存这些敏感数据。secret-shape 命中时
+拒绝而非改写，opaque 签名不解释也不脱敏；不提供通用密钥检测或加密。
+
+上文回滚限制再次适用：旧 reader 不认识此版本，不能剥字段或重写审计链。已通过本地
+工具、重启、压缩和审计 fixture，并有上述受限线上证据；没有证明通用线上可靠性/质量，
+也没有完成原生 Claude
+前缀保持策略或公开 Provider SDK 稳定性门槛。OTel 未改动。
+
+线上测试还发现并修复输入用量低估：Messages 的普通输入、缓存读取、缓存创建分别计数，
+适配器现在校验溢出后相加，形成核心要求的总输入；缓存读取仍是其子集。修复前的规范
+审计事件不回写。最后一次实测为 1,648 + 768 = 2,416 输入 token，缓存子集 768。

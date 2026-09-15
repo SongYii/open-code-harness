@@ -68,6 +68,7 @@ separately by the same test.
 | `application` | Turn/step orchestration and transaction boundaries | `agentinstructions`, `contextengine`, `domain`, `engine`, `policy`, `redact`, `telemetry`, `tools` |
 | `adapters/acp` | ACP server-side validation and event projection | `application`, `domain`, `engine`, `tools` |
 | `adapters/openaicompat` | Provider HTTP/SSE mapping | `domain`, `engine`, `redact` |
+| `adapters/anthropic` | Experimental `deepseek-messages` Provider; SDK-assisted native requests and bounded completion/replay admission | `domain`, `engine`, `redact`; Anthropic SDK confined here |
 | `adapters/workspacefs` | Workspace-confined file operations | `domain`, `tools` |
 | `adapters/localexec` | Confined subprocess execution | `domain`, `tools` |
 | `adapters/mcp` | External MCP discovery/call projection | `domain`, `tools` |

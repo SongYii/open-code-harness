@@ -1,6 +1,6 @@
-# Provider Protocol Replay — DeepSeek First Slice
+# Provider Protocol Replay — DeepSeek Chat Completions and Messages
 
-Status: implemented internal slice, experimental; not GA. Date: 2026-09-13.
+Status: implemented internal routes, experimental; not GA. Updated: 2026-09-14.
 The [Chinese reading copy](provider-replay.zh-CN.md) describes the same contract.
 This supplements [Provider adapter](provider-adapter.md) and
 [Startup extensibility](startup-extensibility.md); it does not publish a Provider SDK.
@@ -60,7 +60,7 @@ unchanged when no new state is present.
 | Context Engine | Retain state on retained assistant messages, count its wire content in estimates, and cover it together with its source event. Summary rendering never reads the field. |
 | Outgoing adapter | Replay every retained assistant's reasoning when tools are present. Missing, unknown or foreign state fails before HTTP; never invent empty reasoning or silently strip state to switch routes. |
 
-`domain.ProviderState` contains exactly `protocol`, `modelID`, `endpointID`, and
+For the Chat Completions route, `domain.ProviderState` contains exactly `protocol`, `modelID`, `endpointID`, and
 `reasoningContent`. There is no `map[string]any`, arbitrary header bag, event
 pointer, executable capability, or new public SDK type. The route binding is
 validated, not sent to the model. Empty reasoning explicitly returned by the
@@ -126,6 +126,9 @@ also not an implicit migration. No lossy migration workflow is implemented.
 
 ## Evidence and next gate
 
+The Messages route below extends this evidence; descriptions above of
+`reasoning_content`, `[DONE]`, and its four-field state apply to Chat Completions.
+
 Deterministic tests cover strict nested codec/legacy omission, null and duplicate
 fields, unknown versions, byte/role bounds, clone isolation, completion-only engine
 state, secret rejection, missing/foreign history rejection before HTTP, fragmented
@@ -138,15 +141,95 @@ Cold consistent audit export is independently verified and compared event for
 event with the canonical SQLite history, including protocol-bearing requests.
 
 Verification commands and the observed final results belong in
-[the evidence ledger](provider-replay-evidence.md). No paid/live DeepSeek call has
-been made. Local fixtures validate harness behavior, not the remote service's
-current acceptance, tokenizer, latency, or output quality.
+[the evidence ledger](provider-replay-evidence.md). The 2026-09-14 Messages run
+gave partial acceptance; the authorized 2026-09-15 follow-up passed the nonempty
+native assistant-tail gate across compaction/reopen, including exact outgoing
+blocks, remote continuation and independent audit verification. This is bounded
+acceptance, not a reliability, tokenizer or quality certification. An uncaptured
+first-run stream failure remains unexplained. Chat Completions evidence here
+remains fixture-based.
 
-Next: implement Claude native Messages as the second real protocol, preserving
-its own block/signature associations and model-specific history constraints.
-Do not route it through `reasoningContent` merely because both are called
-thinking. Exact original thinking blocks and their signatures are a separate
-contract. [Source: Claude extended thinking](https://platform.claude.com/docs/en/about-claude/models/extended-thinking-models).
-Only after two real implementations should we settle a shared replay envelope
-and consider a public Provider SDK. Stable promotion still needs an actual
-external consumer; a repository-owned example does not satisfy that gate.
+Next: separately review native Claude's model-specific request-prefix constraints
+and investigate the earlier stream failure if it recurs. Neither fixtures nor
+this bounded live run certify general service reliability. A public Provider SDK remains deferred;
+stable promotion still requires an actual external consumer, not our own example.
+
+The Messages route also has an eight-case local in-flight lifecycle matrix for
+turns/manual summaries: success, caller cancellation, Close and real heartbeat
+fencing after SQLite lease expiry. It checks late-output isolation, canceled
+requests, durable termination/recovery and successor ownership. This does not
+replace process-kill tests at persistence boundaries; see the evidence ledger.
+
+## DeepSeek Messages route (2026-09-14)
+
+Select `-provider-adapter deepseek-messages` and
+`-provider-url https://api.deepseek.com/anthropic`, with the actual DeepSeek model
+name, credential environment variable, and explicit model limits. This appends
+`/v1/messages`. Use a new session and a verified backup; changing routes cannot
+migrate existing replay history. Eval and ACP/in-process configuration support
+the same explicit selection. The default route is unchanged.
+
+The route uses `anthropic-sdk-go v1.72.0` (MIT) for typed requests, HTTP execution
+and indexed content accumulation. No SDK types, environment credential loader,
+automatic retry, redirect, SDK tool runner, or SDK-owned history enter the core.
+Only HTTP 200 with `text/event-stream` is accepted; rejected bodies are closed
+without being read. SDK errors containing request/response bodies are replaced
+with safe classified errors. Private HTTP transport has 30-second header and
+10-second TLS timeouts, a 64 KiB response-header limit, and a 60-second body-read
+idle timeout. Cancellation closes the response; Close is once-only, and its
+failure prevents completion. There is no decoder goroutine.
+
+The SDK does not supply our integrity checks: raw SSE framing remains bounded
+(256 KiB line, 1 MiB/1,024 data lines per event, 8 MiB total). Duplicate keys,
+unpaired Unicode surrogates, unsupported event/block fields, bad block lifecycles,
+and malformed tool input fail before SDK repair. SDK owns text/thinking/signature
+accumulation; only raw tool fragments remain independently buffered because its
+`{}` sentinel and refresh logic can otherwise reset or repair arguments. Multiple
+open blocks may receive interleaved deltas/stops by index. Completion requires
+every block closed, a supported `end_turn` or `tool_use`, and `message_stop`.
+Nothing is emitted to Engine before those checks and response Close succeed.
+Attempt stats normalize these reasons to the existing `stop`/`tool_calls` values.
+
+Durable protocol `deepseek_messages_v1` uses a closed `messagesContent` union:
+ordered `text`, `thinking`, and `tool_use` blocks. Thinking preserves genuinely
+absent versus empty signatures; no signature is fabricated. `redacted_thinking`
+is rejected for this route. This follows the documented DeepSeek compatibility
+profile, not Claude signature or request-prefix requirements.
+[DeepSeek compatibility reference](https://api-docs.deepseek.com/guides/anthropic_api/).
+The legacy `reasoningContent` field remains present but must be empty; older
+Chat Completions bytes remain unchanged and cannot contain `messagesContent`.
+
+Limits are 256 blocks, 1 MiB assembled content, 256 KiB combined thinking and
+signatures, 32 KiB per tool input, JSON depth 64, and a 5 MiB request. Reject,
+never truncate. Domain validates active variants, exact visible-text projection,
+and ordered tool ID/name/JSON-value projection (numbers are not rounded through
+float64), on commands, events, Apply and recorded requests. Clones detach arrays,
+raw arguments and optional signature pointers. Engine also checks projection at
+completion. The existing application transaction still precedes tool execution.
+
+Requests use top-level system blocks, ordered native assistant blocks, and
+grouped tool results in the following user message. Missing/foreign state,
+projection mismatches, unmatched tool results, and response-model aliases fail
+closed. No automatic model alias mapping is assumed. Thinking is explicitly
+enabled; only empty/low/high/max effort is supported, via `output_config.effort`.
+DeepSeek ignores `budget_tokens`, so it is omitted. `max_tokens` is always sent;
+Chat Completions `include_usage` and `max_completion_tokens` hints are rejected.
+
+The existing full-turn retention and rolling-summary/reset mechanisms apply.
+Hidden thinking/signatures and block framing are estimated in addition to the
+existing visible text/tool estimate, without counting visible content twice;
+this is not a native tokenizer. Summary and display export omit replay blocks.
+Canonical SQLite/request/audit records contain sensitive blocks in plaintext
+under the existing storage protections. Secret-shape checks reject rather than
+rewrite thinking/visible text; opaque signatures are never interpreted or
+redacted. This does not promise general secret detection or encryption.
+
+Rollback restrictions above apply again: readers predating this protocol cannot
+read it. Do not strip blocks or rewrite audit chains. Native Claude compatibility,
+Claude prefix-preserving context transforms, general live reliability/quality,
+and public Provider SDK stability are **not** established by this implementation.
+
+Messages usage normalizes uncached + cache-read + cache-created input to the
+Engine's total-input counter; cache-read remains a subset. Overflow fails before
+any output is admitted. This corrects the undercount found during bounded live
+acceptance; historical audit events are not retroactively rewritten.

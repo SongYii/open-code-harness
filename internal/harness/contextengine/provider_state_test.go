@@ -1,6 +1,7 @@
 package contextengine
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
@@ -24,7 +25,7 @@ func TestProviderStateMaterializationAndMeter(t *testing.T) {
 	if len(messages) != 3 || messages[0].Role != domain.PromptRoleUser || messages[0].ProviderState != nil {
 		t.Fatal("summary acquired assistant protocol state")
 	}
-	if messages[2].ProviderState == nil || *messages[2].ProviderState != *state || messages[2].ProviderState == units[3].Messages[0].ProviderState {
+	if messages[2].ProviderState == nil || !reflect.DeepEqual(messages[2].ProviderState, state) || messages[2].ProviderState == units[3].Messages[0].ProviderState {
 		t.Fatal("retained state lost or shared")
 	}
 	bare := []domain.ModelPromptMessage{{Role: domain.PromptRoleAssistant, Text: "visible"}}
@@ -42,5 +43,28 @@ func TestProviderStateMaterializationAndMeter(t *testing.T) {
 	units, err = ProjectSourceEvents([]domain.RecordedEvent{record(1, domain.AssistantMessageCompleted{TurnID: "t", ItemID: "i", ProviderState: state})})
 	if err != nil || len(units) != 1 || units[0].Messages[0].ProviderState == nil {
 		t.Fatal("state-only committed message was dropped")
+	}
+}
+
+func TestMessagesReplayMeterAndDetachedMaterialization(t *testing.T) {
+	signature := "opaque-signature"
+	state := &domain.ProviderState{Protocol: domain.DeepSeekMessagesV1, ModelID: "test", EndpointID: "api.example.com", MessagesContent: []domain.ProviderContentBlock{{Type: "thinking", Thinking: "private", Signature: &signature}, {Type: "text", Text: "visible"}}}
+	units, err := ProjectSourceEvents([]domain.RecordedEvent{record(1, domain.AssistantMessageCompleted{TurnID: "t", ItemID: "i", Text: "visible", ProviderState: state})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared := Materialize(MaterializeInput{RetainedTail: units, Meter: WireEstimateMeter{}})
+	messages := prepared.Envelope.Messages
+	if len(messages) != 1 || !reflect.DeepEqual(messages[0].ProviderState, state) {
+		t.Fatal("Messages replay lost")
+	}
+	base := []domain.ModelPromptMessage{{Role: "assistant", Text: "visible"}}
+	want := 3*perMessageFraming + textTokens("private") + textTokens(signature)
+	if got := (WireEstimateMeter{}).EstimateMessages(messages) - (WireEstimateMeter{}).EstimateMessages(base); got != want {
+		t.Fatalf("hidden budget delta=%d want=%d", got, want)
+	}
+	*messages[0].ProviderState.MessagesContent[0].Signature = "changed"
+	if *units[0].Messages[0].ProviderState.MessagesContent[0].Signature != signature {
+		t.Fatal("materialization aliases signature")
 	}
 }

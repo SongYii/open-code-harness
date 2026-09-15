@@ -1,9 +1,257 @@
 # Provider Replay — Verification Evidence
 
-Date: 2026-09-13. Scope: current working-tree implementation of the
+Updated: 2026-09-15. Scope: current working-tree implementation of the
 [DeepSeek replay contract](provider-replay.md), not a committed-release or live
-provider certification. No changes to the OTel implementation or localexec
+provider certification. The dated live addendum below is bounded acceptance
+evidence, not a stable-release claim. No changes to OTel or the localexec
 backend were made for this slice.
+
+## In-flight Messages lifecycle fault matrix (2026-09-15)
+
+`TestMessagesInFlightLifecycle` runs eight local Composition scenarios: ordinary
+turn and manual summary, each with successful completion, caller cancellation,
+assembly Close and actual lease-expiry/heartbeat fencing. It uses real `Open`,
+the Messages adapter and HTTP client, Application, Context Engine, SQLite and
+Runtime Host. No production model/host replacement, public injection API,
+OTel changes, credentials or paid calls are involved.
+
+The loopback server flushes valid thinking/signature/text blocks (and a valid
+`list_dir` offer for the turn case), but withholds the terminal frames. Tests
+require HTTP cancellation and operation termination **before** releasing those
+frames. Close must also finish while the server is still waiting. Only then
+does the server attempt the late completion. Assertions cover:
+
+- No partial/late text or hidden canaries enter canonical events or the runtime
+  text sink; no assistant completion, tool start or checkpoint may be committed.
+- Caller cancellation leaves the host ready and preserves a durable interrupted
+  turn. Assembly Close/lease loss close `Done` and reject cached Service/Store
+  calls; old facades stay rejected after a successor starts.
+- The fixture expires only its temporary database's lease using the existing
+  SQLite test seam. The **real heartbeat** detects lost ownership; the test does
+  not directly invoke `Abandon` or the fencing reaction.
+- A new host recovers the unfinished turn/summary using `process_crash` or
+  `runtime_recovered`. Closing the old host reports `writer_fenced`, does not
+  release the successor's lease, and the successor can commit a new session.
+- The same withheld responses complete successfully in positive controls: one
+  real workspace tool execution or one valid summary checkpoint. Exact HTTP
+  request counts exclude hidden retries. Interrupted histories pass canonical
+  replay, with no active work remaining after cleanup/recovery.
+
+All eight cases passed with `-race`; the initial matrix also passed two repeated
+race runs. After strengthening the durable terminal-event assertions, the full
+matrix passed with race again. Root `go test ./...`, `go vet ./...`, the separate
+example module, documentation/architecture checks and whitespace checks passed.
+
+Two production-source mutations were tested only through private temporary Go
+overlays, not by editing production files. Removing `Host.Admit`'s host-cancel
+subscription makes the close case fail waiting for HTTP cancellation before
+server release. Removing `ReleaseLease`'s runtime/token ownership predicate makes
+the lease-loss case fail because stale Close returns success instead of fencing.
+Both failures hit the intended assertions, not compilation errors; restored
+source passes. This second change adds tests/evidence only; the Messages route
+was checkpointed separately as `d4ada6e`.
+
+Limits: the server attempts late frames after client cancellation; this does not
+claim canceled clients consumed those frames. These are local stream/lease
+integration checks, not process-kill injection at every persistence boundary,
+non-cooperative driver shutdown, an HTTP/2 or TLS fault matrix, general leak
+certification, or provider reliability measurements. Those remain separate
+evidence obligations; the earlier uncaptured live failure is still unexplained.
+
+## Nonempty retained-tail live gate passed (2026-09-15)
+
+After the operator re-supplied the private key and authorized continuation within
+the original **CNY 5 total** budget, the corrected Composition probe passed against
+the actual `deepseek-flash` model at DeepSeek's official Messages endpoint. The
+separate two-request adapter probe was not repeated. This was a new synthetic
+session; the previous run's database, audit chain and 12-call ledger were preserved.
+
+`TestLiveMessagesComposition` completed all eight planned HTTP requests in one run:
+
+- One `read_file` invocation, tool-result continuation and nonce recall after
+  SQLite close/open; synthetic project color and disposable history added.
+- Summary committed through sequence 37, leaving a nonempty completed assistant
+  tail. That retained response had one thinking block and one nonempty signature.
+- After another close/open, the outgoing retained blocks matched canonical state
+  **byte-for-byte**, and the remote continuation returned the nonce and color.
+- Seven native assistant completions, one retained state and 54 canonical events;
+  display export hid thinking/signatures and independent cold audit verification
+  matched all events. The probe reported `LIVE_COMPOSITION=passed`, not fixture
+  mode. All eight response captures had accepted terminal reasons: one `tool_use`,
+  seven `end_turn`. There were no retries or stream failures in this run.
+
+Production code and validation were unchanged for this follow-up. The sole
+assembly overlay still injects the bounded HTTP client; real tools, summarizer,
+context engine, SQLite and lifecycle are exercised. This closes the specific
+nonempty-retained-wire acceptance gap, **not** a general reliability/quality,
+native Claude compatibility, external-consumer or stable-SDK gate. The uncaptured
+September 14 stream failure was not reproduced and still has no established
+cause; this passing run does not retroactively explain or erase it.
+
+The new ledger records eight calls, 70,174 serialized request bytes and 30,668
+aggregate reserved output tokens. Its complete terminal usage reports 9,365
+uncached input, 9,472 cached input, zero cache creation and 659 output tokens
+(including the summary). At the [official peak prices rechecked on September 15](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/),
+this run's usage-based estimate is CNY 0.024381. Conservatively allocating 65,536
+input tokens per call and every reserved output token gives CNY 1.293920 for
+this run; **combined with the previous run's conservative ceiling, CNY 3.196496**.
+These are estimates, not provider-invoice reconciliation or an account-level
+monetary lock. The aggregate count is 20 calls across both runs, not a reset of
+the CNY 5 budget. No remaining reserved calls were consumed after success.
+
+The exact temporary key file was removed again. Private SQLite, audit and bounded
+response captures remain outside Git. Only metadata is reported here. Updated
+documentation/architecture checks and `git diff --check` passed; the prior local
+rehearsal/race/negative gates remain the deterministic regression evidence.
+
+## Local live-probe rehearsal follow-up (2026-09-15)
+
+No paid requests were made during this rehearsal step; the September 14 live
+ledger stayed at 12 and its credential file was absent. Changes were confined to the opt-in experiment,
+its overlay preparation and documentation, not production replay/compaction or OTel.
+
+The live scenario now checks the newest Turn for both successful completion and
+native assistant blocks **before invoking the summarizer**, including diagnostic
+resume. It checks the committed cut again before sending a continuation. This
+prevents a failed newest Turn from silently making the nonempty-wire gate vacuous;
+the final exact, nonempty comparison remains mandatory.
+
+`TestMessagesCompositionLocalRehearsal` supplies a scripted in-process transport
+to the very same Composition scenario. Observed result: eight fixture requests,
+one real workspace read, seven completed native assistant states, one retained
+signed state replayed byte-for-byte after summary/reopen, and 54 canonical events
+matching independent audit verification. The fixture also verifies each request
+was reserved in the ledger before transport. There is no real HTTP or credential
+access; output is explicitly `LOCAL_REHEARSAL`, never a live pass.
+
+`TestMessagesReplayTailPreflight` uses positive controls plus open, failed,
+failed-after-assistant and completed-without-native cases. A callback spy asserts
+the same orchestration helper makes zero summary calls in each negative case.
+`TestMessagesCompactionMustLeaveReplayTail` rejects no-op and tail-covering cuts
+before continuation. These gates and the full local rehearsal passed with race
+detection. Numbered synthetic rows replace repeated sentences, without claiming
+repetition was the cause of the uncaptured September 14 failure.
+
+A local source-overlay mutation removed the preflight's early return while
+leaving the later retained-tail rejection intact. All four negative cases failed
+specifically on `summary callbacks=1; want callbacks=0`: a later error cannot
+make these tests pass for the wrong reason. Original-source gates pass; the
+mutation never changed production files or contacted a provider. Overlaid
+`go vet`, documentation/architecture guards and `git diff --check` also pass.
+
+At this point the remote nonempty-retained-tail gate and the uncaptured failure
+remained open; the later live follow-up above closes only the former.
+Reproduction instructions are in the [probe README](../../experiments/deepseek-messages-live/README.md).
+
+## Bounded live Messages acceptance (2026-09-14)
+
+The operator authorized DeepSeek's official Messages endpoint, a private key
+file and a CNY 5 spending ceiling. The actual route was
+`https://api.deepseek.com/anthropic/v1/messages`, model `deepseek-flash`, low
+effort. The [opt-in probes](../../experiments/deepseek-messages-live/README.md)
+use synthetic data and a shared pre-send ledger: 12 total calls, at most 32 KiB
+per request and at most 4,096 output tokens, including failures/diagnostics.
+Composition's sole overlay change injects that bounded HTTP client into the
+real assembly; the model/tool/context/store paths remain production code.
+
+**Result: partial acceptance, not an all-green live gate.**
+
+| Boundary | Actual observation |
+| --- | --- |
+| Native tool round trip | Requests 1–2 passed: signed thinking + tool use, tool result accepted, terminal text returned. |
+| Actual tools and persistence | Requests 3–7 exercised one `read_file` on a synthetic nonce file, tool-result continuation, SQLite close/open, nonce recall and additional synthetic history. |
+| Summary rejection | Initial short-history attempt had no coverable prefix and sent no request. Request 8 produced a summary larger than its source; the core refused it. Request 9 failed stream validation; no raw capture was retained, so its exact cause is unresolved. |
+| Truncated summary | Request 10 returned HTTP 200 but `stop_reason=max_tokens`, output 1,177. Offline replay confirms rejection before completion; do not count it as a valid summary. |
+| Summary and continuation | Request 11 committed a checkpoint through sequence 37; request 12, after close/open, completed with both nonce and color intact. This used a 24,576-token test context, 1,996-token derived summary cap and concise manual focus; initial attempts used a 16,384-token context and 1,177 summary cap. No production validation was relaxed. |
+| Post-compaction native retained blocks | **Not covered with a nonempty set.** The retained tail was a failed turn without completed assistant blocks. The probe's positive-coverage assertion failed and remains in place. Successful summary continuation is not evidence of nonempty retained-block wire preservation. Local deterministic tests cover that case. |
+| Offline durable evidence | Independent cold audit export/verification matched all 58 canonical events: one tool call, six completed native states, 15 recorded replay-state occurrences matching earlier completions. Display export omitted hidden thinking/signatures. This offline verification does not turn the failed nonempty-wire gate into a pass. |
+
+Live usage exposed a real adapter bug: Messages reports uncached input separately
+from cache-read/cache-created input, while Engine requires total input with
+cached input a subset. The adapter now performs checked addition before emitting
+anything. `TestSDKUsageNormalizesTotalInput` covers all counters, absent caches,
+completion/attempt consistency and the live 178 uncached + 256 cached regression;
+`TestSDKStreamRejectsBeforeAnyOutput/total_input_overflow` rejects overflow before
+text or tools escape. The final live response reported 1,648 uncached + 768 cache
+read, and the canonical event correctly recorded total input 2,416, cached 768,
+output 84. Early pre-fix events were **not rewritten**.
+
+A no-network source overlay then restored uncached-only accounting. Both the
+all-counter and live-regression cases failed on the intended numerical
+assertions (12 vs 19 and 178 vs 434), not compilation. The unmodified production
+test passed again; the mutation never touched production files or live traffic.
+
+All 12 reserved calls were used; no further paid calls were made in that run. The ledger has
+77,776 serialized request bytes and 41,214 aggregate maximum output tokens. At
+the [official peak CNY prices checked that day](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/),
+allowing 65,536 input tokens for *every* request gives a conservative estimated
+ceiling of CNY 1.903. This is not an account-level monetary lock or actual invoice
+reconciliation. The exact temporary `/tmp/och-deepseek-key` file was removed;
+provider-side key revocation was not performed. Private SQLite/audit/response
+captures remain outside Git; their hidden content is sensitive, not public evidence.
+
+After the input-usage fix, root `go test ./...` passed, including localexec;
+adapter/Domain/Engine/Context Engine race tests also passed. The next live gate
+is a deliberately nonempty completed-assistant tail across compaction, plus
+diagnosis of the uncaptured stream failure if it recurs. Additional paid calls
+require fresh authorization; this run does not certify reliability, latency,
+model quality, account billing, native Claude prefix binding, or a stable SDK.
+
+## Messages route addendum (2026-09-14)
+
+`deepseek-messages` is now an experimental selectable route, using the pinned
+Anthropic Go SDK v1.72.0 in the main module. No upstream code was copied. SDK
+imports are confined to `adapters/anthropic`; Domain has a closed, SDK-independent
+`deepseek_messages_v1` content union and projection validation. This is not a
+native Claude claim. The fixture-only stage below predates the bounded live
+addendum above.
+
+| Claim | Executable evidence |
+| --- | --- |
+| Native blocks survive tools and SDK encoding | `TestSDKModelToolContinuationAndExplicitHTTP`: exact ordered mixed blocks, absent signature, large integer and escaped input, grouped tool results, purpose/effort/max_tokens, explicit endpoint/auth and close-once |
+| Strict durable variants and projection | `TestMessagesStateStrictCodecAndProjection`, `TestMessagesStateBoundsAndAtomicCommand`: assistant and request codec, unknown/null/duplicate/cross-variant payloads, depth/size, large-integer mismatch, clone isolation and atomic rejection |
+| SDK repair cannot silently fabricate completion | `TestSDKStreamRejectsBeforeAnyOutput`: shared hostile fixtures and response-model/redacted/repeated-object cases; `TestSDKRawToolInputOwnsEmptyObjectFragments`: valid fragmented empty object is not reset |
+| HTTP failures do not read bodies, retry or redirect | `TestSDKHTTPRejectsWithoutReadingErrorBodiesOrRetrying`: wrong content type, 204/307/401/429/503, zero error-body reads, one transport call and one Close |
+| Cancellation/idle/Close cannot publish partial output | `TestSDKStreamCancellationIdleAndEarlyClose`, close-error case in `TestSDKStreamRejectsBeforeAnyOutput`; parent/Next cancellation, idle, repeated early Close, blocked-body release |
+| Indexed open blocks and signature absence are preserved | `TestSDKIndexedOpenBlocksAndDeepSeekSignatures` plus the updated indexed-block SDK probe |
+| Hidden replay is priced and detached | `TestMessagesReplayMeterAndDetachedMaterialization`; block/signature framing and no double-counted visible text |
+| Tool loop, restart, summary and audit work | `TestDeepSeekMessagesToolsRestartAndCompaction`: actual Composition, loopback HTTP, workspace tool, SQLite reopen, rolling summary, second reopen, exact retained-state set and independent event-for-event audit verification |
+| Invalid input cannot commit or execute a tool | `TestMessagesInvalidToolInputCannotCommitOrExecute`: SDK-repairable truncated input after visible text, terminal failure, no visible partial, no assistant completion or ToolCallStarted; the lifecycle test above supplies the successful tool control |
+| Both execution configurations agree | `TestDeepSeekFlagsAndInProcessProviderParity`, `TestDeepSeekConfigValidation` now exercise both explicit routes; SDK owner guard covers Domain/Engine/Composition rejection |
+
+Four temporary mutations were applied to actual adapter code, run separately,
+and restored. All failed through assertions (not compilation/startup errors):
+
+1. Skip raw tool-input validation before SDK refresh: truncated-input test
+   reports `invalid stream exposed partial output`.
+2. Remove `WithoutEnvironmentDefaults`: the explicit-auth fixture reports an
+   unexpected ambient Authorization header.
+3. Set `WithMaxRetries(1)`: the 503 fixture fails the single-call/close invariant.
+4. Permit standard redirects: the 307 fixture observes follow-ups/error-body
+   reads and fails its HTTP boundary assertion. All transport remains injected;
+   no live request can escape these mutations.
+
+Local verification completed:
+
+- Root `go test ./...` passed, including localexec in the approved local-test
+  environment. The sandbox-only attempt could not create httptest sockets;
+  that was an environment restriction, not a protocol result.
+- Race tests passed for adapter, Domain, Engine, Application, Context Engine and
+  architecture; targeted Composition tool/restart/compaction and invalid-input
+  scenarios also passed with `-race`.
+- The original overlaid pinned-SDK probe passes with its indexed-block assertion
+  updated to require acceptance by the production replacement.
+- `go vet ./...`, documentation/architecture guards, `go mod tidy -diff`,
+  `go mod verify` and `git diff --check` passed.
+- The separate `examples/keep-last-n` module's dependency manifest was tidied
+  and `go test -mod=readonly ./...` passed; this is build evidence, not a new
+  external consumer.
+
+This local stage did not include a paid/live call. Remote model/quality certification, route-specific
+lease-loss fault campaign, encryption, lossy history migration, native Claude
+prefix preservation, or public Provider SDK is claimed. Full-turn/summary
+semantics are the DeepSeek route's existing local contract, not a generalized
+promise about all Anthropic-compatible gateways.
 
 ## Executable evidence
 
@@ -68,8 +316,9 @@ failed at `httptest` listener creation, which is not a product regression.
 
 ## Limits and next evidence
 
-No live/paid DeepSeek request, live model-quality evaluation, remote acceptance
-test after compaction, or performance comparison was performed. The fixture
+The original Chat Completions fixture stage did not perform live/paid requests,
+model-quality evaluation, remote acceptance after compaction or performance
+comparisons. The later Messages live observations are recorded above. The fixture
 validates exact harness input/output behavior, not what the remote service may
 change to require. Plaintext reasoning remains sensitive canonical evidence;
 known-shape rejection is not general secret detection or encryption.

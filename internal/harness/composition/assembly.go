@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/acp"
+	"github.com/SongYii/open-code-harness/internal/harness/adapters/anthropic"
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/localexec"
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/mcp"
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/openaicompat"
@@ -189,23 +190,35 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 	if config.Provider.AdapterKind == "deepseek" {
 		protocol = domain.DeepSeekThinkingV1
 	}
-	model, err := openaicompat.New(openaicompat.Config{
-		Protocol: protocol,
-		BaseURL:  config.Provider.BaseURL,
-		ModelID:  config.Provider.ModelID,
-		APIKey:   openaicompat.StaticAPIKey{Value: apiKey},
-		// The assembly always enables the workspace tool catalog, and
-		// Application refuses a catalog whose provider profile does not
-		// support native tools. Text-only would make every assembly invalid.
-		Profile: openaicompat.ProfileToolsSupported(config.Provider.ContextWindow, config.Provider.MaxOutput),
-		Hints: openaicompat.WireHints{
-			IncludeUsage:    config.Provider.IncludeUsage,
-			MaxTokensField:  config.Provider.MaxTokensField,
-			ThinkingMode:    config.Provider.ThinkingMode,
-			ReasoningEffort: engine.ReasoningEffort(config.Provider.ReasoningEffort),
-		},
-		AllowInsecureLoopback: config.Provider.AllowInsecureLoopback,
-	})
+	var model interface {
+		engine.Model
+		Identity() engine.RequestIdentity
+	}
+	if config.Provider.AdapterKind == "deepseek-messages" {
+		model, err = anthropic.New(anthropic.Config{
+			BaseURL: config.Provider.BaseURL, ModelID: config.Provider.ModelID, APIKey: apiKey,
+			ContextWindow: config.Provider.ContextWindow, MaxOutput: config.Provider.MaxOutput,
+			ReasoningEffort: engine.ReasoningEffort(config.Provider.ReasoningEffort), AllowInsecureLoopback: config.Provider.AllowInsecureLoopback,
+		})
+	} else {
+		model, err = openaicompat.New(openaicompat.Config{
+			Protocol: protocol,
+			BaseURL:  config.Provider.BaseURL,
+			ModelID:  config.Provider.ModelID,
+			APIKey:   openaicompat.StaticAPIKey{Value: apiKey},
+			// The assembly always enables the workspace tool catalog, and
+			// Application refuses a catalog whose provider profile does not
+			// support native tools. Text-only would make every assembly invalid.
+			Profile: openaicompat.ProfileToolsSupported(config.Provider.ContextWindow, config.Provider.MaxOutput),
+			Hints: openaicompat.WireHints{
+				IncludeUsage:    config.Provider.IncludeUsage,
+				MaxTokensField:  config.Provider.MaxTokensField,
+				ThinkingMode:    config.Provider.ThinkingMode,
+				ReasoningEffort: engine.ReasoningEffort(config.Provider.ReasoningEffort),
+			},
+			AllowInsecureLoopback: config.Provider.AllowInsecureLoopback,
+		})
+	}
 	if err != nil {
 		return release(fmt.Errorf("composition: provider adapter: %w", err))
 	}

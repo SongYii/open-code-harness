@@ -145,6 +145,13 @@ func (runner *TurnRunner) Run(ctx context.Context, request RunRequest, emitter *
 			if event.Text != "" || event.ToolCall != nil {
 				return runner.fail(cancel, stream, engineError(CodeInvalidStream, nil))
 			}
+			offers := make([]domain.ToolCallOffer, len(toolCalls))
+			for i, call := range toolCalls {
+				offers[i] = domain.ToolCallOffer{ID: call.ID, Name: call.Name, Arguments: call.Arguments}
+			}
+			if domain.ValidateProviderProjection(event.ProviderState, builder.String(), offers) != nil {
+				return runner.fail(cancel, stream, engineError(CodeInvalidStream, nil))
+			}
 			return runner.succeed(ctx, cancel, stream, RunResult{
 				ProviderState: domain.CloneProviderState(event.ProviderState),
 				Text:          builder.String(),
@@ -248,6 +255,9 @@ func (runner *TurnRunner) Collect(ctx context.Context, request CollectRequest) (
 			return runner.collectFail(cancel, stream, engineError(CodeInvalidStream, nil))
 		case StreamEventCompleted:
 			if event.Text != "" || event.ToolCall != nil {
+				return runner.collectFail(cancel, stream, engineError(CodeInvalidStream, nil))
+			}
+			if domain.ValidateProviderProjection(event.ProviderState, builder.String(), nil) != nil {
 				return runner.collectFail(cancel, stream, engineError(CodeInvalidStream, nil))
 			}
 			return runner.collectSucceed(ctx, cancel, stream, CollectResult{

@@ -10,12 +10,22 @@ import (
 )
 
 func TestDeepSeekFlagsAndInProcessProviderParity(t *testing.T) {
+	for _, kind := range []string{"deepseek", "deepseek-messages"} {
+		t.Run(kind, func(t *testing.T) { checkDeepSeekProviderParity(t, kind) })
+	}
+}
+
+func checkDeepSeekProviderParity(t *testing.T, kind string) {
 	subject := sentinelParitySubject()
 	legacy, err := eval.SubjectDigest(subject)
 	if err != nil {
 		t.Fatal(err)
 	}
-	subject.Provider.AdapterKind = "deepseek"
+	subject.Provider.AdapterKind = kind
+	if kind == "deepseek-messages" {
+		subject.Provider.IncludeUsage = false
+		subject.Provider.MaxTokensField = "max_tokens"
+	}
 	subject.Provider.ThinkingMode = "enabled"
 	subject.Provider.ReasoningEffort = "high"
 	changed, err := eval.SubjectDigest(subject)
@@ -39,7 +49,7 @@ func TestDeepSeekFlagsAndInProcessProviderParity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Provider.AdapterKind != "deepseek" || !reflect.DeepEqual(config.Provider, inprocess.Provider) {
+	if config.Provider.AdapterKind != kind || !reflect.DeepEqual(config.Provider, inprocess.Provider) {
 		t.Fatal("ACP and in-process provider configuration diverged")
 	}
 }

@@ -173,13 +173,15 @@ Saving only visible assistant text loses that state, including after restart.
 
 ### Visible result
 
-The experimental `-provider-adapter deepseek` route replays thinking state across
+The experimental `-provider-adapter deepseek` and `deepseek-messages` routes replay state across
 tools, SQLite restart and compaction. Default OpenAI-compatible behavior stays
 unchanged. Enable it on a new session after making a verified backup.
 
 ### Implementation
 
-The adapter assembles separate reasoning; Engine accepts it only on completion;
+The Chat Completions adapter assembles separate reasoning; the Messages adapter
+uses a pinned SDK behind raw-input/HTTP admission and preserves ordered blocks.
+Engine accepts state only on completion and checks its visible/tool projection;
 Application validates and commits it with the assistant event. Context preserves
 retained state but excludes it from summary text. See the [contract](provider-replay.md)
 and [evidence](provider-replay-evidence.md).
@@ -190,6 +192,8 @@ Missing reasoning must not become invented empty reasoning. Secret-shaped state
 cannot be redacted without changing the protocol, so it is rejected. Tests now
 also assert early rejection, rather than accepting a later EOF error as proof.
 Four removed/corrupted safeguards each made the intended regression test fail.
+The Messages SDK can repair malformed arguments and accept EOF without a terminal
+marker; OCH rejects both before exposing output, rather than trusting SDK success.
 
 ### Still missing
 

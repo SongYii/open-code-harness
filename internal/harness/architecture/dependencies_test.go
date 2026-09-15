@@ -213,6 +213,10 @@ func TestForbiddenImport(t *testing.T) {
 		{name: "system cannot import engine", owner: ownerSystem, importPath: modulePath + "/internal/harness/engine", forbidden: true},
 		{name: "system may import application", owner: ownerSystem, importPath: modulePath + "/internal/harness/application", forbidden: false},
 		{name: "openaicompat may import net/http", owner: ownerOpenAICompat, importPath: "net/http", forbidden: false},
+		{name: "Messages owns SDK", owner: ownerAnthropic, importPath: "github.com/anthropics/anthropic-sdk-go/option", forbidden: false},
+		{name: "Domain cannot import SDK", owner: ownerDomain, importPath: "github.com/anthropics/anthropic-sdk-go", forbidden: true},
+		{name: "Engine cannot import SDK", owner: ownerEngine, importPath: "github.com/anthropics/anthropic-sdk-go", forbidden: true},
+		{name: "Composition cannot import SDK", owner: ownerComposition, importPath: "github.com/anthropics/anthropic-sdk-go", forbidden: true},
 		{name: "openaicompat may import os", owner: ownerOpenAICompat, importPath: "os", forbidden: false},
 		{name: "openaicompat may import engine", owner: ownerOpenAICompat, importPath: modulePath + "/internal/harness/engine", forbidden: false},
 		{name: "openaicompat cannot import os/exec", owner: ownerOpenAICompat, importPath: "os/exec", forbidden: true},
@@ -445,6 +449,7 @@ const (
 	ownerApplication       packageOwner = "application"
 	ownerMemory            packageOwner = "memory"
 	ownerOpenAICompat      packageOwner = "openaicompat"
+	ownerAnthropic         packageOwner = "anthropic"
 	ownerSQLite            packageOwner = "sqlite"
 	ownerRuntime           packageOwner = "runtime"
 	ownerPolicy            packageOwner = "policy"
@@ -493,6 +498,7 @@ var ownedPackageRoots = []struct {
 	{root: "internal/harness/telemetry", owner: ownerTelemetry},
 	{root: "internal/harness/adapters/memory", owner: ownerMemory},
 	{root: "internal/harness/adapters/openaicompat", owner: ownerOpenAICompat},
+	{root: "internal/harness/adapters/anthropic", owner: ownerAnthropic},
 	{root: "internal/harness/adapters/sqlite", owner: ownerSQLite},
 	{root: "internal/harness/adapters/workspacefs", owner: ownerWorkspaceFS},
 	{root: "internal/harness/adapters/localexec", owner: ownerLocalExec},
@@ -554,6 +560,7 @@ var allowedHarnessImports = map[packageOwner][]string{
 	ownerTelemetry:         {},
 	ownerMemory:            {modulePath + "/internal/harness/application", modulePath + "/internal/harness/contextengine", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/telemetry"},
 	ownerOpenAICompat:      {modulePath + "/internal/harness/domain", modulePath + "/internal/harness/engine", modulePath + "/internal/harness/redact"},
+	ownerAnthropic:         {modulePath + "/internal/harness/domain", modulePath + "/internal/harness/engine", modulePath + "/internal/harness/redact"},
 	ownerSQLite:            {modulePath + "/internal/harness/application", modulePath + "/internal/harness/contextengine", modulePath + "/internal/harness/domain"},
 	ownerWorkspaceFS:       {modulePath + "/internal/harness/domain", modulePath + "/internal/harness/tools"},
 	ownerLocalExec:         {modulePath + "/internal/harness/domain", modulePath + "/internal/harness/tools"},
@@ -597,6 +604,9 @@ func withinPackage(importPath, prefix string) bool {
 }
 
 func forbiddenImport(owner packageOwner, importPath string) string {
+	if withinPackage(importPath, "github.com/anthropics/anthropic-sdk-go") && owner != ownerAnthropic {
+		return "Anthropic SDK must stay inside the Messages adapter"
+	}
 	if importPath == modulePath+"/sdk/contextpolicy" && (owner == ownerContextEngine || owner == ownerApplication || owner == ownerComposition || owner == ownerEval) {
 		return ""
 	}
@@ -647,7 +657,7 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			modulePath+"/internal/harness/transcript",
 			modulePath+"/internal/harness/eval",
 		)
-	case ownerOpenAICompat:
+	case ownerOpenAICompat, ownerAnthropic:
 		forbidden = append(forbidden,
 			modulePath+"/internal/harness/application",
 			modulePath+"/internal/harness/testkit",
@@ -828,7 +838,7 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			return "forbidden host/network dependency"
 		}
 	}
-	if owner == ownerOpenAICompat && importPath == "os/exec" {
+	if (owner == ownerOpenAICompat || owner == ownerAnthropic) && importPath == "os/exec" {
 		return "forbidden host/network dependency"
 	}
 	if owner == ownerSQLite {
@@ -859,6 +869,8 @@ func adapterOwnerRoot(owner packageOwner) (string, bool) {
 		return adaptersRoot + "/memory", true
 	case ownerOpenAICompat:
 		return adaptersRoot + "/openaicompat", true
+	case ownerAnthropic:
+		return adaptersRoot + "/anthropic", true
 	case ownerWorkspaceFS:
 		return adaptersRoot + "/workspacefs", true
 	case ownerLocalExec:
@@ -1057,6 +1069,7 @@ func TestOnlyCompositionAndRuntimeMayNameAnAdapter(t *testing.T) {
 	adapters := []string{
 		modulePath + "/internal/harness/adapters/sqlite",
 		modulePath + "/internal/harness/adapters/openaicompat",
+		modulePath + "/internal/harness/adapters/anthropic",
 		modulePath + "/internal/harness/adapters/memory",
 		modulePath + "/internal/harness/adapters/workspacefs",
 		modulePath + "/internal/harness/adapters/localexec",
@@ -1067,7 +1080,7 @@ func TestOnlyCompositionAndRuntimeMayNameAnAdapter(t *testing.T) {
 	}
 	owners := []packageOwner{
 		ownerDomain, ownerEngine, ownerApplication, ownerPolicy, ownerTools,
-		ownerRuntime, ownerMemory, ownerOpenAICompat, ownerSQLite,
+		ownerRuntime, ownerMemory, ownerOpenAICompat, ownerAnthropic, ownerSQLite,
 		ownerWorkspaceFS, ownerLocalExec, ownerSystem, ownerACP,
 		ownerTranscript, ownerEval, ownerMCP,
 		ownerAgentInstructions, ownerContextEngine, ownerRedact, ownerTelemetry,

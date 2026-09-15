@@ -476,6 +476,9 @@ func completeAssistantEventsWithProviderState(events []UncommittedEvent, state *
 		return nil, err
 	}
 	completed := events[0].Event.(AssistantMessageCompleted)
+	if err := validateProviderProjection(state, completed.Text, completed.ToolCalls, CodeInvalidCommand); err != nil {
+		return nil, err
+	}
 	completed.ProviderState = CloneProviderState(state)
 	events[0].Event = completed
 	return events, nil

@@ -1,5 +1,12 @@
 # Current System Architecture Completion Evidence
 
+2026-09-14 addendum: `adapters/anthropic` is an explicit owner in the exhaustive
+sibling adapter matrix. The experimental `deepseek-messages` route may import
+only `domain`, `engine`, and `redact` inside Harness; the Anthropic SDK is forbidden
+outside that adapter (including Composition). No OTel ownership changed.
+Integration proof and remaining live/Claude gates are recorded in
+[Provider replay evidence](provider-replay-evidence.md).
+
 - Status: Complete
 - Date: 2026-09-09
 - Contract: [Current system architecture](current-system.md)

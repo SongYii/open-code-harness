@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -37,7 +38,7 @@ func TestRunnerProviderStateIsCompletionOnlyAndDetached(t *testing.T) {
 			emitter, _ := NewEmitter(sink, validRunnerCorrelation())
 			result, err := runner.Run(context.Background(), runnerRequest(), emitter)
 			if tc.succeeds {
-				if err != nil || result.ProviderState == nil || result.ProviderState == state || *result.ProviderState != *state {
+				if err != nil || result.ProviderState == nil || result.ProviderState == state || !reflect.DeepEqual(result.ProviderState, state) {
 					t.Fatalf("completion state not copied: %v", err)
 				}
 			} else if err == nil || result.ProviderState != nil {

@@ -127,7 +127,7 @@ func TestProviderStateCommandCompletionIsAtomicAndDetached(t *testing.T) {
 			t.Fatalf("completion: %v", err)
 		}
 		completed := events[0].Event.(AssistantMessageCompleted)
-		if completed.ProviderState == nil || completed.ProviderState == provider || *completed.ProviderState != *provider {
+		if completed.ProviderState == nil || completed.ProviderState == provider || !reflect.DeepEqual(completed.ProviderState, provider) {
 			t.Fatal("completion lost/shared state")
 		}
 		provider.Protocol = "unknown"

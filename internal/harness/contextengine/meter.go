@@ -86,6 +86,14 @@ func (WireEstimateMeter) EstimateMessages(messages []domain.ModelPromptMessage) 
 			// Only the reasoning string is model-visible, not our replay binding.
 			// Legacy shapes are unchanged; this prices the new optional surface.
 			total += perMessageFraming + textTokens(message.ProviderState.ReasoningContent)
+			for _, block := range message.ProviderState.MessagesContent {
+				// Visible text and tool arguments are priced below; only hidden
+				// content and extra block framing are additional replay cost.
+				total += perMessageFraming + textTokens(block.Thinking)
+				if block.Signature != nil {
+					total += textTokens(*block.Signature)
+				}
+			}
 		}
 		if message.ToolCallID != "" {
 			total += perToolCallOrResult
