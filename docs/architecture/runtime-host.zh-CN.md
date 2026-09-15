@@ -41,6 +41,20 @@ Application 服务与 SQLite 存储之上的唯一 Runtime Host：带确定性�
 Item 的遗留运行 Turn 仅以哨兵关闭 turn。活动 Item 引用其他 Turn
 拒绝；缺失 TurnStarted 血统拒绝。绝不自动重放模型或工具。
 
+活动 Tool Item 则以 `tool.call.interrupted`、`turn.interrupted` 依次关闭，
+两者均使用 `process_crash`。CallID 从匹配的规范 `tool.call.started` 中取回，
+不是从有界聚合猜测。已提交 start 不代表副作用已经发生或尚未发生；恢复
+不伪造工具结果，也不自动重做。这不是外部副作用的 exactly-once 承诺，
+也不会改写已经损坏的历史恢复批次。
+
+六个真实进程强杀切点已覆盖放行对照、自然租约过期、持久请求重试与冷审计
+验证，详见[回放证据台账](provider-replay-evidence.md)。后续又在生产恢复器
+`reconcileAll` 的事务中增加 8 次强杀及 8 个放行对照，继任者使用真实 Launch。
+覆盖 assistant、工具、压缩恢复的 COMMIT 前后。再增加的 4 次强杀／4 个
+放行对照覆盖混合多会话数据库中第 2、第 4 次恢复提交前后：已提交恢复保留，
+待处理会话被重新发现，空闲历史不变。这不承诺全数据库原子恢复；其他完整
+Launch 阶段仍需单独验证。
+
 ## 心跳与 fencing 反应
 
 续约按有界间隔运行，截止期严格短于租约期限（启动时校验）。被
@@ -69,6 +83,6 @@ fence 的续约立即反应：停止接纳、经工作上下文取消本地工�
 - 自动模型或工具重试；`retryOfTurnID` 血统记录属于 Application
   命令层。
 - ACP 与 TUI 面。
-- GA 阻塞项：没有调和期间的进程级 kill 注入框架；心跳证据是确定性
+- GA 阻塞项：不是所有完整 Launch 阶段都有进程级 kill 覆盖；心跳证据是确定性
   时间（`testing/synctest`）加脚本化租约结果，不是墙钟浸泡；除
   存储偏向安全的谓词外没有多机租约异常（时钟跳变）证据。

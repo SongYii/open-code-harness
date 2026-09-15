@@ -92,8 +92,27 @@ func (r *reconciler) reconcileSession(ctx context.Context, session domain.Sessio
 	if item.TurnID != turn.ID {
 		return false, fmt.Errorf("session %s active item %s references turn %s", session, item.ID, item.TurnID)
 	}
-	interrupted := domain.AssistantMessageInterrupted{TurnID: turn.ID, ItemID: item.ID, Code: processCrashCode, Message: ""}
-	return r.appendRecovery(ctx, session, records, turn.ID, string(item.ID), head, &interrupted, compaction)
+	var interrupted domain.Event
+	switch item.Kind {
+	case domain.ItemKindAssistantMessage:
+		interrupted = domain.AssistantMessageInterrupted{TurnID: turn.ID, ItemID: item.ID, Code: processCrashCode, Message: ""}
+	case domain.ItemKindToolCall:
+		// The bounded aggregate deliberately carries no tool payload. Recover
+		// the original CallID from canonical history, never infer execution or
+		// fabricate a result: the side effect may already have happened.
+		for i := len(records) - 1; i >= 0; i-- {
+			if started, ok := records[i].Event.(domain.ToolCallStarted); ok && started.TurnID == turn.ID && started.ItemID == item.ID {
+				interrupted = domain.ToolCallInterrupted{TurnID: turn.ID, ItemID: item.ID, CallID: started.CallID, Code: processCrashCode, Message: ""}
+				break
+			}
+		}
+		if interrupted == nil {
+			return false, fmt.Errorf("session %s active tool %s has no start event", session, item.ID)
+		}
+	default:
+		return false, fmt.Errorf("session %s active item %s has unsupported kind", session, item.ID)
+	}
+	return r.appendRecovery(ctx, session, records, turn.ID, string(item.ID), head, interrupted, compaction)
 }
 
 // appendCompactionOnlyRecovery closes a dangling compaction that has no
@@ -149,7 +168,7 @@ func latestOccurredAt(records []domain.RecordedEvent) time.Time {
 	return occurredAt
 }
 
-func (r *reconciler) appendRecovery(ctx context.Context, session domain.SessionID, records []domain.RecordedEvent, turn domain.TurnID, item string, head uint64, itemInterrupted *domain.AssistantMessageInterrupted, compaction *domain.ContextCompaction) (bool, error) {
+func (r *reconciler) appendRecovery(ctx context.Context, session domain.SessionID, records []domain.RecordedEvent, turn domain.TurnID, item string, head uint64, itemInterrupted domain.Event, compaction *domain.ContextCompaction) (bool, error) {
 	// The original CommandID of the turn remains the correlation lineage.
 	var lineage domain.CommandID
 	for i := len(records) - 1; i >= 0; i-- {
@@ -188,7 +207,7 @@ func (r *reconciler) appendRecovery(ctx context.Context, session domain.SessionI
 		add(domain.ContextCompactionFailed{ID: compaction.ID, Code: runtimeRecoveredCode, Message: runtimeRecoveredMessage})
 	}
 	if itemInterrupted != nil {
-		add(*itemInterrupted)
+		add(itemInterrupted)
 	}
 	add(domain.TurnInterrupted{TurnID: turn, Reason: processCrashCode})
 

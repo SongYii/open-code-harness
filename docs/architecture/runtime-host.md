@@ -47,6 +47,24 @@ namespace. An active Item referencing a different turn refuses; a missing
 TurnStarted lineage refuses. No automatic model or tool replay of any
 kind.
 
+An active Tool Item instead closes with `tool.call.interrupted` followed by
+`turn.interrupted`, both `process_crash`. Its CallID comes from the matching
+canonical `tool.call.started`, not the bounded aggregate. A committed start
+does not prove whether the side effect happened; recovery never invents a tool
+result or automatically executes it again. This is not external exactly-once
+execution. Existing malformed histories are not rewritten by recovery.
+
+Six real process-kill boundaries (with release controls, natural lease expiry,
+durable request retry and cold audit checks) are recorded in the
+[provider replay evidence ledger](provider-replay-evidence.md). This does not
+cover every startup boundary. A follow-up adds eight process kills and eight
+release controls inside the production recovery transaction (`reconcileAll`),
+with actual Launch for successors. It covers assistant/tool/compaction recovery
+before and after COMMIT. A further four kills/four controls interrupt the second
+and fourth recovery in a mixed multi-session database; already published recovery
+survives, pending sessions are rediscovered, and idle history stays untouched.
+Other full Launch stages remain open; no database-wide atomic recovery is claimed.
+
 ## Heartbeat and fencing reaction
 
 Renewal runs on a bounded interval with a deadline strictly shorter than
@@ -83,7 +101,7 @@ starting another. Natural lease expiry is unchanged.
 - Automatic model or tool retries; `retryOfTurnID` lineage recording
   belongs to the Application command layer.
 - ACP and TUI surfaces.
-- GA blockers: no process-level kill-during-reconcile harness; heartbeat
+- GA blockers: not every full Launch stage has process-kill coverage; heartbeat
   evidence is deterministic-time (`testing/synctest`) plus scripted lease
   outcomes, not wall-clock soak; no multi-machine lease anomaly
   (clock-jump) evidence beyond the store's safety-biased predicate.

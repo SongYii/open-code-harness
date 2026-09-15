@@ -160,6 +160,25 @@ fencing after SQLite lease expiry. It checks late-output isolation, canceled
 requests, durable termination/recovery and successor ownership. This does not
 replace process-kill tests at persistence boundaries; see the evidence ledger.
 
+Six real process-kill boundaries and matching completion controls now cover
+pre-commit assistant completion, tool execution before/after its side effect,
+summary checkpoint COMMIT before/after, and canonical COMMIT before audit export.
+Natural-expiry takeover, durable request retry, repeated restart and cold audit
+comparison passed with race. The tests exposed and fixed recovery emitting an
+assistant interruption for a tool Item, and request reconstruction rejecting
+`context.prepared` / `process_crash`. An ambiguous tool result is interrupted,
+never automatically re-executed; external exactly-once effects are not promised.
+Follow-up evidence adds kills during the recovery transaction and scripted
+Application mid-turn compaction/overflow-retry reconstruction. Further coverage
+adds mixed multi-session recovery kills and native Messages mid-turn checkpoint
+kills. Native Messages now recognizes a narrowly defined HTTP 400 context overflow
+and delegates bounded recovery to the existing core, as specified below. Other
+statuses and ambiguous bodies remain permanent rejections where applicable.
+Three further kills cover overflow checkpoint COMMIT before/after and retry
+completion before COMMIT. Other startup stages, live overflow certification and
+export-publication substeps remain separate gates. See the
+[evidence ledger](provider-replay-evidence.md) for scope and negative controls.
+
 ## DeepSeek Messages route (2026-09-14)
 
 Select `-provider-adapter deepseek-messages` and
@@ -172,12 +191,54 @@ the same explicit selection. The default route is unchanged.
 The route uses `anthropic-sdk-go v1.72.0` (MIT) for typed requests, HTTP execution
 and indexed content accumulation. No SDK types, environment credential loader,
 automatic retry, redirect, SDK tool runner, or SDK-owned history enter the core.
-Only HTTP 200 with `text/event-stream` is accepted; rejected bodies are closed
-without being read. SDK errors containing request/response bodies are replaced
+Only HTTP 200 with `text/event-stream` is accepted as a model stream. Rejected
+bodies are closed without reading, except bounded inspection of HTTP 400 JSON
+for the overflow contract below. SDK errors containing request/response bodies are replaced
 with safe classified errors. Private HTTP transport has 30-second header and
 10-second TLS timeouts, a 64 KiB response-header limit, and a 60-second body-read
 idle timeout. Cancellation closes the response; Close is once-only, and its
 failure prevents completion. There is no decoder goroutine.
+
+### HTTP context overflow recognition (2026-09-15)
+
+This is an internal, experimental route behavior, not a new plugin or SDK API.
+Only HTTP 400 with parsed `application/json` is inspected, before any SSE stream
+is admitted. The adapter reads at most 4 KiB plus one oversize sentinel byte and
+requires EOF within an absolute two-second deadline, not a resettable idle timer.
+Cancellation/deadline closes the body exactly once; read/close failure, timeout,
+oversize, truncation, duplicate JSON keys or invalid Unicode declines recognition.
+Injected transports must unblock Read on Close, as for streaming. No error-body
+text or request ID is retained in errors, events, runtime output or telemetry;
+the adapter returns only a stable code, HTTP status and fixed safe message.
+
+Recognition requires a closed JSON error object with `type=invalid_request_error`:
+optional `code` is null or that same type; optional `param` is null. Root `type`,
+if present, must be `error`; optional `request_id` must be a string and is ignored.
+Unknown fields decline recognition. A message must be an exact supported form:
+the short Messages prompt-too-long diagnostic, its numeric tokens/maximum form,
+or the full numeric DeepSeek maximum-context diagnostic. Numeric forms validate
+positive uint64 counts and actual overflow; DeepSeek totals must equal input plus
+output, with output alone below capacity. Quoted fragments, arbitrary suffixes,
+generic `max_tokens` text and invented codes do not match. 413 is a byte-size
+rejection, not a token-limit diagnosis; neither 413 nor 422 enters this parser.
+
+Evidence is deliberately separated: [DeepSeek's compatibility guide](https://api-docs.deepseek.com/guides/anthropic_api/)
+documents the Messages route, while [Anthropic's error reference](https://platform.claude.com/docs/en/api/errors)
+defines the JSON envelope and 413 semantics, and its [context-window guide](https://platform.claude.com/docs/en/build-with-claude/context-windows)
+documents the 400 prompt-too-long diagnostic. The numeric DeepSeek variant comes
+from a [first-hand report in DeepSeek's repository](https://github.com/deepseek-ai/DeepSeek-V3/issues/1102),
+not an official guarantee or a live probe performed here. Unknown future variants
+fail closed; this support does not certify every current DeepSeek error response.
+
+Recognized rejection becomes `CodeModelStartup` / `context_overflow`, with adapter
+`Retryable=false` and SDK retries disabled. Only Application may force compaction,
+require at least 10% estimated request reduction, persist a fresh decision and
+consecutive attempt, and retry within `MaxOverflowCompactionsPerTurn`. Summary
+failure/exhaustion is terminal; an HTTP 200 SSE error is a stream failure and
+never promoted to pre-delta overflow. Recovery does not lower model limits, edit
+old events or introduce a provider-owned retry/tool loop.
+
+### Completion and replay integrity
 
 The SDK does not supply our integrity checks: raw SSE framing remains bounded
 (256 KiB line, 1 MiB/1,024 data lines per event, 8 MiB total). Duplicate keys,
