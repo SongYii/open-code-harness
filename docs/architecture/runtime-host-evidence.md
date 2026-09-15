@@ -53,7 +53,10 @@ here as the frozen behavior.
 
 ## Deferred GA blockers
 
-- Process-level crash injection during reconciliation (kill -9 harness).
+- Full Launch/multi-candidate crash injection. The 2026-09-15
+  [follow-up ledger](provider-replay-evidence.md) adds eight actual process kills
+  and eight release controls around recovery COMMIT, using the production
+  reconciler and real successor Launch; it does not cover every startup stage.
 - Wall-clock soak of heartbeat cadence against real lease expiry.
 - Clock-anomaly (jump) evidence beyond the store's safety-biased
   predicate.

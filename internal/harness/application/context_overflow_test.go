@@ -2,6 +2,7 @@ package application_test
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"sync"
 	"testing"
@@ -12,6 +13,62 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
 	"github.com/SongYii/open-code-harness/internal/harness/testkit"
 )
+
+// Rebuilding a new Service excludes process-local execution registry hits.
+// A durable retry must reconstruct both a successful overflow recovery and an
+// exhausted one without dispatching another model request or compaction.
+func TestOverflowDurableRequestReplay(t *testing.T) {
+	for _, exhausted := range []bool{false, true} {
+		name, failCount := "recovered", 1
+		if exhausted {
+			name, failCount = "exhausted", 100
+		}
+		t.Run(name, func(t *testing.T) {
+			store, state, _, ids := buildHistorySession(t, 6)
+			model := &overflowModel{failCount: failCount, text: "recovered"}
+			runner, err := engine.NewTurnRunner(model)
+			if err != nil {
+				t.Fatal(err)
+			}
+			config := application.DefaultConfig()
+			config.Context = newOverflowContextConfig(1)
+			newService := func() *application.Service {
+				s, err := application.NewService(store, ids, testkit.FixedClock{Time: acceptanceTime}, runner, application.WriterAuthority{RuntimeID: "concurrency-runtime", FencingToken: 1}, config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return s
+			}
+			request := application.RunTurnRequest{SessionID: state.ID, RequestID: "durable-overflow", Input: "continue", Sink: &testkit.RecordingSink{}}
+			first, firstErr := newService().RunTurn(context.Background(), request)
+			if !first.TerminalCommitted || len(model.Calls()) != 2 {
+				t.Fatalf("fixture did not reach a two-attempt terminal: %v", firstErr)
+			}
+			before, err := application.ReadWholeStreamPinned(context.Background(), store, state.ID, 256)
+			if err != nil {
+				t.Fatal(err)
+			}
+			replayed, replayErr := newService().RunTurn(context.Background(), request)
+			if replayed.Status != first.Status || replayed.Text != first.Text || !replayed.TerminalCommitted {
+				t.Fatalf("durable overflow replay: first=%s replay=%s err=%v", first.Status, replayed.Status, replayErr)
+			}
+			if exhausted {
+				var original, again *application.Error
+				// Live execution returns the engine's startup classification;
+				// a durable replay returns the recorded provider failure code.
+				if !errors.As(firstErr, &original) || !original.TerminalCommitted || !errors.As(replayErr, &again) || again.Code != "context_overflow" || !again.TerminalCommitted {
+					t.Fatalf("durable failure changed: %v / %v", firstErr, replayErr)
+				}
+			} else if firstErr != nil || replayErr != nil {
+				t.Fatalf("successful replay failed: %v / %v", firstErr, replayErr)
+			}
+			after, err := application.ReadWholeStreamPinned(context.Background(), store, state.ID, 256)
+			if err != nil || !reflect.DeepEqual(before, after) || len(model.Calls()) != 2 {
+				t.Fatalf("replay dispatched or appended work: %v", err)
+			}
+		})
+	}
+}
 
 // overflowModel fails its first failCount calls with a pre-delta,
 // classified context_overflow ProviderFailure (design §15.3/CE-13's own

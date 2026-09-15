@@ -168,8 +168,10 @@ comparison passed with race. The tests exposed and fixed recovery emitting an
 assistant interruption for a tool Item, and request reconstruction rejecting
 `context.prepared` / `process_crash`. An ambiguous tool result is interrupted,
 never automatically re-executed; external exactly-once effects are not promised.
-Kill-during-reconciliation, mid-turn compaction/overflow-retry reconstruction and
-export-publication substeps remain separate gates. See the
+Follow-up evidence adds kills during the recovery transaction and scripted
+Application mid-turn compaction/overflow-retry reconstruction. Native HTTP fault
+combinations, other startup boundaries and export-publication substeps remain
+separate gates. See the
 [evidence ledger](provider-replay-evidence.md) for scope and negative controls.
 
 ## DeepSeek Messages route (2026-09-14)

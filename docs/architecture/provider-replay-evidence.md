@@ -6,6 +6,70 @@ provider certification. The dated live addendum below is bounded acceptance
 evidence, not a stable-release claim. No changes to OTel or the localexec
 backend were made for this slice.
 
+## Recovery interrupted again and context retries (2026-09-15)
+
+The preceding slice was committed locally as `035e12d`.
+`TestRecoveryProcessKilledAtCommit` adds assistant, tool, manual-compaction and
+active-Turn-compaction histories on both sides of recovery COMMIT: eight real
+process kills plus eight same-hook release controls. Seeds are validated
+canonical fixtures, not another live model run. The child opens SQLite and calls
+**the same `reconcileAll` and reconciler used by Launch**, before readiness and
+heartbeat construction. It uses existing commit hooks, not a new production
+Launch callback. The successor and third host use actual Launch.
+
+The supported 3s lease profile blocks early takeover, then expires naturally;
+no row or clock is edited. Pre-COMMIT death leaves no recovery facts, post-COMMIT
+death preserves exactly one whole batch. Recovery checks original command/CallID
+lineage, deterministic event IDs, stream-derived timestamps, valid replay and no
+duplicate facts on repeated startup. The active-compaction seed gives its start
+a different CommandID from the Turn, matching production; the failure is in the
+Turn's recovery batch. Recovered request results must also reconstruct correctly.
+This is transaction-level crash evidence, not every Launch stage or multi-session
+candidate iteration.
+
+`TestOverflowDurableRequestReplay` exposed failed reconstruction of both successful
+and exhausted overflow retries. The walker now accepts an explicit overflow-retry
+preparation with a consecutive attempt index and fresh decision ID, rejecting
+duplicates, skipped attempts, reused decisions, wrong triggers, absent prior
+requests and retries after usage. A fresh Service returns the durable terminal
+result without a new model call or event. Exhausted replay returns the canonical
+`context_overflow` error; the live execution API's `model_startup` wrapper remains
+unchanged.
+
+Request reconstruction now first reuses bounded Domain replay over the full pinned
+history, validating compaction brackets across CommandIDs. The command walker
+accepts only `runtime_recovered` immediately before matching process-crash closure;
+it does not discard arbitrary context events. The failure remains in returned
+evidence. This adds a linear read-only validation pass, not another persistent
+history or public extension point.
+
+`TestMidTurnCompactionDurableReplay` uses the real Application loop with in-memory
+adapters and a scripted model/summarizer. Calibration measures initial/post-tool
+envelopes; a fresh fixture must complete one mid-turn compaction and one tool.
+Cold Service reconstruction preserves its result without new model/summary calls
+or appends. The initial oversized-tool fixture correctly failed the 10% whole-
+request shrink guard. The fixture was bounded to leave actual shrink headroom;
+production validation was not weakened.
+
+The recovery kill matrix and focused context/request tests passed two repeated
+race runs. Three private Go overlays supplied negative evidence: the previous
+walker rejects valid overflow/recovered-compaction cases; removing Domain replay
+accepts foreign compaction IDs, failing the adversarial tests; wall-clock recovery
+timestamps fail deterministic-record assertions in the kill/control matrix.
+Production working-tree files were not edited by these overlays.
+
+Final checks: `go test ./...`, `go vet ./...`, full package race runs for
+Application/Runtime/Composition, Windows amd64 cross-vet for Application/Runtime,
+documentation/architecture guards and `git diff --check` all passed. The final
+recovery matrix and focused request tests also passed their `-race -count=2`
+runs. These are local checks; no remote CI or merge is implied.
+
+Remaining gates: full Launch/multi-candidate crash injection, native HTTP overflow
+and mid-turn-compaction crash combinations, exporter publication substeps,
+power-loss/corrupt-disk recovery and arbitrary external-tool effects. No schema
+change, public SDK expansion, paid request, real credential or OTel modification
+is involved. Existing malformed history is not rewritten.
+
 ## Process-kill persistence boundaries (2026-09-15)
 
 `TestMessagesProcessCrashRecovery` adds six real process-death boundaries, each
@@ -81,10 +145,11 @@ checks pass for an unrelated reason. Verification results:
   passed.
 - Documentation/architecture guards and `git diff --check`: passed.
 
-Limits: killing **during reconciliation**, mid-turn compaction/overflow-retry
+At that checkpoint, killing **during reconciliation**, mid-turn compaction/overflow-retry
 request reconstruction, export-publication substeps, power-loss/disk corruption,
 non-cooperative drivers and arbitrary external-tool reconciliation remain separate
-obligations. This fix does not rewrite already malformed historical recovery
+obligations; the follow-up above records their additional bounded coverage.
+This fix does not rewrite already malformed historical recovery
 batches or their audit chains. No remote calls, real credentials, paid budget, OTel
 changes or stable SDK claims are involved. The earlier uncaptured live failure
 remains unexplained.

@@ -11,15 +11,19 @@ import (
 // contiguous Session view. RecordedEvent carries no AppendID, so admission
 // linkage is established by the unique CommandID plus adjacent start pair.
 //
-// The walk is Apply-equivalent (admit_turn → open_assistant → idle_in_turn →
-// open_tool → terminal) and does not call Apply: there is no compact Session
-// here. Illegal order is store_corrupt. Admission ItemID is only the stable
+// Domain replay validates the complete pinned lifecycle, including compaction
+// brackets whose commands differ from the Turn's. The command walk validates
+// admission, attempt companions and terminal result projection. Illegal order
+// is store_corrupt. Admission ItemID is only the stable
 // RunTurnResult.ItemID; later Steps and tools use new ItemIDs.
 func ReconstructRequestResult(record CommandRequestRecord, records []domain.RecordedEvent) (RunTurnResult, error) {
 	if err := validateCommandRequestRecord(record); err != nil {
 		return RunTurnResult{}, corruptRequestResult(err.Error())
 	}
 	if err := validateRequestView(record.SessionID, records); err != nil {
+		return RunTurnResult{}, corruptRequestResult(err.Error())
+	}
+	if _, err := domain.Replay(records); err != nil {
 		return RunTurnResult{}, corruptRequestResult(err.Error())
 	}
 	matching := make([]domain.RecordedEvent, 0, 8)
@@ -122,6 +126,28 @@ func admitRequestCommand(records []domain.RecordedEvent, record CommandRequestRe
 }
 
 func (walk *requestWalk) step(records []domain.RecordedEvent, index int) (int, error) {
+	if failed, ok := records[index].Event.(domain.ContextCompactionFailed); ok {
+		// The Host closes a dangling compaction in the SAME atomic recovery
+		// batch/Turn lineage, although its start used a different command.
+		// The full Domain replay above verified that bracket. Do not ignore
+		// arbitrary context facts: this one must precede process-crash closure.
+		if failed.Code != "runtime_recovered" || index+1 >= len(records) {
+			return 0, fmt.Errorf("misplaced compaction recovery")
+		}
+		var crash bool
+		switch event := records[index+1].Event.(type) {
+		case domain.AssistantMessageInterrupted:
+			crash = walk.state == reconstructOpenAssistant && event.Code == "process_crash"
+		case domain.ToolCallInterrupted:
+			crash = walk.state == reconstructOpenTool && event.Code == "process_crash"
+		case domain.TurnInterrupted:
+			crash = walk.state == reconstructIdleInTurn && event.Reason == "process_crash"
+		}
+		if !crash {
+			return 0, fmt.Errorf("compaction recovery is not followed by process-crash closure")
+		}
+		return index + 1, nil
+	}
 	switch walk.state {
 	case reconstructOpenAssistant:
 		return walk.stepOpenAssistant(records, index)
@@ -141,7 +167,15 @@ func (walk *requestWalk) stepOpenAssistant(records []domain.RecordedEvent, index
 			return 0, fmt.Errorf("context preparation does not match open assistant")
 		}
 		if walk.preparation != nil || walk.sawRequest || walk.sawUsage {
-			return 0, fmt.Errorf("duplicate or misplaced context preparation")
+			prior := walk.preparation
+			if prior == nil || !walk.sawRequest || walk.sawUsage || event.Trigger != domain.ContextTriggerOverflowRetry ||
+				prior.AttemptIndex == 0 || event.AttemptIndex <= prior.AttemptIndex || event.AttemptIndex-prior.AttemptIndex != 1 ||
+				event.ContextDecisionID == "" || event.ContextDecisionID == prior.ContextDecisionID {
+				return 0, fmt.Errorf("duplicate or misplaced context preparation")
+			}
+			// Only an explicitly identified pre-delta overflow retry starts a
+			// fresh attempt on the same Item. Usage/terminal facts are not reset.
+			walk.sawRequest = false
 		}
 		walk.preparation = &event
 		return index + 1, nil
