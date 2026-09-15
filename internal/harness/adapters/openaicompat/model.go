@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -92,6 +94,8 @@ type Model struct {
 	idleTimeout time.Duration
 	maxRequest  int
 	maxSSELine  int
+	closeOnce   sync.Once
+	closed      atomic.Bool
 }
 
 var (
@@ -183,11 +187,30 @@ func New(cfg Config) (*Model, error) {
 	if headerTimeout == 0 {
 		headerTimeout = defaultResponseHeaderTimeout
 	}
-	model.client = cloneHTTPClient(cfg.HTTPClient, headerTimeout)
 	if err := model.Identity().Validate(); err != nil {
 		return nil, err
 	}
+	model.client = cloneHTTPClient(cfg.HTTPClient, headerTimeout)
 	return model, nil
+}
+
+// Close releases the model's private idle connection pool after all streams
+// have drained. It is not a substitute for canceling and closing live streams.
+// Standard transports are always created/cloned by cloneHTTPClient; arbitrary
+// injected RoundTrippers are borrowed and must not be closed here.
+func (m *Model) Close() error {
+	if m == nil {
+		return nil
+	}
+	m.closeOnce.Do(func() {
+		m.closed.Store(true)
+		if m.client != nil {
+			if transport, ok := m.client.Transport.(*http.Transport); ok && transport != nil {
+				transport.CloseIdleConnections()
+			}
+		}
+	})
+	return nil
 }
 
 func (m *Model) Identity() engine.RequestIdentity {
@@ -212,7 +235,7 @@ func (m *Model) Identity() engine.RequestIdentity {
 }
 
 func (m *Model) Stream(ctx context.Context, request engine.ModelRequest) (engine.ModelStream, error) {
-	if m == nil || m.client == nil {
+	if m == nil || m.client == nil || m.closed.Load() {
 		return nil, startupFailure(engine.FailureClassPermanent, "provider_permanent", 0, "", "invalid adapter")
 	}
 	if ctx == nil {

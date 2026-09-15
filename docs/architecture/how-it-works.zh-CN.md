@@ -134,10 +134,16 @@ OpenAI 兼容流会变成统一模型流，并记录用量、限制输入输出�
 
 早期账本主要列测试，没有详细踩坑叙述，这是文档缺口。后续原生工具消息和 Secret
 脱敏仍保持在 Adapter 内，没有把供应商分支塞进 Application。
+内部收口发现共同测试依赖固定 chunk 数、并发测试即使一条请求被拒仍能通过。
+现在两个真实 adapter 都验收完整文本/工具/终态，并发夹具必须得到两条可用流。
+见[后续证据](provider-internal-closure-evidence.md)。
+进一步的本地测试区分 A/B 请求、只取消 A，并确认真实 HTTP₂ 协商、同连接复用及
+自有连接池与原调用方连接池隔离。
 
 ### 仍未完成
 
-目前只有一类 OpenAI 兼容 Provider，没有多 Provider 路由或真实密钥 CI。
+本合同覆盖 Chat Completions；实验性 SDK-assisted Messages 路线见下节。
+没有公开 Provider SDK、运行时多 Provider 路由或真实密钥 CI。
 
 <!-- contract: docs/architecture/provider-replay.md -->
 ## Provider 协议状态回放
@@ -347,6 +353,11 @@ Host 负责准入、取消和排空；摘要、checkpoint 校验与持久事实�
 
 开发发现生产 Clock/ID 缺失、“未归类等于无限制”以及 Adapter 黑名单会漏掉未来包。
 这些都变成真实实现和穷尽式自动测试。
+后续评审发现模型级 HTTP 池不归 teardown 管理。现在启动回滚与正常关闭共用
+排空后关闭 Provider 的路径，不碰借用的 transport；测试检查真实连接与匹配租约，
+不只检查 Close 计数。见[内部 Provider 证据](provider-internal-closure-evidence.md)。
+真实 stock 二进制还覆盖对话/自动摘要中的 EOF、SIGTERM，再由第二个二进制接管
+同一数据库。这补充进程级证据，不取代进程内资源归属验证。
 
 ### 仍未完成
 

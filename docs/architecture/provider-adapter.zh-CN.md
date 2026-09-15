@@ -1,5 +1,14 @@
 # 已实现 Provider Adapter 合同
 
+2026-09-15 内部收口：`Model.Close()` 在流排空后关闭自有 HTTP 连接池；注入的
+非标准 transport 归调用方，标准 transport 只关闭克隆副本，关闭后拒绝新请求。
+Composition 统一负责正常关闭和启动回滚。两个 HTTP adapter 都运行共同语义测试，
+比较完整文本与工具顺序而非 chunk 数，原生 framing/state/usage 验证继续保留。
+见[证据](provider-internal-closure-evidence.md)；以英文 [provider-adapter.md](provider-adapter.md) 为准。
+
+后续验证覆盖不同请求并发、只取消其中一条、usage/工具输出不串用；TLS 测试确认
+实际协商 HTTP₂、同连接复用、自有池与调用方原有池隔离。不据此声称远端厂商认证。
+
 - 状态：已实现内部合同
 - 稳定级别：v1.0 之前为 `experimental`
 - 成熟度：pre-v0，尚非通用可用（GA）发布

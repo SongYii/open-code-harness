@@ -21,6 +21,18 @@ test-only production branches for the capabilities it does deliver.
   plan is not a substitute for the design contract.
 - **Research evidence** — records comparison or evaluation inputs. It informs
   decisions but does not become a requirement without adoption in a spec.
+- **Draft proposal** — a design under review, not an accepted requirement,
+  approved implementation plan, or claim of implemented behavior.
+
+## Proposals under review
+
+- [Provider startup extensibility: contract and architecture review](superpowers/specs/2026-09-15-provider-startup-extensibility-design.md)
+  ([中文方案](superpowers/specs/2026-09-15-provider-startup-extensibility-design.zh-CN.md)):
+  public API remains draft. Internal semantic/lifecycle steps 1–2 are approved;
+  the [implementation plan](superpowers/plans/2026-09-15-provider-internal-closure.md)
+  and [verification evidence](architecture/provider-internal-closure-evidence.md)
+  track that bounded scope. Replay identity, SDK publication and external
+  consumer requirements remain separate gates. No Provider SDK is published.
 
 ## Current authoritative documents
 

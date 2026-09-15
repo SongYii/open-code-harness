@@ -35,7 +35,7 @@ a `WriterAuthority` snapshot, and reads authority per append. Lease loss never
 reopens the same host instance.
 
 `Open` never returns a non-nil `Assembly` with a non-nil error. Every failure
-after the host has launched attempts reverse-order cleanup before returning.
+after the host has launched uses the same `Assembly.Close` cleanup path before returning.
 If teardown cannot be proven, it stops renewal without releasing ownership
 and requires process termination. With successful cleanup, a failed
 assembly never leaves a lease held or a database locked. When a release itself
@@ -105,11 +105,18 @@ The Application service is constructed with a `tools.Slot` Approver so an
 ACP server can attach without rebuilding the service.
 
 `Close()` stops admission, cancels/drains operations while retaining heartbeat,
-closes MCP and localexec, stops host loops, releases the matching lease, closes
+closes MCP, localexec and Provider, stops host loops, releases the matching lease, closes
 store, then shuts down the existing telemetry adapter. `Config.ShutdownTimeout`
 (default 10s) bounds shutdown; timeout reports unproven teardown, stops renewal,
 and requires process termination rather than same-instance restart. Concurrent
-callers share the first result. Startup rollback also owns command-runner cleanup.
+callers share the first result. Each constructed Provider/command/MCP resource
+is registered on the assembly immediately, so startup rollback uses that same
+bounded ordering. A Provider close failure/timeout abandons the host without
+explicit lease release or store close. Builtin model close releases its private
+HTTP connection pool; it does not close injected nonstandard transports or the
+source transport from which its pool was cloned. Streams must drain first;
+model close is not an active-request cancellation primitive. See the
+[internal Provider closure evidence](provider-internal-closure-evidence.md).
 Abandoning an `Assembly` without `Close` leaks the SQLite handle and the host
 goroutines; this is stated, not defended against.
 
