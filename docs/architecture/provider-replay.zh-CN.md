@@ -117,9 +117,10 @@ Messages 还通过了 8 个本地在途生命周期场景：普通对话和手�
 中断，不自动重做；这不承诺外部副作用 exactly-once。后续已增加恢复事务中
 再次强杀，以及脚本模型下回合内压缩／overflow retry 的请求重建验证。进一步
 补齐混合多会话恢复中途强杀，以及原生 Messages 回合内 checkpoint 提交前后强杀。
-原生 Messages **尚未实现 HTTP overflow 分类**：不读错误正文的边界将
-400／413／422 记为永久失败，不据此压缩重试；本地 HTTP 拒绝和冷重放测试
-明确锁定这一限制。其他启动阶段、overflow 识别／重试及导出发布子步骤仍需独立验证。
+原生 Messages 现已支持下述严格限定的 HTTP 400 overflow 识别，复用核心有界压缩重试；
+其他状态及不明确的错误正文仍按原有分类拒绝。新增三个强杀场景覆盖 overflow 摘要
+提交前后、以及重试回答提交前。其他启动阶段、真实提供方 overflow 验收及导出发布
+子步骤仍需独立验证。
 完整范围和反向验证见[证据台账](provider-replay-evidence.md)。
 
 ## DeepSeek Messages 路线（2026-09-14）
@@ -131,10 +132,42 @@ Composition、CLI、eval、ACP/in-process 使用同一显式选择；默认路�
 
 主模块固定 `anthropic-sdk-go v1.72.0`（MIT），复用请求类型、HTTP 执行和按 index 累积
 内容；SDK 类型禁止越过 Adapter 边界。关闭 SDK 环境凭据、自动重试和重定向，不引入其
-工具运行器或第二份历史。只接受 HTTP 200 + `text/event-stream`；错误正文不读取，直接关闭，
+工具运行器或第二份历史。只接受 HTTP 200 + `text/event-stream` 作为模型流；除下述
+HTTP 400 JSON 的有界 overflow 检查外，错误正文不读取、直接关闭，
 带请求/响应对象的 SDK 错误被转换为固定安全分类。私有 HTTP transport 的 header/TLS 超时
 分别为 30/10 秒，响应 header 上限 64 KiB；body 单次读取空闲超时 60 秒。取消会关闭响应，
 Close 仅执行一次且失败不允许提交完成；没有后台 decoder goroutine。
+
+### HTTP context overflow 识别（2026-09-15）
+
+这是实验性路线的内部行为，不增加插件或 SDK API。只检查 HTTP 400 且 MIME 为
+`application/json` 的响应，在 SSE 准入之前最多读 4 KiB 加一个越界检测字节，要求
+在绝对 2 秒期限内读到 EOF。滴流不会重置期限；取消／超时关闭 body 且仅关闭一次。
+读／关闭失败、超时、过大、截断、重复 JSON 键或损坏 Unicode 都放弃识别。与流式
+响应相同，注入的 transport 必须支持 Close 解除 Read 阻塞。正文和正文中的 request ID
+不进入错误、事件、运行时输出或遥测；只返回固定安全信息、HTTP 状态和稳定错误码。
+
+采用封闭 JSON 错误对象：`type` 必须为 `invalid_request_error`，可选 `code` 只能为
+null 或同值，可选 `param` 只能为 null。根 `type` 若存在必须为 `error`；可选
+`request_id` 必须为字符串、随后丢弃；未知字段拒绝。消息必须完整匹配受支持的
+prompt-too-long 短格式、其 tokens/maximum 数值格式，或 DeepSeek 最大上下文数值
+诊断格式。数值必须是正 uint64 且确实超限；DeepSeek 的请求总量必须等于输入加输出，
+输出本身还必须小于窗口。引用片段、任意后缀、泛化的 max_tokens 信息、臆造错误码
+都不匹配。413 是字节限制，不是 token 诊断；413／422 不进入此解析器。
+
+证据分级：[DeepSeek 兼容文档](https://api-docs.deepseek.com/guides/anthropic_api/)说明接口，
+[Anthropic 错误文档](https://platform.claude.com/docs/en/api/errors)说明 JSON 结构和 413 含义，
+[上下文文档](https://platform.claude.com/docs/en/build-with-claude/context-windows)说明 400 的
+prompt-too-long 诊断。DeepSeek 数值变体来自其仓库中的[用户一手报告](https://github.com/deepseek-ai/DeepSeek-V3/issues/1102)，
+不是官方稳定保证，也不是本轮真实接口实测。未来未知格式保守拒绝，不承诺识别所有现网错误。
+
+识别后返回 `CodeModelStartup`／`context_overflow`，Adapter 的 `Retryable=false`，SDK
+自动重试仍关闭。只有 Application 可强制压缩、要求请求估算至少缩小 10%、持久化新的
+decision 和连续 attempt，再按 `MaxOverflowCompactionsPerTurn` 有界重试。摘要失败或
+次数耗尽终止；HTTP 200 中的 SSE 错误保持 stream failure，不提升为 pre-delta overflow。
+不动态调低模型窗口、不改历史事件，也不增加 Provider 自有重试／工具循环。
+
+### 完成准入与回放完整性
 
 原始 SSE 校验保留：单行 256 KiB、event 1 MiB / 1,024 data 行、总流 8 MiB；重复字段、
 损坏 Unicode、不支持的 shape、错误生命周期和损坏工具参数在 SDK 修复之前拒绝。

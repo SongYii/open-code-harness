@@ -47,7 +47,7 @@ type crashedMessages struct {
 // in for process death. Controls release the SAME hook and must complete.
 func TestMessagesProcessCrashRecovery(t *testing.T) {
 	t.Setenv(crashKeyEnv, "local-fixture-only")
-	boundaries := []string{"assistant_before_commit", "tool_before_execution", "tool_after_effect", "summary_before_commit", "summary_after_commit", "midturn_before_commit", "midturn_after_commit", "audit_before_export"}
+	boundaries := []string{"assistant_before_commit", "tool_before_execution", "tool_after_effect", "summary_before_commit", "summary_after_commit", "midturn_before_commit", "midturn_after_commit", "overflow_before_commit", "overflow_after_commit", "overflow_retry_before_commit", "audit_before_export"}
 	var crashed []crashedMessages
 	// Kill all children before recovery so their real 30s leases age together.
 	// This avoids both parallel global-env mutation and serial lease waits.
@@ -245,6 +245,22 @@ func assertMessagesCrashBoundary(t *testing.T, point crashCheckpoint, records []
 				t.Fatal("crash did not occur in mid-turn compaction")
 			}
 		}
+	case "overflow_before_commit", "overflow_after_commit", "overflow_retry_before_commit":
+		wantRequests := 1
+		if point.Boundary != "overflow_before_commit" {
+			wantSummary = 1
+		}
+		if point.Boundary == "overflow_retry_before_commit" {
+			wantRequests = 2
+		}
+		if crashEventCount(tail, domain.EventContextCompactionStarted) != 1 || crashEventCount(tail, domain.EventModelRequestRecorded) != wantRequests {
+			t.Fatal("overflow crash missed summary/retry bracket")
+		}
+		for _, record := range tail {
+			if e, ok := record.Event.(domain.ContextCompactionStarted); ok && e.Trigger != domain.ContextTriggerOverflowRetry {
+				t.Fatal("crash did not occur during overflow recovery")
+			}
+		}
 	}
 	for kind, want := range map[string]int{
 		domain.EventAssistantMessageCompleted:  wantAssistant,
@@ -364,6 +380,9 @@ func recoverMessagesCrash(t *testing.T, fixture crashedMessages) {
 	}
 	if point.Boundary == "midturn_after_commit" {
 		wantNew = 1 // Tool finished; next assistant has not started yet.
+	}
+	if point.Boundary == "overflow_before_commit" {
+		wantNew = 3 // Compaction failure, active assistant and Turn interruption.
 	}
 	if len(records) != len(fixture.records)+wantNew {
 		t.Fatalf("recovery appended %d events, want %d", len(records)-len(fixture.records), wantNew)

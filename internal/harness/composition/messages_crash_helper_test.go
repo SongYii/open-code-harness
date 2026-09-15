@@ -27,6 +27,7 @@ func TestMessagesProcessCrashHelper(t *testing.T) {
 		t.Skip("subprocess fixture only")
 	}
 	midTurn := strings.HasPrefix(boundary, "midturn_")
+	overflow := strings.HasPrefix(boundary, "overflow_")
 	config := Config{
 		WorkspaceRoot: filepath.Join(root, "workspace"),
 		DatabasePath:  filepath.Join(root, "harness.db"),
@@ -40,8 +41,11 @@ func TestMessagesProcessCrashHelper(t *testing.T) {
 	config.Diagnostics = io.Discard
 	config.Policy = policy.ModeAllowWrites
 	config.Context.TailPercent = 10
-	if midTurn {
+	if midTurn || overflow {
 		config.Context.TargetPercent = 30
+		config.Context.MaxOverflowCompactionsPerTurn = 1
+	}
+	if midTurn {
 		if err := os.WriteFile(filepath.Join(config.WorkspaceRoot, "large.txt"), []byte(strings.Repeat("bounded tool result\n", 200)), 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -51,7 +55,7 @@ func TestMessagesProcessCrashHelper(t *testing.T) {
 	config.Provider.APIKeyEnv = crashKeyEnv
 	t.Setenv(crashKeyEnv, "local-fixture-only")
 	ctx := context.Background()
-	var armed, hit atomic.Bool
+	var armed, hit, overflowed atomic.Bool
 	var requests atomic.Int32
 	var store *sqlite.Store
 	var point crashCheckpoint
@@ -84,15 +88,24 @@ func TestMessagesProcessCrashHelper(t *testing.T) {
 		r.Body.Close()
 		target := armed.CompareAndSwap(true, false)
 		summaryRequest := r.Header.Get("X-Och-Request-Purpose") == "compaction"
-		if target && (boundary == "assistant_before_commit" || strings.HasPrefix(boundary, "summary_")) || midTurn && summaryRequest {
+		if overflow && target && !summaryRequest {
+			overflowed.Store(true)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(400)
+			_, _ = io.WriteString(w, messagesOverflowError)
+			return
+		}
+		overflowRetry := boundary == "overflow_retry_before_commit" && overflowed.Load() && !summaryRequest
+		summaryBoundary := strings.HasPrefix(boundary, "summary_") || midTurn || overflow && boundary != "overflow_retry_before_commit"
+		if target && boundary == "assistant_before_commit" || summaryBoundary && summaryRequest || overflowRetry {
 			want := domain.EventAssistantMessageCompleted
-			if strings.HasPrefix(boundary, "summary_") || midTurn {
+			if summaryBoundary {
 				want = domain.EventContextCompactionCompleted
 				if r.Header.Get("X-Och-Request-Purpose") != "compaction" {
 					t.Error("wrong request purpose")
 				}
 			}
-			if boundary == "summary_after_commit" || boundary == "midturn_after_commit" {
+			if boundary == "summary_after_commit" || boundary == "midturn_after_commit" || boundary == "overflow_after_commit" {
 				store.SetCommitHook("after_publish", func() {
 					if !hit.Load() {
 						records := messagesLifecycleRecords(t, store, point.Session)
@@ -113,11 +126,7 @@ func TestMessagesProcessCrashHelper(t *testing.T) {
 		text := "Synthetic completed response."
 		tool := target && strings.HasPrefix(boundary, "tool_")
 		if summaryRequest {
-			var summary strings.Builder
-			for _, heading := range []string{"Objective", "User Constraints", "Established Facts", "Work Completed", "Files and Commands", "Open Work", "Risks and Unknowns", "Continuation"} {
-				fmt.Fprintf(&summary, "## %s\nSynthetic fact.\n", heading)
-			}
-			text = summary.String()
+			text = messagesOverflowSummary()
 		}
 		if midTurn && target && !summaryRequest {
 			writeCrashMessagesTool(t, w, config.Provider.ModelID, text, "read_file", map[string]string{"path": "large.txt"})
@@ -140,7 +149,7 @@ func TestMessagesProcessCrashHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.HasPrefix(boundary, "summary_") || midTurn {
+	if strings.HasPrefix(boundary, "summary_") || midTurn || overflow {
 		for i := 0; i < 2; i++ {
 			out, err := assembly.Service().RunTurn(ctx, application.RunTurnRequest{SessionID: created.SessionID, RequestID: domain.RunTurnRequestID(fmt.Sprintf("seed-%d", i)), Input: strings.Repeat("synthetic source material ", 160), Sink: &testkit.RecordingSink{}})
 			if err != nil || out.Status != domain.TurnStatusCompleted || hit.Load() {
@@ -222,6 +231,13 @@ func TestMessagesProcessCrashHelper(t *testing.T) {
 			if e, ok := record.Event.(domain.ContextCompactionStarted); ok && e.Trigger != domain.ContextTriggerMidTurn {
 				t.Fatal("fixture compacted outside mid-turn boundary")
 			}
+		}
+	}
+	if overflow {
+		wantRequests = 5 // Two history turns, HTTP rejection, summary, retry.
+		records := messagesLifecycleRecords(t, store, created.SessionID)[point.Baseline:]
+		if !overflowed.Load() || crashEventCount(records, domain.EventContextCompactionStarted) != 1 || crashEventCount(records, domain.EventContextCompactionCompleted) != 1 || crashEventCount(records, domain.EventModelRequestRecorded) != 2 {
+			t.Fatal("overflow control missed compaction/retry bracket")
 		}
 	}
 	if requests.Load() != wantRequests {

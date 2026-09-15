@@ -177,7 +177,11 @@ func TestSDKHTTPRejectsWithoutReadingErrorBodiesOrRetrying(t *testing.T) {
 			var calls atomic.Int32
 			m := fixtureModel(t, func(r *http.Request) (*http.Response, error) {
 				calls.Add(1)
-				return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {"application/json"}, "Location": {"https://must-not-follow.invalid/"}}, Body: body}, nil
+				media := "application/json"
+				if status == 400 {
+					media = "text/plain" // Only 400 JSON is eligible for bounded inspection.
+				}
+				return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {media}, "Location": {"https://must-not-follow.invalid/"}}, Body: body}, nil
 			})
 			stream, err := m.Stream(context.Background(), engine.ModelRequest{Input: "hello"})
 			var failure *engine.ProviderFailure

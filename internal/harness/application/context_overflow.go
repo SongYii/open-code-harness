@@ -10,7 +10,7 @@ import (
 )
 
 // contextOverflowFailureCode is the durable Provider failure code
-// openaicompat/classify.go:103 assigns a pre-delta capacity rejection.
+// the provider adapters assign to a verified pre-delta capacity rejection.
 // Only this exact code, on a startup failure (before any stream event
 // was read), is eligible for overflow recovery (design §15.3, CE-13).
 const contextOverflowFailureCode = "context_overflow"

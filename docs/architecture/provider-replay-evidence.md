@@ -6,6 +6,64 @@ provider certification. The dated live addendum below is bounded acceptance
 evidence, not a stable-release claim. No changes to OTel or the localexec
 backend were made for this slice.
 
+## Native Messages bounded overflow recovery (2026-09-15)
+
+The preceding boundary-evidence slice is local commit `b504510`. Native HTTP
+overflow was unsupported at that checkpoint; this slice intentionally replaces
+the blanket unread-error-body rule with the narrow
+[HTTP overflow contract](provider-replay.md#http-context-overflow-recognition-2026-09-15).
+Only HTTP 400 JSON can be inspected, up to 4 KiB plus a sentinel and an absolute
+2s deadline. Strict complete JSON and message matching classify a pre-stream
+capacity rejection; vendor body text never survives into a returned failure or
+canonical/runtime output. Other statuses still close unread. Classification is
+internal to the experimental route and adds no configuration flag or SDK seam.
+
+`TestMessagesOverflowClassification` exercises positive protocol shapes and
+malformed/ambiguous variants: mismatched types/codes/parameters, quoted or suffixed
+messages, duplicate/escaped duplicate fields, unknown fields, Unicode repair,
+incomplete/concatenated JSON, oversized valid prefixes and invalid token arithmetic.
+`TestMessagesOverflowBodyLimits` checks the exact byte-read cap and close failure.
+`TestMessagesOverflowHTTPDeadlineAndCancellation` uses real local HTTP: the server
+sends a complete matching JSON prefix but keeps the body open with a whitespace
+drip. Neither the prefix nor progress can bypass EOF/deadline requirements; caller
+cancellation and the absolute deadline close the request. Existing unread-body,
+single-close/no-SDK-retry tests remain for non-eligible responses.
+
+`TestMessagesNativeOverflowDurableReplay` uses real Composition, HTTP/SSE, Context
+Engine and SQLite, with two preceding history turns and a one-recovery cap. It
+covers successful recovery, exhausted retry, rejected summary, and an HTTP 200
+SSE error following text content. Assertions require exact request/summary counts,
+overflow-only compaction, same assistant Item, consecutive attempts/fresh decision,
+at least 10% estimated shrink and smaller actual HTTP bodies. Error-body canaries
+and failed-stream text must not reach records, errors or runtime output. A cold
+Assembly replays the original request after server shutdown without new events
+or summary calls, preserving successful or failed canonical outcomes.
+
+The process matrix adds three kills with same-hook release controls: overflow
+summary before COMMIT, after COMMIT, and retry response before assistant-completion
+COMMIT. The first needs three recovery facts (compaction failure, assistant and
+Turn interruption); the other two preserve the committed checkpoint and need
+only assistant/Turn interruption. Default-lease natural expiry, dead-provider
+request replay, unchanged committed prefixes, third startup and independent
+audit verification all use the existing production fixtures. Controls must make
+exactly five HTTP requests: two seeds, rejection, summary and retry.
+
+Verification passed: full `go test ./...`, full `go vet ./...`, full Messages
+adapter/Composition package race runs, two repeated race runs of the focused
+classification/native-retry tests and the three new process boundaries, Windows
+amd64 cross-vet, documentation/architecture guards and `git diff --check`.
+Three private Go overlays failed as expected: disabling recognition breaks the
+native successful-recovery case; loose substring matching admits malformed or
+ambiguous bodies and fails the negative matrix; removing the oversize sentinel
+admits a truncated valid prefix and fails the byte-limit test. Production files
+were not rewritten for these mutations. No remote CI or merge is implied.
+
+All traffic here is synthetic loopback. The numeric DeepSeek shape is grounded
+in a first-hand repository issue, not a new paid/live certification; the official
+compatibility documentation does not promise a dedicated overflow code. Unknown
+future variants remain fail-closed. No real credentials, paid budget, OTel,
+schema migration, default-route change or public API expansion is involved.
+
 ## Multi-session recovery and native Messages context boundaries (2026-09-15)
 
 The preceding slice was committed locally as `2355f0d`. This follow-up changes
@@ -36,7 +94,7 @@ cold original-request replay against the dead provider, repeated startup and
 independent audit verification reuse the existing process matrix. The fixture
 uses supported 30% target / 10% tail settings without weakening shrink guards.
 
-An important limit was confirmed: **the native Messages route does not currently
+At that checkpoint, an important limit was confirmed: **the native Messages route did not
 classify HTTP context overflow**. Its adapter intentionally closes rejected HTTP
 responses without reading their bodies. Status 400, 413 or 422 alone is not a
 model-context diagnosis. `TestMessagesHTTPFailureDurableReplay` sends these
@@ -59,7 +117,7 @@ assertions; omitting compaction-only candidates leaves only three recovered
 sessions and fails the fourth-commit multi-session control. These are local
 checks, not remote CI or a release certification.
 
-Remaining gates include other full Launch stages, native Messages overflow
+Remaining gates at that checkpoint included other full Launch stages, native Messages overflow
 classification/retry, exporter file-publication substeps, power loss/corrupt disk
 and arbitrary external-tool effects. No remote provider, credential, paid budget,
 OTel change, schema migration or public SDK expansion is involved.

@@ -20,8 +20,8 @@ import (
 )
 
 // HTTP status alone does not identify model context overflow. The Messages
-// adapter deliberately never reads error bodies; the generic Application
-// overflow recovery tests must not be mistaken for native route coverage.
+// adapter requires a closed error shape, not a loose overflow substring or an
+// undocumented code. These ambiguous bodies must remain permanent failures.
 func TestMessagesHTTPFailureDurableReplay(t *testing.T) {
 	t.Setenv(crashKeyEnv, "local-fixture-only")
 	for _, status := range []int{400, 413, 422} {

@@ -10,9 +10,13 @@ import (
 )
 
 // Check status and content type BEFORE the SDK reads an unbounded error body or
-// treats a redirect as a successful empty stream. Never read an error body.
+// treats a redirect as a successful empty stream. Only 400 JSON receives the
+// bounded overflow check; no error body is handed to the SDK or retained.
 type httpBoundary struct{ client *http.Client }
-type statusError struct{ status int }
+type statusError struct {
+	status          int
+	contextOverflow bool
+}
 
 func (*statusError) Error() string { return "anthropic: rejected HTTP response" }
 
@@ -45,8 +49,13 @@ func (b *httpBoundary) Do(req *http.Request) (*http.Response, error) {
 	}
 	typ, _, parseErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
 	if response.StatusCode != http.StatusOK || parseErr != nil || typ != "text/event-stream" {
-		_ = response.Body.Close()
-		return nil, &statusError{status: response.StatusCode}
+		overflow := false
+		if response.StatusCode == http.StatusBadRequest && parseErr == nil && typ == "application/json" {
+			overflow = readContextOverflow(req.Context(), response.Body)
+		} else {
+			_ = response.Body.Close()
+		}
+		return nil, &statusError{status: response.StatusCode, contextOverflow: overflow}
 	}
 	return response, nil
 }

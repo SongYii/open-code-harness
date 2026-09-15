@@ -117,6 +117,12 @@ func (m *Model) Stream(ctx context.Context, request engine.ModelRequest) (engine
 		}
 		var status *statusError
 		if errors.As(err, &status) {
+			if status.contextOverflow {
+				return nil, &engine.Error{Code: engine.CodeModelStartup, Cause: &engine.ProviderFailure{
+					Class: engine.FailureClassPermanent, Code: "context_overflow", HTTPStatus: status.status,
+					SafeMessage: "DeepSeek Messages context window exceeded",
+				}}
+			}
 			return nil, failure(engine.CodeModelStartup, status.status)
 		}
 		return nil, failure(engine.CodeModelStartup, 0) // Never retain SDK request/body errors.
