@@ -1,5 +1,9 @@
 # 已实现 Provider Adapter 合同
 
+2026-09-16 [HTTP₂ 关闭修复](provider-http2-shutdown-evidence.md)：流排空后显式关闭自有
+socket，不再只扫描空闲连接。关闭会拒绝新拨号、取消并等待已有拨号及其清理，缓存错误。
+TLS/HTTP₂ 协商和调用方原有连接池保持不变，不用等待或重试掩盖竞态。
+
 2026-09-15 内部收口：`Model.Close()` 在流排空后关闭自有 HTTP 连接池；注入的
 非标准 transport 归调用方，标准 transport 只关闭克隆副本，关闭后拒绝新请求。
 Composition 统一负责正常关闭和启动回滚。两个 HTTP adapter 都运行共同语义测试，

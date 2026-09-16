@@ -16,6 +16,10 @@ transport 归调用方。不新增回放 schema、请求正文格式或公开 SD
 
 ## 为什么先做这一刀
 
+2026-09-16 [HTTP₂ 关闭修复](provider-http2-shutdown-evidence.md)同时覆盖 Messages 与
+Chat：流排空后显式回收自有 socket，处理尚未结束的拨号和清理错误，不再只扫空闲池。
+回放状态、请求正文和持久化事件 schema 不变。
+
 真正缺失的不是注册表，而是消息结构丢弃了厂商继续工具回合所需的状态。
 DeepSeek 当前合同要求：请求带 tools 时，回传此前所有 assistant 消息的
 `reasoning_content`，包括没有调用工具的回复；不带 tools 时，服务端忽略该历史字段。

@@ -229,7 +229,7 @@ first-load/invalid-checkpoint full scans and full application replay are not
 made bounded-memory by this change. No runtime hot swap, alternate summarizer,
 checkpoint schema, or arbitrary event-writing extension is introduced.
 
-## Subsequent slices (not implemented here)
+## Subsequent slices and internal progress
 
 The [Provider contract and architecture review](../superpowers/specs/2026-09-15-provider-startup-extensibility-design.md)
 separates accepted internal conformance/lifecycle work from the still-draft
@@ -240,7 +240,7 @@ requires a concrete external integration need before its API is frozen.
 | Order | Extension | Required boundary before publication |
 | --- | --- | --- |
 | 2 | Provider | Public request/response DTOs and adapter around existing engine port; preserve capability/usage/failure contracts, no internal aliases |
-| 3 | Execution environment | Separate filesystem/command/process lifecycle contracts; remove MCP's assumption of a local `exec.Cmd`; preserve truthful enforcement reporting and guarded writes |
+| 3 | Execution environment | Internal process ownership slice removes MCP's raw `exec.Cmd` dependency; localexec owns managed stdio lifecycle. Filesystem/one-shot command contracts, truthful enforcement and guarded writes remain unchanged. Public/remote execution is still deferred; see the [slice plan](../superpowers/plans/2026-09-15-mcp-process-ownership.md). |
 | 4 | Tool authorization policy | Pure decision DTOs with immutable risk catalog and non-bypassable core guards; approval remains a separate port |
 | 5 | Eval/storage if justified | Offline evaluator inputs from canonical evidence; storage replacement only after full append/resolve/fencing/audit/recovery conformance, not a generic plugin interface |
 

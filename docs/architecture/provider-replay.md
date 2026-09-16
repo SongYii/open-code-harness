@@ -21,6 +21,11 @@ by a second real launcher loading/recovering the same durable session. See the
 
 ## Why this slice precedes more extension points
 
+The 2026-09-16 [HTTP2 shutdown repair](provider-http2-shutdown-evidence.md)
+applies equally to Messages and Chat: explicit private socket ownership after
+stream drain replaces idle-only sweeping. Pending dials and cleanup errors are
+accounted for. It changes no replay state, request body or durable event schema.
+
 The first missing capability was not another factory registry. The existing
 message representation discarded state that a real provider requires to continue
 a tool-using conversation. DeepSeek's current documented Chat Completions

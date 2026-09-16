@@ -20,6 +20,12 @@ unchanged unless that supplement explicitly says otherwise.
 
 ## Delivered capability
 
+The 2026-09-16 [HTTP2 shutdown repair](provider-http2-shutdown-evidence.md)
+replaces idle-only cleanup with explicit private socket ownership. After stream
+drain, Model.Close rejects/cancels and accounts for pending dials, closes owned
+sockets even while H2 stream bookkeeping retires, and preserves cleanup errors.
+Standard/custom TLS negotiation and borrowed source pools remain unchanged.
+
 The 2026-09-15 internal closure adds once-owned `Model.Close()` for the private
 HTTP pool, called by Composition after stream drain. Nonstandard injected
 transports remain caller-owned; standard supplied transports are cloned and

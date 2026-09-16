@@ -161,6 +161,11 @@ The internal closure found that shared tests assumed a fixed text chunk count
 and a concurrent test could pass despite a rejected request. Both HTTP adapters
 now run semantic text/tool/completion checks; the concurrency fixture requires
 two usable streams. See the [follow-up evidence](provider-internal-closure-evidence.md).
+
+An H2 cancellation regression showed that stream Close can precede transport
+bookkeeping cleanup. Both adapters now own and close private sockets explicitly,
+including pending/late dials, without closing borrowed source pools. See the
+[repair evidence](provider-http2-shutdown-evidence.md).
 Further local tests now distinguish A/B payloads, cancel only A, and prove
 HTTP2 was negotiated with real multiplexing and separate owned/source pools.
 
@@ -695,8 +700,10 @@ path.
 
 ### Implementation
 
-`internal/harness/adapters/mcp` wraps the pinned official SDK behind a confined
-command port supplied by Composition. See the [contract](mcp-client.md) and
+`internal/harness/adapters/mcp` uses the pinned SDK's IOTransport over a managed
+byte channel supplied by Composition. localexec owns process startup, quota,
+pipes, waiting and process-group shutdown; MCP holds no raw OS process handle.
+See the [contract](mcp-client.md) and
 [evidence](mcp-client-evidence.md).
 
 ### Problems found and fixes

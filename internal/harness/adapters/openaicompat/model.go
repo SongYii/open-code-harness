@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/SongYii/open-code-harness/internal/harness/adapters/internal/httpresource"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
 )
@@ -95,6 +96,8 @@ type Model struct {
 	maxRequest  int
 	maxSSELine  int
 	closeOnce   sync.Once
+	connections *httpresource.Connections
+	closeErr    error
 	closed      atomic.Bool
 }
 
@@ -191,10 +194,11 @@ func New(cfg Config) (*Model, error) {
 		return nil, err
 	}
 	model.client = cloneHTTPClient(cfg.HTTPClient, headerTimeout)
+	model.connections = httpresource.Own(model.client.Transport)
 	return model, nil
 }
 
-// Close releases the model's private idle connection pool after all streams
+// Close releases the model's private connections after all streams
 // have drained. It is not a substitute for canceling and closing live streams.
 // Standard transports are always created/cloned by cloneHTTPClient; arbitrary
 // injected RoundTrippers are borrowed and must not be closed here.
@@ -204,13 +208,9 @@ func (m *Model) Close() error {
 	}
 	m.closeOnce.Do(func() {
 		m.closed.Store(true)
-		if m.client != nil {
-			if transport, ok := m.client.Transport.(*http.Transport); ok && transport != nil {
-				transport.CloseIdleConnections()
-			}
-		}
+		m.closeErr = m.connections.Close()
 	})
-	return nil
+	return m.closeErr
 }
 
 func (m *Model) Identity() engine.RequestIdentity {

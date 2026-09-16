@@ -1,5 +1,16 @@
 # MCP 客户端适配器设计（中文摘要）
 
+## 2026-09-15 修订：进程资源归属
+
+经批准的[内部执行层切片](../plans/2026-09-15-mcp-process-ownership.md)取代旧的原始命令
+端口与 SDK 持有进程生命周期的设计。MCP 只持有 Start、字节读写和 Close；Composition
+供应 localexec 受管 stdio 实现，由执行层拥有隔离、启动括号、配额、唯一的 Wait、
+EOF/TERM/KILL 进程组关闭和临时资源。协议仍归 SDK，以 IOTransport 承载，不再使用
+CommandTransport。MCP 的 os/exec 例外移除，启动/握手失败及 SDK 自动关闭的清理
+不确定性必须传到 Composition，阻止错误释放租约。非 POSIX 平台在启动前拒绝。
+本次不发布执行 SDK 或远程后端；具体界限见[当前合同](../../architecture/mcp-client.zh-CN.md)。
+以下历史内容与本修订冲突时，以本修订为准。
+
 **状态：** 已接受（2026-08-30）；本文是与英文规范同步的中文摘要，不是逐字翻译。两者若有分歧，以英文 [2026-08-30-mcp-client-adapter-design.md](2026-08-30-mcp-client-adapter-design.md) 为准。
 
 **审阅问答：** 人类审阅者问了一个直接的问题——如果别的都不依赖它，现在有必要实现吗？答案是：不必要。已实现的合同（Tool runtime、组合根、ACP v1 adapter）今天完全不依赖 MCP 客户端就能正常工作，里程碑顺序里也没有任何一项卡在它上面。这份设计仍然值得现在写——趁调研门的发现还新鲜，把摆放位置、风险分类、审批路由这些问题先钉下来——但这一轮不跟着写实施计划。这跟里程碑 7（TUI 客户端）和 Context Engine 本体现在的状态是同一种做法：已设计（或已接受方向），未承诺实现。`tools.SourceMCP` 在这份设计之后依然是一个"目录里合法但没有适配器"的占位符，直到出现具体的外部工具需求。

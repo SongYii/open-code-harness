@@ -209,3 +209,18 @@ result is recorded above.
 All three follow-up gates are complete in the working tree. No production fix
 was needed for this follow-up; fixture corrections are recorded above. No paid
 model calls, commit, push or merge were performed.
+
+## Subsequent regression warning (2026-09-15)
+
+The baseline above was subsequently committed locally as `b46b48e`. During
+the [MCP ownership slice](mcp-process-ownership-evidence.md), full regression
+found an HTTP2 socket-close timeout in the direct Provider test
+`TestProviderDistinctRequestsAndHTTP2Isolation/chat/http2/cancel=true`.
+Twenty focused race repetitions reproduced four failures. The earlier passing
+commands remain historical observations, not proof of reliable H2 teardown.
+No Provider production code or assertion was changed by that MCP slice. The
+race was still open at that checkpoint. The subsequent 2026-09-16
+[HTTP2 shutdown repair](provider-http2-shutdown-evidence.md) resolves it with
+explicit private socket ownership and pending-dial accounting. Full regression,
+the final affected-package rerun and 100 repetitions of the original failing
+case passed. The original deadline and assertions were not weakened.

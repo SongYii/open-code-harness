@@ -2,6 +2,11 @@
 
 **Status:** Evidence ledger for milestone 9 (plan Tasks 1–8, with Task 4a inserted during implementation)
 
+The original milestone evidence below is historical. The 2026-09-15
+[process-ownership follow-up](mcp-process-ownership-evidence.md) moves OS
+supervision to localexec, replaces raw-command/SDK process ownership and
+records the current tests plus an unresolved Provider regression.
+
 **Contract:** [MCP client adapter — implemented contract](mcp-client.md)
 
 **Design:** [MCP client adapter design](../superpowers/specs/2026-08-30-mcp-client-adapter-design.md)

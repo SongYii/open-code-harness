@@ -1,6 +1,6 @@
 # Internal Provider Conformance and Ownership
 
-- Status: Complete in the working tree; not yet committed
+- Status: Baseline committed as `b46b48e`; subsequent HTTP2 repair verified in the working tree
 - Date: 2026-09-15
 - Approved scope: steps 1–2 of the [Provider design](../specs/2026-09-15-provider-startup-extensibility-design.md)
 - No public SDK, registration, configuration flags, durable schema or OTel API/schema changes

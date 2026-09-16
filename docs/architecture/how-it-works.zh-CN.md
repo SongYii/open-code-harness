@@ -137,6 +137,10 @@ OpenAI 兼容流会变成统一模型流，并记录用量、限制输入输出�
 内部收口发现共同测试依赖固定 chunk 数、并发测试即使一条请求被拒仍能通过。
 现在两个真实 adapter 都验收完整文本/工具/终态，并发夹具必须得到两条可用流。
 见[后续证据](provider-internal-closure-evidence.md)。
+
+HTTP₂ 取消回归发现：流关闭可能早于 transport 内部清理。两个 Adapter 现在显式持有
+并关闭自有 socket，也处理未完成和晚到拨号，不关闭调用方原有池。见
+[修复证据](provider-http2-shutdown-evidence.md)。
 进一步的本地测试区分 A/B 请求、只取消 A，并确认真实 HTTP₂ 协商、同连接复用及
 自有连接池与原调用方连接池隔离。
 
@@ -590,7 +594,9 @@ Checkpoint 保存身份。见[合同](system-prompt-workspace-instructions.md)�
 
 ### 真实实现
 
-`internal/harness/adapters/mcp` 包装锁定版本的官方 SDK；Composition 提供受限进程端口。
+`internal/harness/adapters/mcp` 使用锁定 SDK 的 IOTransport，Composition 提供受管
+字节通道。启动、配额、管道、等待和进程组关闭归 localexec，MCP 不再持有原始 OS
+进程句柄。
 见[合同](mcp-client.md)和[证据](mcp-client-evidence.md)。
 
 ### 遇到的问题与修复

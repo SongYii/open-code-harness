@@ -34,6 +34,10 @@ test-only production branches for the capabilities it does deliver.
   track that bounded scope. Replay identity, SDK publication and external
   consumer requirements remain separate gates. No Provider SDK is published.
 
+The [HTTP2 shutdown repair](superpowers/plans/2026-09-16-provider-http2-shutdown.md)
+and [repair evidence](architecture/provider-http2-shutdown-evidence.md) track the
+follow-up private-connection fix, including the previously reproduced timeout.
+
 ## Current authoritative documents
 
 | Status | Authority | Document | Purpose |
@@ -140,6 +144,8 @@ test-only production branches for the capabilities it does deliver.
 | Implemented | Implemented contract | [MCP client adapter](architecture/mcp-client.md) | Current stdio MCP client: the pinned official Go SDK behind a confined-command port the adapter declares and composition fills, bounded discovery (256 tools, 64 KiB per definition), unconditional `RiskExec` classification, injective untrusted-name qualification, source-aware schema validation that degrades rather than drops, dispatch keyed on `Source`, fail-closed startup, and process-group teardown with proof |
 | Implemented | Reading copy | [MCP 客户端适配器 — 已实现合同](architecture/mcp-client.zh-CN.md) | 与已实现 MCP 客户端适配器合同同步的中文语义阅读版；以英文 [mcp-client.md](architecture/mcp-client.md) 为准 |
 | Complete | Evidence ledger | [MCP client adapter completion evidence / MCP 客户端适配器完成证据](architecture/mcp-client-evidence.md) | Auditable Task 1–8 commits, the five design clauses the implementation overturned (one of them an amendment written the day before), the SDK claim that did not survive pinning a release, measured dependency posture, 26 mutation results, and the two mutations that initially caught nothing |
+| Verified in working tree | Plan | [MCP process ownership](superpowers/plans/2026-09-15-mcp-process-ownership.md) | Internal Start/I/O/Close port; localexec owns process supervision; no execution SDK or remote backend |
+| Verified in working tree | Evidence ledger | [MCP process ownership evidence](architecture/mcp-process-ownership-evidence.md) | Local process/MCP tests and five negative controls passed; the reproduced Provider HTTP2 blocker was subsequently repaired, with full and final affected-package regressions passing |
 | Accepted | Normative design | [MCP evaluation suite](superpowers/specs/2026-09-09-mcp-evaluation-suite-design.md) | Frozen static MCP Subject configuration, in-process-only `mcp_stdio`, evidence-only containment verifiers, two deterministic fixture Scenarios, and a separately claimed live injection-resistance example |
 | Accepted | Reading copy | [MCP 评测套件设计](superpowers/specs/2026-09-09-mcp-evaluation-suite-design.zh-CN.md) | 与 MCP 评测套件英文设计同步的中文阅读版 |
 | Implemented plan | Plan | [MCP evaluation suite implementation plan](superpowers/plans/2026-09-09-mcp-evaluation-suite.md) | Six-step implementation sequence covering frozen configuration, verifiers, real stdio fixtures, the consent-gated live example, synchronized contracts, and verification |

@@ -1,6 +1,9 @@
 package mcp
 
-import "os/exec"
+import (
+	"context"
+	"io"
+)
 
 // ServerConfig names one MCP server this harness may talk to.
 //
@@ -20,28 +23,17 @@ type ServerConfig struct {
 	Args    []string
 }
 
-// Command is one confined, prepared, not-yet-started server subprocess.
-//
-// The MCP stdio transport needs the process handed over unstarted, because
-// its stdin and stdout are the protocol channel: the SDK's own
-// CommandTransport attaches the pipes and calls Start itself. That is why
-// this port yields an *exec.Cmd rather than running anything.
+// Command is a prepared, owned byte channel to a confined server. The
+// implementation owns pipes, OS startup, quota enrollment, the sole wait and
+// process-tree teardown. MCP owns only the protocol spoken on that channel.
 type Command interface {
-	// Cmd returns the prepared, unstarted command. The caller attaches stdio
-	// and starts it.
-	Cmd() *exec.Cmd
-
-	// StartBracket applies the platform's pre-Start resource bracket and
-	// returns its release, to be invoked exactly once after the process has
-	// started. On platforms with no such bracket it is a no-op.
-	StartBracket() func()
-
-	// Register enrolls a started process in the provider's resource quota.
-	Register(pid int) error
-
-	// Close releases the command's temporary resources. It does not stop the
-	// process; this package owns that.
-	Close() error
+	// Start makes one startup attempt. Cancellation after successful startup
+	// does not end the resource lifetime. Close is required even on failure.
+	Start(context.Context) error
+	// Close must unblock I/O, prove teardown, release temporary resources and
+	// cache its result. SDK connection closure may call it concurrently with
+	// owner cleanup. A nil result means cleanup was proven complete.
+	io.ReadWriteCloser
 }
 
 // CommandFactory builds confined server subprocesses.

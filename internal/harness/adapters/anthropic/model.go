@@ -42,6 +42,7 @@ type Model struct {
 	http      *httpBoundary
 	closeOnce sync.Once
 	closed    atomic.Bool
+	closeErr  error
 }
 
 var errConfig = errors.New("anthropic: invalid DeepSeek Messages configuration")
@@ -92,12 +93,10 @@ func (m *Model) Close() error {
 	m.closeOnce.Do(func() {
 		m.closed.Store(true)
 		if m.http != nil {
-			if transport, ok := m.http.client.Transport.(*http.Transport); ok && transport != nil {
-				transport.CloseIdleConnections()
-			}
+			m.closeErr = m.http.connections.Close()
 		}
 	})
-	return nil
+	return m.closeErr
 }
 
 func (m *Model) Identity() engine.RequestIdentity { return m.identity }
