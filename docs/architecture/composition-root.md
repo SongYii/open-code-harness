@@ -35,7 +35,7 @@ a `WriterAuthority` snapshot, and reads authority per append. Lease loss never
 reopens the same host instance.
 
 `Open` never returns a non-nil `Assembly` with a non-nil error. Every failure
-after the host has launched attempts reverse-order cleanup before returning.
+after the host has launched uses the same `Assembly.Close` cleanup path before returning.
 If teardown cannot be proven, it stops renewal without releasing ownership
 and requires process termination. With successful cleanup, a failed
 assembly never leaves a lease held or a database locked. When a release itself
@@ -78,21 +78,13 @@ After admitted work drains, `Close` stops connected servers and the command
 runner before shutting down the host. Unproven leaf teardown prevents lease
 release; a single configured bound covers drain and the leaf phase.
 
-Teardown runs the SDK's own stdio shutdown first, then escalates to the
-server's **process group** and proves the group is gone before reporting
-success. The SDK's own last rung signals the process alone, so a server that
-spawned children of its own would leave them orphaned; and signalling is not
-collection, so proof comes from a clean return of the SDK's close or from
-probing the group with signal 0. `mcp.ErrTeardownUnproven` reports the case
-where neither establishes it, rather than a success being assumed.
-
-On non-unix platforms the escalation does not exist: process groups and the
-signals addressing them are POSIX, and this repository does not claim support
-for supervising subprocesses on Windows — the ACP subprocess executor already
-refuses outright there for the same reason rather than approximating a
-kill-only-the-parent substitute. A Windows build therefore gets the SDK's
-ladder alone, and a server that spawns children can leave them running. The
-limitation is stated, not hidden.
+The factory supplies `localexec.StdioProcess` through MCP's internal Start/I/O/
+Close port. MCP uses SDK IOTransport, while localexec owns the startup bracket,
+quota, pipes, sole Wait and EOF/TERM/KILL process-group ladder. Teardown success
+requires Wait completion and absence of both leader and group. Any cleanup
+failure, including on failed startup/handshake, is preserved across the port as
+`mcp.ErrTeardownUnproven`; Composition must not release the lease on that result.
+Non-POSIX platforms reject managed stdio construction before spawning.
 
 `Assembly` exposes a lifecycle-managed `Service()` interface and external
 `Store()` facade. Lifecycle observation is limited to `Ready()` and receive-only
@@ -105,11 +97,21 @@ The Application service is constructed with a `tools.Slot` Approver so an
 ACP server can attach without rebuilding the service.
 
 `Close()` stops admission, cancels/drains operations while retaining heartbeat,
-closes MCP and localexec, stops host loops, releases the matching lease, closes
+closes MCP, localexec and Provider, stops host loops, releases the matching lease, closes
 store, then shuts down the existing telemetry adapter. `Config.ShutdownTimeout`
 (default 10s) bounds shutdown; timeout reports unproven teardown, stops renewal,
 and requires process termination rather than same-instance restart. Concurrent
-callers share the first result. Startup rollback also owns command-runner cleanup.
+callers share the first result. Each constructed Provider/command/MCP resource
+is registered on the assembly immediately, so startup rollback uses that same
+bounded ordering. A Provider close failure/timeout abandons the host without
+explicit lease release or store close. Builtin model close releases its private
+HTTP connection pool; it does not close injected nonstandard transports or the
+source transport from which its pool was cloned. Streams must drain first;
+the [HTTP2 repair](provider-http2-shutdown-evidence.md) explicitly owns sockets
+and accounts for canceled/late dials rather than assuming an idle sweep proves
+cleanup. Dial/socket cleanup failure still prevents successful lease release;
+model close is not an active-request cancellation primitive. See the
+[internal Provider closure evidence](provider-internal-closure-evidence.md).
 Abandoning an `Assembly` without `Close` leaks the SQLite handle and the host
 goroutines; this is stated, not defended against.
 

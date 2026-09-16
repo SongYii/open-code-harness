@@ -52,7 +52,10 @@ func TestClassifyProductionDirectory(t *testing.T) {
 		{name: "localexec root", directory: "internal/harness/adapters/localexec", want: ownerLocalExec, inspect: true, hasOwner: true},
 		{name: "localexec production subpackage", directory: "internal/harness/adapters/localexec/internal", want: ownerLocalExec, inspect: true, hasOwner: true},
 		{name: "mcp root", directory: "internal/harness/adapters/mcp", want: ownerMCP, inspect: true, hasOwner: true},
+		{name: "private HTTP resource helper", directory: "internal/harness/adapters/internal/httpresource", want: ownerHTTPResource, inspect: true, hasOwner: true},
 		{name: "mcp production subpackage", directory: "internal/harness/adapters/mcp/internal", want: ownerMCP, inspect: true, hasOwner: true},
+		{name: "mcp executable test fixture", directory: "internal/harness/adapters/mcp/testdata/fixtureserver", want: ownerMCP, inspect: false, hasOwner: true},
+		{name: "mcp other testdata still inspected", directory: "internal/harness/adapters/mcp/testdata/future", want: ownerMCP, inspect: true, hasOwner: true},
 		{name: "otel root", directory: "internal/harness/adapters/otel", want: ownerOTel, inspect: true, hasOwner: true},
 		{name: "otel production subpackage", directory: "internal/harness/adapters/otel/internal", want: ownerOTel, inspect: true, hasOwner: true},
 		{name: "sqlite root", directory: "internal/harness/adapters/sqlite", want: ownerSQLite, inspect: true, hasOwner: true},
@@ -200,6 +203,10 @@ func TestForbiddenImport(t *testing.T) {
 		// 2026-09-04 amendment resolves that contradiction with a port the
 		// mcp adapter declares and composition fills.
 		{name: "mcp cannot import localexec", owner: ownerMCP, importPath: modulePath + "/internal/harness/adapters/localexec", forbidden: true},
+		{name: "mcp cannot import os/exec", owner: ownerMCP, importPath: "os/exec", forbidden: true},
+		{name: "mcp cannot import syscall", owner: ownerMCP, importPath: "syscall", forbidden: true},
+		{name: "mcp cannot import unix", owner: ownerMCP, importPath: "golang.org/x/sys/unix", forbidden: true},
+		{name: "mcp cannot import executable test fixture", owner: ownerMCP, importPath: modulePath + "/internal/harness/adapters/mcp/testdata/fixtureserver", forbidden: true},
 		{name: "mcp cannot import workspacefs", owner: ownerMCP, importPath: modulePath + "/internal/harness/adapters/workspacefs", forbidden: true},
 		{name: "mcp cannot import sqlite", owner: ownerMCP, importPath: modulePath + "/internal/harness/adapters/sqlite", forbidden: true},
 		{name: "mcp cannot import acp", owner: ownerMCP, importPath: modulePath + "/internal/harness/adapters/acp", forbidden: true},
@@ -220,6 +227,12 @@ func TestForbiddenImport(t *testing.T) {
 		{name: "openaicompat may import os", owner: ownerOpenAICompat, importPath: "os", forbidden: false},
 		{name: "openaicompat may import engine", owner: ownerOpenAICompat, importPath: modulePath + "/internal/harness/engine", forbidden: false},
 		{name: "openaicompat cannot import os/exec", owner: ownerOpenAICompat, importPath: "os/exec", forbidden: true},
+		{name: "chat may own HTTP connections", owner: ownerOpenAICompat, importPath: modulePath + "/internal/harness/adapters/internal/httpresource", forbidden: false},
+		{name: "messages may own HTTP connections", owner: ownerAnthropic, importPath: modulePath + "/internal/harness/adapters/internal/httpresource", forbidden: false},
+		{name: "MCP cannot own Provider HTTP connections", owner: ownerMCP, importPath: modulePath + "/internal/harness/adapters/internal/httpresource", forbidden: true},
+		{name: "composition cannot import private HTTP helper", owner: ownerComposition, importPath: modulePath + "/internal/harness/adapters/internal/httpresource", forbidden: true},
+		{name: "HTTP helper cannot import engine", owner: ownerHTTPResource, importPath: modulePath + "/internal/harness/engine", forbidden: true},
+		{name: "HTTP helper cannot import os/exec", owner: ownerHTTPResource, importPath: "os/exec", forbidden: true},
 		{name: "openaicompat cannot import application", owner: ownerOpenAICompat, importPath: modulePath + "/internal/harness/application", forbidden: true},
 		{name: "openaicompat cannot import testkit", owner: ownerOpenAICompat, importPath: modulePath + "/internal/harness/testkit", forbidden: true},
 		{name: "openaicompat cannot import memory adapter", owner: ownerOpenAICompat, importPath: modulePath + "/internal/harness/adapters/memory", forbidden: true},
@@ -450,6 +463,7 @@ const (
 	ownerMemory            packageOwner = "memory"
 	ownerOpenAICompat      packageOwner = "openaicompat"
 	ownerAnthropic         packageOwner = "anthropic"
+	ownerHTTPResource      packageOwner = "httpresource"
 	ownerSQLite            packageOwner = "sqlite"
 	ownerRuntime           packageOwner = "runtime"
 	ownerPolicy            packageOwner = "policy"
@@ -473,6 +487,9 @@ const (
 )
 
 var excludedTestSupportDirectories = []string{
+	// A separate build-tagged executable used by real stdio tests, not
+	// adapter production. Imports from production are explicitly prohibited.
+	"internal/harness/adapters/mcp/testdata/fixtureserver",
 	"internal/harness/testkit",
 	"internal/harness/application/enginescenariotest",
 	"internal/harness/application/eventstoretest",
@@ -499,6 +516,7 @@ var ownedPackageRoots = []struct {
 	{root: "internal/harness/adapters/memory", owner: ownerMemory},
 	{root: "internal/harness/adapters/openaicompat", owner: ownerOpenAICompat},
 	{root: "internal/harness/adapters/anthropic", owner: ownerAnthropic},
+	{root: "internal/harness/adapters/internal/httpresource", owner: ownerHTTPResource},
 	{root: "internal/harness/adapters/sqlite", owner: ownerSQLite},
 	{root: "internal/harness/adapters/workspacefs", owner: ownerWorkspaceFS},
 	{root: "internal/harness/adapters/localexec", owner: ownerLocalExec},
@@ -549,6 +567,7 @@ var allowedHarnessImports = map[packageOwner][]string{
 	ownerLauncher:          {modulePath + "/internal/harness/application", modulePath + "/internal/harness/composition", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/policy", modulePath + "/sdk/contextpolicy"},
 	ownerSDKOch:            {modulePath + "/internal/launcher", modulePath + "/sdk/contextpolicy"},
 	ownerContextPolicy:     {},
+	ownerHTTPResource:      {},
 	ownerDomain:            {},
 	ownerEngine:            {modulePath + "/internal/harness/domain"},
 	ownerApplication:       {modulePath + "/internal/harness/agentinstructions", modulePath + "/internal/harness/contextengine", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/engine", modulePath + "/internal/harness/policy", modulePath + "/internal/harness/redact", modulePath + "/internal/harness/telemetry", modulePath + "/internal/harness/tools"},
@@ -604,6 +623,15 @@ func withinPackage(importPath, prefix string) bool {
 }
 
 func forbiddenImport(owner packageOwner, importPath string) string {
+	if withinPackage(importPath, modulePath+"/internal/harness/adapters/internal/httpresource") {
+		if owner == ownerOpenAICompat || owner == ownerAnthropic || owner == ownerHTTPResource {
+			return ""
+		}
+		return "private HTTP connection ownership is only for Provider adapters"
+	}
+	if withinPackage(importPath, modulePath+"/internal/harness/adapters/mcp/testdata/fixtureserver") {
+		return "executable test fixture cannot be imported by production"
+	}
 	if withinPackage(importPath, "github.com/anthropics/anthropic-sdk-go") && owner != ownerAnthropic {
 		return "Anthropic SDK must stay inside the Messages adapter"
 	}
@@ -838,8 +866,11 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 			return "forbidden host/network dependency"
 		}
 	}
-	if (owner == ownerOpenAICompat || owner == ownerAnthropic) && importPath == "os/exec" {
+	if (owner == ownerOpenAICompat || owner == ownerAnthropic || owner == ownerHTTPResource) && importPath == "os/exec" {
 		return "forbidden host/network dependency"
+	}
+	if owner == ownerMCP && (importPath == "os/exec" || importPath == "syscall" || strings.HasPrefix(importPath, "golang.org/x/sys/")) {
+		return "process supervision belongs to localexec, not the MCP protocol adapter"
 	}
 	if owner == ownerSQLite {
 		switch importPath {
@@ -925,15 +956,6 @@ func TestOsExecOnlyInLocalExec(t *testing.T) {
 	allowedRoots := []string{
 		filepath.Join(harnessRoot, "adapters", "localexec"),
 		filepath.Join(harnessRoot, "eval"),
-		// adapters/mcp names os/exec but never spawns with it: localexec
-		// builds the confined *exec.Cmd, the mcp port declares the type so
-		// composition can hand one across the boundary, and the adopted SDK's
-		// CommandTransport is what finally calls Start. The exception is
-		// listed rather than assumed because the process does start on this
-		// adapter's behalf — see the 2026-09-04 amendment to the MCP design's
-		// §3, which forbids mcp from importing localexec and resolves the
-		// resulting contradiction with this port.
-		filepath.Join(harnessRoot, "adapters", "mcp"),
 	}
 
 	err := filepath.WalkDir(harnessRoot, func(path string, entry fs.DirEntry, walkErr error) error {

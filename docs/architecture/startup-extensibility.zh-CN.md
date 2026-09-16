@@ -115,8 +115,10 @@ service/store 门面也必须通过准入。守卫固定 Assembly 的完整导�
 仅返回请求校验错误不能算准入已执行的证据。
 
 正常顺序：停止准入 → 取消并排空（此时继续心跳，允许终态写入）→ MCP → localexec
-runner → Host 循环、匹配租约释放及 store → 既有 telemetry adapter。并发 Close
-共享首次结果；构造失败也释放已创建的命令执行器。OTel 子系统和 span 属性未重做。
+runner → Provider → Host 循环、匹配租约释放及 store → 既有 telemetry adapter。并发 Close
+共享首次结果；构造失败也通过同一个 `Assembly.Close` 回收已取得的命令执行器与
+Provider。Builtin 只关闭自己的 HTTP transport，不关闭借用的非标准 transport。
+OTel 子系统和 span 属性未重做。
 
 一个续租 worker 配合独立、按最后成功确认时间计时的 watchdog。被 fence 或超过
 截止期就永久取消工作、停止导出及接单。即使 worker 卡在 SQLite mutex，也不能
@@ -161,12 +163,18 @@ PID namespace 内 PID 与登记的宿主 PID 比较。后续评审者报告全�
 扫描，以及 application 的全量重放，并未因此变成有界内存。没有热替换、替代
 摘要器、新 checkpoint 格式或任意写事件的扩展。
 
-## 后续实施顺序（本阶段不实现）
+## 后续实施顺序与内部进展
+
+[Provider 合同与架构评审](../superpowers/specs/2026-09-15-provider-startup-extensibility-design.zh-CN.md)
+区分已获批的内部语义验收/生命周期与仍待评审的公开扩展；[内部证据](provider-internal-closure-evidence.md)
+记录共同语义测试和资源归属。公开 SDK 仍由明确的外部接入需求决定，不能提前冻结 API。
 
 1. Provider：围绕已有 engine port 设计公开请求/响应 DTO 与 adapter，保持能力、
    usage 和失败合同，不能公开内部别名。
-2. Execution environment：拆清文件、命令和长驻进程生命周期；去掉 MCP 对本地
-   `exec.Cmd` 的依赖；保留真实 enforcement 报告和安全文件写入。
+2. Execution environment：内部首刀已去掉 MCP 对本地 `exec.Cmd` 的依赖，将长驻
+   进程监管收回 localexec，见[实施计划](../superpowers/plans/2026-09-15-mcp-process-ownership.md)。
+   文件与单次命令端口、真实 enforcement 报告和安全文件写入不变；公开执行环境
+   扩展与容器/远程后端仍须真实需求，不随本切片发布。
 3. 工具授权策略：纯决策 DTO、不可变风险目录、不可绕过的核心 guard；审批保留独立端口。
 4. 有实际需求再扩 eval/storage：离线评价读取规范证据；替代存储先过完整追加、
    resolve、fencing、审计和恢复一致性测试，不是声明一个插件接口就算支持。

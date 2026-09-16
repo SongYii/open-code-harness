@@ -2,7 +2,7 @@
 
 **状态：** 已实现；尚未 GA（参见[成熟度与已知限制](#成熟度与已知限制)）
 
-**权威来源：** [MCP 客户端适配器设计](../superpowers/specs/2026-08-30-mcp-client-adapter-design.md)，含其 2026-09-04 与 2026-09-05 的修订
+**权威来源：** [MCP 客户端适配器设计](../superpowers/specs/2026-08-30-mcp-client-adapter-design.md)，含其 2026-09-04、2026-09-05 与 2026-09-15 的修订
 
 **已实现计划：** [MCP 客户端适配器实施计划](../superpowers/plans/2026-09-04-mcp-client-adapter.md)
 
@@ -38,9 +38,11 @@ MCP 服务器是本 harness 通过 stdio 启动的外部程序。它提供的每
 
 设计一方面禁止适配器导入兄弟适配器，另一方面又要求这种复用。这两条互相矛盾，解决方式是一个端口：`mcp.CommandFactory` 与 `mcp.Command` 由**消费方**声明，而 `composition`——唯一被允许同时导入两者的包——提供由 `localexec` 支撑的实现。`localexec` 因此不欠 MCP 任何东西。
 
-`localexec.NewConfinedCommand` 返回**已配置但尚未启动**的命令，因为 MCP stdio 服务器的 stdin/stdout 就是协议传输通道：由 SDK 自己的 `CommandTransport` 接上管道并调用 `Start`。句柄持有私有临时目录与配额登记直到进程结束，而 `Run` 那种一次性形状只把它们限定在单次调用内。
-
-有一处与 `Run` 的差异是明确披露而非隐藏的：`Run` 在自己的 `cmd.Start` 外围持有 macOS 的 `RLIMIT_AS` 括号，而这里 `Start` 归调用方，因此该括号以 `StartBracket()` 暴露，并在 SDK 的 `Connect` 外围被取用。
+`localexec.NewStdioProcess` 返回已配置、未启动的受管字节通道，复用 `Run` 的受限命令构造。
+MCP 内部端口仅含 `Start(context.Context)` 和 `io.ReadWriteCloser`，不再暴露命令句柄、
+PID、配额登记或 OS 信号。启动资源括号、尽力配额登记、唯一一次 Wait、管道和临时目录
+均由 localexec 持有；MCP 使用 SDK 的 `IOTransport` 完成帧处理和握手，不再使用
+`CommandTransport`。启动 context 不拥有成功启动后的服务器生命周期，资源所有者须主动关闭。
 
 ## 发现
 
@@ -83,16 +85,24 @@ MCP 服务器是本 harness 通过 stdio 启动的外部程序。它提供的每
 
 `Open` 在三种情况下 fail-closed，且每种都有 mutation 验证：服务器连不上、服务器突破发现阶段上限、两台服务器同名。这里刻意没有类似 `AllowUnsandboxedExec` 的逃生阀。中途失败会拆除已经连上的服务器。
 
-`Assembly.Close` 在关闭 host **之前**停掉每一台已连接的服务器：它们是本装配的叶子节点，先停它们意味着一台迟钝的服务器无法拖延写入端自身的租约释放。
+`Assembly.Close` 先排空工作，再关闭所有服务器、执行器及 host，共享既有的关闭截止时间。
+清理缓慢或失败必须阻止主动释放租约，不能报告已成功回收。
 
-拆除先运行 SDK 自己的 stdio 关闭流程，再升级越过它不做的两件事：它的最后一级只对**进程本身**发信号（自行启动过子进程的服务器会把它们留成孤儿），而且它返回时并未证明进程已被回收（**发信号不等于回收**）。证据来自 SDK 关闭流程的干净返回，以及之后用信号 0 的探测。**进程组与组长必须都消失**：如果某个进程并非组长，`kill(-pid, 0)` 打到的是可能不存在的组并返回 `ESRCH`，而进程还活着，把这当作证据就是假报成功。`mcp.ErrTeardownUnproven` 会如实报告两者都无法确立的情况。
+SDK 自动关闭通道和所有者显式关闭都进入同一个缓存结果的 `StdioProcess.Close`：关闭
+stdin 后给 EOF 退出 5 秒，再对进程组发送 SIGTERM 并等待 3 秒，最后 SIGKILL 并等待
+5 秒。成功要求唯一的 Wait 已结束，且组长和进程组均消失。证明失败也会关闭管道并清理
+临时资源。这是 POSIX 进程组监管，不保证拦住主动逃逸进程组的后代；隔离仍依赖既有沙箱。
+
+退出码本身不等于清理错误或回收证据；协议错误由 SDK 报告，OS 信号及资源错误仍会上报。
+启动或握手失败、SDK 提前关闭之后也必须检查清理结果，MCP 用 `ErrTeardownUnproven`
+保留不确定性。重复或并发 Close 共享首次结果，晚到的清理不能把失败变成可释放租约的成功。
 
 ## 成熟度与已知限制
 
 已实现，**尚未 GA**。以下每一项都是明确声明的边界，而非疏漏：
 
 - **没有 Streamable HTTP，没有 OAuth。** 只做 stdio。接受远程传输就必须防御服务器提供的元数据指向 `https://169.254.169.254/…` 或私有段地址这类内网盲 SSRF，而这是本仓库已经为 Provider 适配器推理过一次、在这里要针对服务器可控输入重建一遍的防线。尽管如此，`golang.org/x/oauth2` 仍在构建图中（经由 `mcp` → `auth` → `oauthex`），只是这里没有任何代码调用它。
-- **Windows 上没有进程组拆除。** 进程组及针对它们的信号是 POSIX 概念；本仓库对 ACP 子进程监管在该平台本来就是直接拒绝而非近似替代。因此 Windows 构建只得到 SDK 自己那套阶梯，自行启动过子进程的服务器可能把它们留在运行中。
+- **非 POSIX 平台不运行受管 stdio 服务器。** 构造阶段即拒绝，不再退化到只能回收父进程的路径。
 - **没有服务器重启。** 会话中途死亡的服务器会留下一个进程已消失的目录条目；调用会失败。
 - **没有按会话的配置。** 服务器只在 `Open` 时命名一次。
 - **`MaxToolsPerServer = 256` 是继承来的，不是测出来的。**

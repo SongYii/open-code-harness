@@ -113,8 +113,8 @@ func (c *ConfinedCommand) TempDir() string { return c.tempDir }
 // after the process has been started.
 //
 // Run holds this bracket around its own cmd.Start. Here the caller owns Start
-// — for an MCP stdio server it is the SDK's CommandTransport.Connect that
-// calls it — so the bracket is exposed rather than applied, and a caller that
+// — StdioProcess now owns that call for long-lived servers — so the bracket
+// is exposed here rather than applied, and a caller that
 // skips it gets confinement without the macOS address-space bound. That is a
 // disclosed difference between the two entry points, not an oversight: the
 // bracket lowers this process's own RLIMIT_AS across the fork, so it cannot

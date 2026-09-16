@@ -157,11 +157,23 @@ and [evidence](provider-adapter-evidence.md).
 The dated implementation ledger records no design deviation and mostly lists
 tests, not the development story. Later work added native tool messages and
 secret redaction without moving vendor logic into Application.
+The internal closure found that shared tests assumed a fixed text chunk count
+and a concurrent test could pass despite a rejected request. Both HTTP adapters
+now run semantic text/tool/completion checks; the concurrency fixture requires
+two usable streams. See the [follow-up evidence](provider-internal-closure-evidence.md).
+
+An H2 cancellation regression showed that stream Close can precede transport
+bookkeeping cleanup. Both adapters now own and close private sockets explicitly,
+including pending/late dials, without closing borrowed source pools. See the
+[repair evidence](provider-http2-shutdown-evidence.md).
+Further local tests now distinguish A/B payloads, cancel only A, and prove
+HTTP2 was negotiated with real multiplexing and separate owned/source pools.
 
 ### Still missing
 
-Only one OpenAI-compatible provider family exists. There is no provider
-routing, vendor SDK layer, or live-key CI.
+This contract covers Chat Completions; the experimental SDK-assisted Messages
+route is described below. No public Provider SDK, runtime provider routing or
+live-key CI is offered.
 
 <!-- contract: docs/architecture/provider-replay.md -->
 ## Provider protocol replay
@@ -411,6 +423,14 @@ Runtime, exposes ACP, and shuts resources down in order.
 The slice found missing production Clock/ID implementations, an “unowned means
 unrestricted” dependency hole, and an adapter deny-list that future adapters
 could bypass. These became production implementations and exhaustive tests.
+Later review found that model-wide HTTP pools were not owned by teardown.
+Provider resources now join the same drain-before-close path for startup
+rollback and normal shutdown, without closing borrowed transports. Tests observe
+real sockets and matching leases, not just Close counters; see the
+[internal Provider evidence](provider-internal-closure-evidence.md).
+The real stock binary also passes EOF/SIGTERM tests during a conversation or
+automatic summary, with a second binary taking over the same database. These
+process tests complement, not replace, in-process resource ownership evidence.
 
 ### Still missing
 
@@ -680,8 +700,10 @@ path.
 
 ### Implementation
 
-`internal/harness/adapters/mcp` wraps the pinned official SDK behind a confined
-command port supplied by Composition. See the [contract](mcp-client.md) and
+`internal/harness/adapters/mcp` uses the pinned SDK's IOTransport over a managed
+byte channel supplied by Composition. localexec owns process startup, quota,
+pipes, waiting and process-group shutdown; MCP holds no raw OS process handle.
+See the [contract](mcp-client.md) and
 [evidence](mcp-client-evidence.md).
 
 ### Problems found and fixes

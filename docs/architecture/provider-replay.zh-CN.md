@@ -5,7 +5,20 @@
 这是 [Provider adapter](provider-adapter.md) 与[启动扩展架构](startup-extensibility.zh-CN.md)
 的增量，不是公开 Provider SDK。
 
+2026-09-15 [内部收口](provider-internal-closure-evidence.md)：两个 HTTP adapter 共用
+不依赖 chunk 数的语义测试；Messages 仍整体验证响应后才暴露输出，状态/usage 合同
+不变。Composition 在流排空后关闭模型自有 HTTP 池，启动回滚也用同一路径；借用的
+transport 归调用方。不新增回放 schema、请求正文格式或公开 SDK。
+
+后续本地验证还检查并发 Messages 私有状态不串用，B 完成后再次核对 A 的结果。
+真实启动器覆盖对话/自动摘要中 EOF 和 SIGTERM，随后由第二个真实启动器加载、恢复
+同一 session。见[验证矩阵与反例](provider-internal-closure-evidence.md)。
+
 ## 为什么先做这一刀
+
+2026-09-16 [HTTP₂ 关闭修复](provider-http2-shutdown-evidence.md)同时覆盖 Messages 与
+Chat：流排空后显式回收自有 socket，处理尚未结束的拨号和清理错误，不再只扫空闲池。
+回放状态、请求正文和持久化事件 schema 不变。
 
 真正缺失的不是注册表，而是消息结构丢弃了厂商继续工具回合所需的状态。
 DeepSeek 当前合同要求：请求带 tools 时，回传此前所有 assistant 消息的

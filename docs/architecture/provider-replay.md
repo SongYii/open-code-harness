@@ -5,7 +5,26 @@ The [Chinese reading copy](provider-replay.zh-CN.md) describes the same contract
 This supplements [Provider adapter](provider-adapter.md) and
 [Startup extensibility](startup-extensibility.md); it does not publish a Provider SDK.
 
+The 2026-09-15 [internal closure](provider-internal-closure-evidence.md) runs
+both HTTP adapters through shared chunk-independent semantic tests. Messages
+still validates the complete native response before publishing output; typed
+state and usage rules are unchanged. Composition now owns model-wide close
+after stream drain, including startup rollback, closing only private HTTP pools.
+Borrowed transports remain caller-owned. No replay schema, request body or
+SDK extension was added by that work.
+
+Local follow-up tests also distinguish concurrent Messages private state,
+including rechecking A's retained output after B completes. Real stock-launcher
+EOF/SIGTERM cases cover in-flight conversation and automatic summary, followed
+by a second real launcher loading/recovering the same durable session. See the
+[verification matrix and negative controls](provider-internal-closure-evidence.md).
+
 ## Why this slice precedes more extension points
+
+The 2026-09-16 [HTTP2 shutdown repair](provider-http2-shutdown-evidence.md)
+applies equally to Messages and Chat: explicit private socket ownership after
+stream drain replaces idle-only sweeping. Pending dials and cleanup errors are
+accounted for. It changes no replay state, request body or durable event schema.
 
 The first missing capability was not another factory registry. The existing
 message representation discarded state that a real provider requires to continue

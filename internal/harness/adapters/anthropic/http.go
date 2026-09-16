@@ -6,13 +6,17 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/SongYii/open-code-harness/internal/harness/adapters/internal/httpresource"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
 )
 
 // Check status and content type BEFORE the SDK reads an unbounded error body or
 // treats a redirect as a successful empty stream. Only 400 JSON receives the
 // bounded overflow check; no error body is handed to the SDK or retained.
-type httpBoundary struct{ client *http.Client }
+type httpBoundary struct {
+	client      *http.Client
+	connections *httpresource.Connections
+}
 type statusError struct {
 	status          int
 	contextOverflow bool
@@ -39,7 +43,7 @@ func newHTTPBoundary(source *http.Client) *httpBoundary {
 	}
 	client.Jar = nil // No ambient session cookies on provider requests.
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &httpBoundary{client: client}
+	return &httpBoundary{client: client, connections: httpresource.Own(client.Transport)}
 }
 
 func (b *httpBoundary) Do(req *http.Request) (*http.Response, error) {

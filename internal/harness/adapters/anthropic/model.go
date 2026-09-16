@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -34,9 +36,13 @@ type Config struct {
 }
 
 type Model struct {
-	client   sdk.Client
-	identity engine.RequestIdentity
-	idle     time.Duration
+	client    sdk.Client
+	identity  engine.RequestIdentity
+	idle      time.Duration
+	http      *httpBoundary
+	closeOnce sync.Once
+	closed    atomic.Bool
+	closeErr  error
 }
 
 var errConfig = errors.New("anthropic: invalid DeepSeek Messages configuration")
@@ -68,13 +74,29 @@ func New(cfg Config) (*Model, error) {
 	if idle == 0 {
 		idle = 60 * time.Second
 	}
+	boundary := newHTTPBoundary(cfg.HTTPClient)
 	client := sdk.NewClient(
 		option.WithoutEnvironmentDefaults(), option.WithBaseURL(strings.TrimRight(u.String(), "/")+"/"),
 		option.WithAPIKey(cfg.APIKey), option.WithMaxRetries(0), option.WithRequestTimeout(0),
-		option.WithHTTPClient(newHTTPBoundary(cfg.HTTPClient)),
+		option.WithHTTPClient(boundary),
 		option.WithHeader("User-Agent", "open-code-harness"), option.WithHeader("Accept", "text/event-stream"),
 	)
-	return &Model{client: client, identity: identity, idle: idle}, nil
+	return &Model{client: client, identity: identity, idle: idle, http: boundary}, nil
+}
+
+// Close runs after all streams drain. Only the private standard transport is
+// owned here; a nonstandard injected RoundTripper remains caller-owned.
+func (m *Model) Close() error {
+	if m == nil {
+		return nil
+	}
+	m.closeOnce.Do(func() {
+		m.closed.Store(true)
+		if m.http != nil {
+			m.closeErr = m.http.connections.Close()
+		}
+	})
+	return m.closeErr
 }
 
 func (m *Model) Identity() engine.RequestIdentity { return m.identity }
@@ -84,6 +106,10 @@ func supportedEffort(e engine.ReasoningEffort) bool {
 }
 
 func (m *Model) Stream(ctx context.Context, request engine.ModelRequest) (engine.ModelStream, error) {
+	if m == nil || m.closed.Load() {
+		// This is terminal local misuse, not a retryable network failure.
+		return nil, failure(engine.CodeInvalidRequest, 0)
+	}
 	if ctx == nil {
 		return nil, failure(engine.CodeInvalidRequest, 0)
 	}

@@ -25,7 +25,7 @@ type confinedCommandFactory struct {
 
 func (factory confinedCommandFactory) NewCommand(config mcp.ServerConfig) (mcp.Command, error) {
 	argv := append([]string{config.Command}, config.Args...)
-	confined, err := factory.runner.NewConfinedCommand(tools.CommandSpec{
+	confined, err := factory.runner.NewStdioProcess(tools.CommandSpec{
 		Argv: argv,
 		Cwd:  factory.workspace,
 	})

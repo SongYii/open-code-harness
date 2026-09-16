@@ -39,6 +39,23 @@
 English is normative. The Chinese file is a synchronized summary, not a
 field-for-field translation.
 
+## Amendment 2026-09-15: process ownership
+
+The approved [internal execution slice](../plans/2026-09-15-mcp-process-ownership.md)
+supersedes the raw-command and SDK-owned process-lifetime portions of §3/§6 and
+the earlier teardown amendments below. MCP's consumer-owned port now contains
+Start and byte I/O/Close only. Composition supplies localexec's managed stdio
+process; localexec owns confinement, the startup bracket, quota registration,
+one Wait, EOF/TERM/KILL group shutdown and temporary resources. The pinned SDK
+still owns framing, handshake and protocol via IOTransport, not CommandTransport.
+The MCP os/exec exception is removed. Failed startup/handshake and SDK-initiated
+close must preserve cleanup uncertainty so Composition cannot release a lease
+on unproven teardown. Non-POSIX managed stdio construction fails before spawn.
+This is internal ownership only, not a public execution SDK or remote backend.
+The [implemented contract](../../architecture/mcp-client.md) records the current
+shutdown bounds and proof requirements; preceding text is historical where it
+conflicts with this amendment.
+
 ---
 
 ## 1. Decision summary

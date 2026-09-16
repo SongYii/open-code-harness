@@ -38,14 +38,23 @@ MCP 命令工厂位于 `composition` 内，因为它是唯一被允许同时导�
 - **两台服务器配置了相同名字**会让 `Open` 失败，并作为配置错误指名道姓，而不是变成 `NewCatalog` 报出的那种由工具名推导出来的重名错误。
 - 中途失败会**拆除已经连上的服务器**再返回，因此半成品装配不会泄漏子进程。
 
-`Close` 先排空已准入操作，再关闭 MCP 和命令执行器，最后关闭 Host。叶子资源回收未被证明时不得释放租约；排空及资源关闭共享配置的总界限。
+`Close` 先排空已准入操作，再关闭 MCP、命令执行器和 Provider，最后关闭 Host。叶子资源回收未被证明时不得释放租约；排空及资源关闭共享配置的总界限。
 
-拆除时先运行 SDK 自己的 stdio 关闭流程，然后升级到服务器所在的**进程组**，并在报告成功之前证明该组已经消失。SDK 自己的最后一级只对进程本身发信号，因此一台自行启动过子进程的服务器会把它们留成孤儿；而且发信号不等于回收，所以证据来自 SDK 关闭流程的干净返回，或来自用信号 0 对进程组的探测。两者都无法确立时，`mcp.ErrTeardownUnproven` 会如实报告，而不是默认成功。
+工厂通过 MCP 内部的 Start/读写/Close 端口供应 `localexec.StdioProcess`。MCP 使用 SDK
+IOTransport；启动资源括号、配额、管道、唯一的 Wait 及 EOF/TERM/KILL 进程组回收
+由 localexec 负责。成功要求 Wait 已结束，组长与进程组均消失。启动或握手失败时的
+清理错误也以 `mcp.ErrTeardownUnproven` 保留，阻止主动释放租约。非 POSIX 平台在
+构造阶段拒绝受管 stdio 进程，不先启动再退化处理。
 
-在非 unix 平台上不存在这一级升级：进程组以及针对它们的信号是 POSIX 概念，而本仓库并不声称支持在 Windows 上监管子进程——ACP 子进程执行器出于同样理由在该平台直接拒绝，而不是近似出一个"只杀父进程"的替代方案。因此 Windows 构建只得到 SDK 自己的那套阶梯，一台自行启动过子进程的服务器可能把它们留在运行中。这个限制是被明确声明的，不是被隐藏的。
 `Assembly` 暴露受生命周期管理的 `Service()` 接口与外部 `Store()` 门面；生命周期观察仅限 `Ready()` 与只读的 `Done()`。原 `Host()` 访问器已移除，调用方不能由此取得原始 store 或单独关闭 Host。`Done()` 表示停止准入，不表示清理完成，调用方仍须调用 `Close()`。装配拥有所有返回资源。`ServeACP` 跟随 Host 取消，在指定双工上讲 ACP v1，写入端只有协议帧；`tools.Slot` 允许 ACP 接入审批而无需重建服务。
 
-`Close()` 停止准入、取消并排空操作（期间继续心跳）、关闭 MCP/localexec、停止 Host 循环、释放匹配租约及关闭 store，最后关闭既有 telemetry adapter。`Config.ShutdownTimeout` 默认 10 秒；超时如实报告未证明回收，停止续租，要求终止进程而非原地重启。并发调用共享首次结果；构造失败也负责释放命令执行器。不调用 Close 仍会泄漏资源。
+`Close()` 停止准入、取消并排空操作（期间继续心跳）、关闭 MCP/localexec/Provider、停止 Host 循环、释放匹配租约及关闭 store，最后关闭既有 telemetry adapter。`Config.ShutdownTimeout` 默认 10 秒；超时如实报告未证明回收，停止续租，要求终止进程而非原地重启。并发调用共享首次结果；每个资源构造后立即登记，启动回滚使用同一个 `Assembly.Close`。不调用 Close 仍会泄漏资源。
+
+Builtin 模型只关闭私有 HTTP 连接池，不关闭注入的非标准 transport，也不关闭被克隆
+的源 transport。Provider 关闭失败/超时不主动释放租约或关闭 store。流必须先排空。
+2026-09-16 [HTTP₂ 修复](provider-http2-shutdown-evidence.md)显式持有 socket 并处理
+取消后/晚到的拨号，不再把空闲池扫描等同于清理完成。
+模型级 Close 不是活跃请求的取消原语。见[内部 Provider 收口证据](provider-internal-closure-evidence.md)。
 
 ## 配置
 

@@ -41,6 +41,7 @@ type Assembly struct {
 	mcp       mcpServers
 	telemetry *oteladapter.Adapter
 	commands  *localexec.Runner
+	provider  io.Closer
 
 	timeout   time.Duration
 	closeErr  error
@@ -90,8 +91,9 @@ var checkSandboxAvailability = localexec.Availability
 // tool catalog, then the Application service.
 //
 // Open never returns a non-nil Assembly with a non-nil error, and never
-// leaves a partially constructed assembly running: if any step fails, every
-// resource already built is released before returning.
+// reports a clean startup rollback while resources remain active. Failures use
+// the same bounded teardown as Close; unproven teardown requires terminating
+// this process before starting a successor, not retrying Open in place.
 func Open(ctx context.Context, config Config) (*Assembly, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("%w: context is required", errInvalidConfig)
@@ -154,17 +156,13 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 		}
 		return nil, fmt.Errorf("composition: launch runtime host: %w", err)
 	}
-	// From here on every failure path must release the host, which owns the
-	// store, the lease, and the background loops.
+	// Register each acquired resource immediately. Startup rollback and normal
+	// shutdown use the SAME drain/leaf/lease ordering and shared time budget.
+	assembly := &Assembly{host: host, telemetry: traceAdapter, timeout: config.ShutdownTimeout}
 	release := func(cause error) (*Assembly, error) {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), config.ShutdownTimeout)
-		defer cancel()
-		shutdownErr := host.Shutdown(shutdownCtx)
-		if traceAdapter != nil {
-			traceAdapter.Shutdown(shutdownCtx)
-		}
+		shutdownErr := assembly.Close()
 		if shutdownErr != nil {
-			return nil, errors.Join(cause, fmt.Errorf("composition: release after failure: %w", shutdownErr))
+			return nil, errors.Join(cause, fmt.Errorf("composition: startup teardown unproven; terminate process before restarting: %w", shutdownErr))
 		}
 		return nil, cause
 	}
@@ -193,6 +191,7 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 	var model interface {
 		engine.Model
 		Identity() engine.RequestIdentity
+		io.Closer
 	}
 	if config.Provider.AdapterKind == "deepseek-messages" {
 		model, err = anthropic.New(anthropic.Config{
@@ -222,6 +221,7 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 	if err != nil {
 		return release(fmt.Errorf("composition: provider adapter: %w", err))
 	}
+	assembly.provider = model
 	runner, err := engine.NewTurnRunner(model)
 	if err != nil {
 		return release(fmt.Errorf("composition: turn runner: %w", err))
@@ -254,6 +254,7 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 	if err != nil {
 		return release(fmt.Errorf("composition: command runner: %w", err))
 	}
+	assembly.commands = commands
 	// MCP servers are connected before the catalog is built, because their
 	// discovered tools join the same catalog the builtins do — one catalog,
 	// one name-uniqueness check, one Policy table, one audit trail. A
@@ -262,22 +263,17 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 	mcpSpecs, mcpConnected, err := connectMCPServers(ctx,
 		config.MCPServers,
 		confinedCommandFactory{runner: commands, workspace: config.WorkspaceRoot})
+	assembly.mcp = mcpConnected
 	if err != nil {
 		if errors.Is(err, mcp.ErrTeardownUnproven) {
 			return abandon(err)
 		}
-		return release(errors.Join(err, commands.Close()))
-	}
-	releaseWithMCP := func(cause error) (*Assembly, error) {
-		if closeErr := mcpConnected.close(); closeErr != nil {
-			return abandon(errors.Join(cause, closeErr))
-		}
-		return release(errors.Join(cause, commands.Close()))
+		return release(err)
 	}
 
 	catalog, err := tools.NewCatalog(append(tools.DefaultWorkspaceSpecs(), mcpSpecs...))
 	if err != nil {
-		return releaseWithMCP(fmt.Errorf("composition: tool catalog: %w", err))
+		return release(fmt.Errorf("composition: tool catalog: %w", err))
 	}
 
 	appConfig := application.DefaultConfig()
@@ -323,27 +319,19 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 	// picked up instead of wedging every append behind a stale snapshot.
 	service, err := application.NewService(store, system.IDs{}, system.Clock{}, runner, sqliteStore, appConfig)
 	if err != nil {
-		return releaseWithMCP(fmt.Errorf("composition: application service: %w", err))
+		return release(fmt.Errorf("composition: application service: %w", err))
 	}
 	if !host.Ready() {
-		return releaseWithMCP(fmt.Errorf("composition: lease lost during startup; restart required"))
+		return release(fmt.Errorf("composition: lease lost during startup; restart required"))
 	}
 	if err := ctx.Err(); err != nil {
-		return releaseWithMCP(err)
+		return release(err)
 	}
 
-	return &Assembly{
-		service:   &managedService{host: host, inner: service},
-		commands:  commands,
-		host:      host,
-		store:     store,
-		approver:  approver,
-		workspace: config.WorkspaceRoot,
-		catalog:   catalog,
-		mcp:       mcpConnected,
-		telemetry: traceAdapter,
-		timeout:   config.ShutdownTimeout,
-	}, nil
+	assembly.service = &managedService{host: host, inner: service}
+	assembly.store, assembly.approver = store, approver
+	assembly.workspace, assembly.catalog = config.WorkspaceRoot, catalog
+	return assembly, nil
 }
 
 // ServeACP speaks ACP v1 JSON-RPC on in/out until in closes or ctx is done.
@@ -395,6 +383,9 @@ func (assembly *Assembly) Close() error {
 			var err error
 			if assembly.commands != nil {
 				err = assembly.commands.Close()
+			}
+			if err == nil && assembly.provider != nil {
+				err = assembly.provider.Close()
 			}
 			leaves <- err
 		}()

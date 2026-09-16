@@ -20,6 +20,27 @@ unchanged unless that supplement explicitly says otherwise.
 
 ## Delivered capability
 
+The 2026-09-16 [HTTP2 shutdown repair](provider-http2-shutdown-evidence.md)
+replaces idle-only cleanup with explicit private socket ownership. After stream
+drain, Model.Close rejects/cancels and accounts for pending dials, closes owned
+sockets even while H2 stream bookkeeping retires, and preserves cleanup errors.
+Standard/custom TLS negotiation and borrowed source pools remain unchanged.
+
+The 2026-09-15 internal closure adds once-owned `Model.Close()` for the private
+HTTP pool, called by Composition after stream drain. Nonstandard injected
+transports remain caller-owned; standard supplied transports are cloned and
+only the clone is closed. Direct model users must drain/close streams before
+closing the model; this is not concurrent active-request teardown. Closed models
+reject new requests. The shared `modeltest.RunContract` now compares complete
+text and ordered tools, not text chunk counts, and both HTTP adapters run it.
+Native framing/state/usage tests remain separate. See
+[internal Provider closure evidence](provider-internal-closure-evidence.md).
+
+Follow-up tests distinguish concurrent requests, cancel one without affecting
+the other, and verify usage/tool output isolation. TLS tests require negotiated
+HTTP2, same-connection multiplexing and separate owned/source pools. These are
+local transport guarantees, not remote-provider certification.
+
 `engine.Model` remains the Engine consumption port. `testkit.ScriptedModel` and
 `adapters/openaicompat.Model` both implement it. Application admits a Turn,
 calls `engine.TurnRunner`, and persists terminal facts through EventStore v2.

@@ -162,10 +162,12 @@ caller cancellation, stopped admission, and completed teardown; a validation
 error alone is not accepted as evidence that admission ran.
 
 Normal order is: close admission -> cancel/drain operations while keeping
-renewal alive -> close MCP servers -> close localexec runner -> stop host loops
+renewal alive -> close MCP servers -> close localexec runner -> close Provider -> stop host loops
 and release matching lease/close store -> shut down existing telemetry adapter.
 Concurrent Close callers share one result. Construction failures also close the
-command runner once it exists. No OTel subsystem or event attributes were
+command runner and Provider once acquired, through the same `Assembly.Close`
+path as normal shutdown. Builtin Provider close releases only its private HTTP
+transport, not borrowed nonstandard transports. No OTel subsystem or event attributes were
 redesigned.
 
 Heartbeat uses one renewal worker plus an independent monotonic-time watchdog.
@@ -227,12 +229,18 @@ first-load/invalid-checkpoint full scans and full application replay are not
 made bounded-memory by this change. No runtime hot swap, alternate summarizer,
 checkpoint schema, or arbitrary event-writing extension is introduced.
 
-## Subsequent slices (not implemented here)
+## Subsequent slices and internal progress
+
+The [Provider contract and architecture review](../superpowers/specs/2026-09-15-provider-startup-extensibility-design.md)
+separates accepted internal conformance/lifecycle work from the still-draft
+public extension. The [internal evidence](provider-internal-closure-evidence.md)
+records shared semantic tests and resource ownership. Public SDK work still
+requires a concrete external integration need before its API is frozen.
 
 | Order | Extension | Required boundary before publication |
 | --- | --- | --- |
 | 2 | Provider | Public request/response DTOs and adapter around existing engine port; preserve capability/usage/failure contracts, no internal aliases |
-| 3 | Execution environment | Separate filesystem/command/process lifecycle contracts; remove MCP's assumption of a local `exec.Cmd`; preserve truthful enforcement reporting and guarded writes |
+| 3 | Execution environment | Internal process ownership slice removes MCP's raw `exec.Cmd` dependency; localexec owns managed stdio lifecycle. Filesystem/one-shot command contracts, truthful enforcement and guarded writes remain unchanged. Public/remote execution is still deferred; see the [slice plan](../superpowers/plans/2026-09-15-mcp-process-ownership.md). |
 | 4 | Tool authorization policy | Pure decision DTOs with immutable risk catalog and non-bypassable core guards; approval remains a separate port |
 | 5 | Eval/storage if justified | Offline evaluator inputs from canonical evidence; storage replacement only after full append/resolve/fencing/audit/recovery conformance, not a generic plugin interface |
 
