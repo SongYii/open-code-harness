@@ -1,10 +1,24 @@
 package policy
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 )
+
+type scriptedEngine struct {
+	decision Decision
+	err      error
+	calls    int
+	input    Input
+}
+
+func (engine *scriptedEngine) Decide(input Input) (Decision, error) {
+	engine.calls++
+	engine.input = input
+	return engine.decision, engine.err
+}
 
 func TestNewAcceptsShippedModes(t *testing.T) {
 	t.Parallel()
@@ -241,6 +255,117 @@ func TestAllowAllIsUnconditional(t *testing.T) {
 	}
 	for _, input := range inputs {
 		assertDecide(t, engine, input, EffectAllow, RuleAllowAll, ReasonAllowAll)
+	}
+}
+
+// TestGuardRejectsCoreDenialsBeforeCallingStrategy protects the boundary that
+// makes an authorization strategy advisory rather than authoritative. Removing
+// any core branch must both call the allow strategy and change the decision.
+func TestGuardRejectsCoreDenialsBeforeCallingStrategy(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		input  Input
+		rule   string
+		reason string
+	}{
+		{name: "empty name", input: Input{Risk: domain.RiskRead, WorkspaceIn: true}, rule: RuleEmptyName, reason: ReasonEmptyName},
+		{name: "network flag", input: Input{Name: "read_file", Risk: domain.RiskRead, WorkspaceIn: true, Network: true}, rule: RuleNetworkDenied, reason: ReasonNetworkDenied},
+		{name: "network risk", input: Input{Name: "fetch", Risk: domain.RiskNetwork, WorkspaceIn: true}, rule: RuleNetworkDenied, reason: ReasonNetworkDenied},
+		{name: "unknown risk", input: Input{Name: "mystery", Risk: domain.RiskClass("invented"), WorkspaceIn: true}, rule: RuleUnknownRisk, reason: ReasonUnknownRisk},
+		{name: "read marked mutating", input: Input{Name: "read_file", Risk: domain.RiskRead, Mutates: true, WorkspaceIn: true}, rule: RuleUnknownRisk, reason: ReasonUnknownRisk},
+		{name: "write marked non-mutating", input: Input{Name: "write_file", Risk: domain.RiskWrite, WorkspaceIn: true}, rule: RuleUnknownRisk, reason: ReasonUnknownRisk},
+		{name: "outside workspace", input: Input{Name: "read_file", Risk: domain.RiskRead, WorkspaceIn: false}, rule: RuleOutOfWorkspace, reason: ReasonOutOfWorkspace},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			strategy := &scriptedEngine{decision: Decision{Effect: EffectAllow, RuleID: "malicious.allow", Reason: "bypass"}}
+			guarded, err := Guard(strategy)
+			if err != nil {
+				t.Fatalf("Guard: %v", err)
+			}
+			decision, err := guarded.Decide(test.input)
+			if err != nil {
+				t.Fatalf("Decide: %v", err)
+			}
+			if decision != (Decision{Effect: EffectDeny, RuleID: test.rule, Reason: test.reason}) {
+				t.Fatalf("decision = %#v, want core deny rule=%q reason=%q", decision, test.rule, test.reason)
+			}
+			if strategy.calls != 0 {
+				t.Fatalf("unsafe input reached strategy %d times, want 0", strategy.calls)
+			}
+		})
+	}
+}
+
+func TestGuardDelegatesValidDetachedInput(t *testing.T) {
+	t.Parallel()
+	wantInput := Input{Name: "write_file", Risk: domain.RiskWrite, Mutates: true, WorkspaceIn: true, PathLiteral: "out.txt"}
+	wantDecision := Decision{Effect: EffectRequireApproval, RuleID: "custom.write", Reason: "operator_review"}
+	strategy := &scriptedEngine{decision: wantDecision}
+	guarded, err := Guard(strategy)
+	if err != nil {
+		t.Fatalf("Guard: %v", err)
+	}
+	got, err := guarded.Decide(wantInput)
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if got != wantDecision {
+		t.Fatalf("decision = %#v, want %#v", got, wantDecision)
+	}
+	if strategy.calls != 1 || strategy.input != wantInput {
+		t.Fatalf("strategy observed calls=%d input=%#v, want one detached input %#v", strategy.calls, strategy.input, wantInput)
+	}
+}
+
+func TestGuardFailsClosedOnStrategyErrorsAndInvalidDecisions(t *testing.T) {
+	t.Parallel()
+	strategyFailure := errors.New("strategy failed")
+	tests := []struct {
+		name     string
+		decision Decision
+		err      error
+	}{
+		{name: "strategy error", err: strategyFailure},
+		{name: "unknown effect", decision: Decision{Effect: Effect("invented"), RuleID: "custom.rule", Reason: "custom_reason"}},
+		{name: "empty rule", decision: Decision{Effect: EffectAllow, Reason: "custom_reason"}},
+		{name: "blank reason", decision: Decision{Effect: EffectAllow, RuleID: "custom.rule", Reason: "  "}},
+		{name: "invalid UTF-8 rule", decision: Decision{Effect: EffectAllow, RuleID: string([]byte{0xff}), Reason: "custom_reason"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			guarded, err := Guard(&scriptedEngine{decision: test.decision, err: test.err})
+			if err != nil {
+				t.Fatalf("Guard: %v", err)
+			}
+			decision, err := guarded.Decide(Input{Name: "read_file", Risk: domain.RiskRead, WorkspaceIn: true})
+			if err == nil {
+				t.Fatalf("Decide returned nil error and decision %#v", decision)
+			}
+			if decision != (Decision{}) {
+				t.Fatalf("decision = %#v, want zero decision on failure", decision)
+			}
+			if test.err != nil && !errors.Is(err, test.err) {
+				t.Fatalf("error = %v, want wrapped strategy error %v", err, test.err)
+			}
+		})
+	}
+}
+
+func TestGuardRejectsNilStrategies(t *testing.T) {
+	t.Parallel()
+	var typedNil *scriptedEngine
+	for name, strategy := range map[string]Engine{"nil interface": nil, "typed nil": typedNil} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			guarded, err := Guard(strategy)
+			if err == nil || guarded != nil {
+				t.Fatalf("Guard(nil) = (%#v, %v), want nil engine and error", guarded, err)
+			}
+		})
 	}
 }
 

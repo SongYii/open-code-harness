@@ -241,7 +241,7 @@ requires a concrete external integration need before its API is frozen.
 | --- | --- | --- |
 | 2 | Provider | Public request/response DTOs and adapter around existing engine port; preserve capability/usage/failure contracts, no internal aliases |
 | 3 | Execution environment | Internal process ownership slice removes MCP's raw `exec.Cmd` dependency; localexec owns managed stdio lifecycle. Filesystem/one-shot command contracts, truthful enforcement and guarded writes remain unchanged. Public/remote execution is still deferred; see the [slice plan](../superpowers/plans/2026-09-15-mcp-process-ownership.md). |
-| 4 | Tool authorization policy | Pure decision DTOs with immutable risk catalog and non-bypassable core guards; approval remains a separate port |
+| 4 | Tool authorization policy | The internal guard slice is implemented: pure decision DTOs consume cloned catalog metadata, core denials run before strategies, strategy output is validated, and approval remains a separate Application port. No public selector, SDK, hot swap or third-party strategy loading is published; see the [evidence](tool-authorization-guard-evidence.md). |
 | 5 | Eval/storage if justified | Offline evaluator inputs from canonical evidence; storage replacement only after full append/resolve/fencing/audit/recovery conformance, not a generic plugin interface |
 
 Before promoting any experimental public API to stable, demonstrate two real

@@ -2,7 +2,9 @@ package policy
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 )
@@ -55,7 +57,7 @@ const (
 type Input struct {
 	Name        string
 	Risk        domain.RiskClass
-	Mutates     bool // unused; table is Risk × workspace × mode
+	Mutates     bool // checked against Risk before the strategy runs
 	WorkspaceIn bool
 	Network     bool
 	PathLiteral string // audit-only; not used to re-do I/O
@@ -78,25 +80,83 @@ type tableEngine struct {
 func New(mode Mode) (Engine, error) {
 	switch mode {
 	case ModeDefault, ModeReadOnly, ModeAllowWrites, ModeDenyAll:
-		return tableEngine{mode: mode}, nil
+		return Guard(tableEngine{mode: mode})
 	default:
 		return nil, fmt.Errorf("unknown policy mode %q", mode)
 	}
 }
 
-func (engine tableEngine) Decide(input Input) (Decision, error) {
+// Guard turns a decision strategy into the final authorization authority. Core
+// denials run before the strategy and strategy output is validated afterwards,
+// so a replacement strategy can tighten policy but cannot bypass invariants.
+func Guard(strategy Engine) (Engine, error) {
+	if isNilEngine(strategy) {
+		return nil, fmt.Errorf("policy: strategy is required")
+	}
+	return guardedEngine{strategy: strategy}, nil
+}
+
+func isNilEngine(engine Engine) bool {
+	if engine == nil {
+		return true
+	}
+	value := reflect.ValueOf(engine)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
+type guardedEngine struct {
+	strategy Engine
+}
+
+func (engine guardedEngine) Decide(input Input) (Decision, error) {
+	if decision, denied := coreDeny(input); denied {
+		return decision, nil
+	}
+	decision, err := engine.strategy.Decide(input)
+	if err != nil {
+		return Decision{}, fmt.Errorf("policy: strategy decision: %w", err)
+	}
+	if !validDecision(decision) {
+		return Decision{}, fmt.Errorf("policy: strategy returned an invalid decision")
+	}
+	return decision, nil
+}
+
+func coreDeny(input Input) (Decision, bool) {
 	if strings.TrimSpace(input.Name) == "" {
-		return Decision{Effect: EffectDeny, RuleID: RuleEmptyName, Reason: ReasonEmptyName}, nil
+		return Decision{Effect: EffectDeny, RuleID: RuleEmptyName, Reason: ReasonEmptyName}, true
 	}
 	if input.Network || input.Risk == domain.RiskNetwork {
-		return Decision{Effect: EffectDeny, RuleID: RuleNetworkDenied, Reason: ReasonNetworkDenied}, nil
+		return Decision{Effect: EffectDeny, RuleID: RuleNetworkDenied, Reason: ReasonNetworkDenied}, true
 	}
 	if !knownWorkspaceRisk(input.Risk) {
-		return Decision{Effect: EffectDeny, RuleID: RuleUnknownRisk, Reason: ReasonUnknownRisk}, nil
+		return Decision{Effect: EffectDeny, RuleID: RuleUnknownRisk, Reason: ReasonUnknownRisk}, true
+	}
+	if input.Mutates != (input.Risk == domain.RiskWrite || input.Risk == domain.RiskExec) {
+		return Decision{Effect: EffectDeny, RuleID: RuleUnknownRisk, Reason: ReasonUnknownRisk}, true
 	}
 	if !input.WorkspaceIn {
-		return Decision{Effect: EffectDeny, RuleID: RuleOutOfWorkspace, Reason: ReasonOutOfWorkspace}, nil
+		return Decision{Effect: EffectDeny, RuleID: RuleOutOfWorkspace, Reason: ReasonOutOfWorkspace}, true
 	}
+	return Decision{}, false
+}
+
+func validDecision(decision Decision) bool {
+	switch decision.Effect {
+	case EffectAllow, EffectDeny, EffectRequireApproval:
+	default:
+		return false
+	}
+	return strings.TrimSpace(decision.RuleID) != "" && strings.TrimSpace(decision.Reason) != "" &&
+		utf8.ValidString(decision.RuleID) && utf8.ValidString(decision.Reason)
+}
+
+func (engine tableEngine) Decide(input Input) (Decision, error) {
 	return engine.decideInWorkspace(input.Risk), nil
 }
 
