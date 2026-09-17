@@ -175,7 +175,9 @@ PID namespace 内 PID 与登记的宿主 PID 比较。后续评审者报告全�
    进程监管收回 localexec，见[实施计划](../superpowers/plans/2026-09-15-mcp-process-ownership.md)。
    文件与单次命令端口、真实 enforcement 报告和安全文件写入不变；公开执行环境
    扩展与容器/远程后端仍须真实需求，不随本切片发布。
-3. 工具授权策略：纯决策 DTO、不可变风险目录、不可绕过的核心 guard；审批保留独立端口。
+3. 工具授权策略：内部 guard 切片已实现。纯决策 DTO 使用目录复制出的元数据，核心拒绝先于
+   策略执行，策略输出须重新校验，审批仍由 Application 的独立端口负责。没有随之发布公开
+   选择器、SDK、热替换或第三方策略加载；见[实施证据](tool-authorization-guard-evidence.md)。
 4. 有实际需求再扩 eval/storage：离线评价读取规范证据；替代存储先过完整追加、
    resolve、fencing、审计和恢复一致性测试，不是声明一个插件接口就算支持。
 
