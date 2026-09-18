@@ -59,6 +59,7 @@ func CloneEvent(event Event) (Event, error) {
 	case ToolCallInterrupted:
 		return event, nil
 	case PolicyDecisionRecorded:
+		event.Policy = CloneToolPolicyIdentity(event.Policy)
 		return event, nil
 	case ApprovalRequested:
 		return event, nil
