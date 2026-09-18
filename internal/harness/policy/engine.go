@@ -36,6 +36,7 @@ const (
 	ReasonDenyAll         = "deny_all"
 	ReasonAllowAll        = "test_allow_all"
 	ReasonInvalidMetadata = "invalid_metadata"
+	ReasonPolicyFailed    = "policy_failed"
 )
 
 const (
@@ -55,6 +56,7 @@ const (
 	RuleDenyAllDenied                   = "deny_all.denied"
 	RuleAllowAll                        = "allow_all"
 	RuleInvalidMetadata                 = "invalid_metadata"
+	RulePolicyFailed                    = "policy_failed"
 )
 
 const (

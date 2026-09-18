@@ -38,6 +38,8 @@ type Config struct {
 	MaxToolCallsPerStep           int
 	ApprovalTimeout               time.Duration
 	PolicyMode                    policy.Mode
+	PolicyStrategy                policy.Engine
+	PolicyIdentity                *domain.ToolPolicyIdentity
 	Catalog                       *tools.Catalog
 	Files                         tools.FileSystem
 	Commands                      tools.CommandRunner
@@ -179,9 +181,29 @@ func NewService(store EventStore, ids IDGenerator, clock Clock, runner *engine.T
 		}
 		config.RequestIdentity = &copied
 	}
-	policyEngine, err := policy.New(config.PolicyMode)
-	if err != nil {
-		return nil, applicationError(CategoryValidation, "invalid_configuration", false, err)
+	var policyEngine policy.Engine
+	if config.PolicyStrategy != nil && isNilValue(config.PolicyStrategy) {
+		return nil, applicationError(CategoryValidation, "invalid_configuration", false, nil)
+	}
+	if config.PolicyStrategy != nil {
+		if config.PolicyIdentity == nil || config.PolicyMode != policy.ModeDefault || domain.ValidateToolPolicyIdentity(config.PolicyIdentity) != nil {
+			return nil, applicationError(CategoryValidation, "invalid_configuration", false, nil)
+		}
+		var err error
+		policyEngine, err = policy.Guard(config.PolicyStrategy)
+		if err != nil {
+			return nil, applicationError(CategoryValidation, "invalid_configuration", false, err)
+		}
+		config.PolicyIdentity = domain.CloneToolPolicyIdentity(config.PolicyIdentity)
+	} else {
+		if config.PolicyIdentity != nil {
+			return nil, applicationError(CategoryValidation, "invalid_configuration", false, nil)
+		}
+		var err error
+		policyEngine, err = policy.New(config.PolicyMode)
+		if err != nil {
+			return nil, applicationError(CategoryValidation, "invalid_configuration", false, err)
+		}
 	}
 	catalogEnabled := catalogHasSpecs(config.Catalog)
 	if err := validateToolComposition(config, catalogEnabled); err != nil {
