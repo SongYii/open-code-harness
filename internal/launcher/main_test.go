@@ -408,6 +408,24 @@ func TestBindAssemblyFlagsMatchesBuildConfig(t *testing.T) {
 	}
 }
 
+func TestBindAssemblyFlagsParsesToolPolicy(t *testing.T) {
+	flags := flag.NewFlagSet("och", flag.ContinueOnError)
+	config := composition.Config{}
+	var policyMode string
+	var uintFlags assemblyUintFlags
+	bindAssemblyFlags(flags, &config, &policyMode, &uintFlags)
+	if err := flags.Parse([]string{
+		"-tool-policy", "deny_tools",
+		"-tool-policy-version", "1.0.0",
+		"-tool-policy-config", `{"names":["exec"]}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if config.ToolPolicy.ID != "deny_tools" || config.ToolPolicy.Version != "1.0.0" || config.ToolPolicy.Config != `{"names":["exec"]}` {
+		t.Fatalf("tool policy flags = %#v", config.ToolPolicy)
+	}
+}
+
 // TestNormalizedArgvCarriesNoCredentialValue proves NormalizedArgv never
 // emits the credential's own value -- only its environment variable name
 // -- even when that value happens to be set in this test process's own

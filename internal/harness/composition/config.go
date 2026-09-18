@@ -15,6 +15,7 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/policy"
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
 	"github.com/SongYii/open-code-harness/sdk/contextpolicy"
+	"github.com/SongYii/open-code-harness/sdk/toolpolicy"
 )
 
 // Provider names the model endpoint and where its credential comes from.
@@ -51,6 +52,14 @@ type Limits struct {
 	MaxToolCallsPerStep int
 	MaxAssistantBytes   int
 	ApprovalTimeout     time.Duration
+}
+
+// ToolPolicy selects one startup-registered tool policy implementation.
+// Config is a non-secret JSON object; empty means {}.
+type ToolPolicy struct {
+	ID      string
+	Version string
+	Config  string
 }
 
 type Telemetry struct {
@@ -218,6 +227,7 @@ func (context Context) validate(windowTokens, maxOutputTokens uint32) error {
 type Config struct {
 	Diagnostics     io.Writer
 	ContextPolicies []contextpolicy.Registration
+	ToolPolicies    []toolpolicy.Registration
 	// WorkspaceRoot jails every filesystem tool and is the working directory
 	// for exec. It must already exist.
 	WorkspaceRoot string
@@ -229,9 +239,10 @@ type Config struct {
 	// exporter; export lag never blocks readiness either way.
 	AuditDirectory string
 
-	Provider Provider
-	Policy   policy.Mode
-	Limits   Limits
+	Provider   Provider
+	Policy     policy.Mode
+	ToolPolicy ToolPolicy
+	Limits     Limits
 	// Context tunes the Context Engine Open always constructs (design
 	// §21); see the Context type's own doc for why there is no separate
 	// enable switch here.

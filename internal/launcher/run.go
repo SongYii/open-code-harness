@@ -16,6 +16,7 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/policy"
 	"github.com/SongYii/open-code-harness/sdk/contextpolicy"
+	"github.com/SongYii/open-code-harness/sdk/toolpolicy"
 )
 
 // Streams makes ownership explicit: In is closed on ACP cancellation.
@@ -24,10 +25,23 @@ type Streams struct {
 	Out, Err io.Writer
 }
 
+type Extensions struct {
+	ContextPolicies []contextpolicy.Registration
+	ToolPolicies    []toolpolicy.Registration
+}
+
+func cloneExtensions(extensions Extensions) Extensions {
+	return Extensions{
+		ContextPolicies: append([]contextpolicy.Registration(nil), extensions.ContextPolicies...),
+		ToolPolicies:    append([]toolpolicy.Registration(nil), extensions.ToolPolicies...),
+	}
+}
+
 // Run opens one immutable assembly and always tears it down. Signals are the
 // caller's responsibility; no global registry, signal handler or mutable state
 // is installed by this library.
-func Run(ctx context.Context, arguments []string, streams Streams, registrations []contextpolicy.Registration) error {
+func Run(ctx context.Context, arguments []string, streams Streams, extensions Extensions) error {
+	extensions = cloneExtensions(extensions)
 	if ctx == nil || streams.In == nil || streams.Out == nil || streams.Err == nil {
 		return fmt.Errorf("launcher: context and streams are required")
 	}
@@ -38,11 +52,11 @@ func Run(ctx context.Context, arguments []string, streams Streams, registrations
 		return exportSession(ctx, arguments[1:], streams.Out, streams.Err)
 	}
 	if len(arguments) > 0 && arguments[0] == "compact-session" {
-		return compactSession(ctx, arguments[1:], streams.Out, streams.Err, registrations)
+		return compactSession(ctx, arguments[1:], streams.Out, streams.Err, extensions)
 	}
 	flags := flag.NewFlagSet("och", flag.ContinueOnError)
 	flags.SetOutput(streams.Err)
-	config := composition.Config{Diagnostics: streams.Err, ContextPolicies: registrations}
+	config := composition.Config{Diagnostics: streams.Err, ContextPolicies: extensions.ContextPolicies, ToolPolicies: extensions.ToolPolicies}
 	var policyMode string
 	var uintFlags assemblyUintFlags
 	bindAssemblyFlags(flags, &config, &policyMode, &uintFlags)
@@ -142,6 +156,9 @@ func bindAssemblyFlags(flags *flag.FlagSet, config *composition.Config, policyMo
 	flags.StringVar(&config.Context.PolicyID, "context-policy", "", "startup-registered context policy; empty uses builtin")
 	flags.StringVar(&config.Context.PolicyConfig, "context-policy-config", "", "nonsecret policy configuration JSON object")
 	flags.StringVar(&config.Context.PolicyVersion, "context-policy-version", "", "optional expected policy implementation version")
+	flags.StringVar(&config.ToolPolicy.ID, "tool-policy", "", "startup-registered tool policy; empty uses builtin")
+	flags.StringVar(&config.ToolPolicy.Config, "tool-policy-config", "", "nonsecret tool policy configuration JSON object")
+	flags.StringVar(&config.ToolPolicy.Version, "tool-policy-version", "", "optional expected tool policy implementation version")
 	flags.StringVar(&config.Context.SummaryReasoningEffort, "context-summary-reasoning-effort", "", "summary reasoning effort override; empty inherits provider-reasoning-effort")
 	flags.UintVar(&uintFlags.MaxOverflowCompactionsPerTurn, "context-max-overflow-compactions-per-turn", 0, "maximum per-Turn Provider overflow recoveries; 0 uses the Context Engine default")
 	flags.UintVar(&uintFlags.MaxPrunedToolResultsPerRequest, "context-max-pruned-tool-results-per-request", 0, "maximum Tool Results one request may prune; 0 uses the Context Engine default")
@@ -177,12 +194,14 @@ type compactSessionOutput struct {
 // precedent but on the write side), runs one manual compaction, and prints
 // one stable JSON object to stdout with a human-readable summary on
 // stderr — export-session's own stdout/stderr discipline.
-func compactSession(ctx context.Context, arguments []string, stdout, stderr io.Writer, extensions ...[]contextpolicy.Registration) error {
+func compactSession(ctx context.Context, arguments []string, stdout, stderr io.Writer, supplied ...Extensions) error {
 	flags := flag.NewFlagSet("och compact-session", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	config := composition.Config{Diagnostics: stderr}
-	if len(extensions) > 0 {
-		config.ContextPolicies = extensions[0]
+	if len(supplied) > 0 {
+		extensions := cloneExtensions(supplied[0])
+		config.ContextPolicies = extensions.ContextPolicies
+		config.ToolPolicies = extensions.ToolPolicies
 	}
 	var policyMode string
 	var uintFlags assemblyUintFlags
