@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"strings"
@@ -27,13 +28,14 @@ const (
 )
 
 const (
-	ReasonInWorkspace    = "in_workspace"
-	ReasonOutOfWorkspace = "out_of_workspace"
-	ReasonNetworkDenied  = "network_denied"
-	ReasonUnknownRisk    = "unknown_risk"
-	ReasonEmptyName      = "empty_name"
-	ReasonDenyAll        = "deny_all"
-	ReasonAllowAll       = "test_allow_all"
+	ReasonInWorkspace     = "in_workspace"
+	ReasonOutOfWorkspace  = "out_of_workspace"
+	ReasonNetworkDenied   = "network_denied"
+	ReasonUnknownRisk     = "unknown_risk"
+	ReasonEmptyName       = "empty_name"
+	ReasonDenyAll         = "deny_all"
+	ReasonAllowAll        = "test_allow_all"
+	ReasonInvalidMetadata = "invalid_metadata"
 )
 
 const (
@@ -52,6 +54,13 @@ const (
 	RuleAllowWritesExecRequiresApproval = "allow_writes.exec_requires_approval"
 	RuleDenyAllDenied                   = "deny_all.denied"
 	RuleAllowAll                        = "allow_all"
+	RuleInvalidMetadata                 = "invalid_metadata"
+)
+
+const (
+	maxRuleIDBytes      = 128
+	maxReasonBytes      = 256
+	maxPathLiteralBytes = 4096
 )
 
 type Input struct {
@@ -70,7 +79,7 @@ type Decision struct {
 }
 
 type Engine interface {
-	Decide(Input) (Decision, error)
+	Decide(context.Context, Input) (Decision, error)
 }
 
 type tableEngine struct {
@@ -113,11 +122,11 @@ type guardedEngine struct {
 	strategy Engine
 }
 
-func (engine guardedEngine) Decide(input Input) (Decision, error) {
+func (engine guardedEngine) Decide(ctx context.Context, input Input) (Decision, error) {
 	if decision, denied := coreDeny(input); denied {
 		return decision, nil
 	}
-	decision, err := engine.strategy.Decide(input)
+	decision, err := engine.strategy.Decide(ctx, input)
 	if err != nil {
 		return Decision{}, fmt.Errorf("policy: strategy decision: %w", err)
 	}
@@ -130,6 +139,9 @@ func (engine guardedEngine) Decide(input Input) (Decision, error) {
 func coreDeny(input Input) (Decision, bool) {
 	if strings.TrimSpace(input.Name) == "" {
 		return Decision{Effect: EffectDeny, RuleID: RuleEmptyName, Reason: ReasonEmptyName}, true
+	}
+	if len(input.PathLiteral) > maxPathLiteralBytes || !utf8.ValidString(input.PathLiteral) {
+		return Decision{Effect: EffectDeny, RuleID: RuleInvalidMetadata, Reason: ReasonInvalidMetadata}, true
 	}
 	if input.Network || input.Risk == domain.RiskNetwork {
 		return Decision{Effect: EffectDeny, RuleID: RuleNetworkDenied, Reason: ReasonNetworkDenied}, true
@@ -153,10 +165,11 @@ func validDecision(decision Decision) bool {
 		return false
 	}
 	return strings.TrimSpace(decision.RuleID) != "" && strings.TrimSpace(decision.Reason) != "" &&
-		utf8.ValidString(decision.RuleID) && utf8.ValidString(decision.Reason)
+		utf8.ValidString(decision.RuleID) && utf8.ValidString(decision.Reason) &&
+		len(decision.RuleID) <= maxRuleIDBytes && len(decision.Reason) <= maxReasonBytes
 }
 
-func (engine tableEngine) Decide(input Input) (Decision, error) {
+func (engine tableEngine) Decide(_ context.Context, input Input) (Decision, error) {
 	return engine.decideInWorkspace(input.Risk), nil
 }
 
@@ -211,6 +224,6 @@ func AllowAll() Engine {
 
 type allowAllEngine struct{}
 
-func (allowAllEngine) Decide(Input) (Decision, error) {
+func (allowAllEngine) Decide(context.Context, Input) (Decision, error) {
 	return Decision{Effect: EffectAllow, RuleID: RuleAllowAll, Reason: ReasonAllowAll}, nil
 }

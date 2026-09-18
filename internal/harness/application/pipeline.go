@@ -129,7 +129,7 @@ func (service *Service) executeOneTool(ctx context.Context, owned *ownedTurn, ca
 	policyAttributes = append(policyAttributes, traceString(telemetry.KeyToolSource, string(spec.Source))...)
 	policyAttributes = append(policyAttributes, traceString(telemetry.KeyToolRisk, string(spec.Risk))...)
 	_, policySpan := telemetry.SafeStart(service.telemetry, ctx, telemetry.Start{Kind: telemetry.KindPolicyDecide, Attributes: policyAttributes})
-	decision, decideErr := service.policy.Decide(policy.Input{
+	decision, decideErr := service.policy.Decide(ctx, policy.Input{
 		Name: spec.Name, Risk: spec.Risk, Mutates: spec.Mutates,
 		WorkspaceIn: workspaceIn, PathLiteral: args.pathLiteral(),
 	})
