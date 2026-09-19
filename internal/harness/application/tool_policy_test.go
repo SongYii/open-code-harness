@@ -57,6 +57,40 @@ func customToolPolicyConfig(strategy policy.Engine) application.Config {
 	return config
 }
 
+func TestBuiltinToolPolicyDecisionRetainsLegacyAttributionOmission(t *testing.T) {
+	fs := testkit.NewMemFS("/workspace")
+	fs.AddFile("README.md", []byte("hello"))
+	model := newSequenceModel(
+		[]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "call-1", Name: tools.NameReadFile, Arguments: `{"path":"README.md"}`}}, {Type: engine.StreamEventCompleted}},
+		[]engine.StreamEvent{{Type: engine.StreamEventTextDelta, Text: "continued"}, {Type: engine.StreamEventCompleted}},
+	)
+	service, _ := newToolService(t, model, fs, nil, nil, application.DefaultConfig())
+	created, err := service.CreateSession(context.Background(), application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.RunTurn(context.Background(), application.RunTurnRequest{SessionID: created.SessionID, RequestID: "builtin-legacy-attribution", Input: "inspect", Sink: &testkit.RecordingSink{}})
+	if err != nil || result.Text != "continued" {
+		t.Fatalf("RunTurn() = (%#v, %v)", result, err)
+	}
+	decision := onlyPolicyDecision(t, result.Records)
+	if decision.Policy != nil {
+		t.Fatalf("builtin decision gained custom identity: %#v", decision.Policy)
+	}
+	for _, record := range result.Records {
+		if _, ok := record.Event.(domain.PolicyDecisionRecorded); !ok {
+			continue
+		}
+		encoded, err := domain.MarshalRecordedEvent(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(encoded), `"policy"`) {
+			t.Fatalf("builtin durable bytes gained policy attribution: %s", encoded)
+		}
+	}
+}
+
 func TestCustomToolPolicyDenyIsAttributedAndDoesNotExecute(t *testing.T) {
 	strategy := &appPolicyStrategy{decision: policy.Decision{Effect: policy.EffectDeny, RuleID: "custom.read_deny", Reason: "configured_deny"}}
 	config := customToolPolicyConfig(strategy)

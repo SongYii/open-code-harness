@@ -1,7 +1,6 @@
 # Tool-policy startup extensibility evidence
 
-**Status:** Implementation Tasks 1–7 complete in the working branch; final
-mutation and full-tree verification pending. **Date:** 2026-09-19.
+**Status:** Complete on the implementation branch. **Date:** 2026-09-19.
 
 This ledger covers the experimental startup-composed tool authorization policy
 surface. The normative implemented contract is
@@ -32,9 +31,11 @@ No paid provider was called; end-to-end tests use only loopback fixtures.
 | `0f7d4be` | Application strategy injection, attributed fail-closed decisions, and cancellation behavior |
 | `2d2af33` | Startup-local resolver, launcher flags, public extensions, and managed lifecycle |
 | `4a508d3` | Frozen Eval Subject/ACP identity and collection/readback agreement checks |
+| `ef350e3` | Independent `deny_tools` module, real ACP denial/audit proof, and synchronized contracts |
 
-The independent example/documentation commit is recorded after Task 7 is
-committed. These hashes identify branch history, not a released API version.
+These hashes identify branch history, not a released API version. The final
+evidence commit also adds the builtin Application-path omission regression found
+by mutation; like every commit, it cannot cite its own hash inside its contents.
 
 ## Verified behavior
 
@@ -78,10 +79,45 @@ with a reader that understands the field or restore that backup; never delete
 the field or rewrite hashes/audit chains. Configuration is nonsecret because it
 is visible in argv and Eval documents.
 
-## Remaining final evidence
+## Mutation evidence
 
-Task 8 will record the four required mutation groups after each mutation fails
-for the intended reason and the production source is restored. It will also
-replace this section with the complete `go test`, race, vet, documentation gate,
-diff, and status outputs. Until then this ledger deliberately does not claim
-final completion.
+Every mutation below was made temporarily with the production source restored
+before the next mutation and before final verification.
+
+| Removed or corrupted invariant | Observed falsification |
+| --- | --- |
+| Deleted the pre-strategy `coreDeny` branch | Seven hostile metadata cases accepted the permissive strategy's `allow`; Application's out-of-workspace custom-policy test also showed the strategy called and its allow persisted |
+| Deleted post-strategy `validDecision` rejection | Unknown effect, empty rule, blank reason, and invalid UTF-8 passed; Application no longer produced the intended fail-closed terminal path |
+| Returned the input pointer from `CloneToolPolicyIdentity` | `TestCloneToolPolicyIdentity` failed immediately because the clone aliased its source |
+| Injected a synthetic custom identity into builtin Application recording | The plan-named Domain codec test unexpectedly stayed green because it only encoded a hand-built event and never traversed Application. A new real builtin tool-loop regression was added; the same mutation then failed on the injected identity. This is a repaired test gap, not counted as successful evidence from the original test. |
+| Returned success before decoding/comparing Eval audit events | Five comparison negatives, collection-before-publication rejection, and manifest-backed readback rejection all failed because mismatches were accepted |
+
+After restoration, the combined targeted run passed for policy, domain,
+Application, and Eval. The mutation exercise found no production defect; it did
+find and close one evidence defect in the default-attribution promise.
+
+## Final restored-tree verification
+
+The final tree passed:
+
+```text
+GOCACHE=/tmp/och-tool-policy-gocache go test ./... -count=1
+# all packages passed; longest packages:
+ok github.com/SongYii/open-code-harness/internal/harness/composition 93.885s
+ok github.com/SongYii/open-code-harness/internal/harness/eval 72.452s
+ok github.com/SongYii/open-code-harness/sdk/och 8.202s
+
+GOCACHE=/tmp/och-tool-policy-gocache go test -race ./... -count=1
+# all packages passed with no DATA RACE; longest packages:
+ok github.com/SongYii/open-code-harness/internal/harness/composition 178.221s
+ok github.com/SongYii/open-code-harness/internal/harness/eval 279.337s
+ok github.com/SongYii/open-code-harness/internal/harness/runtime 41.999s
+ok github.com/SongYii/open-code-harness/sdk/och 15.941s
+
+GOCACHE=/tmp/och-tool-policy-gocache go vet ./...
+# exit 0, no diagnostics
+```
+
+These integration runs used normal local socket, subprocess, and sandbox
+permissions. They made no paid model request. The final documentation/diff/status
+gate is run after this ledger update and recorded by the final commit result.
