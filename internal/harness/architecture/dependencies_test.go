@@ -484,6 +484,7 @@ const (
 	ownerLauncher          packageOwner = "launcher"
 	ownerSDKOch            packageOwner = "sdk_och"
 	ownerContextPolicy     packageOwner = "contextpolicy"
+	ownerToolPolicy        packageOwner = "toolpolicy"
 )
 
 var excludedTestSupportDirectories = []string{
@@ -504,6 +505,7 @@ var ownedPackageRoots = []struct {
 	{root: "internal/launcher", owner: ownerLauncher},
 	{root: "sdk/och", owner: ownerSDKOch},
 	{root: "sdk/contextpolicy", owner: ownerContextPolicy},
+	{root: "sdk/toolpolicy", owner: ownerToolPolicy},
 	{root: "internal/harness/domain", owner: ownerDomain},
 	{root: "internal/harness/engine", owner: ownerEngine},
 	{root: "internal/harness/application", owner: ownerApplication},
@@ -564,9 +566,10 @@ func productionOwnershipViolation(directory string) string {
 // package roots, so an owner may also import a subpackage below a named root.
 // An owner's own root is always allowed to support internal subpackages.
 var allowedHarnessImports = map[packageOwner][]string{
-	ownerLauncher:          {modulePath + "/internal/harness/application", modulePath + "/internal/harness/composition", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/policy", modulePath + "/sdk/contextpolicy"},
-	ownerSDKOch:            {modulePath + "/internal/launcher", modulePath + "/sdk/contextpolicy"},
+	ownerLauncher:          {modulePath + "/internal/harness/application", modulePath + "/internal/harness/composition", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/policy", modulePath + "/sdk/contextpolicy", modulePath + "/sdk/toolpolicy"},
+	ownerSDKOch:            {modulePath + "/internal/launcher", modulePath + "/sdk/contextpolicy", modulePath + "/sdk/toolpolicy"},
 	ownerContextPolicy:     {},
+	ownerToolPolicy:        {},
 	ownerHTTPResource:      {},
 	ownerDomain:            {},
 	ownerEngine:            {modulePath + "/internal/harness/domain"},
@@ -588,9 +591,9 @@ var allowedHarnessImports = map[packageOwner][]string{
 	ownerSystem:            {modulePath + "/internal/harness/application", modulePath + "/internal/harness/domain"},
 	ownerACP:               {modulePath + "/internal/harness/application", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/engine", modulePath + "/internal/harness/tools"},
 	ownerRuntime:           {modulePath + "/internal/harness/adapters/sqlite", modulePath + "/internal/harness/application", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/telemetry"},
-	ownerComposition:       {modulePath + "/internal/harness/adapters", modulePath + "/internal/harness/application", modulePath + "/internal/harness/contextengine", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/engine", modulePath + "/internal/harness/policy", modulePath + "/internal/harness/runtime", modulePath + "/internal/harness/telemetry", modulePath + "/internal/harness/tools", modulePath + "/internal/harness/transcript"},
+	ownerComposition:       {modulePath + "/internal/harness/adapters", modulePath + "/internal/harness/application", modulePath + "/internal/harness/contextengine", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/engine", modulePath + "/internal/harness/policy", modulePath + "/internal/harness/runtime", modulePath + "/internal/harness/telemetry", modulePath + "/internal/harness/tools", modulePath + "/internal/harness/transcript", modulePath + "/sdk/toolpolicy"},
 	ownerTranscript:        {modulePath + "/internal/harness/application", modulePath + "/internal/harness/domain"},
-	ownerEval:              {modulePath + "/internal/harness/application", modulePath + "/internal/harness/composition", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/engine", modulePath + "/internal/harness/policy", modulePath + "/internal/harness/redact", modulePath + "/internal/harness/tools", modulePath + "/internal/harness/transcript"},
+	ownerEval:              {modulePath + "/internal/harness/application", modulePath + "/internal/harness/composition", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/engine", modulePath + "/internal/harness/policy", modulePath + "/internal/harness/redact", modulePath + "/internal/harness/tools", modulePath + "/internal/harness/transcript", modulePath + "/sdk/toolpolicy"},
 }
 
 func allowedHarnessImport(owner packageOwner, importPath string) bool {
@@ -640,6 +643,9 @@ func forbiddenImport(owner packageOwner, importPath string) string {
 	}
 	if owner == ownerContextPolicy && (strings.Contains(strings.Split(importPath, "/")[0], ".") || importPath == "os" || strings.HasPrefix(importPath, "net") || importPath == "unsafe" || importPath == "plugin") {
 		return "context policy SDK must be a standard-library-only data contract"
+	}
+	if owner == ownerToolPolicy && (strings.Contains(strings.Split(importPath, "/")[0], ".") || importPath == "os" || strings.HasPrefix(importPath, "net") || importPath == "unsafe" || importPath == "plugin") {
+		return "tool policy SDK must be a standard-library-only data contract"
 	}
 	if (withinPackage(importPath, modulePath+"/internal/harness") || withinPackage(importPath, modulePath+"/internal/launcher") || withinPackage(importPath, modulePath+"/sdk")) && !allowedHarnessImport(owner, importPath) {
 		return "forbidden package dependency outside the owner's allowlist"

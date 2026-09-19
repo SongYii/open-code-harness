@@ -1,10 +1,11 @@
 # Startup Extensibility — Architecture and First Slice
 
-**Status:** Implemented first slice; not GA. **Date:** 2026-09-12.
+**Status:** Implemented context and tool-policy slices; not GA. **Date:** 2026-09-19.
 
-**Public API stability:** `sdk/och` and `sdk/contextpolicy` are **experimental**;
-source compatibility is not yet promised. Pin a tested revision. Implementation
-status and GA readiness are distinct from this API stability level.
+**Public API stability:** `sdk/och`, `sdk/contextpolicy`, and `sdk/toolpolicy`
+are **experimental**; source compatibility is not yet promised. Pin a tested
+revision. Implementation status and GA readiness are distinct from this API
+stability level.
 
 The Chinese [reading copy](startup-extensibility.zh-CN.md) covers the same contract.
 This document updates the startup-extension and lifecycle boundary; it does not
@@ -25,7 +26,8 @@ does not weaken durable-event integrity, replay, or the rollback rules below.
 Support third-party Go extensions selected once at startup, through a custom
 compiled launcher. Do not add runtime registration, hot reload, Go binary
 plugins, an arbitrary event hook bus, or a second agent loop. The first public
-extension controls context compression triggers and retention boundaries only.
+extensions control context compression boundaries and tool authorization
+decisions. They do not own storage, execution, approval, or recovery.
 
 The structural advantage is separation of executable behavior from durable
 facts: admitted requests, append identity/resolution, fencing, replay, guarded
@@ -56,25 +58,26 @@ custom main / stock cmd/och (signals)
       -> composition (validate, resolve, construct, own resources)
         -> runtime.Host (admit, cancel, drain, fence)
         -> managed Service -> application -> contextengine
-                                             -> sdk/contextpolicy.Policy
+                              |              -> sdk/contextpolicy.Policy
+                              -> policy.Guard -> sdk/toolpolicy.Policy
         -> adapters: SQLite, provider, workspace, localexec, MCP, OTel
 ```
 
-`sdk/contextpolicy` imports only the standard library. Domain owns its own
-attribution DTO, never SDK aliases. Application/contextengine can import the
-policy contract, not the launcher SDK. Only composition constructs adapters;
+Both policy SDK packages import only the standard library. Domain owns its own
+attribution DTOs, never SDK aliases. Application/contextengine can import the
+policy contracts, not the launcher SDK. Only composition constructs adapters;
 runtime retains its pre-existing narrow SQLite dependency. Architecture tests
-now inspect both SDK packages and the internal launcher as well as the harness.
-The separate example module is a real external-consumer compile gate.
+inspect the SDK packages and internal launcher as well as the harness. Separate
+example modules are external-module compile gates, not external adoption.
 
 ## Public launch contract
 
-`och.Run(ctx, args, och.Streams{In, Out, Err}, och.Extensions{ContextPolicies})`
-uses the same parser, ACP server, `compact-session`, `export-session`, and
-teardown as the stock binary. The caller owns signals; Run owns the assembly.
-ACP owns/closes its input during the call; output carries protocol frames only.
-Diagnostics use the supplied error writer. No public Service, Store, Domain,
-raw engine, or Eval SDK is exposed.
+`och.Run(ctx, args, och.Streams{In, Out, Err}, och.Extensions{ContextPolicies,
+ToolPolicies})` uses the same parser, ACP server, `compact-session`,
+`export-session`, and teardown as the stock binary. The caller owns signals;
+Run owns the assembly. ACP owns/closes its input during the call; output carries
+protocol frames only. Diagnostics use the supplied error writer. No public
+Service, Store, Domain, raw engine, or Eval SDK is exposed.
 
 Each registration has an ID, version and JSON factory. The registry is local to
 one launch; duplicate/reserved IDs, unknown selection, nil factories/results,
@@ -85,6 +88,9 @@ concurrency-safe policy. Nothing is registered globally.
 - `-context-policy`: empty or `builtin` preserves the current algorithm.
 - `-context-policy-config`: nonsecret JSON object, at most 64 KiB; default `{}`.
 - `-context-policy-version`: optional expected registered version, used by eval.
+- `-tool-policy`: empty or `builtin` preserves the current authorization table.
+- `-tool-policy-config`: nonsecret JSON object, at most 64 KiB; default `{}`.
+- `-tool-policy-version`: optional expected registered version, used by eval.
 
 The host canonicalizes whitespace/object-key order, rejects duplicate keys and
 trailing values, preserves number spelling, and hashes the canonical bytes with
@@ -92,9 +98,10 @@ SHA-256. Config is not a credential container: it appears in argv/eval artifacts
 and hashing low-entropy secrets would not protect them. Builtin takes no custom
 config/version; its current budget flags remain the configuration mechanism.
 
-See [the independent launcher](../../examples/keep-last-n/README.md). Its module
-imports only the two SDK packages, supplies a `keep_last_n_turns` implementation,
-and compiles its own executable. Merely registering it does not select it.
+See the independent [`keep_last_n_turns`](../../examples/keep-last-n/README.md)
+and [`deny_tools`](../../examples/deny-tools/README.md) launchers. Each compiles
+as its own module against public SDK packages. Merely registering a policy does
+not select it.
 
 ## Context policy contract and invariants
 
@@ -140,6 +147,30 @@ no background work, concurrency-safe and cooperative with cancellation. The
 host cannot forcibly stop a hung Go function, contain arbitrary panics, or
 prove third-party determinism. Untrusted execution requires a future process
 boundary, not a misleading timeout goroutine around every callback.
+
+## Tool authorization policy contract and invariants
+
+`toolpolicy.Policy.Decide(context.Context, Input)` receives detached catalog
+metadata only: tool name, risk class, mutation bit, workspace-membership fact,
+and an optional bounded path literal. It receives no arguments object, event,
+filesystem, process runner, provider, store, or approver. The core guard runs
+first and cannot be replaced: empty names, network access, unknown/inconsistent
+risk metadata, invalid path metadata, and out-of-workspace access are denied
+without invoking custom code. Returned effects and bounded UTF-8 rule/reason
+fields are validated before use; callback errors or invalid output fail closed
+as an attributed `policy_failed` denial.
+
+A custom decision can tighten or reproduce the safe table, but cannot execute a
+tool. `require_approval` still enters Application's separate approver; it is not
+permission by itself. The selected identity `{id, version, configDigest}` is
+copied onto every durable `policy.decision.recorded` event. Builtin decisions
+omit it byte-for-byte. Policy decisions remain deliberately absent from ACP
+updates and session transcript projection; the canonical database/audit stream
+is the authority.
+
+The same trusted-code limitation applies as for context policy. Registration is
+startup-local and immutable for one Assembly. Runtime hot swap and hostile-code
+containment are not provided.
 
 ## Admission and shutdown
 
@@ -187,11 +218,13 @@ starting a replacement, never interpret a timeout as proof of quiescence.
 
 ## Durable/eval compatibility and rollback
 
-Custom policies add optional `{id, version, configDigest}` under `policy` on
-`context.prepared` and `context.compaction.started`, including transcript
-projection. Builtin omits it: old payloads and their hashes remain unchanged.
-Domain validates and defensively clones the new identity. The event envelope
-schema and checkpoint formats stay unchanged; existing logs are not rewritten.
+Custom context policies add optional `{id, version, configDigest}` under
+`policy` on `context.prepared` and `context.compaction.started`, including
+transcript projection. Custom tool policies add the same optional identity only
+to canonical `policy.decision.recorded` events. Builtins omit it: old payloads
+and hashes remain unchanged. Domain validates and defensively clones both
+identities. Event-envelope and checkpoint formats stay unchanged; existing logs
+are not rewritten.
 
 New readers read old logs; absence means legacy builtin. Checkpoints can be
 reused after existing core validation even if the selected policy changes.
@@ -200,11 +233,13 @@ new custom-policy facts.** Before first use, make a verified backup. Rollback
 means using a reader supporting these fields, or restoring that pre-extension
 backup (losing subsequent work); do not strip fields or rewrite the audit chain.
 
-Eval's optional `SubjectContext.Policy` freezes ID/version/config digest/config
-in subject identity. Canonical JSON also normalizes nested config key order.
-ACP argv includes selection, version pin and config; the existing launcher
-binary hash freezes the compiled implementation. Custom policy evaluation is
-ACP-only in this slice. Stock in-process BuildConfig explicitly rejects it;
+Eval's optional `SubjectContext.Policy` and `SubjectPolicy.ToolPolicy` freeze
+ID/version/config digest/config in Subject identity. Canonical JSON normalizes
+nested config key order. ACP argv includes selection, version pin and config;
+the launcher binary hash freezes the compiled implementation. Collection and
+readback require every durable tool-policy decision to match the frozen Subject
+before evidence is scoreable. Custom policy evaluation is ACP-only in this
+slice. Stock in-process BuildConfig explicitly rejects either custom policy;
 there is no evaluation plugin registry or new Eval SDK.
 
 ## Verification and known limits
@@ -213,8 +248,10 @@ Tests cover legacy/default parity, all forced triggers, candidate validation,
 mutated DTOs, cancellation, registry isolation/config rejection, strict identity
 round-trip/clone, prior-checkpoint summary rollback, blocked renewal, permanent
 fencing, drain timeout, close during turn/manual callbacks, concurrent Close,
-eval identity/argv, and independent-module ACP compaction/export. Existing
-replay, SQLite, transcript, CLI and architecture suites remain required.
+eval identity/argv/evidence agreement, independent-module ACP compaction/export,
+and an independent `deny_tools` run that proves denial, continued execution,
+durable attribution, and transcript/ACP omission. Existing replay, SQLite,
+transcript, CLI and architecture suites remain required.
 
 The implementation run observed two platform-dependent localexec failures:
 an unconditional “no backend” expectation and a namespace PID versus registered
@@ -241,7 +278,7 @@ requires a concrete external integration need before its API is frozen.
 | --- | --- | --- |
 | 2 | Provider | Public request/response DTOs and adapter around existing engine port; preserve capability/usage/failure contracts, no internal aliases |
 | 3 | Execution environment | Internal process ownership slice removes MCP's raw `exec.Cmd` dependency; localexec owns managed stdio lifecycle. Filesystem/one-shot command contracts, truthful enforcement and guarded writes remain unchanged. Public/remote execution is still deferred; see the [slice plan](../superpowers/plans/2026-09-15-mcp-process-ownership.md). |
-| 4 | Tool authorization policy | The internal guard slice is implemented: pure decision DTOs consume cloned catalog metadata, core denials run before strategies, strategy output is validated, and approval remains a separate Application port. No public selector, SDK, hot swap or third-party strategy loading is published; see the [evidence](tool-authorization-guard-evidence.md). |
+| 4 | Tool authorization policy | The guard and experimental startup SDK are implemented: pure detached DTOs, pre-strategy core denials, validated output, separate approval, frozen durable identity, and one independent-module ACP proof. There is no hot swap or hostile-code containment; see the [boundary evidence](tool-authorization-guard-evidence.md) and [startup evidence](tool-policy-startup-extensibility-evidence.md). |
 | 5 | Eval/storage if justified | Offline evaluator inputs from canonical evidence; storage replacement only after full append/resolve/fencing/audit/recovery conformance, not a generic plugin interface |
 
 Before promoting any experimental public API to stable, demonstrate two real

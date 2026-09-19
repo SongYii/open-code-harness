@@ -609,6 +609,7 @@ func decideRecordPolicyDecision(state Session, command RecordPolicyDecision) ([]
 		return nil, err
 	}
 	event := PolicyDecisionRecorded{
+		Policy: CloneToolPolicyIdentity(command.Policy),
 		TurnID: command.TurnID, ItemID: command.ItemID, CallID: command.CallID,
 		Name: command.Name, Effect: command.Effect, RuleID: command.RuleID, Reason: command.Reason,
 	}

@@ -129,12 +129,17 @@ func (service *Service) executeOneTool(ctx context.Context, owned *ownedTurn, ca
 	policyAttributes = append(policyAttributes, traceString(telemetry.KeyToolSource, string(spec.Source))...)
 	policyAttributes = append(policyAttributes, traceString(telemetry.KeyToolRisk, string(spec.Risk))...)
 	_, policySpan := telemetry.SafeStart(service.telemetry, ctx, telemetry.Start{Kind: telemetry.KindPolicyDecide, Attributes: policyAttributes})
-	decision, decideErr := service.policy.Decide(policy.Input{
+	decision, decideErr := service.policy.Decide(ctx, policy.Input{
 		Name: spec.Name, Risk: spec.Risk, Mutates: spec.Mutates,
 		WorkspaceIn: workspaceIn, PathLiteral: args.pathLiteral(),
 	})
+	if callerErr := contextError(ctx); callerErr != nil {
+		policySpan.End(traceEnd(callerErr))
+		result, cancelErr := service.cancelOwnedTurn(ctx, owned, domain.InterruptionCallerCanceled)
+		return true, result, cancelErr
+	}
 	if decideErr != nil {
-		decision = policy.Decision{Effect: policy.EffectDeny, RuleID: policy.RuleUnknownRisk, Reason: policy.ReasonUnknownRisk}
+		decision = policy.Decision{Effect: policy.EffectDeny, RuleID: policy.RulePolicyFailed, Reason: policy.ReasonPolicyFailed}
 	}
 	policyEndAttributes := traceString(telemetry.KeyPolicyEffect, string(decision.Effect))
 	policyEndAttributes = append(policyEndAttributes, traceString(telemetry.KeyPolicyRule, decision.RuleID)...)
@@ -144,6 +149,7 @@ func (service *Service) executeOneTool(ctx context.Context, owned *ownedTurn, ca
 	}
 	policySpan.End(policyEnd)
 	recorded, err := domain.Decide(owned.state, domain.RecordPolicyDecision{
+		Policy:    domain.CloneToolPolicyIdentity(service.config.PolicyIdentity),
 		SessionID: owned.result.SessionID, TurnID: owned.result.TurnID, ItemID: itemID,
 		CallID: call.ID, Name: spec.Name, Effect: string(decision.Effect), RuleID: decision.RuleID, Reason: decision.Reason,
 	})

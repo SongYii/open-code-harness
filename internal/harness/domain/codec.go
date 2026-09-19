@@ -328,6 +328,7 @@ func unmarshalEvent(eventType string, data json.RawMessage) (Event, error) {
 	case EventPolicyDecisionRecorded:
 		event = PolicyDecisionRecorded{}
 		required = []string{"turnID", "itemID", "callID", "name", "effect", "ruleID", "reason"}
+		optional = []string{"policy"}
 	case EventApprovalRequested:
 		event = ApprovalRequested{}
 		required = []string{"turnID", "itemID", "approvalID", "callID", "name", "reason"}
@@ -468,6 +469,9 @@ func unmarshalEvent(eventType string, data json.RawMessage) (Event, error) {
 		}
 		event = target
 	case PolicyDecisionRecorded:
+		if err := validateToolPolicyIdentityJSON(data); err != nil {
+			return nil, err
+		}
 		if err := decoder.Decode(&target); err != nil {
 			return nil, invalidEventError("invalid event data")
 		}
@@ -1067,6 +1071,9 @@ func validateToolCallInterruptedPayload(event ToolCallInterrupted, code ErrorCod
 }
 
 func validatePolicyDecisionPayload(event PolicyDecisionRecorded, code ErrorCode) error {
+	if err := validateToolPolicyIdentity(event.Policy, code); err != nil {
+		return err
+	}
 	if err := validateAssistantMessageIDs(event.TurnID, event.ItemID); err != nil {
 		if code == CodeInvalidCommand {
 			return domainError(CodeInvalidCommand, "turn ID is invalid")

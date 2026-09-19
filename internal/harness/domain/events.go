@@ -340,13 +340,14 @@ type ToolCallInterrupted struct {
 func (ToolCallInterrupted) EventType() string { return EventToolCallInterrupted }
 
 type PolicyDecisionRecorded struct {
-	TurnID TurnID `json:"turnID"`
-	ItemID ItemID `json:"itemID"`
-	CallID string `json:"callID"`
-	Name   string `json:"name"`
-	Effect string `json:"effect"`
-	RuleID string `json:"ruleID"`
-	Reason string `json:"reason"`
+	Policy *ToolPolicyIdentity `json:"policy,omitempty"`
+	TurnID TurnID              `json:"turnID"`
+	ItemID ItemID              `json:"itemID"`
+	CallID string              `json:"callID"`
+	Name   string              `json:"name"`
+	Effect string              `json:"effect"`
+	RuleID string              `json:"ruleID"`
+	Reason string              `json:"reason"`
 }
 
 func (PolicyDecisionRecorded) EventType() string { return EventPolicyDecisionRecorded }

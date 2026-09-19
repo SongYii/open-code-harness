@@ -274,6 +274,7 @@ func (FailToolTurn) CommandType() string          { return CommandFailToolTurn }
 func (c FailToolTurn) TargetSessionID() SessionID { return c.SessionID }
 
 type RecordPolicyDecision struct {
+	Policy    *ToolPolicyIdentity
 	SessionID SessionID
 	TurnID    TurnID
 	ItemID    ItemID

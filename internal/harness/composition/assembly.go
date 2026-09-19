@@ -108,7 +108,11 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 	if config.Diagnostics == nil {
 		config.Diagnostics = os.Stderr
 	}
-	contextPolicy, policyIdentity, err := resolveContextPolicy(config)
+	contextPolicy, contextPolicyIdentity, err := resolveContextPolicy(config)
+	if err != nil {
+		return nil, err
+	}
+	toolPolicy, toolPolicyIdentity, err := resolveToolPolicy(config)
 	if err != nil {
 		return nil, err
 	}
@@ -278,6 +282,8 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 
 	appConfig := application.DefaultConfig()
 	appConfig.PolicyMode = config.Policy
+	appConfig.PolicyStrategy = toolPolicy
+	appConfig.PolicyIdentity = toolPolicyIdentity
 	appConfig.Catalog = catalog
 	appConfig.Files = files
 	appConfig.Commands = commands
@@ -301,7 +307,7 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 		appConfig.ApprovalTimeout = config.Limits.ApprovalTimeout
 	}
 	appConfig.Context = application.ContextConfig{
-		Policy: contextPolicy, PolicyIdentity: policyIdentity,
+		Policy: contextPolicy, PolicyIdentity: contextPolicyIdentity,
 		Enabled:                        true,
 		Budget:                         contextBudget,
 		Meter:                          contextMeter,

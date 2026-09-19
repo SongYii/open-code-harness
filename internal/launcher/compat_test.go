@@ -6,5 +6,5 @@ import (
 )
 
 func run(args []string) error {
-	return Run(context.Background(), args, Streams{In: os.Stdin, Out: os.Stdout, Err: os.Stderr}, nil)
+	return Run(context.Background(), args, Streams{In: os.Stdin, Out: os.Stdout, Err: os.Stderr}, Extensions{})
 }

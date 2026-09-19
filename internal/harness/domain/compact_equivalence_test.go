@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -357,7 +358,7 @@ func freshCommandsForPrefix(state HistoricalSession, prefix int) []Command {
 		FailToolCall{SessionID: sessionID, TurnID: turnID, ItemID: itemID, CallID: "call-1", Code: "policy_denied", Message: "policy denied this tool"},
 		InterruptToolTurn{SessionID: sessionID, TurnID: turnID, ItemID: itemID, CallID: "call-1", Code: InterruptionCallerCanceled, Message: ""},
 		FailToolTurn{SessionID: sessionID, TurnID: turnID, ItemID: itemID, CallID: "call-1", Code: "failed", Message: "failed"},
-		RecordPolicyDecision{SessionID: sessionID, TurnID: turnID, ItemID: itemID, CallID: "call-1", Name: "read_file", Effect: PolicyEffectAllow, RuleID: "default.read", Reason: "in_workspace"},
+		RecordPolicyDecision{Policy: &ToolPolicyIdentity{ID: "deny_tools", Version: "1.0.0", ConfigDigest: strings.Repeat("a", 64)}, SessionID: sessionID, TurnID: turnID, ItemID: itemID, CallID: "call-1", Name: "read_file", Effect: PolicyEffectAllow, RuleID: "default.read", Reason: "in_workspace"},
 		RequestApproval{SessionID: sessionID, TurnID: turnID, ItemID: itemID, ApprovalID: "approval-1", CallID: "call-1", Name: "write_file", Reason: "write_requires_approval"},
 		ResolveApproval{SessionID: sessionID, TurnID: turnID, ItemID: itemID, ApprovalID: "approval-1", Decision: ApprovalDecisionGranted},
 		CloseSession{SessionID: sessionID},

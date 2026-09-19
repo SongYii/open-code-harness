@@ -1,9 +1,10 @@
 # 启动时可插拔架构：已实现首阶段与后续蓝图
 
-**状态：** 首阶段已实现；非 GA。**日期：** 2026-09-12。
+**状态：** 上下文与工具策略阶段已实现；非 GA。**日期：** 2026-09-19。
 
-**公开 API 稳定级别：** `sdk/och` 与 `sdk/contextpolicy` 均为 **experimental**，
-暂不承诺源码兼容，请固定已验证的版本或提交。已实现、是否 GA 与 API 稳定级别是不同维度。
+**公开 API 稳定级别：** `sdk/och`、`sdk/contextpolicy` 与 `sdk/toolpolicy`
+均为 **experimental**，暂不承诺源码兼容，请固定已验证的版本或提交。已实现、是否
+GA 与 API 稳定级别是不同维度。
 
 英文 [startup-extensibility.md](startup-extensibility.md) 为规范文本，本文为同步阅读版。
 本方案更新扩展与生命周期边界，不替换事件、checkpoint、工具安全或 OTel 合同。
@@ -17,8 +18,8 @@
 反馈；自写示例不满足该采用门槛。实验性不降低持久事件完整性、重放及下述回滚要求。
 
 采用「第三方 Go 扩展 + 自定义编译启动器 + 启动时选定、运行期不变」。不做热加载、
-Go 二进制插件、任意事件 hook 总线或第二套 agent loop。首个扩展只控制上下文压缩
-触发与保留边界，摘要模型和 checkpoint 格式保持原样。
+Go 二进制插件、任意事件 hook 总线或第二套 agent loop。当前扩展控制上下文压缩
+边界与工具授权决定，但不拥有存储、执行、审批或恢复。
 
 我们的结构优势在于可执行行为与持久事实已经分开：请求准入、追加身份与未知提交
 解析、fencing、重放、安全文件修改和 ACP 都有独立合同。策略可以变化，但历史与
@@ -39,14 +40,16 @@ fence；失租后同一实例会恢复接单；命令执行器未纳入关闭；
 调用链是自定义 main / `cmd/och`（信号）→ `sdk/och.Run` → `internal/launcher`
 （共享 flags、命令和 streams）→ composition（校验、构造、资源归属）→
 runtime.Host（准入、取消、排空、fence）与 managed Service → application →
-contextengine → `sdk/contextpolicy.Policy`。
+contextengine → `sdk/contextpolicy.Policy`；工具授权从 application → `policy.Guard`
+→ `sdk/toolpolicy.Policy`。
 
-`sdk/contextpolicy` 只依赖标准库。Domain 自己拥有身份 DTO，不引用 SDK。
+两个策略 SDK 都只依赖标准库。Domain 自己拥有身份 DTO，不引用 SDK。
 application/contextengine 能依赖策略合同，不能依赖启动 SDK；具体 adapter 仍由
 composition 构造，runtime 只保留既有 SQLite 特例。架构测试新增覆盖 SDK 和
 launcher；独立模块编译验证外部用户不需要内部类型。
 
-公开调用为 `och.Run(ctx, args, och.Streams{In, Out, Err}, och.Extensions{ContextPolicies})`。
+公开调用为 `och.Run(ctx, args, och.Streams{In, Out, Err},
+och.Extensions{ContextPolicies, ToolPolicies})`。
 与官方二进制共享 flags、ACP、`compact-session`、`export-session` 和关闭逻辑。
 调用方负责信号；Run 负责装配生命周期；ACP 会关闭调用期间拥有的输入，stdout
 只输出协议帧，诊断进入指定 Err。暂不公开 Service、Store、Domain、engine 或 Eval SDK。
@@ -57,14 +60,18 @@ launcher；独立模块编译验证外部用户不需要内部类型。
 - `-context-policy`：空值或 `builtin` 使用原算法。
 - `-context-policy-config`：最多 64 KiB 的非敏感 JSON 对象，默认 `{}`。
 - `-context-policy-version`：可选版本锁定，供 eval 使用。
+- `-tool-policy`：空值或 `builtin` 使用当前授权表。
+- `-tool-policy-config`：最多 64 KiB 的非敏感 JSON 对象，默认 `{}`。
+- `-tool-policy-version`：可选版本锁定，供 eval 使用。
 
 核心规范化空白与对象键顺序，拒绝重复键、尾随值，保留数字字面形式，再计算 SHA-256。
 配置会出现在命令行和评测材料中；摘要不能保护低熵秘密，因此禁止放凭据。Builtin
 不接受自定义 config/version，继续使用原来的预算 flags。factory 只解析配置并构造
 不可变、可并发调用的策略。注册本身不会改变默认选择。
 
-可直接参考 [独立启动器示例](../../examples/keep-last-n/README.md)：模块只导入两个
-SDK 包，实现并注册 `keep_last_n_turns`，编译成自己的可执行文件。
+可直接参考独立的 [`keep_last_n_turns`](../../examples/keep-last-n/README.md) 与
+[`deny_tools`](../../examples/deny-tools/README.md) 启动器；它们分别以独立模块只依赖
+公开 SDK 编译。注册策略本身不会选择它。
 
 ## 策略能力与核心不变量
 
@@ -99,6 +106,21 @@ overflow 路径决定是否失败，不能虚构成功。
 配合取消。Host 无法强杀挂死的 Go 函数、隔离任意 panic 或证明第三方的确定性。
 不可信插件需要未来的进程隔离，不用每次开超时 goroutine 假装实现隔离。
 
+## 工具授权策略能力与核心不变量
+
+`toolpolicy.Policy.Decide(context.Context, Input)` 只收到目录派生的独立元数据：工具名、
+风险级别、变更位、工作区归属事实和可选的有界路径字面量；不传参数对象、事件、文件系统、
+进程执行器、provider、store 或 approver。不可替换的核心 guard 先执行：空名称、网络、
+未知或不一致风险、非法路径元数据及工作区外访问都在调用自定义代码前拒绝。策略返回后，
+effect 及有界 UTF-8 rule/reason 仍须校验；回调错误或非法输出以带身份的
+`policy_failed` 拒绝失败关闭。
+
+自定义决定只能收紧或复现安全默认表，不能自己执行工具。`require_approval` 仍须经过
+Application 独立持有的 approver，并不等于授权。每条规范
+`policy.decision.recorded` 都复制所选 `{id, version, configDigest}`；builtin 继续按原
+字节省略字段。策略决定刻意不投影到 ACP update 或 Session transcript，规范数据库/审计
+流才是权威。注册表只属于一次启动且运行期不变；不提供热替换或恶意代码隔离。
+
 ## 生命周期与故障行为
 
 Host 在同一锁内检查准入与登记操作；工作 context 同时跟随调用方和永久 Host
@@ -132,27 +154,30 @@ OTel 子系统和 span 属性未重做。
 
 ## 事件、评测与回滚
 
-仅自定义策略在 `context.prepared`、`context.compaction.started` 增加可选
+仅自定义上下文策略在 `context.prepared`、`context.compaction.started` 增加可选
 `policy: {id, version, configDigest}`，transcript 同步投影。Builtin 省略字段，旧
-payload 和 hash 不变。Domain 校验并深拷贝身份；事件 envelope schema 与 checkpoint
-格式不变，不改写旧日志。
+payload 和 hash 不变。自定义工具策略只在规范 `policy.decision.recorded` 上增加同形
+身份，不进入 transcript。Domain 校验并深拷贝两类身份；事件 envelope schema 与
+checkpoint 格式不变，不改写旧日志。
 
 新 reader 可以读旧日志，缺失身份代表旧默认策略。切换策略后既有 checkpoint 仍
 可经核心校验复用，历史重放不执行插件。但**旧严格 reader 不能读取新增的自定义
 策略事实**。首次启用前应做已验证备份；回滚应保留能读新字段的 reader，或恢复
 启用前备份（会丢失后续工作），不能删字段或重算审计链冒充兼容。
 
-Eval 的可选 `SubjectContext.Policy` 冻结 ID、版本、配置摘要与配置，并纳入 Subject
-digest，嵌套配置也规范化键顺序。ACP argv 携带选择、版本锁和配置；已有二进制
-hash 冻结真实实现。首阶段自定义策略评测仅支持 ACP，自带 in-process BuildConfig
-明确拒绝，不引入另一个评测注册表或 Eval SDK。
+Eval 的可选 `SubjectContext.Policy` 与 `SubjectPolicy.ToolPolicy` 冻结 ID、版本、
+配置摘要与配置，并纳入 Subject digest，嵌套配置也规范化键顺序。ACP argv 携带选择、
+版本锁和配置；已有二进制 hash 冻结真实实现。收集及回读均要求每条持久工具策略决定
+与冻结 Subject 一致，之后证据才可评分。首阶段自定义策略评测仅支持 ACP，自带
+in-process BuildConfig 明确拒绝两类自定义策略，不引入另一个评测注册表或 Eval SDK。
 
 ## 验证与限制
 
 新增覆盖默认等价、强制触发、候选边界与被修改 DTO、取消、注册隔离与启动拒绝、
 身份严格编解码/深拷贝、旧 checkpoint 摘要失败、阻塞续租、永久 fencing、排空
-超时、Turn/手动回调期间 Close、并发 Close、eval 身份/argv，以及独立模块的真实
-ACP 压缩与导出。既有 replay、SQLite、transcript、CLI 和依赖架构测试继续保留。
+超时、Turn/手动回调期间 Close、并发 Close、eval 身份/argv/证据一致性、独立模块的
+真实 ACP 压缩与导出，以及 `deny_tools` 的拒绝、继续执行、持久身份和 transcript/ACP
+省略。既有 replay、SQLite、transcript、CLI 和依赖架构测试继续保留。
 
 实施时观察到两项与环境相关的 localexec 失败：无条件假设没有 backend，以及
 PID namespace 内 PID 与登记的宿主 PID 比较。后续评审者报告全量通过，未复现两项
@@ -175,9 +200,11 @@ PID namespace 内 PID 与登记的宿主 PID 比较。后续评审者报告全�
    进程监管收回 localexec，见[实施计划](../superpowers/plans/2026-09-15-mcp-process-ownership.md)。
    文件与单次命令端口、真实 enforcement 报告和安全文件写入不变；公开执行环境
    扩展与容器/远程后端仍须真实需求，不随本切片发布。
-3. 工具授权策略：内部 guard 切片已实现。纯决策 DTO 使用目录复制出的元数据，核心拒绝先于
-   策略执行，策略输出须重新校验，审批仍由 Application 的独立端口负责。没有随之发布公开
-   选择器、SDK、热替换或第三方策略加载；见[实施证据](tool-authorization-guard-evidence.md)。
+3. 工具授权策略：内部 guard 与 experimental 启动 SDK 已实现。纯决策 DTO 使用目录
+   复制出的元数据，核心拒绝先于策略执行，策略输出须重新校验，审批仍由 Application 的
+   独立端口负责；身份被冻结到持久事实，并有独立模块 ACP 证明。不提供热替换或恶意代码
+   隔离；见[边界证据](tool-authorization-guard-evidence.md)与
+   [启动扩展证据](tool-policy-startup-extensibility-evidence.md)。
 4. 有实际需求再扩 eval/storage：离线评价读取规范证据；替代存储先过完整追加、
    resolve、fencing、审计和恢复一致性测试，不是声明一个插件接口就算支持。
 

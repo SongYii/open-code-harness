@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
+	corepolicy "github.com/SongYii/open-code-harness/internal/harness/policy"
 )
 
 // FormatVersion is every eval wire document's v1 format version (design §6).
@@ -615,6 +616,7 @@ const (
 // limits, and sandbox policy (design §10).
 type SubjectPolicy struct {
 	Mode                string               `json:"mode"`
+	ToolPolicy          *SubjectToolPolicy   `json:"toolPolicy,omitempty"`
 	ToolCatalogIdentity string               `json:"toolCatalogIdentity"`
 	Limits              SubjectLimits        `json:"limits"`
 	SandboxPolicy       SubjectSandboxPolicy `json:"sandboxPolicy"`
@@ -820,6 +822,14 @@ func (policy SubjectPolicy) validate() error {
 	}
 	if !hasText(policy.ToolCatalogIdentity) {
 		return fmt.Errorf("%w: policy.toolCatalogIdentity is required", errInvalidDocument)
+	}
+	if policy.ToolPolicy != nil {
+		if err := policy.ToolPolicy.validate(); err != nil {
+			return err
+		}
+		if policy.Mode != string(corepolicy.ModeDefault) {
+			return fmt.Errorf("%w: custom tool policy requires policy.mode %q", errInvalidDocument, corepolicy.ModeDefault)
+		}
 	}
 	if err := policy.Limits.validate(); err != nil {
 		return err
