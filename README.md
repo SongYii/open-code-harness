@@ -28,7 +28,7 @@ The numbered milestone list lives in
 [docs/README.md](docs/README.md#milestone-status). Completed slices so far:
 
 - Domain events and the Session/Turn state machine: implemented and verified.
-- Startup-composed Go extensions: an [experimental public launcher SDK and context policy contract](docs/architecture/startup-extensibility.md), with an [independent-module launcher example](examples/keep-last-n/README.md). Source compatibility is not yet promised; the example proves integration, not external adoption. No hot loading; existing summaries/checkpoints stay core-owned.
+- Startup-composed Go extensions: an [experimental public launcher SDK with context and guarded tool-policy contracts](docs/architecture/startup-extensibility.md), plus independent-module [`keep_last_n_turns`](examples/keep-last-n/README.md) and [`deny_tools`](examples/deny-tools/README.md) launchers. Source compatibility is not yet promised; these examples prove integration, not external adoption. No hot loading; summaries, checkpoints, execution, approval, and durable history stay core-owned. See the [tool-policy startup evidence](docs/architecture/tool-policy-startup-extensibility-evidence.md).
 - Industrial Engine vertical slice: implemented and verified through reusable
   scenario, replay, concurrency, race, and dependency-boundary gates.
 - EventStore v2 contract: implemented and verified. The memory adapter is a

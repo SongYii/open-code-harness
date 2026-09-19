@@ -1,7 +1,7 @@
 # Tool Authorization Guard Evidence / 工具授权核心防线证据
 
-**Status:** Internal boundary implemented; no public policy plugin API.
-**Date:** 2026-09-17.
+**Status:** Internal guard and experimental startup policy API implemented.
+**Date:** 2026-09-19.
 **Roadmap:** [Startup extensibility](startup-extensibility.md) and
 [启动时可插拔架构](startup-extensibility.zh-CN.md).
 
@@ -34,8 +34,18 @@ were not changed.
 - `policy.TestGuardRejectsNilStrategies` covers both a nil interface and a
   typed-nil implementation, preventing a delayed panic at decision time.
 - Existing catalog defensive-copy/validation tests and Application approval,
-  denial, timeout, domain-codec and transcript tests remain the evidence for
-  immutable risk ownership, separate approval and persisted-byte compatibility.
+denial, timeout, domain-codec and transcript tests remain the evidence for
+immutable risk ownership, separate approval and persisted-byte compatibility.
+
+The follow-on startup slice publishes a standard-library-only experimental
+`sdk/toolpolicy` DTO contract and local `sdk/och.Extensions.ToolPolicies`
+registry. Composition resolves and freezes the selected ID, version and
+canonical config digest before opening durable or process resources, adapts
+values into the guarded internal strategy, and records that identity on every
+custom policy decision. Builtin decision bytes remain unchanged. The
+project-owned [`deny_tools`](../../examples/deny-tools/README.md) module proves
+external-module compilation and real ACP integration; it is not independent
+adoption.
 
 Two temporary source mutations were run and then restored:
 
@@ -57,14 +67,18 @@ Both commands passed with a task-specific writable Go build cache. The final
 tree also passed `go test -race ./... -count=1`; this required normal loopback
 socket permissions because several integration fixtures bind local listeners.
 
+The dedicated [startup evidence ledger](tool-policy-startup-extensibility-evidence.md)
+records the resolver, lifecycle, durable identity, Eval agreement, external ACP,
+and mutation/full-suite evidence for that follow-on slice.
+
 ## Explicit exclusions
 
-This slice does not add a startup registry, configuration schema, public SDK,
-dynamic loading, runtime hot swap, durable policy identity or a third-party
-consumer. It does not claim isolation from arbitrary in-process Go code: such
-code could block or mutate process state before returning, which is why no
-untrusted strategy loading surface is published. No provider call, paid model
-traffic, persisted schema migration or OTel implementation change is included.
+The public surface does not add dynamic loading, runtime hot swap, arbitrary
+event hooks, a second approval authority, or a third-party adopter. It does not
+claim isolation from arbitrary in-process Go code: trusted policy code can
+block, panic, or mutate process state before returning. Untrusted policy code
+still needs a future process boundary. No paid provider call, persisted schema
+migration or OTel implementation change is included.
 
 ## 中文摘要
 
@@ -76,5 +90,7 @@ effect、规则、原因与 UTF-8 校验。策略报错或返回非法结果时�
 独立端口，`require_approval` 不等于已经批准。删除核心拒绝与删除输出校验的两次临时
 变异均让对应测试准确失败，恢复后定向测试通过。
 
-本轮没有公开策略 SDK、启动注册表、热替换、持久策略身份或第三方加载能力，也不宣称
-能隔离任意进程内 Go 代码。没有发生模型调用、付费流量、持久化迁移或 OTel 实现修改。
+后续启动切片已发布 experimental 的 `sdk/toolpolicy`、每次启动本地注册表及持久策略
+身份；独立 `deny_tools` 模块证明外部模块编译与真实 ACP 接入，但不代表第三方采用。
+仍没有动态加载、热替换、任意事件 hook 或第二套审批权，也不宣称能隔离任意进程内 Go
+代码。没有发生付费模型流量、持久化迁移或 OTel 实现修改。

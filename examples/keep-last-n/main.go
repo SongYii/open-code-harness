@@ -12,19 +12,9 @@ import (
 
 	"github.com/SongYii/open-code-harness/sdk/contextpolicy"
 	"github.com/SongYii/open-code-harness/sdk/och"
-	"github.com/SongYii/open-code-harness/sdk/toolpolicy"
 )
 
 type keepLast struct{ turns uint64 }
-
-type denyExec struct{}
-
-func (denyExec) Decide(_ context.Context, input toolpolicy.Input) (toolpolicy.Decision, error) {
-	if input.Risk == toolpolicy.RiskExec {
-		return toolpolicy.Decision{Effect: toolpolicy.EffectDeny, RuleID: "deny_exec.risk", Reason: "exec_disabled"}, nil
-	}
-	return toolpolicy.Decision{Effect: toolpolicy.EffectAllow, RuleID: "deny_exec.allow", Reason: "allowed"}, nil
-}
 
 func (policy keepLast) Plan(ctx context.Context, input contextpolicy.Input) (contextpolicy.Decision, error) {
 	if err := ctx.Err(); err != nil {
@@ -64,9 +54,6 @@ func main() {
 	defer stop()
 	err := och.Run(ctx, os.Args[1:], och.Streams{In: os.Stdin, Out: os.Stdout, Err: os.Stderr}, och.Extensions{
 		ContextPolicies: []contextpolicy.Registration{{ID: "keep_last_n_turns", Version: "1.0.0", Factory: newPolicy}},
-		ToolPolicies: []toolpolicy.Registration{{ID: "deny_exec", Version: "1.0.0", Factory: func(json.RawMessage) (toolpolicy.Policy, error) {
-			return denyExec{}, nil
-		}}},
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
