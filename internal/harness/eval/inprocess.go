@@ -50,8 +50,8 @@ func (discardSink) Emit(context.Context, engine.RuntimeEvent) error { return nil
 // under a distinct runtime ID without BuildConfig needing to know anything
 // about launch ordinals itself.
 func BuildConfig(subject Subject, directories AttemptRootDirectories, runtimeID string, approver tools.Approver) (composition.Config, error) {
-	if subject.Context.Policy != nil {
-		return composition.Config{}, fmt.Errorf("eval: custom context policies require an ACP launcher; stock in-process execution has no registrations")
+	if subject.Context.Policy != nil || subject.Policy.ToolPolicy != nil {
+		return composition.Config{}, fmt.Errorf("eval: custom context or tool policies require an ACP launcher; stock in-process execution has no registrations")
 	}
 	if err := subject.Validate(); err != nil {
 		return composition.Config{}, fmt.Errorf("eval: build config: %w", err)

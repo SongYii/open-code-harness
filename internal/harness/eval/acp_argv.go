@@ -2,8 +2,10 @@ package eval
 
 import (
 	"fmt"
-	"github.com/SongYii/open-code-harness/sdk/contextpolicy"
 	"strconv"
+
+	"github.com/SongYii/open-code-harness/sdk/contextpolicy"
+	"github.com/SongYii/open-code-harness/sdk/toolpolicy"
 )
 
 // NormalizedArgv derives och's exact CLI argv for launching an ACP
@@ -61,6 +63,17 @@ func NormalizedArgv(subject Subject) ([]string, error) {
 	}
 	if subject.Policy.SandboxPolicy == SandboxPolicyUnsandboxedAllowed {
 		argv = append(argv, "-allow-unsandboxed-exec")
+	}
+	if subject.Policy.ToolPolicy != nil {
+		canonical, _, err := toolpolicy.CanonicalConfig(subject.Policy.ToolPolicy.Config)
+		if err != nil {
+			return nil, err
+		}
+		argv = append(argv,
+			"-tool-policy", subject.Policy.ToolPolicy.ID,
+			"-tool-policy-version", subject.Policy.ToolPolicy.Version,
+			"-tool-policy-config", string(canonical),
+		)
 	}
 
 	limits := subject.Policy.Limits

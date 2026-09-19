@@ -593,7 +593,7 @@ var allowedHarnessImports = map[packageOwner][]string{
 	ownerRuntime:           {modulePath + "/internal/harness/adapters/sqlite", modulePath + "/internal/harness/application", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/telemetry"},
 	ownerComposition:       {modulePath + "/internal/harness/adapters", modulePath + "/internal/harness/application", modulePath + "/internal/harness/contextengine", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/engine", modulePath + "/internal/harness/policy", modulePath + "/internal/harness/runtime", modulePath + "/internal/harness/telemetry", modulePath + "/internal/harness/tools", modulePath + "/internal/harness/transcript", modulePath + "/sdk/toolpolicy"},
 	ownerTranscript:        {modulePath + "/internal/harness/application", modulePath + "/internal/harness/domain"},
-	ownerEval:              {modulePath + "/internal/harness/application", modulePath + "/internal/harness/composition", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/engine", modulePath + "/internal/harness/policy", modulePath + "/internal/harness/redact", modulePath + "/internal/harness/tools", modulePath + "/internal/harness/transcript"},
+	ownerEval:              {modulePath + "/internal/harness/application", modulePath + "/internal/harness/composition", modulePath + "/internal/harness/domain", modulePath + "/internal/harness/engine", modulePath + "/internal/harness/policy", modulePath + "/internal/harness/redact", modulePath + "/internal/harness/tools", modulePath + "/internal/harness/transcript", modulePath + "/sdk/toolpolicy"},
 }
 
 func allowedHarnessImport(owner packageOwner, importPath string) bool {

@@ -3,6 +3,7 @@ package eval
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 )
@@ -17,9 +18,14 @@ type verifierAuditEvent struct {
 }
 
 func readAuditEvents(reader *ArtifactReader) ([]verifierAuditEvent, bool) {
+	events, present, err := readAuditEventsDetailed(reader)
+	return events, present && err == nil
+}
+
+func readAuditEventsDetailed(reader *ArtifactReader) ([]verifierAuditEvent, bool, error) {
 	entries := reader.Entries("audit")
 	if !hasCollectedEntry(entries) {
-		return nil, false
+		return nil, false, nil
 	}
 	var events []verifierAuditEvent
 	for _, entry := range entries {
@@ -28,27 +34,37 @@ func readAuditEvents(reader *ArtifactReader) ([]verifierAuditEvent, bool) {
 		}
 		data, err := reader.ReadEntry(entry.Path)
 		if err != nil {
-			return nil, false
+			return nil, true, err
 		}
-		for _, line := range bytes.Split(data, []byte{'\n'}) {
-			line = bytes.TrimSpace(line)
-			if len(line) == 0 {
-				continue
+		decoded, err := decodeAuditEvents(data)
+		if err != nil {
+			return nil, true, err
+		}
+		events = append(events, decoded...)
+	}
+	return events, true, nil
+}
+
+func decodeAuditEvents(data []byte) ([]verifierAuditEvent, error) {
+	var events []verifierAuditEvent
+	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var envelope verifierAuditEnvelope
+		if err := json.Unmarshal(line, &envelope); err != nil {
+			return nil, fmt.Errorf("eval: malformed audit envelope: %w", err)
+		}
+		for _, raw := range envelope.Events {
+			var event verifierAuditEvent
+			if err := json.Unmarshal(raw, &event); err != nil || event.Type == "" {
+				return nil, fmt.Errorf("eval: malformed audit event")
 			}
-			var envelope verifierAuditEnvelope
-			if err := json.Unmarshal(line, &envelope); err != nil {
-				return nil, false
-			}
-			for _, raw := range envelope.Events {
-				var event verifierAuditEvent
-				if err := json.Unmarshal(raw, &event); err != nil || event.Type == "" {
-					return nil, false
-				}
-				events = append(events, event)
-			}
+			events = append(events, event)
 		}
 	}
-	return events, true
+	return events, nil
 }
 
 // verifyToolApprovalFailureObserved requires canonical audit evidence for an
