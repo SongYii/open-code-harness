@@ -116,7 +116,11 @@ registers the policy at startup. The checked-in `deny_tools` example has a
 fixture EvalSet that exercises the complete path without a paid model call:
 
 ```bash
-go build -o /tmp/deny-tools-och ./examples/deny-tools
+# examples/deny-tools is an independent module with its own go.mod, which is
+# the point of the example: it proves an out-of-tree launcher compiles against
+# the published surface. It therefore builds from its own directory and cannot
+# be named as a package path of this module.
+(cd examples/deny-tools && go build -mod=readonly -o /tmp/deny-tools-och .)
 artifact_root="$(mktemp -d)"
 
 go run ./cmd/och-eval run \
