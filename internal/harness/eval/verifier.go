@@ -7,6 +7,11 @@ package eval
 // beyond one Attempt's own evidence and Scenario.
 type Verifier func(reader *ArtifactReader, scenario Scenario) CriterionResult
 
+// VerifierToolPolicyDenial proves that a custom, attributed tool policy
+// denied a call and that the same call terminated with the core's
+// policy_denied failure code.
+const VerifierToolPolicyDenial = "tool-policy-denial-observed-v1"
+
 // verifierCatalog is a fixed, compiled-in table of every known Verifier,
 // keyed by its versioned ID (design §20: "unknown verifier IDs fail
 // EvalSet validation rather than executing data-file code" — the catalog
@@ -15,6 +20,7 @@ type Verifier func(reader *ArtifactReader, scenario Scenario) CriterionResult
 var verifierCatalog = map[string]Verifier{
 	"manifest-complete-v1":              verifyManifestComplete,
 	"tool-approval-failure-observed-v1": verifyToolApprovalFailureObserved,
+	VerifierToolPolicyDenial:            verifyToolPolicyDenialObserved,
 	"context-compaction-observed-v1":    verifyContextCompactionObserved,
 	"transcript-present-v1":             verifyTranscriptPresent,
 	"audit-included-v1":                 verifyAuditIncluded,

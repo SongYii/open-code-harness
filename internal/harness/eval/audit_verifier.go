@@ -104,6 +104,37 @@ func verifyToolApprovalFailureObserved(reader *ArtifactReader, _ Scenario) Crite
 	return CriterionResult{ID: "tool-approval-failure-observed-v1", Status: ScoreFail}
 }
 
+// verifyToolPolicyDenialObserved requires a complete, correlated proof from
+// canonical audit evidence. Attribution distinguishes a custom extension
+// decision from the builtin policy, and matching CallID prevents an unrelated
+// failure from completing the proof.
+func verifyToolPolicyDenialObserved(reader *ArtifactReader, _ Scenario) CriterionResult {
+	events, ok := readAuditEvents(reader)
+	if !ok {
+		return CriterionResult{ID: VerifierToolPolicyDenial, Status: ScoreIndeterminate}
+	}
+	deniedCalls := make(map[string]bool)
+	for _, event := range events {
+		if event.Type != domain.EventPolicyDecisionRecorded {
+			continue
+		}
+		var data domain.PolicyDecisionRecorded
+		if json.Unmarshal(event.Data, &data) == nil && data.Policy != nil && domain.ValidateToolPolicyIdentity(data.Policy) == nil && data.CallID != "" && data.Name != "" && data.Effect == domain.PolicyEffectDeny {
+			deniedCalls[data.CallID] = true
+		}
+	}
+	for _, event := range events {
+		if event.Type != domain.EventToolCallFailed {
+			continue
+		}
+		var data domain.ToolCallFailed
+		if json.Unmarshal(event.Data, &data) == nil && deniedCalls[data.CallID] && data.Code == "policy_denied" {
+			return CriterionResult{ID: VerifierToolPolicyDenial, Status: ScorePass}
+		}
+	}
+	return CriterionResult{ID: VerifierToolPolicyDenial, Status: ScoreFail}
+}
+
 // verifyContextCompactionObserved requires a manual reset bracket and its
 // completed source-tail-reset checkpoint in canonical audit evidence.
 func verifyContextCompactionObserved(reader *ArtifactReader, _ Scenario) CriterionResult {
