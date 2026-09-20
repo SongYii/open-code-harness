@@ -1,0 +1,30 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.set",
+  "id": "tool-policy-denial-acp",
+  "scenarios": [
+    {
+      "id": "tool-policy-denial",
+      "digest": "sha256:4964499b5bfac2e2309767176df1ed7f67fbb51972c74a9fc40aea113514d93f"
+    }
+  ],
+  "subjects": [
+    {
+      "id": "deny-tools-subject-acp",
+      "digest": "sha256:2999ee6ceb45457f807e8a9100d380fea3ec829bcc7e622ed05b786e105f9971"
+    }
+  ],
+  "executors": [
+    {
+      "id": "smoke-executor-acp",
+      "digest": "sha256:91fdb83cbb37e77378c6d486a17793e683cf6a64f9d613fe111fd276cfe67164"
+    }
+  ],
+  "repetitionCount": 1,
+  "pairingSeed": "tool-policy-denial-v1",
+  "limits": {
+    "tokenCap": 100000
+  },
+  "artifactRoot": ".eval-artifacts-tool-policy-denial",
+  "lane": "fixture"
+}

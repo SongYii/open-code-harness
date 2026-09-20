@@ -53,6 +53,93 @@ func TestValidateToolPolicyEvidenceAgreement(t *testing.T) {
 	}
 }
 
+func TestToolPolicyDenialVerifierRequiresAttributedCorrelatedDenial(t *testing.T) {
+	const verifierID = "tool-policy-denial-observed-v1"
+	verifier, ok := LookupVerifier(verifierID)
+	if !ok {
+		t.Fatalf("verifier %q is not registered", verifierID)
+	}
+	identity := &domain.ToolPolicyIdentity{
+		ID: "deny_tools", Version: "1.0.0", ConfigDigest: strings.Repeat("a", 64),
+	}
+	decision := func(callID string, policy *domain.ToolPolicyIdentity, effect string) traceEvent {
+		return traceEvent{domain.EventPolicyDecisionRecorded, domain.PolicyDecisionRecorded{
+			Policy: policy, CallID: callID, Name: "exec", Effect: effect,
+			RuleID: "deny_tools.configured_name", Reason: "configured_deny",
+		}}
+	}
+	failure := func(callID, code string) traceEvent {
+		return traceEvent{domain.EventToolCallFailed, domain.ToolCallFailed{CallID: callID, Code: code}}
+	}
+
+	for _, test := range []struct {
+		name   string
+		events []traceEvent
+		want   ScoreVerdict
+	}{
+		{
+			name: "attributed denial and policy failure share a call",
+			events: []traceEvent{
+				decision("call-1", identity, domain.PolicyEffectDeny),
+				failure("call-1", "policy_denied"),
+			},
+			want: ScorePass,
+		},
+		{
+			name: "unattributed builtin decision cannot prove a custom policy",
+			events: []traceEvent{
+				decision("call-1", nil, domain.PolicyEffectDeny),
+				failure("call-1", "policy_denied"),
+			},
+			want: ScoreFail,
+		},
+		{
+			name: "invalid attribution cannot prove a custom policy",
+			events: []traceEvent{
+				decision("call-1", &domain.ToolPolicyIdentity{ID: "deny_tools", Version: "1.0.0", ConfigDigest: "not-a-digest"}, domain.PolicyEffectDeny),
+				failure("call-1", "policy_denied"),
+			},
+			want: ScoreFail,
+		},
+		{
+			name: "non-deny decision cannot prove a denial",
+			events: []traceEvent{
+				decision("call-1", identity, domain.PolicyEffectRequireApproval),
+				failure("call-1", "policy_denied"),
+			},
+			want: ScoreFail,
+		},
+		{
+			name: "unrelated failures cannot complete the proof",
+			events: []traceEvent{
+				decision("call-1", identity, domain.PolicyEffectDeny),
+				failure("call-2", "policy_denied"),
+			},
+			want: ScoreFail,
+		},
+		{
+			name: "approval denial is not a policy denial",
+			events: []traceEvent{
+				decision("call-1", identity, domain.PolicyEffectDeny),
+				failure("call-1", "approval_denied"),
+			},
+			want: ScoreFail,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := verifier(traceReaderFor(t, test.events...), validScenario())
+			if got.ID != verifierID || got.Status != test.want {
+				t.Fatalf("result = %+v, want id %q status %q", got, verifierID, test.want)
+			}
+		})
+	}
+
+	malformed := verifier(traceReaderFromLines(t, []string{"not-json"}), validScenario())
+	if malformed.Status != ScoreIndeterminate {
+		t.Fatalf("malformed audit status = %q, want %q", malformed.Status, ScoreIndeterminate)
+	}
+}
+
 func TestCollectEvidenceRejectsToolPolicyMismatchBeforePublication(t *testing.T) {
 	directories, execution, documents := runHappyAttempt(t)
 	documents.Subject.Policy.ToolPolicy = customSubjectToolPolicy(t, `{"names":["write_file"]}`)

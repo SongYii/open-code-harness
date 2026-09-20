@@ -109,6 +109,37 @@ on Outcome. Model judge quality signals are advisory and never gate an
 ordinary PR (design §22) — only deterministic verifier failures and
 configured deterministic floors may.
 
+## Evaluating a custom tool-policy launcher
+
+Custom tool policies run only through an `acp_subprocess` launcher that
+registers the policy at startup. The checked-in `deny_tools` example has a
+fixture EvalSet that exercises the complete path without a paid model call:
+
+```bash
+go build -o /tmp/deny-tools-och ./examples/deny-tools
+artifact_root="$(mktemp -d)"
+
+go run ./cmd/och-eval run \
+  -set eval/sets/tool-policy-denial-acp.json \
+  -artifacts "$artifact_root" \
+  -och-binary /tmp/deny-tools-och
+```
+
+The run report contains the generated Attempt ID. Regrade that Attempt from
+its committed evidence only:
+
+```bash
+go run ./cmd/och-eval regrade \
+  -attempt "$artifact_root/<attempt-id>" \
+  -scorer tool-policy-denial-v1
+```
+
+The scorer passes only when canonical audit contains an attributed custom
+policy `deny` decision and a `policy_denied` terminal failure for the same
+tool call, the Attempt did not suffer an infrastructure failure, and the
+fixture command's workspace marker remained absent. Regrade does not launch
+the policy binary, contact the fixture provider, or read a credential.
+
 ## Live quality judging
 
 `och-eval judge` scores one already-published **live-lane** Attempt's

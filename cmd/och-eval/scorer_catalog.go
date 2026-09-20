@@ -130,6 +130,15 @@ var scorerCatalog = map[string]eval.Scorer{
 			"outcome-not-infra-failed-v1",
 		},
 	},
+	"tool-policy-denial-v1": {
+		ID:      "tool-policy-denial-v1",
+		Version: "v1",
+		VerifierIDs: []string{
+			eval.VerifierToolPolicyDenial,
+			eval.VerifierWorkspacePathsAbsent,
+			"outcome-not-infra-failed-v1",
+		},
+	},
 	"context-compaction-v1": {
 		ID:      "context-compaction-v1",
 		Version: "v1",

@@ -58,6 +58,7 @@ const toolApprovalTriggerMarker = "TRIGGER_WRITE_FILE_APPROVAL"
 const (
 	readFileTriggerMarker    = "TRIGGER_READ_FILE"
 	execRedactionMarker      = "TRIGGER_EXEC_REDACTION"
+	execPolicyDenialMarker   = "TRIGGER_EXEC_POLICY_DENY"
 	readMissingTriggerMarker = "TRIGGER_READ_MISSING"
 	readOutsideTriggerMarker = "TRIGGER_READ_OUTSIDE"
 	mcpApprovalTriggerMarker = "TRIGGER_MCP_APPROVAL_DENY"
@@ -90,6 +91,8 @@ func smartFixtureScript(w http.ResponseWriter, r *http.Request) {
 		writeToolCallSSE(w, "call_read", "read_file", `{"path":"input.txt"}`)
 	case bytes.Contains(body, []byte(execRedactionMarker)):
 		writeToolCallSSE(w, "call_exec", "exec", `{"argv":["echo","API_KEY=sk-test-should-not-appear-in-evidence"]}`)
+	case bytes.Contains(body, []byte(execPolicyDenialMarker)):
+		writeToolCallSSE(w, "call_exec_policy", "exec", `{"argv":["sh","-c","printf ran > policy-should-not-run.txt"]}`)
 	case bytes.Contains(body, []byte(readMissingTriggerMarker)):
 		writeToolCallSSE(w, "call_missing", "read_file", `{"path":"does-not-exist.txt"}`)
 	case bytes.Contains(body, []byte(readOutsideTriggerMarker)):
