@@ -65,6 +65,44 @@ go test ./cmd/acp-web-bridge ./cmd/och ./internal/harness/domain \
 No subagent code is on either failing `localexec` test path. This ledger does
 not rewrite the known host-dependent failures into a clean full-suite claim.
 
+## Follow-up: the contract claimed four denials and proved one (2026-09-20)
+
+Reviewing this branch before merge found that the dispatch claim — "rejects
+hidden write, exec, MCP, and recursive calls" — rested on a single test, for
+write. Two mutations confirmed the rest was unguarded rather than merely
+undocumented:
+
+| Mutation | Result before this follow-up |
+| --- | --- |
+| Delete the `owned.state.Parent != nil` recursion check in `invokeDelegateTask` | nothing failed in `./internal/harness/...` or `./cmd/...` |
+| Add `tools.NameExec` to `childDispatchAllowed` only | nothing failed either |
+
+The exec mutation survives because `TestDelegateTaskCreatesReadOnlyDurableChild`
+asserts the child's *schema* is exactly `read_file`/`list_dir`; a dispatch-only
+widening never reaches that assertion.
+
+`TestChildSessionRejectsExecAtDispatch` and `TestChildSessionCannotDelegateAgain`
+close this. What each is worth differs, and is recorded as such rather than
+summarised as "both mutations now fail":
+
+- The exec test is independently load-bearing: it fails under the
+  dispatch-only widening. The failure is also informative — with dispatch
+  widened, exec falls through to `approval_denied` rather than the capability
+  denial, so the test asserts the specific code rather than merely that
+  something failed.
+- The recursion test proves the combined property only. It stays green when
+  either barrier is removed and fails only when both are, because
+  `delegate_task` is already outside `childDispatchAllowed`, which makes the
+  `Parent` check unreachable in production today. That is real defence in
+  depth, not two separately provable barriers, and no claim here should be
+  read as isolating the inner check.
+
+MCP tools remain proven by construction only: both allowlists are positive
+(`name == read_file || name == list_dir`), so an MCP-contributed name can
+never match. No test forges one, and none is added here — a positive allowlist
+with no denylist branch is the reason, and it is worth stating rather than
+implying.
+
 ## Mutation checks
 
 Three temporary mutations were applied and restored:
