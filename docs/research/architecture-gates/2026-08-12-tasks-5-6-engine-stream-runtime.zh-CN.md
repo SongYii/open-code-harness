@@ -14,7 +14,7 @@
 | 项目 | 一手资料与事实 | 我们的决定 |
 | --- | --- | --- |
 | OpenAI Codex | [`app-server README`](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)、[`common.rs`](https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/common.rs)、[`responses_websocket.rs`](https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/endpoint/responses_websocket.rs)、[`compact.rs`](https://github.com/openai/codex/blob/main/codex-rs/core/src/compact.rs)：Item 生命周期是 `started -> zero or more deltas -> completed`，completed 是权威结果；transport 在 `response.completed` 前结束会报错，消费者遇到显式 completed 即停止。Codex 内部也使用 channel、transport task、retry 和 fallback。 | 采用显式完成与 premature EOF 失败；不能据此推导 Engine 应暴露 push/channel、detached work 或隐藏重试。 |
-| Kimi Code | [`AGENTS.md`](https://github.com/MoonshotAI/kimi-code/blob/main/AGENTS.md)、[`transcript/AGENTS.md`](https://github.com/MoonshotAI/kimi-code/blob/main/packages/transcript/AGENTS.md)、[wire mode](https://moonshotai.github.io/kimi-cli/en/customization/wire-mode.html)：transcript 拥有自身合同和 cold rebuild 来源，记录操作保持顺序与 scope sequence，wire replay 只读且有序；中断时 `TurnEnd` 可以缺失，retry 可以替代 partial output。 | 采用合同所有权、scope 单调顺序、transcript/runtime 分离；严格 ModelStream grammar 拒绝其宽松中断结束与 retry 语义。 |
+| Kimi Code | [`AGENTS.md`](https://github.com/MoonshotAI/kimi-code/blob/main/AGENTS.md)、[`transcript/AGENTS.md`](https://github.com/MoonshotAI/kimi-code/blob/ab565e081/packages/transcript/AGENTS.md)、[wire mode](https://moonshotai.github.io/kimi-cli/en/customization/wire-mode.html)：transcript 拥有自身合同和 cold rebuild 来源，记录操作保持顺序与 scope sequence，wire replay 只读且有序；中断时 `TurnEnd` 可以缺失，retry 可以替代 partial output。 | 采用合同所有权、scope 单调顺序、transcript/runtime 分离；严格 ModelStream grammar 拒绝其宽松中断结束与 retry 语义。 |
 | Maka | [`ARCHITECTURE.md`](https://github.com/maka-agent/maka-agent/blob/main/ARCHITECTURE.md)：Runtime Host 是执行权威，Runtime Event Log 是消息、工具结果与终止事实的 canonical source，UI、recovery、context 是 projection。 | 采用唯一执行权威、持久事实与 transient delivery signal 分离；该来源未定义 pull、Close、UTF-8 或 byte limit。 |
 | Pi | [`agent-loop.ts`](https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/agent-loop.ts)、[`types.ts`](https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/types.ts)、[`agent-session.ts`](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/agent-session.ts)：loop 注入 stream function、传递 AbortSignal、消费 async iterable，并等待内部 lifecycle delivery；公开 wrapper 启动 detached async work，AgentSession 还拥有 retry、compaction 以及等待规则不同的 listener。 | 采用依赖注入、显式取消、有序 lifecycle 与 awaited delivery；同步 Engine 边界拒绝 detached push wrapper 和宽泛 session policy。 |
 | MiniMax Mini-Agent | [`Mini-Agent`](https://github.com/MiniMax-AI/Mini-Agent)、[`agent.py`](https://github.com/MiniMax-AI/Mini-Agent/blob/main/mini_agent/agent.py)：MiniMax 官方 demo 注入 LLM client 并运行 bounded step loop，但调用 provider-specific unary `generate`，取消只在 step boundary 检查。 | 只采用小型、可注入、有界 loop 的经验；它不提供 ModelStream、Close、UTF-8 或 delivery 合同。 |
@@ -171,3 +171,16 @@ Task 5–6 只有在已接受设计和中英文计划写入以下修订后才可
    milestone 之外。
 
 上述修订落地后，本架构门结论为 **READY**。
+
+## 引用修复（2026-09-14）
+
+本门禁中有两条引用当初写成了可变路径 `blob/main/`，早于文档规则 8 要求钉住
+commit。上游此后移动了文件，这些路径现在返回 404，因此已重新钉到文件确实存在的
+commit：
+
+- `packages/transcript/AGENTS.md` → [`MoonshotAI/kimi-code` 的 `ab565e081`](https://github.com/MoonshotAI/kimi-code/blob/ab565e081/packages/transcript/AGENTS.md)
+
+这是对"打不开的链接"的修复，并不声称 2026-08-12 当时读的就是这个 commit。原始引用
+按可变路径书写，读到的具体版本已无法复原；这里主张的范围更窄，且已于 2026-09-14
+核对：钉住 commit 处的文件内容仍然支撑本门禁表格中的描述。后续门禁若需要这条证据，
+须按规则 7 在其自身的当时 commit 上重新核验。

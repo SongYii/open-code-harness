@@ -119,6 +119,9 @@ func Materialize(input MaterializeInput) PreparedContext {
 	}
 	result.PrunedToolResultCount = prunedCount
 	messages = append(messages, currentInputMessages(input.CurrentInput)...)
+	for index := range messages {
+		messages[index].ProviderState = domain.CloneProviderState(messages[index].ProviderState)
+	}
 
 	envelope := Envelope{Messages: messages, Tools: input.Tools}
 	estimate := input.Meter.Estimate(envelope)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
@@ -101,13 +102,14 @@ func projectPriorTurns(records []domain.RecordedEvent, current domain.TurnID) []
 			if event.TurnID == current {
 				continue
 			}
-			if len(event.ToolCalls) == 0 && event.Text == "" {
+			if len(event.ToolCalls) == 0 && event.Text == "" && event.ProviderState == nil {
 				continue
 			}
 			messages = append(messages, domain.ModelPromptMessage{
-				Role:      domain.PromptRoleAssistant,
-				Text:      event.Text,
-				ToolCalls: cloneToolCallOffers(event.ToolCalls),
+				ProviderState: domain.CloneProviderState(event.ProviderState),
+				Role:          domain.PromptRoleAssistant,
+				Text:          event.Text,
+				ToolCalls:     cloneToolCallOffers(event.ToolCalls),
 			})
 		case domain.ToolCallStarted:
 			if event.TurnID == current {
@@ -162,9 +164,10 @@ func (projection *turnProjection) applyRecords(records []domain.RecordedEvent) {
 			}
 			projection.suffixStart = len(projection.messages)
 			projection.messages = append(projection.messages, domain.ModelPromptMessage{
-				Role:      domain.PromptRoleAssistant,
-				Text:      event.Text,
-				ToolCalls: cloneToolCallOffers(event.ToolCalls),
+				ProviderState: domain.CloneProviderState(event.ProviderState),
+				Role:          domain.PromptRoleAssistant,
+				Text:          event.Text,
+				ToolCalls:     cloneToolCallOffers(event.ToolCalls),
 			})
 		case domain.ToolCallStarted:
 			projection.names[event.CallID] = event.Name
@@ -231,7 +234,7 @@ func (service *Service) runAfterAdmission(ctx context.Context, request RunTurnRe
 }
 
 func (service *Service) runSingleAttempt(ctx context.Context, owned *ownedTurn) (RunTurnResult, error) {
-	runResult, err := service.runner.Run(ctx, engine.RunRequest{
+	runResult, err := service.runModel(ctx, engine.RunRequest{
 		ModelRequest: engine.ModelRequest{
 			SessionID: owned.result.SessionID,
 			TurnID:    owned.result.TurnID,
@@ -275,6 +278,9 @@ func (service *Service) runStepLoop(ctx context.Context, owned *ownedTurn) (RunT
 			defer cancel()
 			return service.terminalizeExecutionFailure(cleanupCtx, ctx, owned.state, owned.result, owned.assistantItem, owned.commandID, owned.emitter, owned.lease, mapRunError(err), err, runResult.Stats)
 		}
+		if !service.acceptProviderState(runResult.ProviderState) {
+			return service.failOwnedTurn(ctx, owned, string(engine.CodeInvalidStream), displayFailureSentence(string(engine.CodeInvalidStream)))
+		}
 		if len(runResult.ToolCalls) == 0 {
 			return service.completeAssistantTurn(ctx, owned, runResult)
 		}
@@ -283,11 +289,12 @@ func (service *Service) runStepLoop(ctx context.Context, owned *ownedTurn) (RunT
 		}
 		runResult.Text = redact.Text(runResult.Text)
 		decided, err := service.decideTurnTerminal(owned.state, owned.result.SessionID, owned.result.TurnID, owned.assistantItem, runResult.Stats, domain.CompleteAssistantMessage{
-			SessionID: owned.result.SessionID,
-			TurnID:    owned.result.TurnID,
-			ItemID:    owned.assistantItem,
-			Text:      runResult.Text,
-			ToolCalls: toolCallOffers(runResult.ToolCalls),
+			ProviderState: runResult.ProviderState,
+			SessionID:     owned.result.SessionID,
+			TurnID:        owned.result.TurnID,
+			ItemID:        owned.assistantItem,
+			Text:          runResult.Text,
+			ToolCalls:     toolCallOffers(runResult.ToolCalls),
 		})
 		if err != nil {
 			return cloneRunTurnResult(owned.result), applicationError(CategoryInternal, "domain_transition_failed", false, err)
@@ -345,12 +352,16 @@ func (service *Service) runStepLoop(ctx context.Context, owned *ownedTurn) (RunT
 }
 
 func (service *Service) completeAssistantTurn(ctx context.Context, owned *ownedTurn, runResult engine.RunResult) (RunTurnResult, error) {
+	if !service.acceptProviderState(runResult.ProviderState) {
+		return service.failOwnedTurn(ctx, owned, string(engine.CodeInvalidStream), displayFailureSentence(string(engine.CodeInvalidStream)))
+	}
 	runResult.Text = redact.Text(runResult.Text)
 	decided, err := service.decideTurnTerminal(owned.state, owned.result.SessionID, owned.result.TurnID, owned.assistantItem, runResult.Stats, domain.CompleteAssistantTurn{
-		SessionID: owned.result.SessionID,
-		TurnID:    owned.result.TurnID,
-		ItemID:    owned.assistantItem,
-		Text:      runResult.Text,
+		ProviderState: runResult.ProviderState,
+		SessionID:     owned.result.SessionID,
+		TurnID:        owned.result.TurnID,
+		ItemID:        owned.assistantItem,
+		Text:          runResult.Text,
 	})
 	if err != nil {
 		return cloneRunTurnResult(owned.result), applicationError(CategoryInternal, "domain_transition_failed", false, err)
@@ -531,16 +542,20 @@ func (service *Service) commitStepAppend(ctx context.Context, owned *ownedTurn, 
 	if err := owned.lease.retainIntent(intent); err != nil {
 		return storeContractViolation(err)
 	}
-	next, records, err := CommitAppendIntent(ctx, service.store, owned.state, intent)
+	appendCtx, appendTrace := startAppendTrace(ctx, service.telemetry, intent)
+	next, records, err := CommitAppendIntent(appendCtx, service.store, owned.state, intent)
 	if err != nil {
 		if isAppendOutcomeUnknown(err) {
 			if retainErr := owned.lease.retainUnknown(executionPhaseStepAppendUnknown); retainErr != nil {
+				appendTrace.end(retainErr)
 				return storeContractViolation(retainErr)
 			}
-			return service.resolveStepAppendUnknown(ctx, owned, intent)
+			return service.resolveStepAppendUnknown(ctx, owned, intent, appendTrace)
 		}
+		appendTrace.end(err)
 		return err
 	}
+	appendTrace.end(nil)
 	if err := owned.lease.setPhase(executionPhaseRunning); err != nil {
 		return storeContractViolation(err)
 	}
@@ -551,14 +566,16 @@ func (service *Service) commitStepAppend(ctx context.Context, owned *ownedTurn, 
 	return nil
 }
 
-func (service *Service) resolveStepAppendUnknown(ctx context.Context, owned *ownedTurn, intent AppendIntent) error {
+func (service *Service) resolveStepAppendUnknown(ctx context.Context, owned *ownedTurn, intent AppendIntent, appendTrace *logicalAppendTrace) error {
 	resolveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), service.config.AppendResolutionTimeout)
 	defer cancel()
 	receipt, err := ResolveAppendIntent(resolveCtx, service.store, intent, service.appendResolutionConfig())
 	if err != nil {
+		appendTrace.end(err)
 		return err
 	}
 	next, records, err := ApplyCommittedIntent(owned.state, intent, receipt)
+	appendTrace.end(err)
 	if err != nil {
 		return err
 	}
@@ -643,16 +660,20 @@ func (service *Service) commitTerminalAppend(commitCtx, deliveryCtx context.Cont
 	if err := owned.lease.retainIntent(intent); err != nil {
 		return cloneRunTurnResult(owned.result), storeContractViolation(err)
 	}
-	_, records, err := CommitAppendIntent(commitCtx, service.store, owned.state, intent)
+	appendCtx, appendTrace := startAppendTrace(commitCtx, service.telemetry, intent)
+	_, records, err := CommitAppendIntent(appendCtx, service.store, owned.state, intent)
 	if err != nil {
 		if isAppendOutcomeUnknown(err) || commitCtx.Err() != nil {
 			if retainErr := owned.lease.retainUnknown(executionPhaseTerminalUnknown); retainErr != nil {
+				appendTrace.end(retainErr)
 				return cloneRunTurnResult(owned.result), storeContractViolation(retainErr)
 			}
-			return service.resolveTerminalUnknown(deliveryCtx, owned.lease, owned.state, owned.result, intent, owned.result.Records, owned.emitter)
+			return service.resolveTerminalUnknown(deliveryCtx, owned.lease, owned.state, owned.result, intent, owned.result.Records, owned.emitter, appendTrace)
 		}
+		appendTrace.end(err)
 		return cloneRunTurnResult(owned.result), err
 	}
+	appendTrace.end(nil)
 	owned.result.Status = status
 	owned.result.Text = text
 	owned.result.TerminalCommitted = true
@@ -700,7 +721,35 @@ func clonePromptMessages(messages []domain.ModelPromptMessage) []domain.ModelPro
 	cloned := make([]domain.ModelPromptMessage, len(messages))
 	for index, message := range messages {
 		cloned[index] = message
+		cloned[index].ProviderState = domain.CloneProviderState(message.ProviderState)
 		cloned[index].ToolCalls = cloneToolCallOffers(message.ToolCalls)
 	}
 	return cloned
+}
+
+// Protocol state cannot be redacted without corrupting replay. Reject a result
+// that violates the route binding or hits the existing secret-shape scanner.
+// This is intentionally not a promise to detect arbitrary sensitive content.
+func (service *Service) acceptProviderState(state *domain.ProviderState) bool {
+	identity := service.config.RequestIdentity
+	if identity == nil {
+		return state == nil
+	}
+	if state == nil {
+		return identity.AdapterFamily != domain.DeepSeekThinkingV1 && identity.AdapterFamily != domain.DeepSeekMessagesV1
+	}
+	var visible, thinking strings.Builder
+	for _, block := range state.MessagesContent {
+		visible.WriteString(block.Text)
+		thinking.WriteString(block.Thinking)
+		if redact.Text(block.Text) != block.Text || redact.Text(block.Thinking) != block.Thinking {
+			return false
+		}
+	}
+	if redact.Text(visible.String()) != visible.String() || redact.Text(thinking.String()) != thinking.String() {
+		return false
+	}
+	return domain.ValidateProviderState(state) == nil && state.Protocol == identity.AdapterFamily &&
+		state.ModelID == identity.ModelID && state.EndpointID == identity.EndpointID &&
+		redact.Text(state.ReasoningContent) == state.ReasoningContent
 }

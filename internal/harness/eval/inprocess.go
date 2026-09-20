@@ -50,6 +50,9 @@ func (discardSink) Emit(context.Context, engine.RuntimeEvent) error { return nil
 // under a distinct runtime ID without BuildConfig needing to know anything
 // about launch ordinals itself.
 func BuildConfig(subject Subject, directories AttemptRootDirectories, runtimeID string, approver tools.Approver) (composition.Config, error) {
+	if subject.Context.Policy != nil || subject.Policy.ToolPolicy != nil {
+		return composition.Config{}, fmt.Errorf("eval: custom context or tool policies require an ACP launcher; stock in-process execution has no registrations")
+	}
 	if err := subject.Validate(); err != nil {
 		return composition.Config{}, fmt.Errorf("eval: build config: %w", err)
 	}
@@ -57,6 +60,10 @@ func BuildConfig(subject Subject, directories AttemptRootDirectories, runtimeID 
 		return composition.Config{}, fmt.Errorf("eval: build config: runtimeID is required")
 	}
 	mcpServers := make([]composition.MCPServerConfig, len(subject.MCPServers))
+	adapterKind := subject.Provider.AdapterKind
+	if adapterKind == "openaicompat" {
+		adapterKind = "" // Same legacy default as the flag-less ACP route.
+	}
 	for index, server := range subject.MCPServers {
 		mcpServers[index] = composition.MCPServerConfig{
 			Name: server.Name, Command: server.Command, Args: append([]string(nil), server.Args...),
@@ -70,6 +77,7 @@ func BuildConfig(subject Subject, directories AttemptRootDirectories, runtimeID 
 		Provider: composition.Provider{
 			BaseURL:               subject.Provider.NormalizedEndpoint,
 			ModelID:               subject.Provider.ModelID,
+			AdapterKind:           adapterKind,
 			APIKeyEnv:             subject.Provider.CredentialEnvVar,
 			ContextWindow:         subject.Provider.ContextWindow,
 			MaxOutput:             subject.Provider.MaxOutput,
@@ -137,7 +145,7 @@ type ExecutionOutcome struct {
 // the same Scenario cancels them.
 type executionState struct {
 	assembly      *composition.Assembly
-	service       *application.Service
+	service       composition.Service
 	sessionID     domain.SessionID
 	config        composition.Config
 	launchOrdinal int

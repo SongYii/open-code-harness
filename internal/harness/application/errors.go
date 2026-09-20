@@ -28,6 +28,7 @@ const (
 	CodeReconciliationRequired  = "reconciliation_required"
 	CodeStepLimit               = "step_limit"
 	CodeEnvelopeLimit           = "envelope_limit"
+	CodeContextPolicyInvalid    = "context_policy_invalid"
 
 	CodePolicyDenied    = "policy_denied"
 	CodeApprovalDenied  = "approval_denied"

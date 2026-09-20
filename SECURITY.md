@@ -111,6 +111,13 @@ today, stated with their limits.
   Policy and the Approver still run first, and freshness never grants
   permission. See
   [Observed-state safe file mutation](docs/architecture/observed-file-mutation.md).
+- **Telemetry is metadata-only and opt-in.** Business packages can emit only
+  the closed names and fields in `internal/harness/telemetry`; prompts, model
+  output, tool data, paths, argv, raw errors, credentials, and endpoints have
+  no export field. The OTLP queue, batch, value sizes, and network deadline are
+  bounded; overload or Collector failure drops diagnostics rather than
+  blocking Harness work. No trace context is propagated to Provider, ACP, MCP,
+  or subprocess traffic. See [the implemented contract](docs/architecture/observability-otel.md).
 
 ### Not enforced
 
@@ -175,7 +182,7 @@ not vulnerabilities, unless they show a bypass of something in "Enforced".
 ## Dependencies
 
 This project keeps a small, deliberately chosen dependency set and states it
-honestly rather than advertising a number that has stopped being true. Five
+honestly rather than advertising a number that has stopped being true. Nine
 modules are required by non-test code:
 
 | Module | Why | Reached from |
@@ -185,6 +192,10 @@ modules are required by non-test code:
 | `golang.org/x/term` | Terminal handling for the interactive client | `internal/client/acp` |
 | `github.com/coder/websocket` | The web trajectory bridge's relay transport | `internal/client/acpweb` |
 | `github.com/modelcontextprotocol/go-sdk` | The official MCP client/server SDK | `adapters/mcp` |
+| `go.opentelemetry.io/otel` | Core OTel API/resource integration | `adapters/otel` |
+| `go.opentelemetry.io/otel/trace` | Trace API implementation types | `adapters/otel` |
+| `go.opentelemetry.io/otel/sdk` | Local tracer provider and span limits | `adapters/otel` |
+| `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp` | OTLP/HTTP protobuf export | `adapters/otel` |
 
 `github.com/chromedp/chromedp` is required by tests only — it drives the real
 browser in the web bridge's interoperability test — and no non-test file
@@ -214,3 +225,10 @@ design](docs/superpowers/specs/2026-08-30-mcp-client-adapter-design.md) §1.1:
 the MCP specification has shipped five schema revisions with a live
 backward-incompatible split, and an official, maintained SDK is built to
 absorb exactly that.
+
+The trace exporter is the other deliberately large dependency choice. Its
+HTTP spelling still brings protobuf, gRPC/gateway, backoff, and logging support
+into the production graph. The exact module and binary delta is recorded in
+the [observability evidence](docs/architecture/observability-otel-evidence.md).
+Runtime opt-in avoids queues and network work when disabled, but it does not
+remove those linked bytes from the single `och` binary.

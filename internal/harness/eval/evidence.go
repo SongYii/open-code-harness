@@ -125,6 +125,9 @@ func CollectEvidence(ctx context.Context, directories AttemptRootDirectories, ex
 		return Outcome{}, EvidenceManifest{}, fmt.Errorf("eval: collect evidence: %w", err)
 	}
 	collectTranscriptAndAudit(collectCtx, directories, execution, budget)
+	if err := validateCollectedToolPolicyEvidence(directories.Evidence, budget.entries, documents.Subject.Policy.ToolPolicy); err != nil {
+		return Outcome{}, EvidenceManifest{}, fmt.Errorf("eval: collect evidence: %w", err)
+	}
 	collectWorkspaceArtifacts(directories, documents.Scenario, budget)
 
 	finalOutcome := tentativeOutcome
@@ -176,6 +179,9 @@ func stageAndPublishManifestForExistingOutcome(ctx context.Context, directories 
 		return outcome, EvidenceManifest{}, fmt.Errorf("eval: resume collection: %w", err)
 	}
 	collectTranscriptAndAudit(ctx, directories, execution, budget)
+	if err := validateCollectedToolPolicyEvidence(directories.Evidence, budget.entries, documents.Subject.Policy.ToolPolicy); err != nil {
+		return outcome, EvidenceManifest{}, fmt.Errorf("eval: resume collection: %w", err)
+	}
 	collectWorkspaceArtifacts(directories, documents.Scenario, budget)
 
 	manifest, err := stageOutcomeCopyAndPublishManifest(directories, outcome, budget, startedAt)

@@ -1,7 +1,7 @@
 # 项目实现通俗导读
 
 - 状态：持续维护的通俗导读
-- 最后核对：2026-09-10
+- 最后核对：2026-09-13
 - 英文规范真源：[how-it-works.md](how-it-works.md)
 - 整体地图：[当前系统架构](current-system.zh-CN.md)
 
@@ -134,10 +134,52 @@ OpenAI 兼容流会变成统一模型流，并记录用量、限制输入输出�
 
 早期账本主要列测试，没有详细踩坑叙述，这是文档缺口。后续原生工具消息和 Secret
 脱敏仍保持在 Adapter 内，没有把供应商分支塞进 Application。
+内部收口发现共同测试依赖固定 chunk 数、并发测试即使一条请求被拒仍能通过。
+现在两个真实 adapter 都验收完整文本/工具/终态，并发夹具必须得到两条可用流。
+见[后续证据](provider-internal-closure-evidence.md)。
+
+HTTP₂ 取消回归发现：流关闭可能早于 transport 内部清理。两个 Adapter 现在显式持有
+并关闭自有 socket，也处理未完成和晚到拨号，不关闭调用方原有池。见
+[修复证据](provider-http2-shutdown-evidence.md)。
+进一步的本地测试区分 A/B 请求、只取消 A，并确认真实 HTTP₂ 协商、同连接复用及
+自有连接池与原调用方连接池隔离。
 
 ### 仍未完成
 
-目前只有一类 OpenAI 兼容 Provider，没有多 Provider 路由或真实密钥 CI。
+本合同覆盖 Chat Completions；实验性 SDK-assisted Messages 路线见下节。
+没有公开 Provider SDK、运行时多 Provider 路由或真实密钥 CI。
+
+<!-- contract: docs/architecture/provider-replay.md -->
+## Provider 协议状态回放
+
+### 解决什么问题
+
+厂商可能要求隐式响应状态才能继续工具回合。只存可见正文会丢掉这种状态，重启后也无法补回。
+
+### 用户能看到什么
+
+Experimental 的 `-provider-adapter deepseek` 和 `deepseek-messages` 路线可在工具续接、SQLite 重启、压缩后回传
+thinking 状态。默认兼容路线不变；启用前请验证备份，并使用新会话。
+
+### 真实实现
+
+Chat Completions Adapter 分开拼接 reasoning；Messages Adapter 使用固定 SDK，保留
+原始块顺序，并在 SDK 前验证原始输入/HTTP。Engine 只在完成事件接受状态并核对正文/工具投影，Application 验证后与
+assistant 事件原子提交。Context 保留尾部状态，但不混进摘要正文。
+见[合同](provider-replay.zh-CN.md)和[证据](provider-replay-evidence.md)。
+
+### 遇到的问题与修复
+
+不能把缺失 reasoning 伪造成空值；命中 secret 形状的状态不能改写脱敏，只能拒绝。
+测试还须证明在输出前就拒绝，而不是靠最后 EOF 报错通过。四个删除/破坏防线的变异
+都使对应回归测试失败。
+Messages SDK 会修复损坏工具参数，也可能在缺少终止标记时无错 EOF；OCH 在输出前拒绝，
+不把 SDK 成功当作审计完成保证。
+
+### 仍未完成
+
+没有线上接受性测试、加密、有损迁移、Claude native Messages 或公开 Provider SDK。
+旧严格 reader 不能读取 opt-in 状态字段；展示 transcript 不是回放备份。
 
 <!-- contract: docs/architecture/tool-runtime.md -->
 ## Tool Runtime
@@ -264,6 +306,37 @@ SQLite 在事件事务内维护审计链；Exporter 依次暂存、封口、发�
 
 Kill-9、时钟跳变和长时间真实租约测试仍需扩大。
 
+<!-- contract: docs/architecture/startup-extensibility.md -->
+## 启动时扩展
+
+### 解决什么问题
+
+让仓库外的 Go 项目通过支持的接口扩展行为，不接管事件存储，也不复制 agent loop。
+
+### 用户能看到什么
+
+[自定义编译启动器](../../examples/keep-last-n/README.md) 可通过正常 flags 选择上下文
+保留策略，使用原来的 ACP 协议。
+两个 SDK 包均为 experimental，暂不承诺源码兼容；仓库自写示例不是实际外部采用证据。
+
+### 真实实现
+
+`sdk/och` 复用 CLI，`sdk/contextpolicy` 只交付独立元数据与核心生成的候选。
+Host 负责准入、取消和排空；摘要、checkpoint 校验与持久事实仍由核心拥有。
+
+### 遇到的问题与修复
+
+滚动摘要失败可能遗漏旧 checkpoint 之后的历史，现改为只采用已提交覆盖。
+续租阻塞由独立 watchdog 处理，失租实例不再原地恢复接单。严格事件编解码和
+外部模块编译都有真实测试，而非只依赖内部 mock。
+
+### 仍未完成
+
+没有热加载、不可信代码沙箱或 provider/环境扩展。转稳定需要两个真实实现和一个
+真实外部消费者，目前尚未满足；SDK 实验性不降低持久化完整性要求。旧严格 reader 不能读取新增
+自定义策略事实；兼容性和基线测试限制见[合同](startup-extensibility.zh-CN.md)及
+[证据台账](startup-extensibility-evidence.md)。
+
 <!-- contract: docs/architecture/composition-root.md -->
 ## Composition Root
 
@@ -284,6 +357,11 @@ Kill-9、时钟跳变和长时间真实租约测试仍需扩大。
 
 开发发现生产 Clock/ID 缺失、“未归类等于无限制”以及 Adapter 黑名单会漏掉未来包。
 这些都变成真实实现和穷尽式自动测试。
+后续评审发现模型级 HTTP 池不归 teardown 管理。现在启动回滚与正常关闭共用
+排空后关闭 Provider 的路径，不碰借用的 transport；测试检查真实连接与匹配租约，
+不只检查 Close 计数。见[内部 Provider 证据](provider-internal-closure-evidence.md)。
+真实 stock 二进制还覆盖对话/自动摘要中的 EOF、SIGTERM，再由第二个二进制接管
+同一数据库。这补充进程级证据，不取代进程内资源归属验证。
 
 ### 仍未完成
 
@@ -443,6 +521,37 @@ Checkpoint 继续。
 
 不同真实模型和代码库上的质量证据仍不足，机制已实现但还不能宣称 GA。
 
+<!-- contract: docs/architecture/observability-otel.md -->
+## 只记录元数据的 Trace 可观测性
+
+### 解决什么问题
+
+事件库能证明什么已提交，却不方便看一次慢 Turn 到底耗在模型、审批、工具、压缩还是
+数据库。
+
+### 用户能看到什么
+
+运维人员可以主动开启 OTLP Trace，用一棵树查看一次 Turn 的各段耗时；不配地址就
+完全不导出。
+
+### 真实实现
+
+业务包只引用项目自己的窄接口，不直接依赖 OTel。Adapter 最多排队 256 个 Span，
+通过 OTLP/HTTP 导出，不重试也不向外部请求传播 Trace。见[合同](observability-otel.md)
+和[证据](observability-otel-evidence.md)。
+
+### 遇到的问题与修复
+
+第一个泄密 canary 其实像合法元数据；非法结束字段会留下半条 Span；强制丢弃基准的
+假 Server 也曾无法退出。实现与测试都已针对这些问题修正。
+
+### 仍未完成
+
+没有原生 Metrics/Logs、Dashboard、内置 Collector 或跨进程传播。外部 Collector
+互操作和已实现的 Turn、Context、失败、取消、审批、工具、写入与恢复拓扑都已有证据；
+前述能力是 trace-only 切片有意排除的后续范围，不是尚未补齐的验收项。明显的二进制
+体积成本已经公开记录。
+
 <!-- contract: docs/architecture/system-prompt-workspace-instructions.md -->
 ## System Prompt 与 Workspace Instructions
 
@@ -485,7 +594,9 @@ Checkpoint 保存身份。见[合同](system-prompt-workspace-instructions.md)�
 
 ### 真实实现
 
-`internal/harness/adapters/mcp` 包装锁定版本的官方 SDK；Composition 提供受限进程端口。
+`internal/harness/adapters/mcp` 使用锁定 SDK 的 IOTransport，Composition 提供受管
+字节通道。启动、配额、管道、等待和进程组关闭归 localexec，MCP 不再持有原始 OS
+进程句柄。
 见[合同](mcp-client.md)和[证据](mcp-client-evidence.md)。
 
 ### 遇到的问题与修复
@@ -521,5 +632,5 @@ Judge 评分和方差文档。见[合同](evaluation.md)和[证据](evaluation-e
 
 ### 仍未完成
 
-仍没有成功 Live Judge 样本、校准后的方差策略或第二类 Provider。OpenTelemetry 是
-另一项尚未设计的工作。
+仍没有成功 Live Judge 样本、校准后的方差策略或第二类 Provider。OpenTelemetry 与
+评测分开，也不能当作评分证据。

@@ -1,0 +1,37 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.subject",
+  "id": "deny-tools-subject-acp",
+  "repositoryRevision": "dev",
+  "repositoryDirty": false,
+  "provider": {
+    "adapterKind": "openaicompat",
+    "normalizedEndpoint": "fixture://smart",
+    "modelId": "deny-tools-fixture-model",
+    "contextWindow": 4096,
+    "maxOutput": 512,
+    "credentialEnvVar": "OCH_EVAL_TOOL_POLICY_API_KEY",
+    "lane": "fixture"
+  },
+  "context": {
+    "triggerPercent": 95,
+    "targetPercent": 50,
+    "tailPercent": 10,
+    "maxSummaryChunks": 8,
+    "maxOverflowCompactionsPerTurn": 2,
+    "maxPrunedToolResultsPerRequest": 64,
+    "compactionTimeout": 120000000000
+  },
+  "policy": {
+    "mode": "default",
+    "toolPolicy": {
+      "id": "deny_tools",
+      "version": "1.0.0",
+      "configDigest": "8ed5dae86c00dc33be6e38ff605d05fc4a92b779b70e756d80530bc91731e5ab",
+      "config": {"names": ["exec"]}
+    },
+    "toolCatalogIdentity": "catalog-v1",
+    "limits": {},
+    "sandboxPolicy": "unsandboxed_allowed"
+  }
+}

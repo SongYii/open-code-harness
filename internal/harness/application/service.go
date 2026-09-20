@@ -8,7 +8,9 @@ import (
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
 	"github.com/SongYii/open-code-harness/internal/harness/policy"
+	"github.com/SongYii/open-code-harness/internal/harness/telemetry"
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
+	"github.com/SongYii/open-code-harness/sdk/contextpolicy"
 )
 
 const (
@@ -36,6 +38,8 @@ type Config struct {
 	MaxToolCallsPerStep           int
 	ApprovalTimeout               time.Duration
 	PolicyMode                    policy.Mode
+	PolicyStrategy                policy.Engine
+	PolicyIdentity                *domain.ToolPolicyIdentity
 	Catalog                       *tools.Catalog
 	Files                         tools.FileSystem
 	Commands                      tools.CommandRunner
@@ -44,6 +48,7 @@ type Config struct {
 	ExternalTools tools.ExternalTools
 	Approver      tools.Approver
 	Context       ContextConfig
+	Telemetry     telemetry.Tracer
 }
 
 // ContextConfig configures the Context Engine (design 2026-09-01). The
@@ -55,6 +60,8 @@ type Config struct {
 // construction to opt into early (this package's own tests, and Task 9
 // Step 2's own new tests).
 type ContextConfig struct {
+	Policy          contextpolicy.Policy
+	PolicyIdentity  *domain.ContextPolicyIdentity
 	Enabled         bool
 	Budget          contextengine.Budget
 	Meter           contextengine.Meter
@@ -133,6 +140,7 @@ type Service struct {
 	files      tools.FileSystem
 	commands   tools.CommandRunner
 	approver   tools.Approver
+	telemetry  telemetry.Tracer
 
 	// observations is what each session has actually read. It is what turns
 	// "write this file" into a guarded promise, and it is process-local by
@@ -160,6 +168,9 @@ func NewService(store EventStore, ids IDGenerator, clock Clock, runner *engine.T
 	if config.PolicyMode == "" {
 		config.PolicyMode = policy.ModeDefault
 	}
+	if config.Telemetry == nil {
+		config.Telemetry = telemetry.Noop()
+	}
 	if isNilValue(store) || isNilValue(ids) || isNilValue(clock) || runner == nil || isNilValue(authority) || authority.CurrentAuthority().Validate() != nil || config.MaxAssistantBytes <= 0 || config.TerminalCommitTimeout <= 0 || config.AppendResolutionTimeout <= 0 || config.AppendResolutionMaxOperations == 0 || config.MaxSteps < 1 || config.MaxToolCallsPerStep < 1 {
 		return nil, applicationError(CategoryValidation, "invalid_configuration", false, nil)
 	}
@@ -170,9 +181,29 @@ func NewService(store EventStore, ids IDGenerator, clock Clock, runner *engine.T
 		}
 		config.RequestIdentity = &copied
 	}
-	policyEngine, err := policy.New(config.PolicyMode)
-	if err != nil {
-		return nil, applicationError(CategoryValidation, "invalid_configuration", false, err)
+	var policyEngine policy.Engine
+	if config.PolicyStrategy != nil && isNilValue(config.PolicyStrategy) {
+		return nil, applicationError(CategoryValidation, "invalid_configuration", false, nil)
+	}
+	if config.PolicyStrategy != nil {
+		if config.PolicyIdentity == nil || config.PolicyMode != policy.ModeDefault || domain.ValidateToolPolicyIdentity(config.PolicyIdentity) != nil {
+			return nil, applicationError(CategoryValidation, "invalid_configuration", false, nil)
+		}
+		var err error
+		policyEngine, err = policy.Guard(config.PolicyStrategy)
+		if err != nil {
+			return nil, applicationError(CategoryValidation, "invalid_configuration", false, err)
+		}
+		config.PolicyIdentity = domain.CloneToolPolicyIdentity(config.PolicyIdentity)
+	} else {
+		if config.PolicyIdentity != nil {
+			return nil, applicationError(CategoryValidation, "invalid_configuration", false, nil)
+		}
+		var err error
+		policyEngine, err = policy.New(config.PolicyMode)
+		if err != nil {
+			return nil, applicationError(CategoryValidation, "invalid_configuration", false, err)
+		}
 	}
 	catalogEnabled := catalogHasSpecs(config.Catalog)
 	if err := validateToolComposition(config, catalogEnabled); err != nil {
@@ -202,7 +233,7 @@ func NewService(store EventStore, ids IDGenerator, clock Clock, runner *engine.T
 	service := &Service{
 		store: store, ids: ids, clock: clock, runner: runner, authority: authority,
 		config: config, executions: newExecutionRegistry(), policy: policyEngine,
-		approver: approver, files: config.Files, observations: newFileObservations(),
+		approver: approver, telemetry: config.Telemetry, files: config.Files, observations: newFileObservations(),
 		instructions: newWorkspaceInstructionRegistry(),
 	}
 	if catalogEnabled {
@@ -286,6 +317,7 @@ func (service *Service) maxOverflowRecoveriesPerTurn() uint32 {
 
 func (service *Service) contextOrchestratorDeps() ContextOrchestratorDeps {
 	return ContextOrchestratorDeps{
+		Policy: service.config.Context.Policy, PolicyIdentity: service.config.Context.PolicyIdentity,
 		Store: service.store, IDs: service.ids, Clock: service.clock, Authority: service.authority,
 		CheckpointStore: service.config.Context.CheckpointStore, Summarizer: service.config.Context.Summarizer,
 		Meter: service.config.Context.Meter, Budget: service.config.Context.Budget, PageLimit: service.config.Context.PageLimit,
@@ -293,6 +325,7 @@ func (service *Service) contextOrchestratorDeps() ContextOrchestratorDeps {
 		MaxSummaryChunks:               service.config.Context.MaxSummaryChunks,
 		MaxPrunedToolResultsPerRequest: service.config.Context.MaxPrunedToolResultsPerRequest,
 		Identity:                       service.config.RequestIdentity,
+		Telemetry:                      service.telemetry,
 	}
 }
 

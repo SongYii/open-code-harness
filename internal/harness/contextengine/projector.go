@@ -102,8 +102,8 @@ func (step *openStep) toUnit() ContextUnit {
 //
 // Matching this project's existing (application.projectPriorTurns)
 // behavior exactly: a TurnStarted with empty Input, and an
-// AssistantMessageCompleted with neither Text nor Tool Calls, are both
-// skipped rather than emitted as an empty unit.
+// AssistantMessageCompleted with neither Text, Tool Calls nor ProviderState,
+// are both skipped rather than emitted as an empty unit.
 //
 // ProjectSourceEvents returns ErrProjectionInvalid, never a panic and
 // never a silently dropped event, for a duplicate Call ID offer, a
@@ -143,7 +143,7 @@ func ProjectSourceEvents(records []domain.RecordedEvent) ([]ContextUnit, error) 
 
 		case domain.AssistantMessageCompleted:
 			if len(event.ToolCalls) == 0 {
-				if event.Text == "" {
+				if event.Text == "" && event.ProviderState == nil {
 					continue
 				}
 				units = append(units, ContextUnit{
@@ -152,9 +152,10 @@ func ProjectSourceEvents(records []domain.RecordedEvent) ([]ContextUnit, error) 
 					FirstSequence: record.Sequence,
 					LastSequence:  record.Sequence,
 					Messages: []domain.ModelPromptMessage{{
-						Role:      domain.PromptRoleAssistant,
-						Text:      event.Text,
-						ToolCalls: cloneToolCallOffersForProjector(event.ToolCalls),
+						ProviderState: domain.CloneProviderState(event.ProviderState),
+						Role:          domain.PromptRoleAssistant,
+						Text:          event.Text,
+						ToolCalls:     cloneToolCallOffersForProjector(event.ToolCalls),
 					}},
 				})
 				continue
@@ -164,9 +165,10 @@ func ProjectSourceEvents(records []domain.RecordedEvent) ([]ContextUnit, error) 
 				firstSequence: record.Sequence,
 				lastSequence:  record.Sequence,
 				assistant: domain.ModelPromptMessage{
-					Role:      domain.PromptRoleAssistant,
-					Text:      event.Text,
-					ToolCalls: cloneToolCallOffersForProjector(event.ToolCalls),
+					ProviderState: domain.CloneProviderState(event.ProviderState),
+					Role:          domain.PromptRoleAssistant,
+					Text:          event.Text,
+					ToolCalls:     cloneToolCallOffersForProjector(event.ToolCalls),
 				},
 				offeredNames:    make(map[string]string, len(event.ToolCalls)),
 				terminalResults: make(map[string]domain.ModelPromptMessage, len(event.ToolCalls)),

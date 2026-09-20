@@ -6,6 +6,7 @@ import (
 
 	"github.com/SongYii/open-code-harness/internal/harness/contextengine"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
+	"github.com/SongYii/open-code-harness/internal/harness/telemetry"
 )
 
 // maxCompactSessionFocusBytes is design §15.4's own bound on the optional
@@ -63,7 +64,7 @@ type CompactSessionResult struct {
 // work (a redundant Scan/plan) under real local contention, which
 // implementation plan Task 12's own dedicated concurrency race matrix is
 // positioned to measure and close if it matters.
-func (service *Service) CompactSession(ctx context.Context, request CompactSessionRequest) (CompactSessionResult, error) {
+func (service *Service) CompactSession(ctx context.Context, request CompactSessionRequest) (result CompactSessionResult, returnErr error) {
 	if service == nil {
 		return CompactSessionResult{}, applicationError(CategoryValidation, "invalid_request", false, nil)
 	}
@@ -105,7 +106,16 @@ func (service *Service) CompactSession(ctx context.Context, request CompactSessi
 	// Force: true -- design §15.4's own "below trigger, manual summary is
 	// still allowed if a safe prefix exists." No CurrentInput/Tools:
 	// manual compaction has no upcoming dispatch to plan around.
-	plan, err := contextengine.SelectCutPoint(contextengine.PlanInput{Units: scan.Units, Budget: deps.Budget, Meter: deps.Meter, Force: true})
+	//
+	// PrefixMessages, unlike CurrentInput/Tools, is not a property of an
+	// upcoming dispatch: the versioned system prompt precedes every
+	// Context-enabled request this Session will ever make, so it is part
+	// of the protected tail the same way it is on the pre-turn, mid-turn
+	// and overflow-retry paths. Omitting it here made SelectCutPoint pay
+	// for the whole tail budget out of history alone, which silently
+	// consumed every remaining unit -- and therefore covered nothing --
+	// whenever the post-checkpoint tail was smaller than ProtectedTail.
+	plan, err := planContext(ctx, deps, previous, domain.ContextTriggerManual, contextengine.PlanInput{PrefixMessages: conversationPrefixMessages(), Units: scan.Units, Budget: deps.Budget, Meter: deps.Meter, Force: true})
 	if err != nil {
 		return CompactSessionResult{}, mapContextEngineScanError(err)
 	}
@@ -126,12 +136,26 @@ func (service *Service) CompactSession(ctx context.Context, request CompactSessi
 	if err != nil {
 		return CompactSessionResult{}, applicationError(CategoryInternal, "id_generation_failed", false, err)
 	}
-	input := PrepareContextInput{SessionID: request.SessionID, TurnID: syntheticTurnID, ItemID: syntheticItemID, Trigger: domain.ContextTriggerManual}
+	input := PrepareContextInput{SessionID: request.SessionID, TurnID: syntheticTurnID, ItemID: syntheticItemID, Trigger: domain.ContextTriggerManual, PrefixMessages: conversationPrefixMessages()}
 
 	compactionID, err := deps.IDs.NewContextCompactionID()
 	if err != nil {
 		return CompactSessionResult{}, applicationError(CategoryInternal, "id_generation_failed", false, err)
 	}
+	attributes := traceString(telemetry.KeySessionID, string(request.SessionID))
+	attributes = append(attributes, traceString(telemetry.KeyCompactionID, string(compactionID))...)
+	attributes = append(attributes, traceString(telemetry.KeyContextTrigger, domain.ContextTriggerManual)...)
+	attributes = append(attributes, traceString(telemetry.KeyContextStrategy, strategy)...)
+	traceCtx, span := telemetry.SafeStart(service.telemetry, ctx, telemetry.Start{Kind: telemetry.KindContextCompact, Attributes: attributes})
+	ctx = traceCtx
+	defer func() {
+		span.End(traceEnd(returnErr,
+			telemetry.Bool(telemetry.KeyContextCompacted, result.Ran),
+			telemetry.Uint64(telemetry.KeyContextCoveredEvents, result.CoveredEventCount),
+			telemetry.Uint64(telemetry.KeyContextCoveredTurns, result.CoveredTurnCount),
+			telemetry.Uint64(telemetry.KeyContextEstimatedTokens, result.EstimatedRequestTokens),
+		))
+	}()
 	state, err = startCompaction(ctx, deps, state, input, compactionID, strategy, scan.HeadVersion, previous)
 	if err != nil {
 		return CompactSessionResult{}, err
@@ -159,10 +183,11 @@ func (service *Service) CompactSession(ctx context.Context, request CompactSessi
 	if _, err := completeCompaction(ctx, deps, state, request.SessionID, compactionID, *checkpoint); err != nil {
 		return CompactSessionResult{}, err
 	}
-	return CompactSessionResult{
+	result = CompactSessionResult{
 		Ran: true, CheckpointID: checkpoint.ID, CheckpointKind: string(checkpoint.Kind),
 		CoveredEventCount: checkpoint.Coverage.CoveredEventCount, CoveredTurnCount: checkpoint.Coverage.CoveredTurnCount,
 		ThroughSequence: checkpoint.Coverage.ThroughSequence, TokensBefore: checkpoint.TokensBefore,
 		CheckpointTokens: checkpoint.CheckpointTokens, EstimatedRequestTokens: checkpoint.EstimatedRequestTokens,
-	}, nil
+	}
+	return result, nil
 }

@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
 )
 
@@ -36,6 +38,12 @@ type Contract struct {
 	// MatchStreamError reports whether an error returned by Next is the
 	// configured mid-stream failure. Nil requires identity with the step's Err.
 	MatchStreamError func(error) bool
+	// MatchCancellation recognizes the adapter's classified cancellation.
+	// Nil requires errors.Is(context.Canceled), as for an in-process model.
+	MatchCancellation func(error) bool
+	// CheckCompletion asserts native completion metadata, without prescribing
+	// text chunking. Nil requires absent usage/state for the legacy script.
+	CheckCompletion func(*testing.T, engine.StreamEvent, string, []engine.ToolCall)
 }
 
 func (contract Contract) matchStartup(configured, got error) bool {
@@ -82,33 +90,41 @@ func RunContract(t *testing.T, contract Contract) {
 			}
 		}()
 
-		var got []engine.StreamEvent
-		for range 3 {
-			event, err := stream.Next(context.Background())
-			if err != nil {
-				t.Fatalf("Next() error = %v", err)
-			}
-			got = append(got, event)
-		}
-		want := []engine.StreamEvent{
-			{Type: engine.StreamEventTextDelta, Text: "你好"},
-			{Type: engine.StreamEventTextDelta, Text: " 🌍"},
-			{Type: engine.StreamEventCompleted},
-		}
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("events = %#v, want %#v", got, want)
-		}
-		if got[2].Usage != nil {
-			t.Fatalf("completed Usage = %#v, want nil when the script reports none", got[2].Usage)
-		}
+		contract.consume(t, stream, "你好 🌍", nil)
 		if expected.Messages != nil || expected.Tools != nil {
 			t.Fatalf("default contract request Messages/Tools = (%#v, %#v), want nil", expected.Messages, expected.Tools)
 		}
 		if gotCalls := probe.Calls(); !reflect.DeepEqual(gotCalls, []engine.ModelRequest{expected}) {
 			t.Fatalf("Calls() = %#v, want %#v", gotCalls, []engine.ModelRequest{expected})
 		}
-		if probe.NextCalls() != 3 {
-			t.Fatalf("NextCalls() = %d, want 3", probe.NextCalls())
+	})
+
+	t.Run("delivers ordered assembled tool calls after text", func(t *testing.T) {
+		expected := request("tools")
+		expected.Tools = []domain.ToolSchema{{Name: "read_file", InputSchema: []byte(`{"type":"object"}`)}}
+		calls := []engine.ToolCall{
+			{ID: "call_1", Name: "read_file", Arguments: `{"path":"一"}`},
+			{ID: "call_2", Name: "read_file", Arguments: `{"path":"二"}`},
+		}
+		probe := factory(expected, Config{Steps: []ContractStep{
+			{Event: engine.StreamEvent{Type: engine.StreamEventTextDelta, Text: "reading "}},
+			{Event: engine.StreamEvent{Type: engine.StreamEventTextDelta, Text: "files"}},
+			{Event: engine.StreamEvent{Type: engine.StreamEventToolCall, ToolCall: &calls[0]}},
+			{Event: engine.StreamEvent{Type: engine.StreamEventToolCall, ToolCall: &calls[1]}},
+			{Event: engine.StreamEvent{Type: engine.StreamEventCompleted}},
+		}})
+		stream, err := probe.Stream(context.Background(), expected)
+		if err != nil || stream == nil {
+			t.Fatalf("Stream() = (%v, %v), want usable stream", stream, err)
+		}
+		defer func() {
+			if err := stream.Close(); err != nil {
+				t.Error(err)
+			}
+		}()
+		contract.consume(t, stream, "reading files", calls)
+		if !reflect.DeepEqual(probe.Calls(), []engine.ModelRequest{expected}) {
+			t.Fatal("tool request changed")
 		}
 	})
 
@@ -156,7 +172,11 @@ func RunContract(t *testing.T, contract Contract) {
 		cancel()
 		select {
 		case err := <-result:
-			if !errors.Is(err, context.Canceled) {
+			matches := errors.Is(err, context.Canceled)
+			if contract.MatchCancellation != nil {
+				matches = contract.MatchCancellation(err)
+			}
+			if !matches {
 				t.Fatalf("Next() error = %v, want context.Canceled", err)
 			}
 		case <-time.After(contractRendezvousTimeout):
@@ -166,30 +186,97 @@ func RunContract(t *testing.T, contract Contract) {
 
 	t.Run("records concurrent stream requests independently", func(t *testing.T) {
 		first := request("first")
-		probe := factory(first, Config{})
-		requests := []engine.ModelRequest{first, request("second")}
+		probe := factory(first, Config{Steps: []ContractStep{
+			{Event: engine.StreamEvent{Type: engine.StreamEventTextDelta, Text: "ok"}},
+			{Event: engine.StreamEvent{Type: engine.StreamEventCompleted}},
+		}})
+		// The scripted implementation deliberately accepts exactly its expected
+		// request. Two concurrent calls with that value must still own separate
+		// stream cursors; accepting a different route is a native adapter test.
+		requests := []engine.ModelRequest{first, first}
+		streams := make([]engine.ModelStream, len(requests))
 		var wait sync.WaitGroup
-		for _, req := range requests {
+		for index, req := range requests {
 			wait.Add(1)
-			go func(req engine.ModelRequest) {
+			go func(index int, req engine.ModelRequest) {
 				defer wait.Done()
 				stream, err := probe.Stream(context.Background(), req)
-				if err == nil && stream != nil {
-					_ = stream.Close()
+				if err != nil || stream == nil {
+					t.Errorf("concurrent Stream() = (%v, %v)", stream, err)
+					return
 				}
-			}(req)
+				streams[index] = stream
+			}(index, req)
 		}
 		wait.Wait()
+		// Consume on the test goroutine so fatal assertions cannot be lost in
+		// a worker. Register all closes before asserting either result.
+		for _, stream := range streams {
+			if stream != nil {
+				defer func() {
+					if err := stream.Close(); err != nil {
+						t.Error(err)
+					}
+				}()
+			}
+		}
+		for _, stream := range streams {
+			if stream != nil {
+				contract.consume(t, stream, "ok", nil)
+			}
+		}
 		calls := probe.Calls()
 		if len(calls) != 2 {
 			t.Fatalf("len(Calls()) = %d, want 2", len(calls))
 		}
-		seen := map[string]bool{}
-		for _, call := range calls {
-			seen[call.Input] = true
-		}
-		if !seen["first"] || !seen["second"] {
-			t.Fatalf("Calls() = %#v, want both independent requests", calls)
+		if !reflect.DeepEqual(calls, requests) {
+			t.Fatalf("Calls() = %#v, want both independent calls", calls)
 		}
 	})
+}
+
+// consume compares semantic output, not network framing. The finite bound is
+// intentionally much larger than these tiny fixtures and catches nonterminal
+// streams without making chunk count part of the model contract.
+func (contract Contract) consume(t *testing.T, stream engine.ModelStream, wantText string, wantCalls []engine.ToolCall) {
+	t.Helper()
+	var text strings.Builder
+	var calls []engine.ToolCall
+	for range 1024 {
+		event, err := stream.Next(context.Background())
+		if err != nil {
+			t.Fatalf("Next before completion: %v", err)
+		}
+		if event.Type != engine.StreamEventCompleted && (event.Usage != nil || event.ProviderState != nil) {
+			t.Fatal("completion metadata before completion")
+		}
+		switch event.Type {
+		case engine.StreamEventTextDelta:
+			if len(calls) != 0 || event.ToolCall != nil {
+				t.Fatal("text after tools or invalid text event")
+			}
+			text.WriteString(event.Text)
+		case engine.StreamEventToolCall:
+			if event.ToolCall == nil || event.Text != "" {
+				t.Fatal("invalid tool event")
+			}
+			calls = append(calls, *event.ToolCall)
+		case engine.StreamEventCompleted:
+			if event.Text != "" || event.ToolCall != nil {
+				t.Fatal("invalid completion shape")
+			}
+			if text.String() != wantText || !reflect.DeepEqual(calls, wantCalls) {
+				t.Fatalf("output = (%q, %#v), want (%q, %#v)", text.String(), calls, wantText, wantCalls)
+			}
+			if contract.CheckCompletion != nil {
+				contract.CheckCompletion(t, event, text.String(), calls)
+			} else if event.Usage != nil || event.ProviderState != nil {
+				t.Fatal("unexpected completion metadata")
+			}
+			return
+		default:
+			t.Fatalf("unknown event: %q", event.Type)
+		}
+	}
+	t.Fatal("fixture stream did not complete within event bound")
 }

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,13 +78,7 @@ func TestOpenProceedsAndLogsWhenFlagSetAndSandboxUnavailable(t *testing.T) {
 	t.Setenv(config.Provider.APIKeyEnv, "contract-key")
 
 	var logBuf bytes.Buffer
-	originalOutput, originalFlags := log.Writer(), log.Flags()
-	log.SetOutput(&logBuf)
-	log.SetFlags(0)
-	t.Cleanup(func() {
-		log.SetOutput(originalOutput)
-		log.SetFlags(originalFlags)
-	})
+	config.Diagnostics = &logBuf
 
 	assembly, err := Open(context.Background(), config)
 	if err != nil {
@@ -104,9 +97,7 @@ func TestOpenProceedsSilentlyWhenSandboxAvailable(t *testing.T) {
 	t.Setenv(config.Provider.APIKeyEnv, "contract-key")
 
 	var logBuf bytes.Buffer
-	originalOutput := log.Writer()
-	log.SetOutput(&logBuf)
-	t.Cleanup(func() { log.SetOutput(originalOutput) })
+	config.Diagnostics = &logBuf
 
 	assembly, err := Open(context.Background(), config)
 	if err != nil {

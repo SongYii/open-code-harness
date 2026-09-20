@@ -1,0 +1,5 @@
+{
+  "Replace": {
+    "internal/harness/adapters/anthropic/sdk_probe_test.go": "experiments/anthropic-sdk/sdk_probe_test.go"
+  }
+}

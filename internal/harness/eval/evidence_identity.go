@@ -345,6 +345,15 @@ func readEvidenceDocuments(reader *ArtifactReader, publishedAttempt Attempt) (Ev
 	if err := documents.validateIdentity(); err != nil {
 		return EvidenceDocuments{}, "", err
 	}
+	events, auditPresent, err := readAuditEventsDetailed(reader)
+	if err != nil {
+		return EvidenceDocuments{}, "", err
+	}
+	if auditPresent {
+		if err := validateToolPolicyEvidence(subject.Policy.ToolPolicy, events); err != nil {
+			return EvidenceDocuments{}, "", err
+		}
+	}
 	if reader.Outcome().AttemptID != attempt.ID {
 		return EvidenceDocuments{}, "", fmt.Errorf("Outcome attemptId %q disagrees with Attempt %q", reader.Outcome().AttemptID, attempt.ID)
 	}

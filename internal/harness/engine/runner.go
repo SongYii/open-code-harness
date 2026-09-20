@@ -19,11 +19,13 @@ type RunRequest struct {
 
 // RunResult is the exactly concatenated assistant output from a completed run.
 // ToolCalls are the assembled calls in stream order. Stats is copied on
-// success, fail, and cancel. Fail and cancel clear Text, ToolCalls, and FinishReason.
+// success, fail, and cancel. Fail and cancel clear Text, ToolCalls, ProviderState,
+// and FinishReason. ProviderState is detached completion metadata, never text.
 type RunResult struct {
-	Text      string
-	ToolCalls []ToolCall
-	Stats     AttemptStats
+	ProviderState *domain.ProviderState
+	Text          string
+	ToolCalls     []ToolCall
+	Stats         AttemptStats
 }
 
 // TurnRunner synchronously consumes one ModelStream at a time per Run call.
@@ -101,6 +103,9 @@ func (runner *TurnRunner) Run(ctx context.Context, request RunRequest, emitter *
 			return runner.fail(cancel, stream, engineError(CodeCanceled, cause))
 		}
 
+		if !validEventProviderState(event) {
+			return runner.fail(cancel, stream, engineError(CodeInvalidStream, nil))
+		}
 		switch event.Type {
 		case StreamEventTextDelta:
 			if sawToolCall || event.ToolCall != nil || event.Text == "" || !utf8.ValidString(event.Text) || event.Usage != nil {
@@ -140,10 +145,18 @@ func (runner *TurnRunner) Run(ctx context.Context, request RunRequest, emitter *
 			if event.Text != "" || event.ToolCall != nil {
 				return runner.fail(cancel, stream, engineError(CodeInvalidStream, nil))
 			}
+			offers := make([]domain.ToolCallOffer, len(toolCalls))
+			for i, call := range toolCalls {
+				offers[i] = domain.ToolCallOffer{ID: call.ID, Name: call.Name, Arguments: call.Arguments}
+			}
+			if domain.ValidateProviderProjection(event.ProviderState, builder.String(), offers) != nil {
+				return runner.fail(cancel, stream, engineError(CodeInvalidStream, nil))
+			}
 			return runner.succeed(ctx, cancel, stream, RunResult{
-				Text:      builder.String(),
-				ToolCalls: toolCalls,
-				Stats:     AttemptStats{Usage: copyTokenUsage(event.Usage)},
+				ProviderState: domain.CloneProviderState(event.ProviderState),
+				Text:          builder.String(),
+				ToolCalls:     toolCalls,
+				Stats:         AttemptStats{Usage: copyTokenUsage(event.Usage)},
 			})
 		default:
 			return runner.fail(cancel, stream, engineError(CodeInvalidStream, nil))
@@ -226,6 +239,9 @@ func (runner *TurnRunner) Collect(ctx context.Context, request CollectRequest) (
 			return runner.collectFail(cancel, stream, engineError(CodeCanceled, cause))
 		}
 
+		if !validEventProviderState(event) {
+			return runner.collectFail(cancel, stream, engineError(CodeInvalidStream, nil))
+		}
 		switch event.Type {
 		case StreamEventTextDelta:
 			if event.ToolCall != nil || event.Text == "" || !utf8.ValidString(event.Text) || event.Usage != nil {
@@ -239,6 +255,9 @@ func (runner *TurnRunner) Collect(ctx context.Context, request CollectRequest) (
 			return runner.collectFail(cancel, stream, engineError(CodeInvalidStream, nil))
 		case StreamEventCompleted:
 			if event.Text != "" || event.ToolCall != nil {
+				return runner.collectFail(cancel, stream, engineError(CodeInvalidStream, nil))
+			}
+			if domain.ValidateProviderProjection(event.ProviderState, builder.String(), nil) != nil {
 				return runner.collectFail(cancel, stream, engineError(CodeInvalidStream, nil))
 			}
 			return runner.collectSucceed(ctx, cancel, stream, CollectResult{
@@ -331,7 +350,11 @@ func (runner *TurnRunner) succeed(ctx context.Context, cancel context.CancelFunc
 		stats.FinishReason = ""
 		return RunResult{Stats: stats}, engineError(CodeModelStream, errorCause(closeErr, CodeModelStream))
 	}
-	return RunResult{Text: result.Text, ToolCalls: result.ToolCalls, Stats: stats}, nil
+	return RunResult{Text: result.Text, ToolCalls: result.ToolCalls, Stats: stats, ProviderState: result.ProviderState}, nil
+}
+
+func validEventProviderState(event StreamEvent) bool {
+	return event.ProviderState == nil || event.Type == StreamEventCompleted && domain.ValidateProviderState(event.ProviderState) == nil
 }
 
 func toolCallFromEvent(event StreamEvent) (ToolCall, bool) {

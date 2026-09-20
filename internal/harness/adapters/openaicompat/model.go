@@ -9,9 +9,12 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
+	"github.com/SongYii/open-code-harness/internal/harness/adapters/internal/httpresource"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
 )
@@ -62,6 +65,9 @@ type WireHints struct {
 }
 
 type Config struct {
+	// Protocol is empty for legacy compatibility, or DeepSeekThinkingV1 for
+	// explicit, bounded reasoning replay. It is never inferred from a URL.
+	Protocol              string
 	BaseURL               string
 	ModelID               string
 	APIKey                APIKeySource
@@ -77,6 +83,7 @@ type Config struct {
 }
 
 type Model struct {
+	protocol    string
 	baseURL     string
 	modelID     string
 	endpointID  string
@@ -88,6 +95,10 @@ type Model struct {
 	idleTimeout time.Duration
 	maxRequest  int
 	maxSSELine  int
+	closeOnce   sync.Once
+	connections *httpresource.Connections
+	closeErr    error
+	closed      atomic.Bool
 }
 
 var (
@@ -120,12 +131,25 @@ func nativeToolsEnabled(profile engine.CapabilityProfile) bool {
 }
 
 func New(cfg Config) (*Model, error) {
+	if cfg.Protocol != "" && cfg.Protocol != domain.DeepSeekThinkingV1 {
+		return nil, errInvalidConfig
+	}
+	if cfg.Protocol == domain.DeepSeekThinkingV1 {
+		if cfg.Hints.ThinkingMode != "" && cfg.Hints.ThinkingMode != "enabled" || !deepSeekEffort(cfg.Hints.ReasoningEffort) {
+			return nil, errInvalidConfig
+		}
+		cfg.Hints.ThinkingMode = "enabled"
+		cfg.Profile.ReasoningFields = engine.CapabilitySupported
+	}
 	if cfg.APIKey == nil {
 		return nil, errInvalidConfig
 	}
 	parsed, endpointID, err := parseBaseURL(cfg.BaseURL, cfg.AllowInsecureLoopback)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.Protocol != "" && domain.ValidateProviderState(&domain.ProviderState{Protocol: cfg.Protocol, ModelID: cfg.ModelID, EndpointID: endpointID}) != nil {
+		return nil, errInvalidConfig
 	}
 	if cfg.IdleTimeout < 0 || cfg.ResponseHeaderTimeout < 0 || cfg.MaxRequestBytes < 0 || cfg.MaxSSELineBytes < 0 {
 		return nil, errInvalidConfig
@@ -134,6 +158,7 @@ func New(cfg Config) (*Model, error) {
 		return nil, errInvalidConfig
 	}
 	model := &Model{
+		protocol:    cfg.Protocol,
 		baseURL:     strings.TrimRight(parsed.String(), "/"),
 		modelID:     cfg.ModelID,
 		endpointID:  endpointID,
@@ -165,19 +190,39 @@ func New(cfg Config) (*Model, error) {
 	if headerTimeout == 0 {
 		headerTimeout = defaultResponseHeaderTimeout
 	}
-	model.client = cloneHTTPClient(cfg.HTTPClient, headerTimeout)
 	if err := model.Identity().Validate(); err != nil {
 		return nil, err
 	}
+	model.client = cloneHTTPClient(cfg.HTTPClient, headerTimeout)
+	model.connections = httpresource.Own(model.client.Transport)
 	return model, nil
+}
+
+// Close releases the model's private connections after all streams
+// have drained. It is not a substitute for canceling and closing live streams.
+// Standard transports are always created/cloned by cloneHTTPClient; arbitrary
+// injected RoundTrippers are borrowed and must not be closed here.
+func (m *Model) Close() error {
+	if m == nil {
+		return nil
+	}
+	m.closeOnce.Do(func() {
+		m.closed.Store(true)
+		m.closeErr = m.connections.Close()
+	})
+	return m.closeErr
 }
 
 func (m *Model) Identity() engine.RequestIdentity {
 	if m == nil {
 		return engine.RequestIdentity{}
 	}
+	family := adapterFamily
+	if m.protocol != "" {
+		family = m.protocol
+	}
 	return engine.RequestIdentity{
-		AdapterFamily:   adapterFamily,
+		AdapterFamily:   family,
 		ModelID:         m.modelID,
 		EndpointID:      m.endpointID,
 		Profile:         m.profile,
@@ -190,7 +235,7 @@ func (m *Model) Identity() engine.RequestIdentity {
 }
 
 func (m *Model) Stream(ctx context.Context, request engine.ModelRequest) (engine.ModelStream, error) {
-	if m == nil || m.client == nil {
+	if m == nil || m.client == nil || m.closed.Load() {
 		return nil, startupFailure(engine.FailureClassPermanent, "provider_permanent", 0, "", "invalid adapter")
 	}
 	if ctx == nil {
@@ -205,7 +250,7 @@ func (m *Model) Stream(ctx context.Context, request engine.ModelRequest) (engine
 	if request.MaxOutputTokens > m.profile.MaxOutputTokens {
 		return nil, startupFailure(engine.FailureClassPermanent, "provider_permanent", 0, "", "invalid request")
 	}
-	if !engine.IsReasoningEffort(request.ReasoningEffort) || request.ReasoningEffort != "" && m.hints.ThinkingMode != "" {
+	if !engine.IsReasoningEffort(request.ReasoningEffort) || request.ReasoningEffort != "" && m.hints.ThinkingMode != "" && m.protocol == "" || m.protocol != "" && !deepSeekEffort(request.ReasoningEffort) {
 		return nil, startupFailure(engine.FailureClassPermanent, "provider_permanent", 0, "", "invalid request")
 	}
 	key, err := m.apiKey.APIKey()
@@ -250,6 +295,9 @@ func (m *Model) Stream(ctx context.Context, request engine.ModelRequest) (engine
 	}
 
 	stream := newChatStream(reqCtx, resp.Body, cancel, started, requestID, m.idleTimeout, m.maxSSELine, m.profile.NativeTools)
+	if m.protocol != "" {
+		stream.providerState = &domain.ProviderState{Protocol: m.protocol, ModelID: m.modelID, EndpointID: m.endpointID}
+	}
 	return stream, nil
 }
 
@@ -257,6 +305,23 @@ func (m *Model) marshalRequest(request engine.ModelRequest) ([]byte, error) {
 	messages, err := mapCompletionMessages(request)
 	if err != nil {
 		return nil, err
+	}
+	for index, message := range request.Messages {
+		state := message.ProviderState
+		if state != nil {
+			if domain.ValidateProviderState(state) != nil || message.Role != domain.PromptRoleAssistant || state.Protocol != m.protocol || state.ModelID != m.modelID || state.EndpointID != m.endpointID {
+				return nil, errInvalidConfig
+			}
+			// Without tools DeepSeek ignores this field. Do not send or bill a
+			// hidden field the protocol explicitly says is unnecessary.
+			if len(request.Tools) > 0 {
+				reasoning := state.ReasoningContent
+				messages[index].ReasoningContent = &reasoning
+			}
+		} else if m.protocol != "" && len(request.Tools) > 0 && message.Role == domain.PromptRoleAssistant {
+			// Legacy history cannot be upgraded by fabricating empty reasoning.
+			return nil, errInvalidConfig
+		}
 	}
 	tools, err := mapCompletionTools(request.Tools)
 	if err != nil {
@@ -415,11 +480,12 @@ type completionThinking struct {
 }
 
 type completionMessage struct {
-	Role       string               `json:"role"`
-	Content    string               `json:"content"`
-	ToolCalls  []completionToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string               `json:"tool_call_id,omitempty"`
-	Name       string               `json:"name,omitempty"`
+	ReasoningContent *string              `json:"reasoning_content,omitempty"`
+	Role             string               `json:"role"`
+	Content          string               `json:"content"`
+	ToolCalls        []completionToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string               `json:"tool_call_id,omitempty"`
+	Name             string               `json:"name,omitempty"`
 }
 
 type completionTool struct {

@@ -47,6 +47,24 @@ namespace. An active Item referencing a different turn refuses; a missing
 TurnStarted lineage refuses. No automatic model or tool replay of any
 kind.
 
+An active Tool Item instead closes with `tool.call.interrupted` followed by
+`turn.interrupted`, both `process_crash`. Its CallID comes from the matching
+canonical `tool.call.started`, not the bounded aggregate. A committed start
+does not prove whether the side effect happened; recovery never invents a tool
+result or automatically executes it again. This is not external exactly-once
+execution. Existing malformed histories are not rewritten by recovery.
+
+Six real process-kill boundaries (with release controls, natural lease expiry,
+durable request retry and cold audit checks) are recorded in the
+[provider replay evidence ledger](provider-replay-evidence.md). This does not
+cover every startup boundary. A follow-up adds eight process kills and eight
+release controls inside the production recovery transaction (`reconcileAll`),
+with actual Launch for successors. It covers assistant/tool/compaction recovery
+before and after COMMIT. A further four kills/four controls interrupt the second
+and fourth recovery in a mixed multi-session database; already published recovery
+survives, pending sessions are rediscovered, and idle history stays untouched.
+Other full Launch stages remain open; no database-wide atomic recovery is claimed.
+
 ## Heartbeat and fencing reaction
 
 Renewal runs on a bounded interval with a deadline strictly shorter than
@@ -55,21 +73,27 @@ immediately: admission stops, local work is cancelled through the work
 context, and the exporter stops — nothing is deleted and no takeover is
 attempted while ownership is uncertain. Transient store unavailability
 within the deadline does not revoke ownership: the per-append store
-predicate is the authority, not the renewal round-trip. After quiescence
-the loop may re-acquire through the normal expired-takeover path (next
-monotonic token) and resume admission. The Application service does not
-snapshot `WriterAuthority` at construction: it holds an `AuthoritySource`
-and reads the live fencing token per append, so the rotated token is
-visible on the next write instead of fencing every subsequent append.
+predicate is the authority, not the renewal round-trip. One renewal worker
+and an independent watchdog measure time since the last confirmation, so a
+blocked SQLite mutex cannot delay fencing. Lease loss is permanent for the
+instance; late renewal success cannot reopen admission. A new process must
+acquire ownership and reconcile. Application still reads `AuthoritySource`
+per append. See [startup extensibility](startup-extensibility.md).
 
 ## Shutdown and exporter ownership
 
-`Shutdown` stops admission, cancels in-flight work, waits for the loops
-within the caller's bound, and releases the lease by expiring it — the
+`Admit` atomically registers operations against readiness; composition's
+managed facade retains that registration through application cleanup.
+`Drain` stops admission, cancels work and waits while heartbeat stays alive
+for terminal appends. `Shutdown` then waits for loops within the caller's
+bound, and releases the lease by expiring it — the
 update matches the owning runtime ID and fencing token exactly, so a
 stale host can never release a successor's lease (the Pi rule). The
 background exporter starts only after readiness on a bounded cadence and
-stops at shutdown.
+stops when work is cancelled. Concurrent shutdown is idempotent. A timeout
+does not release the lease or close a possibly-in-use store; renewal stops,
+admission stays closed, and the caller must terminate the old process before
+starting another. Natural lease expiry is unchanged.
 
 ## Exclusions
 
@@ -77,7 +101,7 @@ stops at shutdown.
 - Automatic model or tool retries; `retryOfTurnID` lineage recording
   belongs to the Application command layer.
 - ACP and TUI surfaces.
-- GA blockers: no process-level kill-during-reconcile harness; heartbeat
+- GA blockers: not every full Launch stage has process-kill coverage; heartbeat
   evidence is deterministic-time (`testing/synctest`) plus scripted lease
   outcomes, not wall-clock soak; no multi-machine lease anomaly
   (clock-jump) evidence beyond the store's safety-biased predicate.

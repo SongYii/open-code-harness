@@ -4,8 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
+	"io"
 	"strings"
+	"sync"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -26,6 +27,10 @@ var (
 	// ErrConnect marks a server that could not be reached or would not
 	// complete the initialize handshake.
 	ErrConnect = errors.New("mcp: server connect failed")
+
+	// ErrTeardownUnproven preserves cleanup uncertainty across the execution
+	// port. Composition must abandon ownership rather than release its lease.
+	ErrTeardownUnproven = errors.New("mcp: server teardown could not be proven")
 )
 
 // Server is one connected MCP server: its configuration, its confined
@@ -36,9 +41,11 @@ var (
 // guarantees; composition holds one per configured server for the harness's
 // lifetime.
 type Server struct {
-	config  ServerConfig
-	command Command
-	session *sdk.ClientSession
+	config    ServerConfig
+	command   Command
+	session   *sdk.ClientSession
+	closeOnce sync.Once
+	closeErr  error
 
 	// rawNames maps a qualified Catalog name back to the name the server
 	// knows. Discovery owns the qualification, so only discovery can supply
@@ -73,9 +80,9 @@ func (config ServerConfig) Validate() error {
 // which is the whole reason the design adopts it instead of hand-rolling a
 // wire this project would have to re-verify on every specification move.
 //
-// Every failure path closes what it opened. A factory error, a failed
-// handshake, or a server that exits during initialize all leave no process
-// and no temporary directory behind.
+// Every acquired command is closed on failure, including a failed handshake.
+// Unproven cleanup is returned explicitly; it is not a promise that hostile
+// processes can always be reaped. Factories own partial construction on error.
 func Connect(ctx context.Context, config ServerConfig, factory CommandFactory) (server *Server, err error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
@@ -88,30 +95,25 @@ func Connect(ctx context.Context, config ServerConfig, factory CommandFactory) (
 	if err != nil {
 		return nil, fmt.Errorf("%w: server %q: %w", ErrConnect, config.Name, err)
 	}
+	if command == nil {
+		return nil, fmt.Errorf("%w: factory returned no command", ErrConnect)
+	}
 	defer func() {
 		if err != nil {
-			_ = command.Close()
+			err = errors.Join(err, closeCommand(command))
 		}
 	}()
-
-	client := sdk.NewClient(&sdk.Implementation{Name: clientName, Version: clientVersion}, nil)
-	transport := &sdk.CommandTransport{Command: command.Cmd()}
-
-	// The SDK's Connect is what actually calls Start, so the platform's
-	// pre-Start resource bracket has to wrap this call rather than a Start
-	// this package makes itself. See localexec.ConfinedCommand.StartBracket.
-	release := command.StartBracket()
-	session, err := client.Connect(ctx, transport, nil)
-	release()
-	if err != nil {
+	if err = command.Start(ctx); err != nil {
 		return nil, fmt.Errorf("%w: server %q: %w", ErrConnect, config.Name, err)
 	}
 
-	if process := command.Cmd().Process; process != nil {
-		// Best-effort quota enrollment, matching localexec.Run's own
-		// treatment: a platform without the controller must not fail a
-		// server that is otherwise correctly confined.
-		_ = command.Register(process.Pid)
+	client := sdk.NewClient(&sdk.Implementation{Name: clientName, Version: clientVersion}, nil)
+	// Only the writer closes the shared channel. That invokes the execution
+	// owner's EOF/teardown path; closing stdout first would skip graceful EOF.
+	transport := &sdk.IOTransport{Reader: io.NopCloser(command), Writer: command}
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: server %q: %w", ErrConnect, config.Name, err)
 	}
 
 	return &Server{config: config, command: command, session: session}, nil
@@ -123,40 +125,29 @@ func (s *Server) Name() string { return s.config.Name }
 // Session exposes the connected SDK session for discovery and invocation.
 func (s *Server) Session() *sdk.ClientSession { return s.session }
 
-// Close ends the session and releases the command's resources.
-//
-// The SDK's own stdio shutdown runs first — close stdin, wait, SIGTERM, then
-// Kill — because that is the specification's prescribed sequence and what a
-// well-behaved server expects. Its last rung signals the process alone and
-// proves no reap, so shutdownProcess escalates to the process group and waits
-// for real collection, reporting ErrReapUnproven rather than assuming success.
-// The command's own resources are released either way, so a stubborn server
-// cannot also leak a temporary directory.
+// Close ends the protocol session, then checks the execution owner's cached
+// cleanup result. The SDK may already have closed the channel on a read error;
+// that must not hide a failed teardown. Repeated Close preserves the result.
 func (s *Server) Close() error {
 	if s == nil {
 		return nil
 	}
-	var command *exec.Cmd
-	if s.command != nil {
-		command = s.command.Cmd()
-	}
-	session := s.session
-	s.session = nil
-
-	// shutdownProcess runs the SDK's own stdio shutdown first, then escalates
-	// past the two things it does not do: signal the process group rather
-	// than the process alone, and prove the process was actually reaped.
-	stopErr := shutdownProcess(command, func() error {
-		if session == nil {
-			return nil
+	s.closeOnce.Do(func() {
+		var sessionErr error
+		if s.session != nil {
+			sessionErr = s.session.Close()
 		}
-		return session.Close()
+		s.closeErr = errors.Join(sessionErr, closeCommand(s.command))
 	})
+	return s.closeErr
+}
 
-	var commandErr error
-	if s.command != nil {
-		commandErr = s.command.Close()
-		s.command = nil
+func closeCommand(command Command) error {
+	if command == nil {
+		return nil
 	}
-	return errors.Join(stopErr, commandErr)
+	if err := command.Close(); err != nil {
+		return errors.Join(ErrTeardownUnproven, err)
+	}
+	return nil
 }

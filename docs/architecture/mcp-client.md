@@ -2,7 +2,7 @@
 
 **Status:** Implemented; not GA (see [Maturity and known limits](#maturity-and-known-limits))
 
-**Authority:** [MCP client adapter design](../superpowers/specs/2026-08-30-mcp-client-adapter-design.md), including its 2026-09-04 and 2026-09-05 amendments
+**Authority:** [MCP client adapter design](../superpowers/specs/2026-08-30-mcp-client-adapter-design.md), including its 2026-09-04, 2026-09-05 and 2026-09-15 amendments
 
 **Implemented plan:** [MCP client adapter implementation plan](../superpowers/plans/2026-09-04-mcp-client-adapter.md)
 
@@ -73,17 +73,14 @@ supplies the `localexec`-backed implementation. `localexec` owes nothing to
 MCP, and a differently-confined provider could be substituted without either
 package learning about the other.
 
-`localexec.NewConfinedCommand` returns the command **configured but
-unstarted**, because an MCP stdio server's stdin and stdout are the protocol
-transport: the SDK's own `CommandTransport` attaches the pipes and calls
-`Start`. The handle owns the private temporary directory and quota membership
-for the process's lifetime, which `Run`'s one-shot shape scopes to a single
-call.
-
-One difference from `Run` is disclosed rather than hidden: `Run` holds the
-macOS pre-`Start` `RLIMIT_AS` bracket around its own `cmd.Start`, and here the
-caller owns `Start`, so the bracket is exposed as `StartBracket()` and taken
-around the SDK's `Connect`.
+`localexec.NewStdioProcess` returns an owned, unstarted byte channel sharing
+the same confined-command builder as `Run`. The internal MCP port contains
+only `Start(context.Context)` and `io.ReadWriteCloser`: no command handle,
+PID, quota registration or OS signal. localexec owns the Start bracket,
+best-effort quota registration, one Wait, pipes and temporary directory.
+The MCP adapter uses the SDK's `IOTransport` for framing and the handshake;
+it no longer uses `CommandTransport`. Startup cancellation does not become
+the connected server's lifetime cancellation. The owner must close it.
 
 ## Discovery
 
@@ -225,28 +222,23 @@ server asked for its tools, and starting without them while reporting success
 would make them look absent rather than broken. A failure part-way through
 tears down the servers already connected.
 
-`Assembly.Close` stops every connected server **before** shutting the host
-down: they are leaves of the assembly, and stopping them first means a slow
-server cannot delay the writer's own lease release.
+`Assembly.Close` drains work, then stops every server before releasing the
+runner and host. Its shared shutdown deadline still applies. A slow or failed
+cleanup must prevent explicit lease release, not announce successful teardown.
 
-Teardown runs the SDK's own stdio shutdown first — close stdin, wait,
-SIGTERM, Kill — then escalates past the two things it does not do:
+SDK channel closure and explicit owner cleanup both reach the same cached
+`StdioProcess.Close`: close stdin, allow 5s for EOF shutdown, signal the group
+with SIGTERM and allow 3s, then SIGKILL and allow 5s. Success requires the sole
+Wait to finish AND both leader and process group to be absent. Pipes and
+temporary resources are released even when that proof fails. This is POSIX
+group supervision, not containment of descendants that deliberately escape
+their group; the existing sandbox remains responsible for confinement.
 
-- its last rung signals the **process alone**, so a server that spawned
-  children of its own would leave them orphaned. Escalation signals the
-  process group, which the confined command carries a group for;
-- it returns without proving collection. Signalling is not reaping.
-
-Proof comes from a clean return of the SDK's close, which means its own
-`Wait` returned, and past that from probing with signal 0. Both the group and
-the leader must be gone: if a process is ever not a group leader,
-`kill(-pid, 0)` addresses a group that may not exist and returns `ESRCH` while
-the process is alive, and treating that as proof would report a false success.
-`mcp.ErrTeardownUnproven` reports the case where neither establishes it,
-rather than assuming success.
-
-Errors that are the expected consequence of deliberately terminating a server
-— a broken transport, a signal exit — are not surfaced as faults.
+Process exit status alone is not a cleanup fault or proof; protocol failure
+is reported by the SDK. OS signalling/resource errors remain errors. MCP wraps
+any command cleanup failure with `ErrTeardownUnproven`, including after failed
+startup/handshake or an SDK-initiated close. Repeated/concurrent Close preserves
+the first result; late cleanup cannot turn uncertainty into a clean release.
 
 ## Maturity and known limits
 
@@ -259,11 +251,8 @@ Implemented, **not GA**. Each of these is a stated boundary, not an oversight:
   about once for its Provider adapter and would have to rebuild here against
   server-controlled input. `golang.org/x/oauth2` is nonetheless in the build
   graph, reached via `mcp` → `auth` → `oauthex`; no code here calls it.
-- **No process-group teardown on Windows.** Process groups and the signals
-  addressing them are POSIX. This repository already refuses ACP subprocess
-  supervision on Windows rather than approximating a kill-only-the-parent
-  substitute, and the same stance applies: a Windows build gets the SDK's
-  ladder alone, and a server that spawns children can leave them running.
+- **No managed stdio servers on non-POSIX platforms.** Construction now fails
+  before spawning, rather than running a parent-only shutdown fallback.
 - **No server restart.** A server that dies mid-session leaves a Catalog entry
   whose process is gone; the call fails. Supervised restart is a larger
   contract with its own identity questions.

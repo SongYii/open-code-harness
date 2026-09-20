@@ -8,9 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SongYii/open-code-harness/internal/harness/adapters/memory"
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/sqlite"
 	"github.com/SongYii/open-code-harness/internal/harness/application"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
+	"github.com/SongYii/open-code-harness/internal/harness/telemetry"
 )
 
 func hostConfig(t *testing.T) Config {
@@ -65,6 +67,24 @@ func TestLaunchReconcilesAndBecomesReady(t *testing.T) {
 	}
 	if terminal, ok := page.Records[4].Event.(domain.TurnInterrupted); !ok || terminal.Reason != processCrashCode {
 		t.Fatalf("terminal record = %T, want process_crash TurnInterrupted", page.Records[4].Event)
+	}
+}
+
+func TestLaunchTracesRecoveryAppendAsReconciliationChild(t *testing.T) {
+	config := hostConfig(t)
+	seedCrashState(t, config.SQLite.Path)
+	recorder := &memory.Telemetry{}
+	config.Telemetry = recorder
+	host, err := Launch(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = host.Shutdown(context.Background()) }()
+	records := recorder.Records()
+	if len(records) != 2 || records[0].Start.Kind != telemetry.KindStoreAppend ||
+		records[1].Start.Kind != telemetry.KindRuntimeReconcile || records[0].Parent != records[1].ID ||
+		records[1].End.Outcome != telemetry.OutcomeOK {
+		t.Fatalf("recovery telemetry = %#v, want append child followed by successful reconcile root", records)
 	}
 }
 

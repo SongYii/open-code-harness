@@ -185,12 +185,11 @@ func TestCPUQuotaKillsARunawayCPUCommand(t *testing.T) {
 // requireFunctionalSeatbelt skips the calling test unless this file's own
 // GOOS build (Darwin only, per the filename) also has a functionally
 // working sandbox-exec: the binary present and a probe invocation that
-// succeeds.
+// succeeds. A lane that sets OCH_REQUIRE_EXEC_SANDBOX gets a failure
+// instead of a skip, the same way the Linux backend's tests do.
 func requireFunctionalSeatbelt(t *testing.T, runner *Runner) {
 	t.Helper()
-	if runner.Enforcement().Filesystem != EnforcementFull {
-		t.Skip("sandbox-exec is not functionally available in this environment")
-	}
+	requireFunctionalSandbox(t, runner)
 }
 
 func TestSeatbeltConfinementDeniesWritesOutsideWorkspace(t *testing.T) {

@@ -3,15 +3,19 @@ package composition
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/mcp"
+	oteladapter "github.com/SongYii/open-code-harness/internal/harness/adapters/otel"
 	"github.com/SongYii/open-code-harness/internal/harness/contextengine"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
 	"github.com/SongYii/open-code-harness/internal/harness/policy"
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
+	"github.com/SongYii/open-code-harness/sdk/contextpolicy"
+	"github.com/SongYii/open-code-harness/sdk/toolpolicy"
 )
 
 // Provider names the model endpoint and where its credential comes from.
@@ -20,6 +24,9 @@ import (
 // fixtures, shell history, and process listings; the key is read from the
 // named environment variable at Open, and never stored on Config.
 type Provider struct {
+	// AdapterKind is empty/openaicompat (legacy), deepseek or deepseek-messages (experimental
+	// thinking replay). Switching routes does not migrate existing history.
+	AdapterKind    string
 	BaseURL        string
 	ModelID        string
 	APIKeyEnv      string
@@ -47,6 +54,36 @@ type Limits struct {
 	ApprovalTimeout     time.Duration
 }
 
+// ToolPolicy selects one startup-registered tool policy implementation.
+// Config is a non-secret JSON object; empty means {}.
+type ToolPolicy struct {
+	ID      string
+	Version string
+	Config  string
+}
+
+type Telemetry struct {
+	OTLPTraceEndpoint     string
+	SampleRatio           float64
+	AllowInsecureLoopback bool
+}
+
+func (config Telemetry) validate(runtimeID string) error {
+	if config.OTLPTraceEndpoint == "" {
+		if config.SampleRatio != 0 || config.AllowInsecureLoopback {
+			return fmt.Errorf("%w: Telemetry fields require OTLPTraceEndpoint", errInvalidConfig)
+		}
+		return nil
+	}
+	if err := oteladapter.ValidateConfig(oteladapter.Config{
+		Endpoint: config.OTLPTraceEndpoint, SampleRatio: config.SampleRatio,
+		AllowInsecureLoopback: config.AllowInsecureLoopback, InstanceID: runtimeID,
+	}); err != nil {
+		return fmt.Errorf("%w: Telemetry: %v", errInvalidConfig, err)
+	}
+	return nil
+}
+
 // MCPServerConfig is the composition-owned spelling of the adapter's static
 // server configuration. Callers configure the assembly without importing a
 // concrete adapter; composition remains the only package that joins them.
@@ -60,6 +97,10 @@ type MCPServerConfig = mcp.ServerConfig
 // default, and Validate rejects an out-of-range or inverted relationship
 // before Open constructs any resource.
 type Context struct {
+	PolicyID     string
+	PolicyConfig string
+	// PolicyVersion optionally pins the registered implementation (eval).
+	PolicyVersion string
 	// SummaryReasoningEffort is the per-request override used only by rolling
 	// summary calls. Empty inherits Provider.ReasoningEffort.
 	SummaryReasoningEffort string
@@ -184,6 +225,9 @@ func (context Context) validate(windowTokens, maxOutputTokens uint32) error {
 // Config describes one assembly. Every field is validated before any resource
 // is constructed.
 type Config struct {
+	Diagnostics     io.Writer
+	ContextPolicies []contextpolicy.Registration
+	ToolPolicies    []toolpolicy.Registration
 	// WorkspaceRoot jails every filesystem tool and is the working directory
 	// for exec. It must already exist.
 	WorkspaceRoot string
@@ -195,13 +239,17 @@ type Config struct {
 	// exporter; export lag never blocks readiness either way.
 	AuditDirectory string
 
-	Provider Provider
-	Policy   policy.Mode
-	Limits   Limits
+	Provider   Provider
+	Policy     policy.Mode
+	ToolPolicy ToolPolicy
+	Limits     Limits
 	// Context tunes the Context Engine Open always constructs (design
 	// §21); see the Context type's own doc for why there is no separate
 	// enable switch here.
 	Context Context
+	// Telemetry is opt-in. It never changes provider, protocol, Domain, or
+	// evaluation identity; see the 2026-09-12 trace-only design.
+	Telemetry Telemetry
 	// Approver is optional. Unset becomes a deny slot so an ACP server can
 	// attach later without reconstructing the Service.
 	Approver tools.Approver
@@ -270,6 +318,9 @@ func (config Config) Validate() error {
 	if config.RuntimeID == "" {
 		return fmt.Errorf("%w: RuntimeID is required", errInvalidConfig)
 	}
+	if err := config.Telemetry.validate(config.RuntimeID); err != nil {
+		return err
+	}
 	if config.AuditDirectory != "" {
 		if err := requireExistingDirectory("AuditDirectory", config.AuditDirectory); err != nil {
 			return err
@@ -292,7 +343,24 @@ func (config Config) Validate() error {
 	default:
 		return fmt.Errorf("%w: Provider.MaxTokensField must be empty, %q, or %q", errInvalidConfig, "max_tokens", "max_completion_tokens")
 	}
-	if config.Provider.ThinkingMode != "" && config.Provider.ThinkingMode != "disabled" {
+	if config.Provider.AdapterKind != "" && config.Provider.AdapterKind != "openaicompat" && config.Provider.AdapterKind != "deepseek" && config.Provider.AdapterKind != "deepseek-messages" {
+		return fmt.Errorf("%w: Provider.AdapterKind is not supported", errInvalidConfig)
+	}
+	deepSeek := config.Provider.AdapterKind == "deepseek" || config.Provider.AdapterKind == "deepseek-messages"
+	if config.Provider.AdapterKind == "deepseek-messages" && (config.Provider.IncludeUsage || config.Provider.MaxTokensField != "" && config.Provider.MaxTokensField != "max_tokens") {
+		return fmt.Errorf("%w: Messages uses native usage and max_tokens, not Chat Completions hints", errInvalidConfig)
+	}
+	if deepSeek {
+		if config.Provider.ThinkingMode != "" && config.Provider.ThinkingMode != "enabled" {
+			return fmt.Errorf("%w: DeepSeek ThinkingMode must be empty or enabled", errInvalidConfig)
+		}
+		for _, effort := range []string{config.Provider.ReasoningEffort, config.Context.SummaryReasoningEffort} {
+			if effort != "" && effort != "low" && effort != "high" && effort != "max" {
+				return fmt.Errorf("%w: DeepSeek reasoning effort must be empty, low, high, or max", errInvalidConfig)
+			}
+		}
+	}
+	if !deepSeek && config.Provider.ThinkingMode != "" && config.Provider.ThinkingMode != "disabled" {
 		return fmt.Errorf("%w: Provider.ThinkingMode must be empty or %q", errInvalidConfig, "disabled")
 	}
 	if !engine.IsReasoningEffort(engine.ReasoningEffort(config.Provider.ReasoningEffort)) {
@@ -301,7 +369,7 @@ func (config Config) Validate() error {
 	if !engine.IsReasoningEffort(engine.ReasoningEffort(config.Context.SummaryReasoningEffort)) {
 		return fmt.Errorf("%w: Context.SummaryReasoningEffort is not supported", errInvalidConfig)
 	}
-	if config.Provider.ThinkingMode != "" && (config.Provider.ReasoningEffort != "" || config.Context.SummaryReasoningEffort != "") {
+	if !deepSeek && config.Provider.ThinkingMode != "" && (config.Provider.ReasoningEffort != "" || config.Context.SummaryReasoningEffort != "") {
 		return fmt.Errorf("%w: Provider.ThinkingMode cannot be combined with reasoning effort", errInvalidConfig)
 	}
 	if err := config.Context.validate(config.Provider.ContextWindow, config.Provider.MaxOutput); err != nil {

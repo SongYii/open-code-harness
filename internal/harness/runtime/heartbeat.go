@@ -12,13 +12,11 @@ import (
 // satisfies it and tests script it.
 type leaseController interface {
 	RenewLease(ctx context.Context) error
-	AcquireLease(ctx context.Context) (application.WriterAuthority, error)
 }
 
 // runHeartbeat renews ownership on a bounded interval. Failure to confirm
 // stops admission, cancels local work, and stops the exporter; nothing is
-// deleted and no takeover is attempted. After in-flight work quiesces, the
-// normal expired-takeover path may restore ownership with the next token.
+// deleted and no takeover is attempted. Only a NEW host can recover.
 func (host *Host) runHeartbeat(ctx context.Context) {
 	defer host.loopWG.Done()
 	controller := leaseController(host.store)
@@ -26,32 +24,61 @@ func (host *Host) runHeartbeat(ctx context.Context) {
 }
 
 func (host *Host) heartbeatLoop(ctx context.Context, controller leaseController, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	sinceConfirmed := time.Duration(0)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	confirmed := make(chan time.Time, 1)
+	fenced := make(chan struct{}, 1)
+	done := make(chan struct{})
+	// Exactly one renewal worker. The watchdog never waits on SQLite's
+	// mutex to revoke admission. A stuck worker remains accounted for by
+	// loopWG and causes Shutdown to report a timeout, not false success.
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+			renewCtx, stop := context.WithTimeout(ctx, host.config.HeartbeatDeadline)
+			err := controller.RenewLease(renewCtx)
+			stop()
+			if err == nil {
+				select {
+				case confirmed <- time.Now():
+				case <-ctx.Done():
+					return
+				}
+			} else if application.IsStoreCode(err, application.StoreCodeWriterFenced) {
+				fenced <- struct{}{}
+				return
+			}
+		}
+	}()
+	defer func() { cancel(); <-done }()
+	last := time.Now()
+	watchdog := time.NewTimer(host.config.HeartbeatDeadline)
+	defer watchdog.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-		}
-		if err := controller.RenewLease(ctx); err == nil {
-			sinceConfirmed = 0
-			continue
-		} else if !application.IsStoreCode(err, application.StoreCodeWriterFenced) {
-			// Transient unavailability does not revoke ownership: the store
-			// predicate is the authority, not the renewal round-trip.
-			sinceConfirmed += interval
-			if sinceConfirmed < host.config.HeartbeatDeadline {
-				continue
+		case at := <-confirmed:
+			if at.Sub(last) >= host.config.HeartbeatDeadline {
+				host.fencingReaction()
+				return
 			}
+			last = at
+			watchdog.Reset(time.Until(last.Add(host.config.HeartbeatDeadline)))
+		case <-fenced:
+			host.fencingReaction()
+			return
+		case <-watchdog.C:
+			host.fencingReaction()
+			return
 		}
-		host.fencingReaction()
-		// After quiescence, attempt the normal expired-takeover path.
-		if _, err := controller.AcquireLease(ctx); err != nil {
-			continue
-		}
-		host.leaseRegained()
 	}
 }
 
@@ -67,28 +94,13 @@ func (host *Host) fencingReaction() {
 	}
 }
 
-// leaseRegained resumes admission with a fresh work context. The previous
-// work cancel is invoked after the lock is released: a cancel callback that
-// reads Ready/Store/WorkContext would deadlock if it ran while holding mu.
-func (host *Host) leaseRegained() {
-	host.mu.Lock()
-	if host.shutdown {
-		host.mu.Unlock()
-		return
-	}
-	host.lostLease = false
-	previous := host.workCancel
-	host.workCtx, host.workCancel = context.WithCancel(context.Background())
-	host.mu.Unlock()
-	if previous != nil {
-		previous()
-	}
-}
-
 // runExporter drains the audit replica on a bounded cadence after
 // readiness; lag never blocks Runtime readiness.
 func (host *Host) runExporter(ctx context.Context) {
 	defer host.loopWG.Done()
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(host.WorkContext(), cancel)
+	defer func() { stop(); cancel() }()
 	if host.config.AuditDirectory == "" {
 		return
 	}
@@ -99,6 +111,9 @@ func (host *Host) runExporter(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		}
+		if !host.Ready() {
+			return
 		}
 		_, _ = host.store.ExportOnce(ctx, sqlite.ExportConfig{Directory: host.config.AuditDirectory})
 	}

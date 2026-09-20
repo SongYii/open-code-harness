@@ -10,9 +10,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
+
+	"github.com/SongYii/open-code-harness/internal/harness/adapters/localexec"
+	"github.com/SongYii/open-code-harness/internal/harness/tools"
 )
 
 // buildFixtureServer builds the real MCP server in testdata once per run and
@@ -45,33 +47,31 @@ func fixtureServerPath(t *testing.T) string {
 	return path
 }
 
-// fakeCommand is the port's test implementation. Confinement itself belongs
-// to localexec and is tested there; this package's job is that it asks for a
-// command through the port and never constructs one itself.
+// Production adapters never import siblings. This test-only bridge drives the
+// actual local byte-channel implementation; MCP sees no raw process handle.
 type fakeCommand struct {
-	cmd            *exec.Cmd
-	bracketTaken   int
-	bracketDone    int
-	registeredPID  int
-	closed         int
-	failOnRegister error
+	Command
+	started   int
+	closed    int
+	closeOnce sync.Once
+	closeErr  error
+	startErr  error
 }
 
-func (c *fakeCommand) Cmd() *exec.Cmd { return c.cmd }
-
-func (c *fakeCommand) StartBracket() func() {
-	c.bracketTaken++
-	return func() { c.bracketDone++ }
-}
-
-func (c *fakeCommand) Register(pid int) error {
-	c.registeredPID = pid
-	return c.failOnRegister
+func (c *fakeCommand) Start(ctx context.Context) error {
+	c.started++
+	if c.startErr != nil {
+		return c.startErr
+	}
+	return c.Command.Start(ctx)
 }
 
 func (c *fakeCommand) Close() error {
-	c.closed++
-	return nil
+	c.closeOnce.Do(func() {
+		c.closed++
+		c.closeErr = errors.Join(c.closeErr, c.Command.Close())
+	})
+	return c.closeErr
 }
 
 type fakeFactory struct {
@@ -90,13 +90,38 @@ func (f *fakeFactory) NewCommand(config ServerConfig) (Command, error) {
 
 func fixtureFactory(t *testing.T, env ...string) *fakeFactory {
 	t.Helper()
-	command := exec.Command(fixtureServerPath(t))
-	command.Env = append([]string{"PATH=" + os.Getenv("PATH")}, env...)
-	// The real localexec-backed factory always hands over a process group
-	// leader, and teardown signals the group. A fake that omitted it would
-	// exercise a configuration production never uses.
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	return &fakeFactory{command: &fakeCommand{cmd: command}}
+	workspace := t.TempDir()
+	data, err := os.ReadFile(fixtureServerPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(workspace, "mcp-fixture")
+	if err := os.WriteFile(binary, data, 0700); err != nil {
+		t.Fatal(err)
+	}
+	runner, err := localexec.New(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runner.Close() })
+	argv := []string{binary}
+	for _, setting := range env {
+		key, value, _ := strings.Cut(setting, "=")
+		switch key {
+		case "OCH_FIXTURE_MODE":
+			argv = append(argv, "--mode="+value)
+		case "OCH_FIXTURE_TOOLS":
+			argv = append(argv, "--tools="+value)
+		default:
+			t.Fatalf("unsupported fixture setting %q", key)
+		}
+	}
+	process, err := runner.NewStdioProcess(tools.CommandSpec{Argv: argv, Cwd: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = process.Close() })
+	return &fakeFactory{command: &fakeCommand{Command: process}}
 }
 
 func TestConnectCompletesTheRealHandshakeAgainstARealServer(t *testing.T) {
@@ -122,10 +147,7 @@ func TestConnectCompletesTheRealHandshakeAgainstARealServer(t *testing.T) {
 	}
 }
 
-// TestConnectTakesAndReleasesTheStartBracketAroundTheSDKsOwnStart pins the
-// answer Task 2 recorded: the SDK calls Start, so the bracket must wrap the
-// SDK's Connect rather than a Start this package makes.
-func TestConnectTakesAndReleasesTheStartBracketAroundTheSDKsOwnStart(t *testing.T) {
+func TestConnectStartsTheOwnedChannelExactlyOnce(t *testing.T) {
 	factory := fixtureFactory(t)
 	server, err := Connect(t.Context(), ServerConfig{Name: "fixture", Command: "unused"}, factory)
 	if err != nil {
@@ -133,29 +155,24 @@ func TestConnectTakesAndReleasesTheStartBracketAroundTheSDKsOwnStart(t *testing.
 	}
 	defer func() { _ = server.Close() }()
 
-	if factory.command.bracketTaken != 1 {
-		t.Fatalf("StartBracket taken %d times, want 1", factory.command.bracketTaken)
-	}
-	if factory.command.bracketDone != 1 {
-		t.Fatalf("bracket released %d times, want exactly 1", factory.command.bracketDone)
+	if factory.command.started != 1 {
+		t.Fatalf("Start called %d times, want 1", factory.command.started)
 	}
 }
 
-// TestConnectRegistersTheStartedProcessForQuotaEnforcement: the pid does not
-// exist until the SDK starts the process, so enrollment happens after.
-func TestConnectRegistersTheStartedProcessForQuotaEnforcement(t *testing.T) {
+func TestStartupCancellationDoesNotOwnTheConnectedServerLifetime(t *testing.T) {
 	factory := fixtureFactory(t)
-	server, err := Connect(t.Context(), ServerConfig{Name: "fixture", Command: "unused"}, factory)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	server, err := Connect(ctx, ServerConfig{Name: "fixture", Command: "unused"}, factory)
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	defer func() { _ = server.Close() }()
 
-	if factory.command.registeredPID == 0 {
-		t.Fatal("the started process was never registered for quota enforcement")
-	}
-	if got, want := factory.command.registeredPID, factory.command.cmd.Process.Pid; got != want {
-		t.Fatalf("registered pid %d, want %d", got, want)
+	cancel()
+	if _, err := server.Discover(t.Context()); err != nil {
+		t.Fatalf("startup cancellation killed live server: %v", err)
 	}
 }
 
@@ -270,5 +287,53 @@ func TestServerCloseReleasesTheCommandEvenWhenTheSessionErrors(t *testing.T) {
 	}
 	if factory.command.closed != 1 {
 		t.Fatalf("command closed %d times after a second Close, want 1", factory.command.closed)
+	}
+}
+
+func TestConnectRetainsCleanupFailureOnStartupOrHandshakeError(t *testing.T) {
+	for _, phase := range []string{"start", "handshake"} {
+		t.Run(phase, func(t *testing.T) {
+			factory := fixtureFactory(t, "OCH_FIXTURE_MODE=exit_before_handshake")
+			failure := errors.New("fixture cleanup unproven")
+			factory.command.closeErr = failure
+			if phase == "start" {
+				factory.command.startErr = errors.New("fixture start failed")
+			}
+			server, err := Connect(t.Context(), ServerConfig{Name: "fixture", Command: "unused"}, factory)
+			if server != nil {
+				_ = server.Close()
+				t.Fatal("failed startup returned a server")
+			}
+			if !errors.Is(err, ErrConnect) || !errors.Is(err, ErrTeardownUnproven) || !errors.Is(err, failure) {
+				t.Fatalf("cleanup uncertainty was lost: %v", err)
+			}
+			if factory.command.closed != 1 {
+				t.Fatalf("cleanup count = %d", factory.command.closed)
+			}
+		})
+	}
+}
+
+func TestServerCloseCachesUnprovenCleanup(t *testing.T) {
+	factory := fixtureFactory(t)
+	failure := errors.New("fixture cleanup unproven")
+	factory.command.closeErr = failure
+	server, err := Connect(t.Context(), ServerConfig{Name: "fixture", Command: "unused"}, factory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var group sync.WaitGroup
+	for range 8 {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			if err := server.Close(); !errors.Is(err, failure) || !errors.Is(err, ErrTeardownUnproven) {
+				t.Errorf("cleanup failure lost: %v", err)
+			}
+		}()
+	}
+	group.Wait()
+	if factory.command.closed != 1 {
+		t.Fatalf("cleanup count = %d", factory.command.closed)
 	}
 }

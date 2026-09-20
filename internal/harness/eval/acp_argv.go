@@ -3,6 +3,9 @@ package eval
 import (
 	"fmt"
 	"strconv"
+
+	"github.com/SongYii/open-code-harness/sdk/contextpolicy"
+	"github.com/SongYii/open-code-harness/sdk/toolpolicy"
 )
 
 // NormalizedArgv derives och's exact CLI argv for launching an ACP
@@ -43,6 +46,9 @@ func NormalizedArgv(subject Subject) ([]string, error) {
 	if subject.Provider.Lane == ProviderLaneFixture {
 		argv = append(argv, "-provider-allow-insecure-loopback")
 	}
+	if subject.Provider.AdapterKind == "deepseek" || subject.Provider.AdapterKind == "deepseek-messages" {
+		argv = append(argv, "-provider-adapter", subject.Provider.AdapterKind)
+	}
 	if subject.Provider.IncludeUsage {
 		argv = append(argv, "-provider-include-usage")
 	}
@@ -57,6 +63,17 @@ func NormalizedArgv(subject Subject) ([]string, error) {
 	}
 	if subject.Policy.SandboxPolicy == SandboxPolicyUnsandboxedAllowed {
 		argv = append(argv, "-allow-unsandboxed-exec")
+	}
+	if subject.Policy.ToolPolicy != nil {
+		canonical, _, err := toolpolicy.CanonicalConfig(subject.Policy.ToolPolicy.Config)
+		if err != nil {
+			return nil, err
+		}
+		argv = append(argv,
+			"-tool-policy", subject.Policy.ToolPolicy.ID,
+			"-tool-policy-version", subject.Policy.ToolPolicy.Version,
+			"-tool-policy-config", string(canonical),
+		)
 	}
 
 	limits := subject.Policy.Limits
@@ -77,6 +94,13 @@ func NormalizedArgv(subject Subject) ([]string, error) {
 	// positive, so they are always emitted -- never conditionally, unlike
 	// the Limits fields above.
 	context := subject.Context
+	if context.Policy != nil {
+		canonical, _, err := contextpolicy.CanonicalConfig(context.Policy.Config)
+		if err != nil {
+			return nil, err
+		}
+		argv = append(argv, "-context-policy", context.Policy.ID, "-context-policy-version", context.Policy.Version, "-context-policy-config", string(canonical))
+	}
 	if context.SummaryReasoningEffort != "" {
 		argv = append(argv, "-context-summary-reasoning-effort", context.SummaryReasoningEffort)
 	}

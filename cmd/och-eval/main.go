@@ -1,7 +1,6 @@
-// Command och-eval runs Milestone 10's evaluation subsystem: Stage A's
-// deterministic in-process foundation only (design's own accepted first
-// slice) — an ACP-subprocess Cell is refused before any Attempt is
-// created, not silently skipped, until Stage B registers that executor.
+// Command och-eval runs the evaluation subsystem across deterministic
+// in-process and ACP-subprocess Cells. ACP execution requires an explicitly
+// resolved launcher binary; no executable is discovered or built implicitly.
 //
 // It prints exactly one versioned JSON document on stdout per invocation
 // and human-readable diagnostics on stderr, and exits with one of five

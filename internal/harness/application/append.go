@@ -147,10 +147,12 @@ func cloneAppendIntent(intent AppendIntent) (AppendIntent, error) {
 	return cloned, nil
 }
 
-func appendCompact(ctx context.Context, service *Service, sessionID domain.SessionID, state domain.Session, events []domain.UncommittedEvent, commandID domain.CommandID, admission *CommandAdmission) (domain.Session, []domain.RecordedEvent, error) {
+func appendCompact(ctx context.Context, service *Service, sessionID domain.SessionID, state domain.Session, events []domain.UncommittedEvent, commandID domain.CommandID, admission *CommandAdmission) (next domain.Session, records []domain.RecordedEvent, returnErr error) {
 	intent, err := BuildAppendIntent(service.clock, service.ids, service.authority.CurrentAuthority(), sessionID, state.Version, commandID, admission, events)
 	if err != nil {
 		return domain.Session{}, nil, err
 	}
-	return CommitAppendIntent(ctx, service.store, state, intent)
+	traceCtx, trace := startAppendTrace(ctx, service.telemetry, intent)
+	defer func() { trace.end(returnErr) }()
+	return CommitAppendIntent(traceCtx, service.store, state, intent)
 }

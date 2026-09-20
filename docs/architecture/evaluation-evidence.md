@@ -1256,3 +1256,92 @@ Cell and the MCP prompt-injection live claim. It does not establish a global
 quality threshold, judge independence (Subject and Judge used the same model
 family), provider breadth, or broad judge meta-evaluation. Cost remains
 unavailable because neither JudgeConfig pinned a price table.
+
+## Follow-up: the custom tool policy is proved by evaluation, not by its own tests (2026-09-20)
+
+The startup-composed tool authorization slice arrived with a complete unit and
+mutation record of its own (see
+[tool-policy startup extensibility evidence](tool-policy-startup-extensibility-evidence.md)).
+Everything that record proves, it proves *inside* the harness: that the guard
+denies before extension code runs, that malformed strategy output fails
+closed, and that attribution survives the codec. None of it proves the thing
+an operator actually cares about — that a policy registered by a separately
+compiled launcher stops a real tool call from having a real effect.
+
+The `tool-policy-denial` Scenario closes that gap end to end. A fixture
+provider offers an `exec` call whose argv would write
+`policy-should-not-run.txt` into the workspace. The Subject freezes the
+`deny_tools` identity (`1.0.0`, config digest
+`8ed5dae8…`), so the Attempt cannot silently run against a different policy
+than the one it claims. `tool-policy-denial-v1` then scores three independent
+criteria: an attributed custom `deny` in canonical audit, a `policy_denied`
+terminal failure **for the same CallID**, and durable workspace evidence that
+the marker never appeared.
+
+Observed on 2026-09-20, from the committed EvalSet and a launcher built out of
+`examples/deny-tools`:
+
+```
+och-eval run -set eval/sets/tool-policy-denial-acp.json -och-binary <deny-tools launcher>
+  → exit 0; one Attempt, status completed, collectionStatus complete
+
+och-eval regrade -attempt <attempt> -scorer tool-policy-denial-v1
+  → exit 0; verdict pass
+     tool-policy-denial-observed-v1  pass
+     workspace-paths-absent-v1       pass
+     outcome-not-infra-failed-v1     pass
+```
+
+### The scorer was falsified before it was believed
+
+A passing scorer is not evidence that the scorer can fail. Two falsifications
+were run against the same committed EvalSet.
+
+Substituting the stock `och` binary fails at `initialize` with exit 4 — the
+stock launcher does not accept the frozen policy argv at all. That proves
+Subject identity is bound to the launcher, but it does **not** exercise the
+scorer, because no Attempt is ever scored.
+
+The falsification that matters used a mutant launcher: `examples/deny-tools`
+with its configured-name branch changed from `EffectDeny` to `EffectAllow`,
+with identity, version and config digest left untouched, so the only
+difference reaching evidence is the decision itself. The Attempt still
+completed, and the scorer moved exactly as it must:
+
+```
+och-eval regrade -attempt <mutant attempt> -scorer tool-policy-denial-v1
+  → exit 3; verdict fail
+     tool-policy-denial-observed-v1  fail   (no attributed deny in audit)
+     workspace-paths-absent-v1       fail   (the marker is present)
+     outcome-not-infra-failed-v1     pass   (correctly still pass: the mutant is not an infrastructure failure)
+```
+
+`policy-should-not-run.txt` is present in that Attempt's workspace evidence.
+Both denial criteria moved independently, and the third correctly did not:
+a permissive policy is a Subject failure, not a broken runner. The proof
+therefore rests on a file that either exists on disk or does not, rather than
+on the policy's own report of what it decided.
+
+### One defect the passing tests could not have caught
+
+The operations guide's own build command was wrong:
+`go build -o /tmp/deny-tools-och ./examples/deny-tools` fails with *main
+module does not contain package .../examples/deny-tools*, because the example
+is an independent module and cannot be named as a package path of this one.
+The integration test never hit it — the test builds with the working directory
+set inside the example, which is correct and which no reader of the guide
+would infer. A green suite therefore said nothing about the one command an
+operator would actually type first.
+
+It now reads `(cd examples/deny-tools && go build -mod=readonly -o … .)`, and
+the whole documented sequence — build, run, regrade — was executed verbatim
+from the guide, producing exit 0 and a `pass` verdict.
+
+### What this does not establish
+
+One fixture Scenario, one policy, one tool. This says nothing about policies
+that deny conditionally, about approval interaction, about MCP-contributed
+tools under a custom policy, or about any real-model behaviour — the provider
+here is a fixture and no credential is used. The public `sdk/toolpolicy`
+surface remains experimental on its own terms; an evaluation proving one
+repository-owned example works is not adoption evidence.

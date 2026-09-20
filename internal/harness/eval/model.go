@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
+	corepolicy "github.com/SongYii/open-code-harness/internal/harness/policy"
 )
 
 // FormatVersion is every eval wire document's v1 format version (design §6).
@@ -590,14 +591,15 @@ type SubjectProvider struct {
 // exposes (design §10; internal/harness/composition/config.go's Context
 // type is the runtime counterpart this snapshot's fields mirror).
 type SubjectContext struct {
-	SummaryReasoningEffort         string        `json:"summaryReasoningEffort,omitempty"`
-	TriggerPercent                 uint32        `json:"triggerPercent"`
-	TargetPercent                  uint32        `json:"targetPercent"`
-	TailPercent                    uint32        `json:"tailPercent"`
-	MaxSummaryChunks               uint32        `json:"maxSummaryChunks"`
-	MaxOverflowCompactionsPerTurn  uint32        `json:"maxOverflowCompactionsPerTurn"`
-	MaxPrunedToolResultsPerRequest uint32        `json:"maxPrunedToolResultsPerRequest"`
-	CompactionTimeout              time.Duration `json:"compactionTimeout"`
+	Policy                         *SubjectContextPolicy `json:"policy,omitempty"`
+	SummaryReasoningEffort         string                `json:"summaryReasoningEffort,omitempty"`
+	TriggerPercent                 uint32                `json:"triggerPercent"`
+	TargetPercent                  uint32                `json:"targetPercent"`
+	TailPercent                    uint32                `json:"tailPercent"`
+	MaxSummaryChunks               uint32                `json:"maxSummaryChunks"`
+	MaxOverflowCompactionsPerTurn  uint32                `json:"maxOverflowCompactionsPerTurn"`
+	MaxPrunedToolResultsPerRequest uint32                `json:"maxPrunedToolResultsPerRequest"`
+	CompactionTimeout              time.Duration         `json:"compactionTimeout"`
 }
 
 // SubjectSandboxPolicy names whether this Subject snapshot ran with OS-level
@@ -614,6 +616,7 @@ const (
 // limits, and sandbox policy (design §10).
 type SubjectPolicy struct {
 	Mode                string               `json:"mode"`
+	ToolPolicy          *SubjectToolPolicy   `json:"toolPolicy,omitempty"`
 	ToolCatalogIdentity string               `json:"toolCatalogIdentity"`
 	Limits              SubjectLimits        `json:"limits"`
 	SandboxPolicy       SubjectSandboxPolicy `json:"sandboxPolicy"`
@@ -664,7 +667,13 @@ func (subject Subject) Validate() error {
 	if err := subject.Context.validate(); err != nil {
 		return err
 	}
-	if subject.Provider.ThinkingMode != "" && subject.Context.SummaryReasoningEffort != "" {
+	if subject.Provider.AdapterKind == "deepseek" || subject.Provider.AdapterKind == "deepseek-messages" {
+		effort := subject.Context.SummaryReasoningEffort
+		if effort != "" && effort != "low" && effort != "high" && effort != "max" {
+			return fmt.Errorf("%w: DeepSeek summary reasoning effort must be empty, low, high, or max", errInvalidDocument)
+		}
+	}
+	if subject.Provider.AdapterKind != "deepseek" && subject.Provider.AdapterKind != "deepseek-messages" && subject.Provider.ThinkingMode != "" && subject.Context.SummaryReasoningEffort != "" {
 		return fmt.Errorf("%w: provider.thinkingMode cannot be combined with context.summaryReasoningEffort", errInvalidDocument)
 	}
 	if err := subject.Policy.validate(); err != nil {
@@ -711,6 +720,9 @@ func (provider SubjectProvider) validate() error {
 	if !hasText(provider.AdapterKind) {
 		return fmt.Errorf("%w: provider.adapterKind is required", errInvalidDocument)
 	}
+	if provider.AdapterKind != "openaicompat" && provider.AdapterKind != "deepseek" && provider.AdapterKind != "deepseek-messages" {
+		return fmt.Errorf("%w: provider.adapterKind is not supported", errInvalidDocument)
+	}
 	if err := validateNormalizedEndpoint(provider.NormalizedEndpoint); err != nil {
 		return err
 	}
@@ -728,13 +740,20 @@ func (provider SubjectProvider) validate() error {
 	default:
 		return fmt.Errorf("%w: provider.maxTokensField must be empty, %q, or %q", errInvalidDocument, "max_tokens", "max_completion_tokens")
 	}
-	if provider.ThinkingMode != "" && provider.ThinkingMode != "disabled" {
+	deepSeek := provider.AdapterKind == "deepseek" || provider.AdapterKind == "deepseek-messages"
+	if provider.AdapterKind == "deepseek-messages" && (provider.IncludeUsage || provider.MaxTokensField != "" && provider.MaxTokensField != "max_tokens") {
+		return fmt.Errorf("%w: Messages does not support Chat Completions wire hints", errInvalidDocument)
+	}
+	if deepSeek && (provider.ThinkingMode != "" && provider.ThinkingMode != "enabled" || provider.ReasoningEffort != "" && provider.ReasoningEffort != "low" && provider.ReasoningEffort != "high" && provider.ReasoningEffort != "max") {
+		return fmt.Errorf("%w: invalid DeepSeek thinking controls", errInvalidDocument)
+	}
+	if !deepSeek && provider.ThinkingMode != "" && provider.ThinkingMode != "disabled" {
 		return fmt.Errorf("%w: provider.thinkingMode must be empty or %q", errInvalidDocument, "disabled")
 	}
 	if !engine.IsReasoningEffort(engine.ReasoningEffort(provider.ReasoningEffort)) {
 		return fmt.Errorf("%w: provider.reasoningEffort is not supported", errInvalidDocument)
 	}
-	if provider.ThinkingMode != "" && provider.ReasoningEffort != "" {
+	if !deepSeek && provider.ThinkingMode != "" && provider.ReasoningEffort != "" {
 		return fmt.Errorf("%w: provider.thinkingMode cannot be combined with provider.reasoningEffort", errInvalidDocument)
 	}
 	switch provider.Lane {
@@ -765,6 +784,11 @@ func validateNormalizedEndpoint(endpoint string) error {
 }
 
 func (context SubjectContext) validate() error {
+	if context.Policy != nil {
+		if err := context.Policy.validate(); err != nil {
+			return err
+		}
+	}
 	if !engine.IsReasoningEffort(engine.ReasoningEffort(context.SummaryReasoningEffort)) {
 		return fmt.Errorf("%w: context.summaryReasoningEffort is not supported", errInvalidDocument)
 	}
@@ -798,6 +822,14 @@ func (policy SubjectPolicy) validate() error {
 	}
 	if !hasText(policy.ToolCatalogIdentity) {
 		return fmt.Errorf("%w: policy.toolCatalogIdentity is required", errInvalidDocument)
+	}
+	if policy.ToolPolicy != nil {
+		if err := policy.ToolPolicy.validate(); err != nil {
+			return err
+		}
+		if policy.Mode != string(corepolicy.ModeDefault) {
+			return fmt.Errorf("%w: custom tool policy requires policy.mode %q", errInvalidDocument, corepolicy.ModeDefault)
+		}
 	}
 	if err := policy.Limits.validate(); err != nil {
 		return err

@@ -306,6 +306,8 @@ Agent daemon 和分布式多 Agent 协作"（第 24 行：A2A、远程 agent dae
 
 ## 排序建议
 
+**2026-09-09 更正。** 下文说六个参考项目里只有两个接了真正的分布式追踪。实际是三个：专门的[可观测性调研门](2026-09-09-observability.zh-CN.md)发现 DeepSeek Harness 发布了 `@deepseek-ai/dsh-session-telemetry-otel`，一个挂在它自己遥测端口后面的 OpenTelemetry 包。本门自己的范围说明就写着「每个领域在设计之前仍需要一份专属的子系统调研门」，而正是那份门查出了这一点。下文的排序结论不变 —— Observability 的优先级依然低于 Context Engine 和 Evaluation，后两者此后都已完成设计、实现与验证 —— 但那个计数是错的，而且第三个例子恰恰是形状最贴合本项目的那个。
+
 这是给未来的调研门和设计阶段参考的建议，不是承诺。
 
 **Context Engine 优先。** 六个参考项目全部实现了它，而且比本文覆盖的其他任何一块

@@ -9,6 +9,7 @@ import (
 
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/sqlite"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
+	"github.com/SongYii/open-code-harness/internal/harness/telemetry"
 )
 
 // ErrNotReady reports that reconciliation has not completed; commands are
@@ -26,7 +27,8 @@ func (err *ErrLeaseHeld) Error() string {
 
 // Config bounds one host. Zero values take documented defaults.
 type Config struct {
-	SQLite sqlite.Config
+	SQLite    sqlite.Config
+	Telemetry telemetry.Tracer
 
 	// AuditDirectory enables the background exporter after readiness; empty
 	// disables it (export lag never blocks readiness either way).
@@ -82,12 +84,17 @@ type Host struct {
 	config Config
 	store  *sqlite.Store
 
-	mu         sync.RWMutex
-	ready      bool
-	shutdown   bool
-	workCancel context.CancelFunc
-	workCtx    context.Context
-	lostLease  bool
+	mu           sync.RWMutex
+	ready        bool
+	shutdown     bool
+	workCancel   context.CancelFunc
+	workCtx      context.Context
+	lostLease    bool
+	closing      bool
+	active       int
+	drained      chan struct{}
+	shutdownOnce sync.Once
+	shutdownErr  error
 
 	loopCancel context.CancelFunc
 	loopWG     sync.WaitGroup
@@ -110,10 +117,21 @@ func Launch(ctx context.Context, config Config) (*Host, error) {
 	if err != nil {
 		return nil, classifyOpenError(err)
 	}
-	rec := &reconciler{store: store, authority: store}
-	if err := reconcileAll(ctx, rec, store); err != nil {
+	reconcileCtx, reconcileSpan := telemetry.SafeStart(config.Telemetry, ctx, telemetry.Start{Kind: telemetry.KindRuntimeReconcile})
+	rec := &reconciler{store: store, authority: store, telemetry: config.Telemetry}
+	candidates, recovered, reconcileErr := reconcileAll(reconcileCtx, rec, store)
+	reconcileEnd := telemetry.End{Outcome: telemetry.OutcomeOK, Attributes: []telemetry.Attribute{
+		telemetry.Int64(telemetry.KeyRuntimeCandidates, int64(candidates)),
+		telemetry.Int64(telemetry.KeyRuntimeRecovered, int64(recovered)),
+	}}
+	if reconcileErr != nil {
+		reconcileEnd.Outcome = telemetry.OutcomeFailed
+		reconcileEnd.Code = "reconcile_failed"
+	}
+	reconcileSpan.End(reconcileEnd)
+	if reconcileErr != nil {
 		_ = store.Close()
-		return nil, err
+		return nil, reconcileErr
 	}
 
 	workCtx, workCancel := context.WithCancel(context.WithoutCancel(ctx))
@@ -141,14 +159,14 @@ func Launch(ctx context.Context, config Config) (*Host, error) {
 // pre-turn compaction crash session_heads alone cannot surface, since
 // compaction activity never updates it -- and confirms each by
 // authoritative stream replay.
-func reconcileAll(ctx context.Context, rec *reconciler, store *sqlite.Store) error {
+func reconcileAll(ctx context.Context, rec *reconciler, store *sqlite.Store) (candidateCount int, recoveredCount int, returnErr error) {
 	running, err := store.ActiveSessions(ctx)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	compacting, err := store.SessionsWithActiveCompaction(ctx)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	seen := make(map[domain.SessionID]bool, len(running)+len(compacting))
 	candidates := make([]domain.SessionID, 0, len(running)+len(compacting))
@@ -162,18 +180,22 @@ func reconcileAll(ctx context.Context, rec *reconciler, store *sqlite.Store) err
 		}
 	}
 	for _, session := range candidates {
-		if _, err := rec.reconcileSession(ctx, session); err != nil {
-			return fmt.Errorf("reconcile %s: %w", session, err)
+		recovered, err := rec.reconcileSession(ctx, session)
+		if err != nil {
+			return len(candidates), recoveredCount, fmt.Errorf("reconcile %s: %w", session, err)
+		}
+		if recovered {
+			recoveredCount++
 		}
 	}
-	return nil
+	return len(candidates), recoveredCount, nil
 }
 
 // Ready reports whether reconciliation completed and commands are accepted.
 func (host *Host) Ready() bool {
 	host.mu.RLock()
 	defer host.mu.RUnlock()
-	return host.ready && !host.shutdown && !host.lostLease
+	return host.ready && !host.closing && !host.shutdown && !host.lostLease
 }
 
 // Store returns the canonical store for command execution. Before
@@ -183,7 +205,7 @@ func (host *Host) Store() (store *sqlite.Store, err error) {
 	host.mu.RLock()
 	defer host.mu.RUnlock()
 	switch {
-	case host.shutdown:
+	case host.shutdown || host.closing:
 		return nil, errors.New("runtime host: shut down")
 	case host.lostLease:
 		return nil, errors.New("runtime host: lease lost; admission stopped")
@@ -193,8 +215,7 @@ func (host *Host) Store() (store *sqlite.Store, err error) {
 	return host.store, nil
 }
 
-// WorkContext is cancelled when the host stops admitting executions. The
-// read takes the lock: leaseRegained swaps the field concurrently.
+// WorkContext is cancelled permanently when the host stops admitting work.
 func (host *Host) WorkContext() context.Context {
 	host.mu.RLock()
 	defer host.mu.RUnlock()
@@ -206,33 +227,99 @@ func (host *Host) WorkContext() context.Context {
 // runtime ID and fencing token exactly, so a stale host can never release
 // a successor's lease.
 func (host *Host) Shutdown(ctx context.Context) error {
-	host.mu.Lock()
-	if host.shutdown {
+	host.shutdownOnce.Do(func() {
+		if err := host.Drain(ctx); err != nil {
+			host.shutdownErr = err
+			return
+		}
+		host.mu.Lock()
+		host.shutdown = true
 		host.mu.Unlock()
-		return nil
-	}
-	host.shutdown = true
-	host.mu.Unlock()
+		host.loopCancel()
+		done := make(chan struct{})
+		go func() { host.loopWG.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-ctx.Done():
+			host.shutdownErr = fmt.Errorf("runtime host: shutdown wait exceeded its bound: %w", ctx.Err())
+			return // Never release ownership while a worker is unaccounted for.
+		}
+		host.shutdownErr = errors.Join(host.store.ReleaseLease(ctx), host.store.Close())
+	})
+	return host.shutdownErr
+}
 
+// Admit atomically checks readiness and registers an operation. The returned
+// context follows both caller cancellation and permanent host cancellation.
+// Call finish only after all operation cleanup (including terminal appends).
+func (host *Host) Admit(ctx context.Context) (context.Context, func(), error) {
+	if ctx == nil {
+		return nil, nil, errors.New("runtime host: context is required")
+	}
 	host.mu.Lock()
-	cancel := host.workCancel
+	defer host.mu.Unlock()
+	if !host.ready || host.closing || host.shutdown || host.lostLease {
+		return nil, nil, ErrNotReady
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	host.active++
+	work, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(host.workCtx, cancel)
+	var once sync.Once
+	return work, func() {
+		once.Do(func() {
+			stop()
+			cancel()
+			host.mu.Lock()
+			defer host.mu.Unlock()
+			host.active--
+			if host.closing && host.active == 0 {
+				close(host.drained)
+			}
+		})
+	}, nil
+}
+
+// Drain stops admission and waits while heartbeat renewal remains alive so
+// cooperative operations can durably record their cancellation. A timeout is
+// terminal for this instance; callers must restart the process, not reopen it.
+func (host *Host) Drain(ctx context.Context) error {
+	host.mu.Lock()
+	if !host.closing {
+		host.closing = true
+		host.drained = make(chan struct{})
+		if host.active == 0 {
+			close(host.drained)
+		}
+	}
+	done, cancel := host.drained, host.workCancel
 	host.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
-	host.loopCancel()
-	done := make(chan struct{})
-	go func() { host.loopWG.Wait(); close(done) }()
 	select {
 	case <-done:
+		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("runtime host: shutdown wait exceeded its bound: %w", ctx.Err())
+		// Do not renew indefinitely for a non-cooperative operation, but do
+		// not explicitly release or close its store either.
+		if host.loopCancel != nil {
+			host.loopCancel()
+		}
+		return fmt.Errorf("runtime host: operations did not drain: %w", ctx.Err())
 	}
-	if err := host.store.ReleaseLease(context.Background()); err != nil {
-		_ = host.store.Close()
-		return err
+}
+
+// Abandon permanently fences an instance whose teardown cannot be proven.
+// It stops renewal but deliberately neither releases its lease nor closes a
+// store that may still be in use. The caller must terminate this process.
+func (host *Host) Abandon() {
+	host.fencingReaction()
+	if host.loopCancel != nil {
+		host.loopCancel()
 	}
-	return host.store.Close()
 }
 
 func classifyOpenError(err error) error {

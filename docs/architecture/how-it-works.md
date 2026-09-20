@@ -1,7 +1,7 @@
 # How the Implemented System Works
 
 - Status: Maintained plain-language guide
-- Last reconciled: 2026-09-10
+- Last reconciled: 2026-09-13
 - Chinese reading copy: [项目实现通俗导读](how-it-works.zh-CN.md)
 - Architecture map: [Current system architecture](current-system.md)
 
@@ -157,11 +157,61 @@ and [evidence](provider-adapter-evidence.md).
 The dated implementation ledger records no design deviation and mostly lists
 tests, not the development story. Later work added native tool messages and
 secret redaction without moving vendor logic into Application.
+The internal closure found that shared tests assumed a fixed text chunk count
+and a concurrent test could pass despite a rejected request. Both HTTP adapters
+now run semantic text/tool/completion checks; the concurrency fixture requires
+two usable streams. See the [follow-up evidence](provider-internal-closure-evidence.md).
+
+An H2 cancellation regression showed that stream Close can precede transport
+bookkeeping cleanup. Both adapters now own and close private sockets explicitly,
+including pending/late dials, without closing borrowed source pools. See the
+[repair evidence](provider-http2-shutdown-evidence.md).
+Further local tests now distinguish A/B payloads, cancel only A, and prove
+HTTP2 was negotiated with real multiplexing and separate owned/source pools.
 
 ### Still missing
 
-Only one OpenAI-compatible provider family exists. There is no provider
-routing, vendor SDK layer, or live-key CI.
+This contract covers Chat Completions; the experimental SDK-assisted Messages
+route is described below. No public Provider SDK, runtime provider routing or
+live-key CI is offered.
+
+<!-- contract: docs/architecture/provider-replay.md -->
+## Provider protocol replay
+
+### Problem
+
+A provider can require hidden response state to continue a tool conversation.
+Saving only visible assistant text loses that state, including after restart.
+
+### Visible result
+
+The experimental `-provider-adapter deepseek` and `deepseek-messages` routes replay state across
+tools, SQLite restart and compaction. Default OpenAI-compatible behavior stays
+unchanged. Enable it on a new session after making a verified backup.
+
+### Implementation
+
+The Chat Completions adapter assembles separate reasoning; the Messages adapter
+uses a pinned SDK behind raw-input/HTTP admission and preserves ordered blocks.
+Engine accepts state only on completion and checks its visible/tool projection;
+Application validates and commits it with the assistant event. Context preserves
+retained state but excludes it from summary text. See the [contract](provider-replay.md)
+and [evidence](provider-replay-evidence.md).
+
+### Problems found and fixes
+
+Missing reasoning must not become invented empty reasoning. Secret-shaped state
+cannot be redacted without changing the protocol, so it is rejected. Tests now
+also assert early rejection, rather than accepting a later EOF error as proof.
+Four removed/corrupted safeguards each made the intended regression test fail.
+The Messages SDK can repair malformed arguments and accept EOF without a terminal
+marker; OCH rejects both before exposing output, rather than trusting SDK success.
+
+### Still missing
+
+No live-provider acceptance test, encryption, lossy migration, Claude native
+Messages, or public Provider SDK. Old strict readers cannot read the opt-in
+state field; display transcripts are not replay backups.
 
 <!-- contract: docs/architecture/tool-runtime.md -->
 ## Tool runtime
@@ -313,6 +363,43 @@ adapter, so tests that open SQLite alone cannot assume renewal.
 Kill-9 recovery, clock jumps, and long real-time lease soak need broader
 evidence.
 
+<!-- contract: docs/architecture/startup-extensibility.md -->
+## Startup extensions
+
+### Problem
+
+An external Go project needs an extension point to try, without owning
+our event store or duplicating the agent loop.
+
+### Visible result
+
+A [custom compiled launcher](../../examples/keep-last-n/README.md) can select a
+context retention policy with normal och flags and speak the same ACP protocol.
+Both SDK packages are experimental, without a source-compatibility promise;
+this project-owned example is not evidence of real external adoption.
+
+### Implementation
+
+`sdk/och` shares the internal CLI; `sdk/contextpolicy` exposes detached metadata
+and core-approved candidates. The host admits, cancels and drains service calls.
+Summary generation, checkpoint validation and committed facts stay in the core.
+
+### Problems found and fixes
+
+A failed rolling summary could discard history after an old checkpoint.
+Materialization now uses committed coverage only. Blocked renewals have an
+independent watchdog; lost leases never reopen the same instance. Strict event
+decoding and external compilation are tested, not inferred from local mocks.
+
+### Still missing
+
+No hot reload or untrusted-code sandbox; provider/environment extensions are
+future slices. Stable promotion requires two real implementations and a real
+external consumer; that adoption gate is not yet met. Experimental SDK status
+does not relax durable integrity. Old strict readers cannot read custom-policy evidence. Details
+and baseline test limitations are in the [contract](startup-extensibility.md)
+and [evidence ledger](startup-extensibility-evidence.md).
+
 <!-- contract: docs/architecture/composition-root.md -->
 ## Composition root
 
@@ -336,6 +423,14 @@ Runtime, exposes ACP, and shuts resources down in order.
 The slice found missing production Clock/ID implementations, an “unowned means
 unrestricted” dependency hole, and an adapter deny-list that future adapters
 could bypass. These became production implementations and exhaustive tests.
+Later review found that model-wide HTTP pools were not owned by teardown.
+Provider resources now join the same drain-before-close path for startup
+rollback and normal shutdown, without closing borrowed transports. Tests observe
+real sockets and matching leases, not just Close counters; see the
+[internal Provider evidence](provider-internal-closure-evidence.md).
+The real stock binary also passes EOF/SIGTERM tests during a conversation or
+automatic summary, with a second binary taking over the same database. These
+process tests complement, not replace, in-process resource ownership evidence.
 
 ### Still missing
 
@@ -521,6 +616,41 @@ multi-chunk summarization. Each received a focused test and follow-up fix.
 Quality across real models and repositories needs broader live evidence; the
 mechanism is implemented but not GA-calibrated.
 
+<!-- contract: docs/architecture/observability-otel.md -->
+## Trace-only observability
+
+### Problem
+
+The event log proves what committed, but it does not make a slow live Turn's
+model, policy, approval, tool, compaction, and storage time easy to see.
+
+### Visible result
+
+An operator can opt into a bounded OTLP trace tree and see where one Turn
+spent time. With no endpoint flag, nothing is exported.
+
+### Implementation
+
+A project-owned metadata-only port keeps OTel out of business packages. One
+adapter queues at most 256 spans and exports OTLP/HTTP without retries or
+propagation. See the [contract](observability-otel.md) and
+[evidence](observability-otel-evidence.md).
+
+### Problems found and fixes
+
+The first canary was accidentally legal metadata, invalid end data could leave
+a span unfinished, and a forced-drop benchmark fixture could hang on close.
+The tests were strengthened and the end path now always closes safely.
+
+### Still missing
+
+There are no native metrics/logs, dashboard, bundled Collector, or remote
+propagation. Those are deliberate exclusions from the trace-only slice, not
+missing acceptance evidence: an exact-pinned official Collector accepted a
+real ACP Turn, and the implemented Turn, context, failure, cancellation,
+approval, tool, append, and recovery topologies are covered. The binary-size
+increase is material and published.
+
 <!-- contract: docs/architecture/system-prompt-workspace-instructions.md -->
 ## System prompt and workspace instructions
 
@@ -570,8 +700,10 @@ path.
 
 ### Implementation
 
-`internal/harness/adapters/mcp` wraps the pinned official SDK behind a confined
-command port supplied by Composition. See the [contract](mcp-client.md) and
+`internal/harness/adapters/mcp` uses the pinned SDK's IOTransport over a managed
+byte channel supplied by Composition. localexec owns process startup, quota,
+pipes, waiting and process-group shutdown; MCP holds no raw OS process handle.
+See the [contract](mcp-client.md) and
 [evidence](mcp-client-evidence.md).
 
 ### Problems found and fixes
@@ -616,4 +748,5 @@ now catch those errors.
 ### Still missing
 
 There is still no successful live judge sample, calibrated variance policy, or
-second provider family. OpenTelemetry is a separate, undesigned concern.
+second provider family. OpenTelemetry is separate from evaluation and cannot
+be used as score evidence.

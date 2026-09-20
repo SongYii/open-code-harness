@@ -82,12 +82,13 @@ func newContractProbe(t *testing.T) modeltest.Factory {
 			BaseURL:               server.URL,
 			ModelID:               "contract-model",
 			APIKey:                openaicompat.StaticAPIKey{Value: "test-key"},
-			Profile:               openaicompat.ProfileTextOnly(8192, 1024),
+			Profile:               openaicompat.ProfileToolsSupported(8192, 1024),
 			AllowInsecureLoopback: true,
 		})
 		if err != nil {
 			t.Fatalf("openaicompat.New() error = %v", err)
 		}
+		t.Cleanup(func() { _ = model.Close() })
 		return &contractProbe{model: model}
 	}
 }
@@ -113,6 +114,7 @@ func sseHandler(config modeltest.Config) http.Handler {
 				flusher.Flush()
 			}
 		}
+		toolIndex := 0
 		for _, step := range config.Steps {
 			if step.WaitForCancel {
 				flush()
@@ -124,7 +126,10 @@ func sseHandler(config modeltest.Config) http.Handler {
 				flush()
 				return
 			}
-			line, ok := sseChunk(step.Event)
+			line, ok := sseChunk(step.Event, toolIndex)
+			if step.Event.Type == engine.StreamEventToolCall {
+				toolIndex++
+			}
 			if !ok {
 				continue
 			}
@@ -139,7 +144,7 @@ func sseHandler(config modeltest.Config) http.Handler {
 // sseChunk renders one provider-neutral event as an OpenAI-compatible chunk.
 // Usage is deliberately omitted from the finish chunk: the contract asserts a
 // completed event carries no Usage when the script reports none.
-func sseChunk(event engine.StreamEvent) (string, bool) {
+func sseChunk(event engine.StreamEvent, toolIndex int) (string, bool) {
 	type function struct {
 		Name      string `json:"name,omitempty"`
 		Arguments string `json:"arguments,omitempty"`
@@ -174,11 +179,15 @@ func sseChunk(event engine.StreamEvent) (string, bool) {
 			return "", false
 		}
 		body.Choices = []choice{{Delta: delta{ToolCalls: []toolCall{{
+			Index:    toolIndex,
 			ID:       event.ToolCall.ID,
 			Function: function{Name: event.ToolCall.Name, Arguments: event.ToolCall.Arguments},
 		}}}}}
 	case engine.StreamEventCompleted:
 		body.Choices = []choice{{Delta: delta{}, FinishReason: "stop"}}
+		if toolIndex > 0 {
+			body.Choices[0].FinishReason = "tool_calls"
+		}
 	default:
 		return "", false
 	}

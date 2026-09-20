@@ -1,5 +1,18 @@
 # 已实现 Provider Adapter 合同
 
+2026-09-16 [HTTP₂ 关闭修复](provider-http2-shutdown-evidence.md)：流排空后显式关闭自有
+socket，不再只扫描空闲连接。关闭会拒绝新拨号、取消并等待已有拨号及其清理，缓存错误。
+TLS/HTTP₂ 协商和调用方原有连接池保持不变，不用等待或重试掩盖竞态。
+
+2026-09-15 内部收口：`Model.Close()` 在流排空后关闭自有 HTTP 连接池；注入的
+非标准 transport 归调用方，标准 transport 只关闭克隆副本，关闭后拒绝新请求。
+Composition 统一负责正常关闭和启动回滚。两个 HTTP adapter 都运行共同语义测试，
+比较完整文本与工具顺序而非 chunk 数，原生 framing/state/usage 验证继续保留。
+见[证据](provider-internal-closure-evidence.md)；以英文 [provider-adapter.md](provider-adapter.md) 为准。
+
+后续验证覆盖不同请求并发、只取消其中一条、usage/工具输出不串用；TLS 测试确认
+实际协商 HTTP₂、同连接复用、自有池与调用方原有池隔离。不据此声称远端厂商认证。
+
 - 状态：已实现内部合同
 - 稳定级别：v1.0 之前为 `experimental`
 - 成熟度：pre-v0，尚非通用可用（GA）发布
@@ -13,6 +26,10 @@
 内部 Go 合同，不是稳定公共协议；pre-v0 阶段若修改合同，设计、实现、测试和双语文档
 必须同步变更。
 
+2026-09-13 的[协议回放增量合同](provider-replay.zh-CN.md)增加显式 DeepSeek thinking
+路径、仅完成事件携带的协议状态、持久化兼容与上下文集成。除增量合同明确说明之外，
+默认 OpenAI-compatible 路径不变；本副本早期的能力快照以英文正文及增量合同为准。
+
 ## 已交付能力
 
 `engine.Model` 仍是 Engine 消费端口。`testkit.ScriptedModel` 与
@@ -22,7 +39,7 @@ SSE、密钥和分类后的 `engine.ProviderFailure`。Application unwrap 该 Ca
 不对同一次模型尝试重试。
 
 厂商差异以 Capability Profile 加 composition-time identity 进入。Application
-与 Engine 没有按供应商名的分支。默认 `go test` 使用 scripted
+与 Engine 额外验证版本化协议状态及路由绑定，HTTP 翻译仍由 Adapter 拥有。默认 `go test` 使用 scripted
 `http.RoundTripper` 与录制 SSE fixture，不需要活密钥，也不打开厂商套接字。
 
 尚未实现 tools、SQLite、ACP、TUI、插件内核和厂商 SDK。
@@ -259,7 +276,7 @@ EndpointID、profile 和全部 wire hint（`TestIdentityCopiesProfileAndHints`�
 | --- | --- | --- |
 | 非空字符串 `delta.content` | `text_delta` | `TestStreamSuccessEmitsDeltasCompletedAndUsage` |
 | 空 / 仅 role 的 `content` | 忽略 | success fixture 第一块 |
-| `reasoning_content` / `reasoning` / `reasoning_details` | 忽略；永不进入助手文本 | `TestStreamIgnoresReasoningContent`、`TestRunTurnHTTPReasoningIsolation` |
+| `reasoning_content` / `reasoning` / `reasoning_details` | 旧路径忽略；显式 DeepSeek 路径只将 `reasoning_content` 保存为协议状态，永不进入助手文本 | `TestStreamIgnoresReasoningContent`、`TestRunTurnHTTPReasoningIsolation`、`TestDeepSeekCompletedStateAndReplayMapping` |
 | `usage` object | `completed.Usage` / `AttemptStats.Usage` | `TestStreamSuccessEmitsDeltasCompletedAndUsage` |
 | `input_tokens` / `output_tokens` / `prompt_cache_hit_tokens` | 备选字段映射 | `TestStreamUsageAlternateFields` |
 | 小数 usage | `CodeInvalidStream` + `invalid_stream` | `TestStreamRejectsFractionalUsage` |
@@ -467,7 +484,7 @@ go test ./internal/harness/domain ./internal/harness/engine \
 
 - tools、Tool Runtime、Policy、审批、MCP，或 Engine `tool_call*` /
   `reasoning_delta` 常量；
-- reasoning item 持久化（reasoning 字段被丢弃）；
+- 展示用 reasoning item 持久化；opt-in 协议状态持久化见增量合同；
 - 图片、音频、视频或 structured-output 请求；
 - prompt-cache 布局或厂商缓存启发式；
 - 多厂商路由、fallback、成本优化或 Application 重试；

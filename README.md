@@ -28,6 +28,7 @@ The numbered milestone list lives in
 [docs/README.md](docs/README.md#milestone-status). Completed slices so far:
 
 - Domain events and the Session/Turn state machine: implemented and verified.
+- Startup-composed Go extensions: an [experimental public launcher SDK with context and guarded tool-policy contracts](docs/architecture/startup-extensibility.md), plus independent-module [`keep_last_n_turns`](examples/keep-last-n/README.md) and [`deny_tools`](examples/deny-tools/README.md) launchers. Source compatibility is not yet promised; these examples prove integration, not external adoption. No hot loading; summaries, checkpoints, execution, approval, and durable history stay core-owned. See the [tool-policy startup evidence](docs/architecture/tool-policy-startup-extensibility-evidence.md).
 - Industrial Engine vertical slice: implemented and verified through reusable
   scenario, replay, concurrency, race, and dependency-boundary gates.
 - EventStore v2 contract: implemented and verified. The memory adapter is a
@@ -35,6 +36,10 @@ The numbered milestone list lives in
 - Provider adapter (`adapters/openaicompat`): implemented and verified; not GA.
   Thin OpenAI-compatible Chat Completions SSE client behind `engine.Model`,
   not a vendor SDK or plugin kernel.
+  Opt-in [DeepSeek Chat Completions and Messages replay routes](docs/architecture/provider-replay.md)
+  preserve protocol state across tools, restart and compaction; experimental,
+  fixture-verified with bounded Messages live evidence, not a public Provider SDK
+  or general live-provider certification.
 - Tool Runtime, Policy, and five builtin workspace tools: implemented and
   verified; not GA. Application-owned Step loop and a pure Policy Decide
   table behind ports; not a plugin kernel. Every destructive file operation
@@ -180,7 +185,14 @@ The numbered milestone list lives in
   injection resistance as a separately calibrated and validated model-quality
   claim for that exact frozen DeepSeek Cell.
 
-TUI and OpenTelemetry are not yet implemented. Evaluation
+- Trace-only OpenTelemetry observability is implemented and runtime opt-in,
+  with a closed metadata vocabulary, bounded fail-open OTLP/HTTP export, no
+  external context propagation, and a byte-identical Provider request test.
+  Its substantial dependency/binary cost, full trigger topology, and official
+  Collector proof are explicit in the [contract](docs/architecture/observability-otel.md)
+  and [evidence ledger](docs/architecture/observability-otel-evidence.md).
+
+The fuller TypeScript TUI is not yet implemented. Evaluation
 (`internal/harness/eval`, `cmd/och-eval`) is implemented but not GA: frozen
 Scenario/Subject/Executor identity, append-only Attempt/Outcome/Evidence
 Manifest/Score documents, both the in-process and real `och -acp` subprocess

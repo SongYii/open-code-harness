@@ -1,0 +1,1 @@
+{"formatVersion":1,"schema":"och.eval.cli.report","setId":"context-auto-quality-live-example","attempts":[{"attemptId":"548324b9370baf780a4076d09b6980ac","recoveryState":"terminal","status":"completed","collectionStatus":"complete","scores":[{"scorerId":"context-quality-judge","verdict":"indeterminate"}]}]}

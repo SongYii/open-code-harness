@@ -46,6 +46,48 @@ jobs:
       - name: Test with race detector
         run: go test -race ./... -count=1
 
+  # SECURITY.md's central claim is that a model-proposed `exec` command
+  # cannot write outside the workspace, reach the network, or see host
+  # processes. The only executable evidence for it is the bwrap-backed
+  # confinement suite, and until this job existed nothing ever ran that
+  # suite: `ubuntu-latest` ships no bubblewrap, so all three tests skipped
+  # on every run while the job still reported green. The `go` job above is
+  # deliberately left without a backend — that configuration is the one
+  # that covers the unsandboxed escape hatch — so the two lanes together
+  # cover both halves rather than one of them twice.
+  #
+  # OCH_REQUIRE_EXEC_SANDBOX is what makes this job honest: without it, a
+  # backend that is installed but blocked (recent Ubuntu restricts
+  # unprivileged user namespaces through AppArmor) would skip exactly as
+  # before and this job would go green having verified nothing.
+  #
+  # Scope, stated rather than implied: this proves filesystem and network
+  # confinement. The cgroup v2 memory and CPU quota tests have a separate
+  # environment constraint (a functionally delegated controller, which the
+  # "no internal process" rule denies on many hosts) and still skip under
+  # their own guards. No quota claim is verified here.
+  exec-sandbox:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install the exec sandbox backend
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          # Best effort: if this host restricts unprivileged user
+          # namespaces, lift the restriction. A failure here is not fatal
+          # on its own -- the test-side requirement below is what decides
+          # whether the backend actually works.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - name: Exec confinement suite, backend required
+        env:
+          OCH_REQUIRE_EXEC_SANDBOX: "1"
+        run: go test -race ./internal/harness/adapters/localexec -count=1 -v
+
   # The race detector requires cgo, so the primary job cannot cover the
   # `!unix` build tag. These targets are built and vetted, not tested: no
   # platform beyond Linux is claimed to be supported.
@@ -174,3 +216,53 @@ jobs:
         env:
           DOCSGUARD_CHECK_EXTERNAL_LINKS: "1"
         run: go test ./internal/docsguard -run TestExternalCitations -count=1 -v
+
+  # Scheduled CI is the only place several gates run at all: the full Context
+  # evaluation matrix, the repeated and soaked race suites, and the
+  # network-dependent citation check. A failure there is visible only to
+  # whoever opens the Actions tab, and nothing makes anyone do that.
+  #
+  # This is not hypothetical. Every scheduled run between 2026-09-07 and
+  # 2026-09-12 failed. One of those failures was a real product defect --
+  # manual compaction silently covering nothing -- that reached main and
+  # stayed there for four nights while every pull request went green, because
+  # the pull-request lane carries one representative Context Cell and not the
+  # matrix that caught it. Fixing that defect without fixing its silence
+  # would leave the next one to be found the same way.
+  #
+  # The logic lives in scripts/report-nightly-result.sh rather than inline
+  # here so it can be exercised against a stubbed gh, which is how its four
+  # paths (open, comment, close, no-op) were checked.
+  nightly-report:
+    if: always() && github.event_name == 'schedule'
+    needs: [go, exec-sandbox, cross-build, vulncheck, determinism, context-matrix, soak]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report the scheduled run's outcome
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RESULTS: >-
+            go:${{ needs.go.result }}
+            exec-sandbox:${{ needs.exec-sandbox.result }}
+            cross-build:${{ needs.cross-build.result }}
+            vulncheck:${{ needs.vulncheck.result }}
+            determinism:${{ needs.determinism.result }}
+            context-matrix:${{ needs.context-matrix.result }}
+            soak:${{ needs.soak.result }}
+        run: |
+          # Only an outright failure counts. A skipped job is a lane that did
+          # not apply to this run, not a regression, and must never close a
+          # tracking issue by looking like success.
+          failed=()
+          for entry in $RESULTS; do
+            if [ "${entry#*:}" = "failure" ]; then
+              failed+=("${entry%%:*}")
+            fi
+          done
+          scripts/report-nightly-result.sh \
+            "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            "${failed[@]}"

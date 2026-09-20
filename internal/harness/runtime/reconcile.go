@@ -9,6 +9,7 @@ import (
 
 	"github.com/SongYii/open-code-harness/internal/harness/application"
 	"github.com/SongYii/open-code-harness/internal/harness/domain"
+	"github.com/SongYii/open-code-harness/internal/harness/telemetry"
 )
 
 // processCrashCode is the stable recovery terminal reason.
@@ -54,6 +55,7 @@ type reconciler struct {
 	// rotation between Launch attempts cannot strand the recovery append
 	// behind a stale fencing token.
 	authority application.AuthoritySource
+	telemetry telemetry.Tracer
 }
 
 // reconcileSession replays one session stream and appends the recovery
@@ -90,8 +92,27 @@ func (r *reconciler) reconcileSession(ctx context.Context, session domain.Sessio
 	if item.TurnID != turn.ID {
 		return false, fmt.Errorf("session %s active item %s references turn %s", session, item.ID, item.TurnID)
 	}
-	interrupted := domain.AssistantMessageInterrupted{TurnID: turn.ID, ItemID: item.ID, Code: processCrashCode, Message: ""}
-	return r.appendRecovery(ctx, session, records, turn.ID, string(item.ID), head, &interrupted, compaction)
+	var interrupted domain.Event
+	switch item.Kind {
+	case domain.ItemKindAssistantMessage:
+		interrupted = domain.AssistantMessageInterrupted{TurnID: turn.ID, ItemID: item.ID, Code: processCrashCode, Message: ""}
+	case domain.ItemKindToolCall:
+		// The bounded aggregate deliberately carries no tool payload. Recover
+		// the original CallID from canonical history, never infer execution or
+		// fabricate a result: the side effect may already have happened.
+		for i := len(records) - 1; i >= 0; i-- {
+			if started, ok := records[i].Event.(domain.ToolCallStarted); ok && started.TurnID == turn.ID && started.ItemID == item.ID {
+				interrupted = domain.ToolCallInterrupted{TurnID: turn.ID, ItemID: item.ID, CallID: started.CallID, Code: processCrashCode, Message: ""}
+				break
+			}
+		}
+		if interrupted == nil {
+			return false, fmt.Errorf("session %s active tool %s has no start event", session, item.ID)
+		}
+	default:
+		return false, fmt.Errorf("session %s active item %s has unsupported kind", session, item.ID)
+	}
+	return r.appendRecovery(ctx, session, records, turn.ID, string(item.ID), head, interrupted, compaction)
 }
 
 // appendCompactionOnlyRecovery closes a dangling compaction that has no
@@ -117,14 +138,15 @@ func (r *reconciler) appendCompactionOnlyRecovery(ctx context.Context, session d
 		Event:         domain.ContextCompactionFailed{ID: compaction.ID, Code: runtimeRecoveredCode, Message: runtimeRecoveredMessage},
 	}}
 
-	receipt, err := r.store.Append(ctx, application.AppendRequest{
+	request := application.AppendRequest{
 		AppendID:        appendID,
 		SessionID:       session,
 		ExpectedVersion: head,
 		CommandID:       lineage,
 		Authority:       r.authority.CurrentAuthority(),
 		Events:          events,
-	})
+	}
+	receipt, err := r.appendRecoveryRequest(ctx, request)
 	if err != nil {
 		return false, err
 	}
@@ -146,7 +168,7 @@ func latestOccurredAt(records []domain.RecordedEvent) time.Time {
 	return occurredAt
 }
 
-func (r *reconciler) appendRecovery(ctx context.Context, session domain.SessionID, records []domain.RecordedEvent, turn domain.TurnID, item string, head uint64, itemInterrupted *domain.AssistantMessageInterrupted, compaction *domain.ContextCompaction) (bool, error) {
+func (r *reconciler) appendRecovery(ctx context.Context, session domain.SessionID, records []domain.RecordedEvent, turn domain.TurnID, item string, head uint64, itemInterrupted domain.Event, compaction *domain.ContextCompaction) (bool, error) {
 	// The original CommandID of the turn remains the correlation lineage.
 	var lineage domain.CommandID
 	for i := len(records) - 1; i >= 0; i-- {
@@ -185,23 +207,42 @@ func (r *reconciler) appendRecovery(ctx context.Context, session domain.SessionI
 		add(domain.ContextCompactionFailed{ID: compaction.ID, Code: runtimeRecoveredCode, Message: runtimeRecoveredMessage})
 	}
 	if itemInterrupted != nil {
-		add(*itemInterrupted)
+		add(itemInterrupted)
 	}
 	add(domain.TurnInterrupted{TurnID: turn, Reason: processCrashCode})
 
-	receipt, err := r.store.Append(ctx, application.AppendRequest{
+	request := application.AppendRequest{
 		AppendID:        appendID,
 		SessionID:       session,
 		ExpectedVersion: head,
 		CommandID:       lineage,
 		Authority:       r.authority.CurrentAuthority(),
 		Events:          events,
-	})
+	}
+	receipt, err := r.appendRecoveryRequest(ctx, request)
 	if err != nil {
 		return false, err
 	}
 	_ = receipt
 	return true, nil
+}
+
+func (r *reconciler) appendRecoveryRequest(ctx context.Context, request application.AppendRequest) (application.CommitReceipt, error) {
+	attributes := []telemetry.Attribute{
+		telemetry.String(telemetry.KeyAppendID, string(request.AppendID)),
+		telemetry.String(telemetry.KeySessionID, string(request.SessionID)),
+		telemetry.Uint64(telemetry.KeyAppendEventCount, uint64(len(request.Events))),
+		telemetry.Uint64(telemetry.KeyAppendExpectedVersion, request.ExpectedVersion),
+	}
+	traceCtx, span := telemetry.SafeStart(r.telemetry, ctx, telemetry.Start{Kind: telemetry.KindStoreAppend, Attributes: attributes})
+	receipt, err := r.store.Append(traceCtx, request)
+	end := telemetry.End{Outcome: telemetry.OutcomeOK}
+	if err != nil {
+		end.Outcome = telemetry.OutcomeFailed
+		end.Code = "recovery_append_failed"
+	}
+	span.End(end)
+	return receipt, err
 }
 
 // readAll pages through one session stream at a pinned head.

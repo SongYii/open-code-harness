@@ -210,7 +210,7 @@ func (service *Service) ResumeSession(ctx context.Context, request ResumeSession
 	return state.Clone(), nil
 }
 
-func (service *Service) DeleteSession(ctx context.Context, request DeleteSessionRequest) error {
+func (service *Service) DeleteSession(ctx context.Context, request DeleteSessionRequest) (returnErr error) {
 	if service == nil {
 		return applicationError(CategoryValidation, "invalid_request", false, nil)
 	}
@@ -259,7 +259,9 @@ func (service *Service) DeleteSession(ctx context.Context, request DeleteSession
 	if err != nil {
 		return err
 	}
-	_, _, err = CommitAppendIntent(ctx, service.store, state, intent)
+	traceCtx, trace := startAppendTrace(ctx, service.telemetry, intent)
+	defer func() { trace.end(returnErr) }()
+	_, _, err = CommitAppendIntent(traceCtx, service.store, state, intent)
 	if !isAppendOutcomeUnknown(err) {
 		if err == nil {
 			service.observations.forget(request.SessionID)
@@ -267,7 +269,7 @@ func (service *Service) DeleteSession(ctx context.Context, request DeleteSession
 		}
 		return err
 	}
-	resolveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), service.config.AppendResolutionTimeout)
+	resolveCtx, cancel := context.WithTimeout(context.WithoutCancel(traceCtx), service.config.AppendResolutionTimeout)
 	defer cancel()
 	receipt, err := ResolveAppendIntent(resolveCtx, service.store, intent, service.appendResolutionConfig())
 	if err != nil {

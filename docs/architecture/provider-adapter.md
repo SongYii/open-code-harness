@@ -13,7 +13,33 @@ This document records behavior enforced by the current code and tests. It is
 an internal Go contract, not a stable public protocol. Pre-v0 changes still
 require the design, implementation, tests, and this document to move together.
 
+The 2026-09-13 [Provider replay supplement](provider-replay.md) adds explicit
+DeepSeek thinking replay, completion-only protocol state, durable compatibility
+rules and context integration. Default OpenAI-compatible behavior below is
+unchanged unless that supplement explicitly says otherwise.
+
 ## Delivered capability
+
+The 2026-09-16 [HTTP2 shutdown repair](provider-http2-shutdown-evidence.md)
+replaces idle-only cleanup with explicit private socket ownership. After stream
+drain, Model.Close rejects/cancels and accounts for pending dials, closes owned
+sockets even while H2 stream bookkeeping retires, and preserves cleanup errors.
+Standard/custom TLS negotiation and borrowed source pools remain unchanged.
+
+The 2026-09-15 internal closure adds once-owned `Model.Close()` for the private
+HTTP pool, called by Composition after stream drain. Nonstandard injected
+transports remain caller-owned; standard supplied transports are cloned and
+only the clone is closed. Direct model users must drain/close streams before
+closing the model; this is not concurrent active-request teardown. Closed models
+reject new requests. The shared `modeltest.RunContract` now compares complete
+text and ordered tools, not text chunk counts, and both HTTP adapters run it.
+Native framing/state/usage tests remain separate. See
+[internal Provider closure evidence](provider-internal-closure-evidence.md).
+
+Follow-up tests distinguish concurrent requests, cancel one without affecting
+the other, and verify usage/tool output isolation. TLS tests require negotiated
+HTTP2, same-connection multiplexing and separate owned/source pools. These are
+local transport guarantees, not remote-provider certification.
 
 `engine.Model` remains the Engine consumption port. `testkit.ScriptedModel` and
 `adapters/openaicompat.Model` both implement it. Application admits a Turn,
@@ -23,13 +49,14 @@ The HTTP adapter owns wire mapping, SSE, keys, and classified
 model attempt.
 
 Vendor differences enter as a capability profile plus composition-time
-identity. Application and Engine have no vendor-name branches. Default `go
+identity. Versioned replay validation additionally binds protocol state to its
+route; HTTP translation stays adapter-owned. Default `go
 test` uses a scripted `http.RoundTripper` and recorded SSE fixtures; it needs
 no live key and opens no vendor socket.
 
 Native tool send/assemble is implemented when `NativeTools` is `supported`
-or `required`. MCP, SQLite, ACP, TUI, a plugin kernel, and vendor SDKs are
-not implemented. The Application step loop is recorded in the
+or `required`. This adapter does not own MCP, SQLite, ACP, TUI, a plugin kernel,
+or vendor SDKs. The Application step loop is recorded in the
 [implemented tool-runtime contract](tool-runtime.md).
 
 ## Package authority and dependency direction
@@ -81,6 +108,7 @@ type ModelStream interface {
 }
 
 type StreamEvent struct {
+    ProviderState *domain.ProviderState // nil except optionally on completed
     Type     StreamEventType
     Text     string
     Usage    *TokenUsage // nil except optionally on completed
@@ -99,6 +127,7 @@ type AttemptStats struct {
 }
 
 type RunResult struct {
+    ProviderState *domain.ProviderState // nil on failure/cancellation
     Text      string
     ToolCalls []ToolCall
     Stats     AttemptStats
@@ -168,7 +197,8 @@ type RequestIdentity struct {
 - `ResponseFormat` is `""` or `"json_object"`; `ThinkingMode` is `""`,
   `"enabled"`, or `"disabled"`. `ReasoningEffort` is empty or `none`,
   `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; it cannot coexist
-  with `ThinkingMode`.
+  with `ThinkingMode` on the legacy route. The explicit DeepSeek replay route
+  permits enabled thinking with native low/high/max effort; see the supplement.
 
 Shipped presets are `openaicompat.ProfileTextOnly` (`NativeTools=unsupported`)
 and adapter-local `openaicompat.ProfileToolsSupported` (`NativeTools=supported`).
@@ -286,7 +316,7 @@ case-insensitively after `mime.ParseMediaType`
 | --- | --- | --- |
 | `delta.content` non-empty string | `text_delta` | `TestStreamSuccessEmitsDeltasCompletedAndUsage` |
 | empty / role-only `content` | ignore | success fixture first chunk |
-| `reasoning_content` / `reasoning` / `reasoning_details` | ignore; never enter assistant text | `TestStreamIgnoresReasoningContent`, `TestRunTurnHTTPReasoningIsolation` |
+| `reasoning_content` / `reasoning` / `reasoning_details` | legacy route ignores all; explicit DeepSeek replay retains only `reasoning_content` as protocol state, never assistant text | `TestStreamIgnoresReasoningContent`, `TestRunTurnHTTPReasoningIsolation`, `TestDeepSeekCompletedStateAndReplayMapping` |
 | `usage` object | `completed.Usage` / `AttemptStats.Usage` | `TestStreamSuccessEmitsDeltasCompletedAndUsage` |
 | `input_tokens` / `output_tokens` / `prompt_cache_hit_tokens` | alternate field map | `TestStreamUsageAlternateFields` |
 | fractional usage number | `CodeInvalidStream` + `invalid_stream` | `TestStreamRejectsFractionalUsage` |
@@ -509,8 +539,8 @@ This implemented contract does not provide:
 - MCP, approvals UX, or a plugin kernel (Application owns the step loop;
   this adapter only sends `tools` and assembles Engine `tool_call*` when
   `NativeTools` is `supported` or `required`);
-- Engine `reasoning_delta` constants or reasoning-item persistence
-  (reasoning fields are dropped);
+- Engine `reasoning_delta` constants or displayed reasoning items; the
+  opt-in protocol-state persistence is covered by the replay supplement;
 - images, audio, video, or structured-output requests;
 - prompt-cache layout or vendor cache heuristics;
 - multi-provider routing, fallback, cost optimization, or Application retry;

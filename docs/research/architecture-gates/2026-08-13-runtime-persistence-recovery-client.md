@@ -24,7 +24,7 @@ correctness contract.
 
 | System | Primary evidence | Observed design | Adopt | Do not infer or copy |
 | --- | --- | --- | --- | --- |
-| OpenAI Codex | [thread-store README](https://github.com/openai/codex/blob/main/codex-rs/thread-store/README.md), [live writer](https://github.com/openai/codex/blob/main/codex-rs/thread-store/src/local/live_writer.rs), [writer lock](https://github.com/openai/codex/blob/main/codex-rs/thread-store/src/local/writer_lock.rs), [state migrations](https://github.com/openai/codex/blob/main/codex-rs/state/src/migrations.rs) | Canonical rollout JSONL is written and flushed before a rebuildable SQLite metadata view; per-thread cross-process locks, backfill, and migration checksums support that choice. | Keep human-readable lossless history, explicit writer ownership, checksummed migrations, and rebuildable projections. | JSONL authority is not automatically the best greenfield choice for exact CAS, lost-ACK retries, and three-OS behavior. Its lock, scan, drift, and repair machinery is part of the cost. |
+| OpenAI Codex | [thread-store README](https://github.com/openai/codex/blob/main/codex-rs/thread-store/README.md), [live writer](https://github.com/openai/codex/blob/main/codex-rs/thread-store/src/local/live_writer.rs), [writer lock](https://github.com/openai/codex/blob/67cc3c318d/codex-rs/thread-store/src/local/writer_lock.rs), [state migrations](https://github.com/openai/codex/blob/main/codex-rs/state/src/migrations.rs) | Canonical rollout JSONL is written and flushed before a rebuildable SQLite metadata view; per-thread cross-process locks, backfill, and migration checksums support that choice. | Keep human-readable lossless history, explicit writer ownership, checksummed migrations, and rebuildable projections. | JSONL authority is not automatically the best greenfield choice for exact CAS, lost-ACK retries, and three-OS behavior. Its lock, scan, drift, and repair machinery is part of the cost. |
 | OpenCode | [session schema](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/session.sql.ts), [CLI database and session commands](https://opencode.ai/docs/cli/) | SQLite stores normalized Session, Message, Part, Todo, Session Message, and Permission records and is the durable recovery source behind session listing, export, and database inspection. Runtime bus and SSE events notify consumers but are not themselves the durable history. | Explicit database tooling, normalized product projections, server-owned durable state, and separate transient delivery events. | Mutable message/part rows and notification events do not establish an immutable domain-event authority, exact append receipt, fencing, or lost-ack recovery contract. The fast-moving `dev` schema must be re-verified before implementation reuse. |
 | Goose | [session manager and SQLite storage](https://github.com/aaif-goose/goose/blob/main/crates/goose/src/session/session_manager.rs) | `SessionManager` routes session, conversation, and usage-ledger reads and writes through SQLite. Schema initialization uses `BEGIN IMMEDIATE` to serialize concurrent first-run writers, and legacy sessions are imported into the database. | Serialized writer admission, bounded database waiting, WAL-oriented operation, transactional message/session updates, explicit migrations, and one-way legacy import. | `replace_conversation` and mutable transcript CRUD are product persistence semantics, not an append-only audit or domain-event contract. |
 | Crush | [repository architecture](https://github.com/charmbracelet/crush/blob/main/AGENTS.md), [session service](https://github.com/charmbracelet/crush/blob/main/internal/session/session.go) | Go services perform Session CRUD against SQLite through sqlc and migrations; session reads come from the database and multi-table deletion uses a transaction. Explicit UI-only estimated usage remains in memory rather than competing as a durable fact. | Go/sqlc repository boundaries, migration discipline, transaction-scoped multi-table changes, and a clear distinction between durable facts and ephemeral UI state. | Mutable Session CRUD, internal pub/sub, and transactional deletion do not provide immutable event replay, expected-version append, or uncertain-effect reconciliation. |
@@ -191,3 +191,19 @@ SQLite records, and internal runtime signals do not become public ACP types.
   evidence, not a promise that every released version has the same tables.
 - No referenced project is treated as a code donor. License and provenance
   review remains mandatory before any implementation reuse.
+
+## Citation repair, 2026-09-14
+
+Two citations in this gate were written as mutable `blob/main/` paths, before
+documentation rule 8 required a commit. Upstream has since moved the files and
+those paths now return 404, so they have been re-pinned to a commit where the
+file exists:
+
+- `codex-rs/thread-store/src/local/writer_lock.rs` -> [`openai/codex` at `67cc3c318d`](https://github.com/openai/codex/blob/67cc3c318d/codex-rs/thread-store/src/local/writer_lock.rs)
+
+This is a repair of an unfollowable link, not a claim about what was read in
+2026-08-13. The original reading was by mutable path and cannot be
+reconstructed; what is asserted here is narrower and was checked on
+2026-09-14 — the file at the pinned commit still shows the behaviour this
+gate's table describes. A later gate that needs this evidence must re-verify
+it at its own then-current commit, as rule 7 requires.
