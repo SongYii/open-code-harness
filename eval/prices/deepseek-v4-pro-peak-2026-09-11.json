@@ -1,0 +1,20 @@
+{
+  "currency": "USD",
+  "id": "deepseek-v4-pro-peak",
+  "version": "2026-09-11",
+  "sourceUrl": "https://api-docs.deepseek.com/quick_start/pricing",
+  "observedAt": "2026-09-11",
+  "rateBasis": "Official peak synchronous API rates; a conservative upper bound because the report does not record DeepSeek's time band.",
+  "entries": [
+    {
+      "modelId": "deepseek-v4-pro",
+      "inputMicrounitsPerToken": 0,
+      "outputMicrounitsPerToken": 0,
+      "cachedInputMicrounitsPerToken": 0,
+      "rateUnitTokens": 1000000,
+      "inputMicrounitsPerRateUnit": 1320000,
+      "outputMicrounitsPerRateUnit": 3960000,
+      "cachedInputMicrounitsPerRateUnit": 44000
+    }
+  ]
+}

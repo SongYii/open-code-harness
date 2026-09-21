@@ -363,6 +363,27 @@ its criterion results, an out-of-range score, or the call itself failing —
 resolves to a real `JudgeOutcome{Verdict: Indeterminate}` carrying a bounded,
 redacted rationale, never a Go error and never silently accepted as `Pass`.
 
+Prompt identity is versioned rather than edited in place. Historical configs
+continue to resolve the exact frozen `och_quality_judge_v1` bytes. New configs
+may select `och_quality_judge_v2`, which calls the fail-closed field
+`unresolvedContradictoryEvidence`: a contradiction that conclusively disproves
+a success claim is ordinary cited evidence and can produce Fail; only a conflict
+that prevents choosing Pass or Fail enters the renamed field and forces
+Indeterminate. V2 also declares the supplied evidence bundle authoritative for
+the judgement and says an untruncated record is complete as supplied even when
+short. Strict per-version decoding rejects the ambiguous v1 field in a v2
+response rather than guessing what the model meant.
+
+New semantic corpora can opt into `labelReviewPolicy=evidence-v1`. Each trusted
+label then binds typed decision facts to exact excerpts in named evidence paths
+and records a counterfactual. Every evidence role must be cited. Pass labels
+require task, completion, and verification facts; Fail requires task and
+violation; Indeterminate requires task and uncertainty. The policy is optional
+only for backward compatibility: an undeclared review object or unknown policy
+is invalid. These checks make human label support inspectable and digest-bound;
+they deliberately do not claim that a mechanical schema can replace semantic
+review.
+
 The provider contract freezes `responseFormat=json_object`; it may freeze a
 portable `reasoningEffort` (`none`, `minimal`, `low`, `medium`, `high`,
 `xhigh`, or `max`) or the legacy provider-specific `thinkingMode=disabled`,
@@ -415,6 +436,23 @@ repetition index, and expected label. The checked-in six-case, three-repetition
 seed is exercised keylessly with a fixture caller. Its first separately gated
 DeepSeek run matched all 18 repeated labels; the checked-in report proves only
 that exact small corpus, and no global quality threshold is inferred from it.
+
+V2 keeps those identities immutable and adds disjoint six-case calibration and
+holdout sets, each repeated three times. A provider-equivalence contract keeps
+the DeepSeek and OpenAI holdout cases byte-identical. A calibrated
+`och.eval.judge-meta-policy` copies the calibration report's empirical error
+envelope and binds the calibration report, exact JudgeConfig, sample count,
+and a different validation-set digest declared before checking. The offline
+`judge-meta-check` refuses a substituted set and exits as a gate failure when
+the holdout exceeds that envelope. This is a regression boundary, not a
+population-accuracy assertion.
+
+Price entries may use legacy integer microunits per token or scaled integer
+microunits over a declared token unit. Scaled terms are summed with arbitrary
+precision and rounded up once, preventing cheap rates from truncating to zero.
+Frozen provenance names the official source, observation date, and rate basis.
+The DeepSeek table selects peak rates as a conservative upper bound; the
+OpenAI table selects standard synchronous rates.
 
 `EvaluateJudgeAttempt` (`internal/harness/eval/judge_attempt.go`) is the
 orchestration `och-eval judge` drives, and the order of its gates is the
