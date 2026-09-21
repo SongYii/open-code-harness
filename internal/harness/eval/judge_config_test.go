@@ -81,6 +81,22 @@ func TestJudgeConfigAcceptsReasoningEffortInsteadOfLegacyThinkingMode(t *testing
 	}
 }
 
+func TestJudgeConfigAcceptsBothFrozenPromptVersionsButNotCrossedDigests(t *testing.T) {
+	v1 := validJudgeConfig()
+	if err := v1.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	v2 := validJudgeConfig()
+	v2.Prompt = JudgePrompt{ID: QualityJudgePromptV2ID, Digest: QualityJudgePromptV2Digest()}
+	if err := v2.Validate(); err != nil {
+		t.Fatalf("v2 Validate: %v", err)
+	}
+	v2.Prompt.Digest = QualityJudgePromptV1Digest()
+	if err := v2.Validate(); err == nil {
+		t.Fatal("v2 prompt accepted the v1 bytes")
+	}
+}
+
 func TestDecodeJudgeConfigRejectsInvalidDocuments(t *testing.T) {
 	longRubric := strings.Repeat("r", maxJudgeRubricBytes+1)
 	cases := []struct {

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -122,6 +121,18 @@ func loadJudgeMetaSet(path string) (eval.JudgeMetaSet, error) {
 	return set, nil
 }
 
+func loadJudgeMetaReport(path string) (eval.JudgeMetaReport, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return eval.JudgeMetaReport{}, fmt.Errorf("read judge meta report: %w", err)
+	}
+	report, err := eval.DecodeJudgeMetaReport(data)
+	if err != nil {
+		return eval.JudgeMetaReport{}, err
+	}
+	return report, nil
+}
+
 // loadJudgePriceTable resolves the optional price table a JudgeConfig may
 // pin. A config that names a priceTableDigest requires the table and
 // requires it to match: a Score that claimed a computed cost against a
@@ -141,9 +152,9 @@ func loadJudgePriceTable(config eval.JudgeConfig, path string) (*eval.PriceTable
 	if err != nil {
 		return nil, fmt.Errorf("read price table: %w", err)
 	}
-	var table eval.PriceTable
-	if err := json.Unmarshal(data, &table); err != nil {
-		return nil, fmt.Errorf("decode price table: %w", err)
+	table, err := eval.DecodePriceTable(data)
+	if err != nil {
+		return nil, err
 	}
 	digest, err := eval.PriceTableDigest(table)
 	if err != nil {
