@@ -1,6 +1,6 @@
 // Package mcp is this project's MCP client adapter: it discovers tools from
 // configured MCP servers and projects them into the same domain.ToolSpec type,
-// tools.Catalog, Policy table, Approver slot, and audit trail the four builtin
+// tools.Catalog, Policy table, Approver slot, and audit trail the builtin
 // workspace tools already flow through.
 //
 // It never imports a sibling adapter. OS-level confinement for a server

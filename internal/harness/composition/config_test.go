@@ -93,6 +93,13 @@ func TestValidateRejectsEveryDocumentedCause(t *testing.T) {
 		{"negative assistant bytes", func(c *composition.Config) { c.Limits.MaxAssistantBytes = -1 }, "Limits"},
 		{"negative approval timeout", func(c *composition.Config) { c.Limits.ApprovalTimeout = -time.Second }, "timeouts"},
 		{"negative shutdown timeout", func(c *composition.Config) { c.ShutdownTimeout = -time.Second }, "timeouts"},
+		{"subagent timeout while disabled", func(c *composition.Config) { c.Subagents.Timeout = time.Minute }, "Subagents.Enabled"},
+		{"subagent timeout too short", func(c *composition.Config) {
+			c.Subagents.Enabled, c.Subagents.Timeout = true, time.Second
+		}, "Subagents.Timeout"},
+		{"subagent timeout too long", func(c *composition.Config) {
+			c.Subagents.Enabled, c.Subagents.Timeout = true, 11*time.Minute
+		}, "Subagents.Timeout"},
 		{"context trigger percent out of range", func(c *composition.Config) { c.Context.TriggerPercent = 50 }, "TriggerPercent"},
 		{"context target percent not below trigger", func(c *composition.Config) {
 			c.Context.TriggerPercent, c.Context.TargetPercent = 80, 80

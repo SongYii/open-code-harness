@@ -53,6 +53,9 @@ func (service *Service) executeOneTool(ctx context.Context, owned *ownedTurn, ca
 	if !ok {
 		return service.failToolAndContinue(ctx, owned, call, CodeUnknownTool, ToolTextUnknownTool)
 	}
+	if owned.state.Parent != nil && !childDispatchAllowed(spec.Name) {
+		return service.failToolAndContinue(ctx, owned, call, CodeSubagentCapabilityDenied, ToolTextSubagentCapabilityDenied)
+	}
 	if err := tools.ValidateArgs(spec, call.Arguments); err != nil {
 		return service.failToolAndContinue(ctx, owned, call, CodeInvalidArgs, ToolTextInvalidArgs)
 	}
@@ -285,7 +288,7 @@ func (service *Service) runToolBody(ctx context.Context, owned *ownedTurn, spec 
 	toolAttributes = append(toolAttributes, traceString(telemetry.KeyToolSource, string(spec.Source))...)
 	toolAttributes = append(toolAttributes, traceString(telemetry.KeyToolRisk, string(spec.Risk))...)
 	toolCtx, toolSpan := telemetry.SafeStart(service.telemetry, ctx, telemetry.Start{Kind: telemetry.KindToolExecute, Attributes: toolAttributes})
-	content, truncated, failCode, failText, execErr := service.invokeTool(toolCtx, owned.result.SessionID, spec, args, resolved)
+	content, truncated, failCode, failText, execErr := service.invokeTool(toolCtx, owned, spec, args, resolved)
 	toolEnd := traceEnd(execErr,
 		telemetry.Int64(telemetry.KeyResultBytes, int64(len(content))),
 		telemetry.Bool(telemetry.KeyResultTruncated, truncated),
@@ -338,10 +341,10 @@ func workspaceInstructionTarget(toolName, resolved string) string {
 	}
 }
 
-func (service *Service) invokeTool(ctx context.Context, session domain.SessionID, spec domain.ToolSpec, args toolArgs, resolved string) (string, bool, string, string, error) {
+func (service *Service) invokeTool(ctx context.Context, owned *ownedTurn, spec domain.ToolSpec, args toolArgs, resolved string) (string, bool, string, string, error) {
 	// Keyed on Source, not Name: an externally-sourced tool's name is chosen
 	// by the operator's configuration and the server itself, so this package
-	// cannot enumerate it the way it enumerates its own four builtins.
+	// cannot enumerate it the way it enumerates its own closed builtin set.
 	if spec.Source == tools.SourceMCP {
 		return service.invokeExternalTool(ctx, spec, args)
 	}
@@ -353,7 +356,7 @@ func (service *Service) invokeTool(ctx context.Context, session domain.SessionID
 			// session now knows nothing is there, which is what lets a
 			// following write make a create-if-absent promise honestly.
 			if errors.Is(err, fs.ErrNotExist) {
-				service.observations.recordAbsent(session, resolved)
+				service.observations.recordAbsent(owned.result.SessionID, resolved)
 			}
 			return "", false, "", "", err
 		}
@@ -365,7 +368,7 @@ func (service *Service) invokeTool(ctx context.Context, session domain.SessionID
 		// is a whole-file replacement built from a partial view -- that is the
 		// caller's problem to reason about, not something to hide by refusing
 		// to remember the read.
-		service.observations.recordPresent(session, resolved, read.Version)
+		service.observations.recordPresent(owned.result.SessionID, resolved, read.Version)
 		text := string(read.Data)
 		if read.Truncated {
 			return appendTruncation(text), true, "", "", nil
@@ -376,7 +379,7 @@ func (service *Service) invokeTool(ctx context.Context, session domain.SessionID
 		// no honest promise to make about text the session has never seen, so
 		// the refusal comes from the observation table rather than from the
 		// filesystem.
-		guard, guardErr := service.observations.guardForEdit(session, resolved)
+		guard, guardErr := service.observations.guardForEdit(owned.result.SessionID, resolved)
 		if guardErr != nil {
 			return "", false, "", "", guardErr
 		}
@@ -384,7 +387,7 @@ func (service *Service) invokeTool(ctx context.Context, session domain.SessionID
 		if err != nil {
 			return "", false, "", "", err
 		}
-		service.observations.recordPresent(session, resolved, result.Version)
+		service.observations.recordPresent(owned.result.SessionID, resolved, result.Version)
 		if args.ReplaceAll {
 			return ToolTextReplacedAll, false, "", "", nil
 		}
@@ -393,7 +396,7 @@ func (service *Service) invokeTool(ctx context.Context, session domain.SessionID
 		// The guard is derived immediately before the call rather than held
 		// from earlier in the Step, so the window between deciding and acting
 		// is as small as this package can make it.
-		guard := service.observations.guardForWrite(session, resolved)
+		guard := service.observations.guardForWrite(owned.result.SessionID, resolved)
 		result, err := service.files.Write(ctx, resolved, []byte(args.Content), guard)
 		if err != nil {
 			// A failed mutation never advances the observation. Recording the
@@ -409,14 +412,14 @@ func (service *Service) invokeTool(ctx context.Context, session domain.SessionID
 			// second already did, and what it read was that nothing was
 			// there, so its file changed after it looked.
 			if errors.Is(err, fs.ErrExist) {
-				if service.observations.seen(session, resolved) {
+				if service.observations.seen(owned.result.SessionID, resolved) {
 					return "", false, "", "", &tools.Error{Code: tools.CodeFSStaleVersion}
 				}
 				return "", false, "", "", &tools.Error{Code: tools.CodeFSNotObserved}
 			}
 			return "", false, "", "", err
 		}
-		service.observations.recordPresent(session, resolved, result.Version)
+		service.observations.recordPresent(owned.result.SessionID, resolved, result.Version)
 		return fmt.Sprintf("wrote %d bytes", len(args.Content)), false, "", "", nil
 	case tools.NameListDir:
 		names, truncated, err := service.files.List(ctx, resolved, args.depthOrDefault(), tools.MaxListDirEntries)
@@ -449,6 +452,8 @@ func (service *Service) invokeTool(ctx context.Context, session domain.SessionID
 			return appendTruncation(text), true, "", "", nil
 		}
 		return text, false, "", "", nil
+	case tools.NameDelegateTask:
+		return service.invokeDelegateTask(ctx, owned, args.Task)
 	default:
 		return "", false, CodeUnknownTool, ToolTextUnknownTool, nil
 	}
@@ -475,7 +480,7 @@ func (service *Service) invokeExternalTool(ctx context.Context, spec domain.Tool
 	}
 	text := result.Text
 	if len(text) > MaxToolResultBytes {
-		text = text[:MaxToolResultBytes]
+		text = truncateValidUTF8(text, MaxToolResultBytes)
 		result.Truncated = true
 	}
 	if result.IsError {
@@ -525,6 +530,20 @@ func appendTruncation(text string) string {
 	return text + TruncationMarker
 }
 
+func truncateValidUTF8(text string, limit int) string {
+	if limit < 0 {
+		limit = 0
+	}
+	if len(text) <= limit {
+		return text
+	}
+	text = text[:limit]
+	for len(text) > 0 && !utf8.ValidString(text) {
+		text = text[:len(text)-1]
+	}
+	return text
+}
+
 func runtimeToolText(call engine.ToolCall) string {
 	if call.Name == "" {
 		return call.ID
@@ -555,6 +574,7 @@ type toolArgs struct {
 	OldString  string `json:"old_string"`
 	NewString  string `json:"new_string"`
 	ReplaceAll bool   `json:"replace_all"`
+	Task       string `json:"task"`
 }
 
 func parseToolArgs(name, raw string) (toolArgs, error) {
@@ -583,6 +603,10 @@ func parseToolArgs(name, raw string) (toolArgs, error) {
 		if len(args.Argv) == 0 {
 			return toolArgs{}, argsError()
 		}
+	case tools.NameDelegateTask:
+		if strings.TrimSpace(args.Task) == "" {
+			return toolArgs{}, argsError()
+		}
 	}
 	return args, nil
 }
@@ -590,6 +614,9 @@ func parseToolArgs(name, raw string) (toolArgs, error) {
 func argsError() error { return errors.New("invalid tool arguments") }
 
 func (args toolArgs) scopePath(workspace string) string {
+	if args.Task != "" {
+		return ""
+	}
 	if args.Path != "" {
 		return args.Path
 	}

@@ -112,6 +112,7 @@ type Session struct {
 	Status        SessionStatus
 	Version       uint64
 	WorkspaceRoot string
+	Parent        *SessionParent
 	ActiveTurn    *Turn
 	// ContextCompaction is non-nil exactly while one Context Engine
 	// compaction is active (design §13.3). It is set by
@@ -124,6 +125,10 @@ func (state Session) Exists() bool { return state.ID != "" }
 
 func (state Session) Clone() Session {
 	clone := state
+	if state.Parent != nil {
+		parent := *state.Parent
+		clone.Parent = &parent
+	}
 	if state.ActiveTurn != nil {
 		turn := *state.ActiveTurn
 		clone.ActiveTurn = &turn
@@ -140,5 +145,5 @@ func (state Session) Clone() Session {
 }
 
 func (state Session) isPristine() bool {
-	return state.ID == "" && state.Status == "" && state.Version == 0 && state.WorkspaceRoot == "" && state.ActiveTurn == nil && state.ContextCompaction == nil
+	return state.ID == "" && state.Status == "" && state.Version == 0 && state.WorkspaceRoot == "" && state.Parent == nil && state.ActiveTurn == nil && state.ContextCompaction == nil
 }

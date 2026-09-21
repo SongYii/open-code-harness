@@ -34,7 +34,10 @@ type ListSessionsResult struct {
 	NextCursor string
 }
 
-type CreateSessionRequest struct{ WorkspaceRoot string }
+type CreateSessionRequest struct {
+	WorkspaceRoot string
+	Parent        *domain.SessionParent
+}
 type CreateSessionResult struct {
 	SessionID domain.SessionID
 	Records   []domain.RecordedEvent
@@ -140,7 +143,7 @@ func (service *Service) CreateSession(ctx context.Context, request CreateSession
 	if _, err := domain.ParseCommandID(string(commandID)); err != nil {
 		return CreateSessionResult{}, applicationError(CategoryInternal, "id_generator_contract_violation", false, err)
 	}
-	decided, err := domain.Decide(domain.Session{}, domain.CreateSession{SessionID: sessionID, WorkspaceRoot: workspaceRoot})
+	decided, err := domain.Decide(domain.Session{}, domain.CreateSession{SessionID: sessionID, WorkspaceRoot: workspaceRoot, Parent: request.Parent})
 	if err != nil {
 		return CreateSessionResult{}, applicationError(CategoryValidation, "domain_rejected", false, err)
 	}

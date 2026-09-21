@@ -122,8 +122,10 @@ For a normal ACP prompt:
 4. model output is assembled into text or tool intent;
 5. every tool intent is schema-checked and decided by Policy; risky work goes
    through the approval port;
-6. a permitted builtin or MCP tool runs through its adapter; durable tool
-   output is redacted before the completion command is appended;
+6. a permitted builtin or MCP tool runs through its adapter; opt-in
+   `delegate_task` instead creates one durable read-only child Session and
+   synchronously runs its Turn through this same flow; durable tool output is
+   redacted before the completion command is appended;
 7. Domain decides commands into events and the EventStore atomically appends
    them with optimistic concurrency; and
 8. ACP projects accepted events to the client. UI delivery is not the commit
@@ -145,6 +147,7 @@ See [Engine](engine-vertical-slice.md), [Tool runtime](tool-runtime.md),
 | Audit replica | SQLite audit-chain state until verified publication | Exported JSONL is a replica, never a second writer |
 | Workspace bytes | Host filesystem | Observed read fingerprint guards permission to mutate; it is not file content authority |
 | Tool permission | Policy decision plus approval result | Model tool intent is only a request |
+| Child lineage | child `session.created` parent tuple | Parent-visible child answer is a bounded Tool Result, not lineage authority |
 | Adapter construction | Composition | Application ports contain no concrete adapter selection |
 | Store lease/recovery | Runtime Host | Client connection lifetime does not own recovery |
 | Evaluation result | Frozen Scenario/Subject/Executor plus committed evidence | A judge score cannot override failed deterministic prerequisites |

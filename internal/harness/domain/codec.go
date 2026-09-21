@@ -26,6 +26,9 @@ func MarshalRecordedEvent(record RecordedEvent) ([]byte, error) {
 	if err := validateRecordedEventMetadata(record); err != nil {
 		return nil, err
 	}
+	if err := validateRecordedSessionParent(record); err != nil {
+		return nil, err
+	}
 
 	eventType, data, err := MarshalEventPayload(record.Event)
 	if err != nil {
@@ -97,7 +100,21 @@ func UnmarshalRecordedEvent(data []byte) (RecordedEvent, error) {
 		return RecordedEvent{}, err
 	}
 	record.Event = event
+	if err := validateRecordedSessionParent(record); err != nil {
+		return RecordedEvent{}, err
+	}
 	return record, nil
+}
+
+func validateRecordedSessionParent(record RecordedEvent) error {
+	created, ok := record.Event.(SessionCreated)
+	if !ok || created.Parent == nil {
+		return nil
+	}
+	if err := validateSessionParent(created.Parent, record.SessionID); err != nil {
+		return invalidEventError("session parent is invalid")
+	}
+	return nil
 }
 
 func ensureSingleJSONValue(decoder *json.Decoder) error {
@@ -113,6 +130,9 @@ func marshalEvent(event Event) (json.RawMessage, string, error) {
 	case SessionCreated:
 		if !hasRequiredText(event.WorkspaceRoot) {
 			return nil, "", invalidEventError("workspace root is required")
+		}
+		if err := validateSessionParent(event.Parent, ""); err != nil {
+			return nil, "", invalidEventError("session parent is invalid")
 		}
 		return marshalEventData(event, EventSessionCreated)
 	case TurnStarted:
@@ -274,6 +294,7 @@ func unmarshalEvent(eventType string, data json.RawMessage) (Event, error) {
 	case EventSessionCreated:
 		event = SessionCreated{}
 		required = []string{"workspaceRoot"}
+		optional = []string{"parent"}
 	case EventTurnStarted:
 		event = TurnStarted{}
 		required = []string{"turnID", "input"}

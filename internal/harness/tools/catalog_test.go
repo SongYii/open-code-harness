@@ -141,6 +141,35 @@ func TestDefaultWorkspaceSpecsLockedContracts(t *testing.T) {
 	}
 }
 
+func TestDelegateTaskSpecIsBoundedReadOnlyAndOptIn(t *testing.T) {
+	spec := DelegateTaskSpec()
+	if spec.Name != NameDelegateTask || spec.Source != SourceBuiltin || spec.Risk != domain.RiskRead || spec.Mutates {
+		t.Fatalf("DelegateTaskSpec() = %#v", spec)
+	}
+	assertSchema(t, spec.InputSchema, map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"task"},
+		"properties": map[string]any{
+			"task": map[string]any{"type": "string", "minLength": float64(1), "maxLength": float64(MaxDelegateTaskBytes)},
+		},
+	})
+	if err := ValidateArgs(spec, `{"task":"inspect"}`); err != nil {
+		t.Fatalf("ValidateArgs(valid) = %v", err)
+	}
+	if err := ValidateArgs(spec, `{"task":"inspect","extra":true}`); err == nil {
+		t.Fatal("ValidateArgs accepted an unknown field")
+	}
+	if err := ValidateArgs(spec, `{"task":"`+strings.Repeat("x", MaxDelegateTaskBytes+1)+`"}`); err == nil {
+		t.Fatal("ValidateArgs accepted an oversized task")
+	}
+	for _, defaultSpec := range DefaultWorkspaceSpecs() {
+		if defaultSpec.Name == NameDelegateTask {
+			t.Fatal("delegate_task entered the default catalog and would change disabled provider bytes")
+		}
+	}
+}
+
 func TestNewCatalogRejectsDuplicateNames(t *testing.T) {
 	specs := DefaultWorkspaceSpecs()
 	specs = append(specs, specs[0])

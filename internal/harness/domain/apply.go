@@ -170,7 +170,10 @@ func applySessionCreated(state Session, record RecordedEvent, event SessionCreat
 	if !hasRequiredText(event.WorkspaceRoot) {
 		return Session{}, domainError(CodeInvalidEvent, "workspace root is required")
 	}
-	return Session{ID: record.SessionID, Status: SessionStatusActive, Version: record.Sequence, WorkspaceRoot: event.WorkspaceRoot}, nil
+	if err := validateSessionParent(event.Parent, record.SessionID); err != nil {
+		return Session{}, domainError(CodeInvalidEvent, "session parent is invalid")
+	}
+	return Session{ID: record.SessionID, Status: SessionStatusActive, Version: record.Sequence, WorkspaceRoot: event.WorkspaceRoot, Parent: cloneSessionParent(event.Parent)}, nil
 }
 
 func applySessionClosed(state Session, record RecordedEvent) (Session, error) {

@@ -192,6 +192,15 @@ The numbered milestone list lives in
   Collector proof are explicit in the [contract](docs/architecture/observability-otel.md)
   and [evidence ledger](docs/architecture/observability-otel-evidence.md).
 
+- Local subagent delegation is implemented and opt-in. `-subagents` adds one
+  synchronous `delegate_task` builtin that creates a durable child Session in
+  the same workspace, gives it fresh context and only `read_file`/`list_dir`,
+  then returns its bounded final answer plus Session ID. Hidden writes are
+  refused again at dispatch; cancellation, timeout, lineage, unknown-outcome
+  deduplication, and real SQLite/Provider composition are covered by the
+  [contract](docs/architecture/local-subagent-delegation.md) and
+  [evidence ledger](docs/architecture/local-subagent-delegation-evidence.md).
+
 The fuller TypeScript TUI is not yet implemented. Evaluation
 (`internal/harness/eval`, `cmd/och-eval`) is implemented but not GA: frozen
 Scenario/Subject/Executor identity, append-only Attempt/Outcome/Evidence

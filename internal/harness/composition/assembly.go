@@ -48,8 +48,9 @@ type Assembly struct {
 	closeOnce sync.Once
 }
 
-// Catalog is the single tool catalog this assembly built: the four builtin
-// workspace tools plus every tool discovered from a configured MCP server.
+// Catalog is the single tool catalog this assembly built: the five default
+// workspace tools, optional delegate_task, and every tool discovered from a
+// configured MCP server.
 // One catalog is the whole point of projecting external tools into
 // domain.ToolSpec — they inherit the same Policy table, Approver slot, and
 // audit trail rather than needing a second mechanism.
@@ -275,7 +276,11 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 		return release(err)
 	}
 
-	catalog, err := tools.NewCatalog(append(tools.DefaultWorkspaceSpecs(), mcpSpecs...))
+	builtinSpecs := tools.DefaultWorkspaceSpecs()
+	if config.Subagents.Enabled {
+		builtinSpecs = append(builtinSpecs, tools.DelegateTaskSpec())
+	}
+	catalog, err := tools.NewCatalog(append(builtinSpecs, mcpSpecs...))
 	if err != nil {
 		return release(fmt.Errorf("composition: tool catalog: %w", err))
 	}
@@ -319,6 +324,7 @@ func Open(ctx context.Context, config Config) (*Assembly, error) {
 		MaxPrunedToolResultsPerRequest: config.Context.MaxPrunedToolResultsPerRequest,
 	}
 	appConfig.Telemetry = tracer
+	appConfig.Subagents = application.SubagentConfig{Enabled: config.Subagents.Enabled, Timeout: config.Subagents.Timeout}
 
 	// Pass the store itself as the AuthoritySource: the Service then reads
 	// the live fencing token per append, so an expired-takeover rotation is

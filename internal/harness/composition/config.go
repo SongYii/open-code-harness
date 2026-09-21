@@ -10,6 +10,7 @@ import (
 
 	"github.com/SongYii/open-code-harness/internal/harness/adapters/mcp"
 	oteladapter "github.com/SongYii/open-code-harness/internal/harness/adapters/otel"
+	"github.com/SongYii/open-code-harness/internal/harness/application"
 	"github.com/SongYii/open-code-harness/internal/harness/contextengine"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
 	"github.com/SongYii/open-code-harness/internal/harness/policy"
@@ -66,6 +67,11 @@ type Telemetry struct {
 	OTLPTraceEndpoint     string
 	SampleRatio           float64
 	AllowInsecureLoopback bool
+}
+
+type Subagents struct {
+	Enabled bool
+	Timeout time.Duration
 }
 
 func (config Telemetry) validate(runtimeID string) error {
@@ -250,6 +256,9 @@ type Config struct {
 	// Telemetry is opt-in. It never changes provider, protocol, Domain, or
 	// evaluation identity; see the 2026-09-12 trace-only design.
 	Telemetry Telemetry
+	// Subagents is opt-in. Enabled adds the synchronous read-only
+	// delegate_task builtin; Timeout defaults to two minutes.
+	Subagents Subagents
 	// Approver is optional. Unset becomes a deny slot so an ACP server can
 	// attach later without reconstructing the Service.
 	Approver tools.Approver
@@ -296,6 +305,9 @@ func (config Config) withDefaults() Config {
 		config.ShutdownTimeout = DefaultShutdownTimeout
 	}
 	config.Context = config.Context.withDefaults()
+	if config.Subagents.Enabled && config.Subagents.Timeout == 0 {
+		config.Subagents.Timeout = application.DefaultSubagentTimeout
+	}
 	return config
 }
 
@@ -320,6 +332,13 @@ func (config Config) Validate() error {
 	}
 	if err := config.Telemetry.validate(config.RuntimeID); err != nil {
 		return err
+	}
+	if config.Subagents.Enabled {
+		if config.Subagents.Timeout < application.MinSubagentTimeout || config.Subagents.Timeout > application.MaxSubagentTimeout {
+			return fmt.Errorf("%w: Subagents.Timeout must be between %s and %s", errInvalidConfig, application.MinSubagentTimeout, application.MaxSubagentTimeout)
+		}
+	} else if config.Subagents.Timeout != 0 {
+		return fmt.Errorf("%w: Subagents.Timeout requires Subagents.Enabled", errInvalidConfig)
 	}
 	if config.AuditDirectory != "" {
 		if err := requireExistingDirectory("AuditDirectory", config.AuditDirectory); err != nil {

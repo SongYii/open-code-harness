@@ -16,7 +16,7 @@ func TestReplayCompactDiscardsTerminalTranscript(t *testing.T) {
 	if got.Version != uint64(len(records)) || got.ActiveTurn != nil {
 		t.Fatalf("compact state = %#v", got)
 	}
-	if reflect.TypeOf(got).NumField() > 6 {
+	if reflect.TypeOf(got).NumField() > 7 {
 		t.Fatalf("compact state unexpectedly grew: %#v", got)
 	}
 	for index := 0; index < reflect.TypeOf(got).NumField(); index++ {
