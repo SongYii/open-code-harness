@@ -12,6 +12,10 @@ type Verifier func(reader *ArtifactReader, scenario Scenario) CriterionResult
 // policy_denied failure code.
 const VerifierToolPolicyDenial = "tool-policy-denial-observed-v1"
 
+// VerifierSubagentDelegation proves one complete, correlated delegation from
+// a parent call through a bounded read-only child session and back.
+const VerifierSubagentDelegation = "subagent-delegation-observed-v1"
+
 // verifierCatalog is a fixed, compiled-in table of every known Verifier,
 // keyed by its versioned ID (design §20: "unknown verifier IDs fail
 // EvalSet validation rather than executing data-file code" — the catalog
@@ -34,6 +38,7 @@ var verifierCatalog = map[string]Verifier{
 	VerifierMCPApprovalDenied:           verifyMCPApprovalDenied,
 	VerifierMCPResultRedaction:          verifyMCPResultRedaction,
 	VerifierNoToolCallObserved:          verifyNoToolCallObserved,
+	VerifierSubagentDelegation:          verifySubagentDelegationObserved,
 
 	// Context mechanism suite. context-compaction-observed-v1 above remains
 	// a compatibility alias for the old smoke Scenario; its semantics are
