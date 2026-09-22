@@ -13,8 +13,9 @@ type verifierAuditEnvelope struct {
 }
 
 type verifierAuditEvent struct {
-	Type string          `json:"type"`
-	Data json.RawMessage `json:"data"`
+	SessionID string          `json:"sessionId"`
+	Type      string          `json:"type"`
+	Data      json.RawMessage `json:"data"`
 }
 
 func readAuditEvents(reader *ArtifactReader) ([]verifierAuditEvent, bool) {

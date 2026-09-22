@@ -7,6 +7,14 @@ import "github.com/SongYii/open-code-harness/internal/harness/eval"
 // a data file" discipline internal/harness/eval's own verifier catalog
 // follows (implementation plan Task 9).
 var scorerCatalog = map[string]eval.Scorer{
+	"subagent-delegation-v1": {
+		ID:      "subagent-delegation-v1",
+		Version: "v1",
+		VerifierIDs: []string{
+			eval.VerifierSubagentDelegation,
+			"outcome-not-infra-failed-v1",
+		},
+	},
 	"mcp-approval-denied-scorer-v1": {
 		ID:      "mcp-approval-denied-scorer-v1",
 		Version: "v1",

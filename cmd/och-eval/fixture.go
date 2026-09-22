@@ -63,6 +63,8 @@ const (
 	readOutsideTriggerMarker = "TRIGGER_READ_OUTSIDE"
 	mcpApprovalTriggerMarker = "TRIGGER_MCP_APPROVAL_DENY"
 	mcpResultTriggerMarker   = "TRIGGER_MCP_RESULT_REDACTION"
+	subagentTriggerMarker    = "TRIGGER_SUBAGENT_DELEGATION"
+	subagentChildMarker      = "TRIGGER_SUBAGENT_CHILD"
 )
 
 // smartFixtureScript answers every checked-in smoke Scenario's request
@@ -101,6 +103,10 @@ func smartFixtureScript(w http.ResponseWriter, r *http.Request) {
 		writeToolCallSSE(w, "call_mcp_echo", eval.MCPFixtureEchoToolName, `{"text":"hello"}`)
 	case bytes.Contains(body, []byte(mcpResultTriggerMarker)):
 		writeToolCallSSE(w, "call_mcp_poison", eval.MCPFixturePoisonToolName, `{}`)
+	case bytes.Contains(body, []byte(subagentChildMarker)):
+		writeToolCallSSE(w, "call_child_read", "read_file", `{"path":"NOTES.md"}`)
+	case bytes.Contains(body, []byte(subagentTriggerMarker)):
+		writeToolCallSSE(w, "call_delegate", "delegate_task", `{"task":"TRIGGER_SUBAGENT_CHILD inspect NOTES.md and report what it says"}`)
 	default:
 		writeSSELine(w, `{"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}`)
 		writeSSELine(w, `{"choices":[{"delta":{},"finish_reason":"stop"}]}`)

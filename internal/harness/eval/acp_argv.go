@@ -64,6 +64,9 @@ func NormalizedArgv(subject Subject) ([]string, error) {
 	if subject.Policy.SandboxPolicy == SandboxPolicyUnsandboxedAllowed {
 		argv = append(argv, "-allow-unsandboxed-exec")
 	}
+	if subject.Subagents != nil {
+		argv = append(argv, "-subagents", "-subagent-timeout", subject.Subagents.Timeout.String())
+	}
 	if subject.Policy.ToolPolicy != nil {
 		canonical, _, err := toolpolicy.CanonicalConfig(subject.Policy.ToolPolicy.Config)
 		if err != nil {

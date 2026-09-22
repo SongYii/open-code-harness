@@ -1,0 +1,29 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.scenario",
+  "id": "subagent-delegation",
+  "description": "A parent delegates one bounded task; its durable child may only list or read files, reads NOTES.md, completes, and returns its result to the same parent call.",
+  "fixtureDigest": "sha256:c67b6c6792c8a0d0bf2a4397507c09738d3a38597b646b4491d308b4a2936dab",
+  "fixtureCopyPolicy": {
+    "maxFiles": 10,
+    "maxFileBytes": 1048576,
+    "maxTotalBytes": 1048576
+  },
+  "actions": [
+    {
+      "id": "prompt-1",
+      "type": "prompt",
+      "prompt": {
+        "text": "delegate a read-only inspection of NOTES.md TRIGGER_SUBAGENT_DELEGATION"
+      }
+    }
+  ],
+  "requiredCapabilities": ["prompt", "subagent"],
+  "requiredEvidenceRoles": ["transcript", "audit"],
+  "deterministicVerifierIds": [
+    "subagent-delegation-observed-v1",
+    "outcome-not-infra-failed-v1"
+  ],
+  "limits": {},
+  "pairingTags": ["subagent"]
+}

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SongYii/open-code-harness/internal/harness/application"
 	"github.com/SongYii/open-code-harness/internal/harness/engine"
 	corepolicy "github.com/SongYii/open-code-harness/internal/harness/policy"
 )
@@ -551,6 +552,10 @@ type Subject struct {
 	Context  SubjectContext  `json:"context"`
 	Policy   SubjectPolicy   `json:"policy"`
 
+	// Subagents freezes the opt-in bounded child-session behavior. Nil keeps
+	// the legacy tool catalog and wire bytes unchanged.
+	Subagents *SubjectSubagents `json:"subagents,omitempty"`
+
 	// MCPServers freezes the static stdio MCP configuration that changes
 	// this Subject's model-visible tool catalog. Commands are PATH-resolved
 	// basenames; machine-local absolute paths remain Attempt execution facts.
@@ -560,6 +565,13 @@ type Subject struct {
 	// cost reporting (design §10, §19). Empty means cost reporting is
 	// unavailable for this Subject, never zero cost.
 	PriceTableDigest string `json:"priceTableDigest,omitempty"`
+}
+
+// SubjectSubagents is explicit when enabled: Eval identities never rely on
+// the runtime's convenience default for a behavior-affecting timeout.
+type SubjectSubagents struct {
+	Enabled bool          `json:"enabled"`
+	Timeout time.Duration `json:"timeout"`
 }
 
 // SubjectMCPServer is one secret-free, portable stdio launch shape. The
@@ -678,6 +690,14 @@ func (subject Subject) Validate() error {
 	}
 	if err := subject.Policy.validate(); err != nil {
 		return err
+	}
+	if subject.Subagents != nil {
+		if !subject.Subagents.Enabled {
+			return fmt.Errorf("%w: subagents.enabled must be true when subagents is present", errInvalidDocument)
+		}
+		if subject.Subagents.Timeout < application.MinSubagentTimeout || subject.Subagents.Timeout > application.MaxSubagentTimeout {
+			return fmt.Errorf("%w: subagents.timeout must be between %s and %s", errInvalidDocument, application.MinSubagentTimeout, application.MaxSubagentTimeout)
+		}
 	}
 	seenMCPNames := make(map[string]struct{}, len(subject.MCPServers))
 	for index, server := range subject.MCPServers {
@@ -864,6 +884,7 @@ const (
 	ExecutorInProcess     ExecutorKind = "in_process"
 	ExecutorACPSubprocess ExecutorKind = "acp_subprocess"
 	CapabilityMCPStdio                 = "mcp_stdio"
+	CapabilitySubagent                 = "subagent"
 )
 
 // Executor is the frozen `och.eval.executor` document (design §11).

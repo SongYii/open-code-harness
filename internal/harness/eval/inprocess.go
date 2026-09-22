@@ -23,7 +23,7 @@ import (
 // (design §7) and so needs no capability entry; interrupt/kill are
 // ACP-subprocess-only and are rejected by Scenario.DerivedRequiredCapabilities
 // pairing against this executor's Capabilities, which never includes them.
-var InProcessCapabilities = []string{"prompt", "compact", "collect"}
+var InProcessCapabilities = []string{"prompt", "compact", "collect", CapabilitySubagent}
 
 // maxOutcomeMessageBytes bounds Outcome.Message (design §13: "bounded safe
 // message"). There is no design-given exact number for this bound, so this
@@ -104,6 +104,12 @@ func BuildConfig(subject Subject, directories AttemptRootDirectories, runtimeID 
 			MaxPrunedToolResultsPerRequest: subject.Context.MaxPrunedToolResultsPerRequest,
 			CompactionTimeout:              subject.Context.CompactionTimeout,
 		},
+		Subagents: func() composition.Subagents {
+			if subject.Subagents == nil {
+				return composition.Subagents{}
+			}
+			return composition.Subagents{Enabled: subject.Subagents.Enabled, Timeout: subject.Subagents.Timeout}
+		}(),
 		Approver:             approver,
 		MCPServers:           mcpServers,
 		AllowUnsandboxedExec: subject.Policy.SandboxPolicy == SandboxPolicyUnsandboxedAllowed,

@@ -1,0 +1,34 @@
+{
+  "formatVersion": 1,
+  "schema": "och.eval.set",
+  "id": "subagent-delegation",
+  "scenarios": [
+    {
+      "id": "subagent-delegation",
+      "digest": "sha256:3b0289ac365aebf13c6cd78eb147636247ce88638e4f0e731e7f323b34dc7757"
+    }
+  ],
+  "subjects": [
+    {
+      "id": "subagent-subject",
+      "digest": "sha256:86da9d8b5ba51f59ed174bdf361d97bca62cf9f2fb4cd52fb2a799687ab2e601"
+    }
+  ],
+  "executors": [
+    {
+      "id": "subagent-executor",
+      "digest": "sha256:e7bce722fbe37f4860fd29b0e1de16747266723d11d1da0f06ae96f34d3a261e"
+    },
+    {
+      "id": "subagent-executor-acp",
+      "digest": "sha256:8b52b9c9418ae93a42f37c1781a2fb3e8b5fee104fdfc2e55cc3046af183c2fe"
+    }
+  ],
+  "repetitionCount": 1,
+  "pairingSeed": "subagent-delegation-v1",
+  "limits": {
+    "tokenCap": 100000
+  },
+  "artifactRoot": ".eval-artifacts-subagent-delegation",
+  "lane": "fixture"
+}
