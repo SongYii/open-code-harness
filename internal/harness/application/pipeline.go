@@ -85,6 +85,7 @@ func (service *Service) executeOneTool(ctx context.Context, owned *ownedTurn, ca
 	}
 
 	requested := ""
+	lexicalRequested := ""
 	if !external {
 		requested = args.scopePath(owned.state.WorkspaceRoot)
 	}
@@ -93,6 +94,7 @@ func (service *Service) executeOneTool(ctx context.Context, owned *ownedTurn, ca
 		if scopeErr != nil || !scope.InWorkspace {
 			return service.failToolAndContinue(ctx, owned, call, CodeScopeDenied, ToolTextScopeDenied)
 		}
+		lexicalRequested = filepath.FromSlash(scope.Clean)
 	}
 	if extra := args.execBinaryPath(); !external && extra != "" {
 		scope, scopeErr := tools.CheckScopeLexical(tools.ScopeRequest{WorkspaceRoot: owned.state.WorkspaceRoot, Requested: extra})
@@ -185,7 +187,7 @@ func (service *Service) executeOneTool(ctx context.Context, owned *ownedTurn, ca
 	default:
 		return service.failToolAndContinue(ctx, owned, call, CodePolicyDenied, ToolTextPolicyDenied)
 	}
-	return service.runToolBody(ctx, owned, spec, call, args, resolved)
+	return service.runToolBody(ctx, owned, spec, call, args, resolved, lexicalRequested)
 }
 
 func (service *Service) waitApproval(ctx context.Context, owned *ownedTurn, call engine.ToolCall, decision policy.Decision) (bool, bool, RunTurnResult, error) {
@@ -269,7 +271,7 @@ func (service *Service) waitApproval(ctx context.Context, owned *ownedTurn, call
 	return true, false, owned.result, nil
 }
 
-func (service *Service) runToolBody(ctx context.Context, owned *ownedTurn, spec domain.ToolSpec, call engine.ToolCall, args toolArgs, resolved string) (bool, RunTurnResult, error) {
+func (service *Service) runToolBody(ctx context.Context, owned *ownedTurn, spec domain.ToolSpec, call engine.ToolCall, args toolArgs, resolved, lexicalRequested string) (bool, RunTurnResult, error) {
 	if _, ok := owned.started[owned.toolItemID]; !ok {
 		return true, cloneRunTurnResult(owned.result), applicationError(CategoryInternal, "tool_started_uncommitted", false, nil)
 	}
@@ -323,10 +325,7 @@ func (service *Service) runToolBody(ctx context.Context, owned *ownedTurn, spec 
 		// Instruction ancestry follows the scope-checked lexical path. The
 		// filesystem's resolved path can use another spelling of a symlinked
 		// workspace root (for example /var versus /private/var on macOS).
-		instructionPath := ""
-		if spec.Source != tools.SourceMCP {
-			instructionPath = args.scopePath(owned.state.WorkspaceRoot)
-		}
+		instructionPath := lexicalRequested
 		if instructionPath != "" && !filepath.IsAbs(instructionPath) {
 			instructionPath = filepath.Join(owned.state.WorkspaceRoot, instructionPath)
 		}

@@ -492,6 +492,10 @@ type twoStepProvider struct {
 }
 
 func newTwoStepProvider(t *testing.T, fileName string) *twoStepProvider {
+	return newWorkspaceToolProvider(t, tools.NameReadFile, fileName)
+}
+
+func newWorkspaceToolProvider(t *testing.T, toolName, fileName string) *twoStepProvider {
 	t.Helper()
 	provider := &twoStepProvider{}
 	provider.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -507,7 +511,8 @@ func newTwoStepProvider(t *testing.T, fileName string) *twoStepProvider {
 
 		if turn == 1 {
 			write(w, flusher, fmt.Sprintf(
-				`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read","function":{"name":"read_file","arguments":%s}}]},"finish_reason":null}]}`,
+				`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read","function":{"name":%s,"arguments":%s}}]},"finish_reason":null}]}`,
+				jsonString(toolName),
 				jsonString(fmt.Sprintf(`{"path":%q}`, fileName))))
 			write(w, flusher, `{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`)
 			write(w, flusher, "[DONE]")
