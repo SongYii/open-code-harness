@@ -187,7 +187,7 @@ Primary source pointers:
 - [Pi edit tool](https://github.com/badlogic/pi-mono/blob/92d8e2d17d4f357788381c49ce2cdb3f4ed1f21c/packages/coding-agent/src/core/tools/edit.ts)
 - [DeepSeek Harness filesystem provider](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/packages/fs/fs-local/README.md)
 - [DeepSeek Harness observation policy](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/packages/fs/fs-observation-policy/README.md)
-- [OpenCode edit tool](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/tool/edit.ts)
+- [OpenCode edit tool](https://github.com/anomalyco/opencode/blob/c9b24ef027dbe5b338123e43ae395892650f8cd3/packages/opencode/src/tool/edit.ts)
 - [Claude Code prompt caching](https://code.claude.com/docs/en/prompt-caching)
 - [PostgreSQL transaction isolation](https://www.postgresql.org/docs/current/transaction-iso.html)
 - [RFC 9110 `If-Match`](https://www.rfc-editor.org/rfc/rfc9110.html#name-if-match)
