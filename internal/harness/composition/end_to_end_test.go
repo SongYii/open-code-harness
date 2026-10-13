@@ -36,6 +36,13 @@ import (
 // credential beyond an environment variable this test sets, and no sleep.
 func TestAssemblyRunsAToolCallingTurnEndToEnd(t *testing.T) {
 	config := validConfig(t)
+	// Exercise a lexical workspace alias on every Unix host, rather than
+	// depending on macOS's /var -> /private/var alias to expose this regression.
+	alias := filepath.Join(t.TempDir(), "workspace-alias")
+	if err := os.Symlink(config.WorkspaceRoot, alias); err != nil {
+		t.Fatal(err)
+	}
+	config.WorkspaceRoot = alias
 	t.Setenv(config.Provider.APIKeyEnv, "assembly-key")
 
 	const fileName = "NOTES.md"

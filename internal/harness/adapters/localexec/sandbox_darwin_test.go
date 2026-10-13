@@ -296,7 +296,11 @@ func TestRunWrapsArgvInSeatbeltWhenAvailable(t *testing.T) {
 		t.Fatalf("fake sandbox-exec was not invoked: %v", err)
 	}
 	captured := strings.Split(strings.TrimRight(string(capturedRaw), "\x00"), "\x00")
-	wantArgv := seatbeltArgv(root, []string{"echo", "hi"})
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantArgv := seatbeltArgv(canonicalRoot, []string{"echo", "hi"})
 	if len(captured) != len(wantArgv) {
 		t.Fatalf("captured argv = %#v, want %#v", captured, wantArgv)
 	}

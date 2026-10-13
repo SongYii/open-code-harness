@@ -320,22 +320,32 @@ func (service *Service) runToolBody(ctx context.Context, owned *ownedTurn, spec 
 	}
 	done, result, completeErr := service.completeToolAndContinue(ctx, owned, call, content, truncated)
 	if !done && completeErr == nil {
-		if target := workspaceInstructionTarget(spec.Name, resolved); target != "" {
+		// Instruction ancestry follows the scope-checked lexical path. The
+		// filesystem's resolved path can use another spelling of a symlinked
+		// workspace root (for example /var versus /private/var on macOS).
+		instructionPath := ""
+		if spec.Source != tools.SourceMCP {
+			instructionPath = args.scopePath(owned.state.WorkspaceRoot)
+		}
+		if instructionPath != "" && !filepath.IsAbs(instructionPath) {
+			instructionPath = filepath.Join(owned.state.WorkspaceRoot, instructionPath)
+		}
+		if target := workspaceInstructionTarget(spec.Name, instructionPath); target != "" {
 			owned.instructionTargets = append(owned.instructionTargets, target)
 		}
 	}
 	return done, result, completeErr
 }
 
-func workspaceInstructionTarget(toolName, resolved string) string {
-	if resolved == "" {
+func workspaceInstructionTarget(toolName, lexicalPath string) string {
+	if lexicalPath == "" {
 		return ""
 	}
 	switch toolName {
 	case tools.NameReadFile, tools.NameWriteFile, tools.NameEditFile:
-		return filepath.Dir(resolved)
+		return filepath.Dir(lexicalPath)
 	case tools.NameListDir:
-		return resolved
+		return lexicalPath
 	default:
 		return ""
 	}
