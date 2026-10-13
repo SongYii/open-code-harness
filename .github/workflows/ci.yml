@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, fix/mac-mini-ci]
   pull_request:
   schedule:
     # Nightly. The soak and citation lanes need time and network, so they run
