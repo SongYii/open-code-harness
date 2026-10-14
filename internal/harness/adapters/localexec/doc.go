@@ -30,11 +30,16 @@
 // project's own deny-by-default-writes-except-the-workspace-root and
 // deny-all-network layer, and Enforcement reports Filesystem and Network
 // as full. Independent of Seatbelt's own availability, every command also
-// gets a best-effort RLIMIT_AS bound (Enforcement reports Memory as
-// partial): this caps virtual address space, not resident memory, and a
-// breach surfaces as the child's own allocator getting ENOMEM rather than
-// a clean external kill, so it never sets CommandResult.ResourceLimited —
-// materially weaker than Linux's monitored cgroup ceiling.
+// is monitored for aggregate sampled CPU time (30 seconds by default) and
+// resident memory (768 MiB). The monitor sends SIGKILL to the owned process
+// group on breach; Run reports ResourceLimited. Both effects are partial:
+// sampling can overshoot, miss short-lived workers, and cannot follow a
+// descendant that leaves the group. Shared RSS pages can be counted twice.
+// PID/start identities protect accounting and signal-target verification;
+// this is still not an atomic kernel process-group capability. Full requests
+// via NewWithOptions fail, and an unavailable/failing sampler is an explicit
+// error. Parent CPU/address-space rlimits are never modified. Prepared users
+// must use ConfinedCommand.Start or Register immediately after raw Start.
 //
 // The child environment is empty except PATH (from the host), HOME (the
 // workspace root), and TMPDIR (a workspace subdirectory removed after

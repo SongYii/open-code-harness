@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
@@ -45,13 +46,19 @@ type Runner struct {
 	cpuReason         string
 	seatbeltAvailable bool
 	seatbeltReason    string
-	rlimitMu          sync.Mutex
+	resourceSampler   groupSampler
+	resourceBudget    resourceBudget
 }
 
 var errInvalidSpec = errors.New("localexec: invalid command spec")
 var errInvalidWorkspace = errors.New("localexec: invalid workspace root")
 
 func New(workspace string) (*Runner, error) {
+	return NewWithOptions(workspace, Options{})
+}
+
+// NewWithOptions refuses unmet enforcement requirements before any command starts.
+func NewWithOptions(workspace string, options Options) (*Runner, error) {
 	if strings.TrimSpace(workspace) == "" {
 		return nil, errInvalidWorkspace
 	}
@@ -67,16 +74,26 @@ func New(workspace string) (*Runner, error) {
 	if err != nil || !info.IsDir() {
 		return nil, errInvalidWorkspace
 	}
+	resourceSampler, resourceBudget, err := platformResourceSampler(options)
+	if err != nil {
+		return nil, err
+	}
 	bwrapAvailable, bwrapReason := probeBwrap()
 	cgroup, cgroupReason, cpuReason := newCgroupQuota(DefaultMemoryHighBytes, DefaultMemoryHighBytes+DefaultMemoryHeadroomBytes, DefaultCPUPeriodMicros, DefaultCPUQuotaMicros)
 	seatbeltAvailable, seatbeltReason := probeSeatbelt()
 	enforcement := enforcementFor(backendAvailability{
-		Sandbox:      bwrapAvailable || seatbeltAvailable,
-		MemoryCgroup: cgroup != nil,
-		CPUCgroup:    cgroup != nil && cpuReason == "",
-		MemoryRlimit: rlimitEnforcementLevel(),
-		CPURlimit:    cpuRlimitEnforcementLevel(),
+		Sandbox:       bwrapAvailable || seatbeltAvailable,
+		MemoryCgroup:  cgroup != nil,
+		CPUCgroup:     cgroup != nil && cpuReason == "",
+		MemoryRlimit:  rlimitEnforcementLevel(),
+		CPURlimit:     cpuRlimitEnforcementLevel(),
+		MemoryMonitor: resourceSampler != nil,
+		CPUMonitor:    resourceSampler != nil,
 	})
+	if err := requireEnforcement(enforcement, options.RequiredEnforcement); err != nil {
+		cgroup.close()
+		return nil, err
+	}
 	return &Runner{
 		workspace:         real,
 		enforcement:       enforcement,
@@ -87,6 +104,8 @@ func New(workspace string) (*Runner, error) {
 		cpuReason:         cpuReason,
 		seatbeltAvailable: seatbeltAvailable,
 		seatbeltReason:    seatbeltReason,
+		resourceSampler:   resourceSampler,
+		resourceBudget:    resourceBudget,
 	}, nil
 }
 
@@ -124,12 +143,17 @@ func (runner *Runner) Run(ctx context.Context, spec tools.CommandSpec) (tools.Co
 	cmd.Stdout = out
 	cmd.Stderr = out
 
-	restoreRlimit := beginRlimitBracket(&runner.rlimitMu, DefaultMemoryHighBytes+DefaultMemoryHeadroomBytes)
 	startErr := cmd.Start()
-	restoreRlimit()
 	if startErr != nil {
 		return tools.CommandResult{}, startErr
 	}
+	monitor, err := runner.startResourceMonitor(cmd.Process.Pid)
+	if err != nil {
+		_ = killProcessGroup(cmd.Process.Pid)
+		_ = cmd.Wait()
+		return tools.CommandResult{}, err
+	}
+	defer monitor.close()
 	_ = runner.cgroup.addProcess(cmd.Process.Pid)
 	resourceLimited := runner.cgroup.register(cmd.Process.Pid)
 	defer runner.cgroup.unregister(cmd.Process.Pid)
@@ -144,40 +168,79 @@ func (runner *Runner) Run(ctx context.Context, spec tools.CommandSpec) (tools.Co
 		timeout = timer.C
 	}
 
-	kill := func() {
+	killAndWait := func() (error, error) {
+		var killErr error
 		if cmd.Process != nil {
-			_ = killProcessGroup(cmd.Process.Pid)
+			if monitor != nil {
+				killErr = monitor.signal(syscall.SIGKILL)
+			} else {
+				killErr = killProcessGroup(cmd.Process.Pid)
+			}
+		}
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		select {
+		case waitErr := <-done:
+			if killErr != nil && !processGoneError(killErr) {
+				return waitErr, killErr
+			}
+			return waitErr, nil
+		case <-timer.C:
+			return nil, errors.Join(ErrProcessTeardownUnproven, killErr)
 		}
 	}
 
 	select {
 	case waitErr := <-done:
+		if err := monitor.cleanupGroup(runner.resourceSampler); err != nil {
+			return tools.CommandResult{}, err
+		}
 		result := finish(waitErr, out, false, runner.throttled())
-		// Nothing else in this select pre-empted normal completion, so a
-		// process terminated by SIGXCPU here was killed by the kernel's
-		// own RLIMIT_CPU enforcement (Darwin only; always false
-		// elsewhere — CPU quota design §4).
-		if isCPUResourceLimitExit(waitErr) {
+		monitor.close()
+		limited, monitorErr := monitor.status()
+		if monitorErr != nil {
+			return tools.CommandResult{}, monitorErr
+		}
+		// SIGXCPU may still arise from an inherited OS limit. The sampled
+		// monitor attributes its own SIGKILL via state, never by signal alone.
+		if limited || isCPUResourceLimitExit(waitErr) {
 			result.ResourceLimited = true
 		}
 		return result, nil
 	case <-ctx.Done():
-		kill()
-		<-done
-		return tools.CommandResult{}, ctx.Err()
+		_, teardownErr := killAndWait()
+		return tools.CommandResult{}, errors.Join(ctx.Err(), teardownErr)
 	case <-timeout:
-		kill()
-		waitErr := <-done
+		waitErr, teardownErr := killAndWait()
+		if teardownErr != nil {
+			return tools.CommandResult{}, teardownErr
+		}
 		return finish(waitErr, out, true, runner.throttled()), nil
 	case <-out.Overflow():
-		kill()
-		waitErr := <-done
+		waitErr, teardownErr := killAndWait()
+		if teardownErr != nil {
+			return tools.CommandResult{}, teardownErr
+		}
 		result := finish(waitErr, out, false, runner.throttled())
 		result.Truncated = true
 		return result, nil
+	case <-monitor.notification():
+		waitErr, teardownErr := killAndWait()
+		if teardownErr != nil {
+			return tools.CommandResult{}, teardownErr
+		}
+		limited, monitorErr := monitor.status()
+		if monitorErr != nil {
+			return tools.CommandResult{}, monitorErr
+		}
+		result := finish(waitErr, out, false, runner.throttled())
+		result.ResourceLimited = limited
+		return result, nil
 	case <-resourceLimited:
-		kill()
-		waitErr := <-done
+		waitErr, teardownErr := killAndWait()
+		if teardownErr != nil {
+			return tools.CommandResult{}, teardownErr
+		}
 		result := finish(waitErr, out, false, runner.throttled())
 		result.ResourceLimited = true
 		return result, nil

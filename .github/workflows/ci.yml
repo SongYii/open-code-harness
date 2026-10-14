@@ -122,6 +122,20 @@ jobs:
           GOOS: ${{ matrix.goos }}
         run: go vet ./...
 
+  # Native Darwin evidence for the sampled resource backend and parent-limit
+  # regression. Cross-build/vet alone cannot validate Mach accounting or kills.
+  darwin-resources:
+    runs-on: macos-15
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Native resource and process-lifetime regressions
+        run: go test -race ./internal/harness/adapters/localexec -count=3 -timeout=6m -v
+
   vulncheck:
     runs-on: ubuntu-latest
     steps:

@@ -16,18 +16,24 @@ const (
 	stdioKillGrace = 5 * time.Second
 )
 
-func stopStdioProcess(pid int, waited <-chan struct{}) error {
+func stopStdioProcess(pid int, waited <-chan struct{}, monitor *resourceMonitor) error {
+	signal := func(sig syscall.Signal) error {
+		if monitor != nil {
+			return monitor.signal(sig)
+		}
+		return syscall.Kill(-pid, sig)
+	}
 	if stdioGroupGone(pid, waited, stdioEOFGrace) {
 		return nil
 	}
 	var signalErr error
-	if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+	if err := signal(syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
 		signalErr = fmt.Errorf("localexec: terminate group: %w", err)
 	}
 	if stdioGroupGone(pid, waited, stdioTermGrace) {
 		return signalErr
 	}
-	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+	if err := signal(syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 		signalErr = errors.Join(signalErr, fmt.Errorf("localexec: kill group: %w", err))
 	}
 	if stdioGroupGone(pid, waited, stdioKillGrace) {

@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -70,49 +69,54 @@ func TestSeatbeltCommandArgvUsesHardcodedExecutable(t *testing.T) {
 	}
 }
 
-func TestRlimitEnforcementLevelIsPartialOnDarwin(t *testing.T) {
-	if got := rlimitEnforcementLevel(); got != EnforcementPartial {
-		t.Fatalf("rlimitEnforcementLevel() = %q, want partial", got)
+func TestRlimitEnforcementLevelIsNoneOnDarwin(t *testing.T) {
+	if got := rlimitEnforcementLevel(); got != EnforcementNone {
+		t.Fatalf("rlimitEnforcementLevel() = %q, want none", got)
 	}
 }
 
-func TestCPURlimitEnforcementLevelIsFullOnDarwin(t *testing.T) {
-	if got := cpuRlimitEnforcementLevel(); got != EnforcementFull {
-		t.Fatalf("cpuRlimitEnforcementLevel() = %q, want full", got)
+func TestCPURlimitEnforcementLevelIsNoneOnDarwin(t *testing.T) {
+	if got := cpuRlimitEnforcementLevel(); got != EnforcementNone {
+		t.Fatalf("cpuRlimitEnforcementLevel() = %q, want none", got)
 	}
 }
 
-// TestRlimitBracketSetsAndRestoresRLIMIT_CPU proves the bracket itself,
-// independent of spawning any child: RLIMIT_CPU is lowered to the
-// soft/hard pair for the duration of the returned closure's lifetime and
-// restored exactly afterward, the same guarantee this package's own
-// RLIMIT_AS bracket already has, verified again here since RLIMIT_CPU is
-// a second, independent rlimit sharing the same bracket function.
+// The historical regression is retained, with a stronger contract: no
+// transient parent mutation is permitted, before, during or after Start.
+// The old assertion that CPU Cur temporarily became 30 required precisely
+// the irreversible process-wide mutation this repair must eliminate.
 func TestRlimitBracketSetsAndRestoresRLIMIT_CPU(t *testing.T) {
-	var before unix.Rlimit
-	if err := unix.Getrlimit(unix.RLIMIT_CPU, &before); err != nil {
-		t.Fatalf("Getrlimit() err = %v", err)
+	var beforeCPU, beforeAS unix.Rlimit
+	if err := unix.Getrlimit(unix.RLIMIT_CPU, &beforeCPU); err != nil {
+		t.Fatal(err)
 	}
-
-	var mu sync.Mutex
-	restore := beginRlimitBracket(&mu, DefaultMemoryHighBytes)
-
-	var during unix.Rlimit
-	if err := unix.Getrlimit(unix.RLIMIT_CPU, &during); err != nil {
-		t.Fatalf("Getrlimit() during bracket err = %v", err)
+	if err := unix.Getrlimit(unix.RLIMIT_AS, &beforeAS); err != nil {
+		t.Fatal(err)
 	}
-	if during.Cur != DefaultCPUSoftSeconds {
-		t.Fatalf("RLIMIT_CPU.Cur during bracket = %d, want %d", during.Cur, DefaultCPUSoftSeconds)
+	runner, root := confinedRunner(t)
+	confined := mustConfined(t, runner, root)
+	release := confined.StartBracket()
+	for resource, want := range map[int]unix.Rlimit{unix.RLIMIT_CPU: beforeCPU, unix.RLIMIT_AS: beforeAS} {
+		var during unix.Rlimit
+		if err := unix.Getrlimit(resource, &during); err != nil {
+			t.Fatal(err)
+		}
+		if during != want {
+			t.Fatalf("parent limit changed during StartBracket: %+v, want %+v", during, want)
+		}
 	}
-
-	restore()
-
-	var after unix.Rlimit
-	if err := unix.Getrlimit(unix.RLIMIT_CPU, &after); err != nil {
-		t.Fatalf("Getrlimit() after restore err = %v", err)
+	release()
+	if _, err := runner.Run(t.Context(), tools.CommandSpec{Argv: []string{"echo", "unchanged"}, Cwd: root}); err != nil {
+		t.Fatal(err)
 	}
-	if after != before {
-		t.Fatalf("RLIMIT_CPU after restore = %+v, want %+v", after, before)
+	for resource, want := range map[int]unix.Rlimit{unix.RLIMIT_CPU: beforeCPU, unix.RLIMIT_AS: beforeAS} {
+		var after unix.Rlimit
+		if err := unix.Getrlimit(resource, &after); err != nil {
+			t.Fatal(err)
+		}
+		if after != want {
+			t.Fatalf("parent limit after Run = %+v, want %+v", after, want)
+		}
 	}
 }
 
@@ -149,14 +153,9 @@ func TestIsCPUResourceLimitExitDetectsSIGXCPUOnly(t *testing.T) {
 	}
 }
 
-// TestCPUQuotaKillsARunawayCPUCommand is the real, gated integration test:
-// with the soft/hard limits lowered to make the test fast (the same
-// technique TestRunWrapsArgvInSeatbeltWhenAvailable's package-level var
-// substitution already uses for seatbeltExecutable), a CPU-spinning
-// command exceeds RLIMIT_CPU's soft limit, is terminated by the kernel's
-// own SIGXCPU, and Run() reports ResourceLimited: true via the
-// signal-inspection path this task adds — proving the full chain, not
-// merely the bracket or the signal-detector in isolation.
+// The existing end-to-end runaway regression remains mandatory. Legacy
+// default overrides now shorten the external monitor's CPU-time budget;
+// the command must be resource-terminated before its independent timeout.
 func TestCPUQuotaKillsARunawayCPUCommand(t *testing.T) {
 	originalSoft, originalHard := DefaultCPUSoftSeconds, DefaultCPUHardSeconds
 	DefaultCPUSoftSeconds, DefaultCPUHardSeconds = 1, 2
@@ -178,7 +177,7 @@ func TestCPUQuotaKillsARunawayCPUCommand(t *testing.T) {
 		t.Fatalf("Run() = %#v, want the CPU quota to fire before the 10s timeout", got)
 	}
 	if !got.ResourceLimited {
-		t.Fatalf("Run() = %#v, want ResourceLimited from RLIMIT_CPU", got)
+		t.Fatalf("Run() = %#v, want ResourceLimited from external CPU monitoring", got)
 	}
 }
 

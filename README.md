@@ -246,10 +246,11 @@ remains pre-v0.
 
 ## Development
 
-The [Mac mini acceptance report (Chinese)](docs/validation/mac-mini-acceptance.md)
-records the current verification results and the unresolved Darwin parent
-resource-limit leak and kernel enforcement limitations. A green cross-build
-does not establish native macOS resource confinement.
+The [Mac resource repair report (Chinese)](docs/validation/mac-mini-resource-repair.md)
+records the parent-limit fix, sampled CPU/RSS protection, strict-request refusal,
+and native validation. The [earlier acceptance report](docs/validation/mac-mini-acceptance.md)
+retains the original failures. A green cross-build does not establish native
+macOS resource confinement.
 
 The implemented internal Session and Turn contract is documented in
 [Domain Events and State Machine](docs/architecture/domain-events.md). The

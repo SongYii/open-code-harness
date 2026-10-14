@@ -46,9 +46,14 @@ func TestEnforcementForReportsOnlyWhatABackendProvides(t *testing.T) {
 			want:      Enforcement{EnforcementNone, EnforcementNone, EnforcementNone, EnforcementNone},
 		},
 		{
-			name:      "the macOS shape: Seatbelt plus a partial RLIMIT_AS and a full RLIMIT_CPU",
+			name:      "generic rlimit levels are not assumed to be the current Darwin backend",
 			available: backendAvailability{Sandbox: true, MemoryRlimit: EnforcementPartial, CPURlimit: EnforcementFull},
 			want:      Enforcement{EnforcementFull, EnforcementFull, EnforcementPartial, EnforcementFull},
+		},
+		{
+			name:      "the probed Darwin monitor provides partial CPU and memory protection",
+			available: backendAvailability{Sandbox: true, MemoryRlimit: EnforcementNone, CPURlimit: EnforcementNone, MemoryMonitor: true, CPUMonitor: true},
+			want:      Enforcement{EnforcementFull, EnforcementFull, EnforcementPartial, EnforcementPartial},
 		},
 		{
 			name:      "an rlimit never silently upgrades itself to a cgroup's full guarantee",

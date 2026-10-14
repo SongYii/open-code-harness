@@ -72,11 +72,7 @@ func (p *StdioProcess) Start(ctx context.Context) error {
 	cmd := p.command.cmd
 	cmd.Stdin, cmd.Stdout = childIn, childOut
 	// Stderr remains discarded, as on the former CommandTransport path.
-	err = func() error {
-		release := p.command.StartBracket()
-		defer release()
-		return cmd.Start()
-	}()
+	err = p.command.Start()
 	if err != nil {
 		return err
 	}
@@ -87,7 +83,6 @@ func (p *StdioProcess) Start(ctx context.Context) error {
 		_ = cmd.Wait()
 		close(p.waited)
 	}()
-	_ = p.command.Register(cmd.Process.Pid) // existing best-effort quota policy
 	return ctx.Err()
 }
 
@@ -126,7 +121,7 @@ func (p *StdioProcess) Close() error {
 			_ = in.Close()
 		}
 		if waited != nil {
-			p.closeErr = stopStdioProcess(p.command.cmd.Process.Pid, waited)
+			p.closeErr = stopStdioProcess(p.command.cmd.Process.Pid, waited, p.command.monitor)
 		}
 		if out != nil {
 			_ = out.Close()

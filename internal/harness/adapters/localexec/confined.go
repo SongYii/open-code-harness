@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
 )
@@ -55,6 +56,9 @@ func (runner *Runner) buildConfinedCommand(spec tools.CommandSpec) (*exec.Cmd, s
 		"TMPDIR=" + tmp,
 	}
 	cmd.SysProcAttr = sysProcAttr()
+	// A child that exits while a detached descendant retains a pipe must
+	// not keep Wait blocked forever. This bounds pipe drain, not CPU/RSS.
+	cmd.WaitDelay = 500 * time.Millisecond
 	return cmd, tmp, nil
 }
 
@@ -79,6 +83,7 @@ type ConfinedCommand struct {
 	mu         sync.Mutex
 	registered int
 	closed     bool
+	monitor    *resourceMonitor
 }
 
 var errConfinedClosed = errors.New("localexec: confined command is closed")
@@ -108,37 +113,69 @@ func (c *ConfinedCommand) Cmd() *exec.Cmd { return c.cmd }
 // points at, released by Close.
 func (c *ConfinedCommand) TempDir() string { return c.tempDir }
 
-// StartBracket applies the platform's pre-Start resource bracket and returns
-// its release function. The caller must invoke the release exactly once,
-// after the process has been started.
-//
-// Run holds this bracket around its own cmd.Start. Here the caller owns Start
-// — StdioProcess now owns that call for long-lived servers — so the bracket
-// is exposed here rather than applied, and a caller that
-// skips it gets confinement without the macOS address-space bound. That is a
-// disclosed difference between the two entry points, not an oversight: the
-// bracket lowers this process's own RLIMIT_AS across the fork, so it cannot
-// be held on the caller's behalf across a call this package does not make.
-//
-// On every platform but macOS the bracket is a no-op, matching Run.
-func (c *ConfinedCommand) StartBracket() func() {
-	return beginRlimitBracket(&c.runner.rlimitMu, DefaultMemoryHighBytes+DefaultMemoryHeadroomBytes)
-}
+// StartBracket is retained for source compatibility. It no longer changes
+// parent-process limits. Call Register immediately after Cmd().Start, or use
+// StdioProcess.Start, to attach the same external monitor used by Run.
+func (c *ConfinedCommand) StartBracket() func() { return func() {} }
 
 // Register enrolls a started process in the runner's resource quota, the same
 // enrollment Run performs for its own child. It is separate from
 // NewConfinedCommand because the pid does not exist until the caller starts
 // the process.
 //
-// A quota that is unavailable on this platform is not an error: enrollment is
-// best-effort in Run too, and a missing cgroup controller must not fail a
-// command that is otherwise correctly confined.
-func (c *ConfinedCommand) Register(pid int) error {
+// Register must follow raw Cmd().Start immediately, before concurrent Wait.
+// Darwin monitor setup errors are returned and the group is terminated.
+// Missing Linux cgroup delegation retains the explicit none capability.
+// Start starts and enrolls a prepared command as one serialized operation.
+// The caller still owns stdio and the single Wait. Prefer this to raw
+// Cmd().Start + Register so monitor setup errors cannot be forgotten.
+func (c *ConfinedCommand) Start() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
 		return errConfinedClosed
 	}
+	if err := c.cmd.Start(); err != nil {
+		return err
+	}
+	if err := c.registerLocked(c.cmd.Process.Pid); err != nil {
+		_ = killProcessGroup(c.cmd.Process.Pid)
+		_ = c.cmd.Wait()
+		return err
+	}
+	return nil
+}
+
+func (c *ConfinedCommand) Register(pid int) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.registerLocked(pid)
+}
+
+func (c *ConfinedCommand) registerLocked(pid int) error {
+	if c.closed {
+		return errConfinedClosed
+	}
+	if c.cmd.Process == nil || pid <= 0 || pid != c.cmd.Process.Pid {
+		return errors.New("localexec: registration must name this command's started process")
+	}
+	// A caller registering an already waited command must not enroll a
+	// new process that has since reused its PID. There is no live resource.
+	if c.cmd.ProcessState != nil {
+		return nil
+	}
+	if c.registered != 0 {
+		if c.registered == pid {
+			return nil
+		}
+		return errors.New("localexec: command already registered")
+	}
+	monitor, err := c.runner.startResourceMonitor(pid)
+	if err != nil {
+		_ = killProcessGroup(pid)
+		return err
+	}
+	c.monitor = monitor
 	_ = c.runner.cgroup.addProcess(pid)
 	c.registered = pid
 	return nil
@@ -158,12 +195,14 @@ func (c *ConfinedCommand) Close() error {
 		return nil
 	}
 	c.closed = true
+	c.monitor.close()
+	_, monitorErr := c.monitor.status()
 	if c.registered != 0 {
 		c.runner.cgroup.unregister(c.registered)
 		c.registered = 0
 	}
 	if c.tempDir == "" {
-		return nil
+		return monitorErr
 	}
-	return os.RemoveAll(c.tempDir)
+	return errors.Join(monitorErr, os.RemoveAll(c.tempDir))
 }

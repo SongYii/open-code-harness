@@ -9,8 +9,8 @@ const (
 	// not by this process's own bookkeeping.
 	EnforcementFull EnforcementLevel = "full"
 	// EnforcementPartial means a bound exists but is weaker than a kernel-
-	// enforced guarantee (for example a virtual-address-space rlimit
-	// standing in for a monitored memory ceiling).
+	// enforced guarantee (for example sampled CPU/RSS accounting followed
+	// by a process-group kill).
 	EnforcementPartial EnforcementLevel = "partial"
 	// EnforcementNone means nothing beyond this package's existing
 	// argv-only/scrubbed-environment/process-group handling bounds the
@@ -47,10 +47,13 @@ type backendAvailability struct {
 	// that already succeeded.
 	CPUCgroup bool
 	// MemoryRlimit and CPURlimit are the platform's own process-limit
-	// fallbacks (RLIMIT_AS and RLIMIT_CPU on macOS, nothing elsewhere),
-	// applied after any cgroup answer.
+	// fallback slots. Current Darwin reports both as none: it does not set
+	// rlimits and instead uses the explicitly partial monitor below.
 	MemoryRlimit EnforcementLevel
 	CPURlimit    EnforcementLevel
+	// Monitors are sampled userspace protection, never kernel hard limits.
+	MemoryMonitor bool
+	CPUMonitor    bool
 }
 
 // enforcementFor derives the per-effect report from what is available. It
@@ -77,11 +80,17 @@ func enforcementFor(available backendAvailability) Enforcement {
 			enforcement.CPU = EnforcementFull
 		}
 	}
-	if available.MemoryRlimit != EnforcementNone {
+	if available.MemoryRlimit != EnforcementNone && available.MemoryRlimit != "" {
 		enforcement.Memory = available.MemoryRlimit
 	}
-	if available.CPURlimit != EnforcementNone {
+	if available.CPURlimit != EnforcementNone && available.CPURlimit != "" {
 		enforcement.CPU = available.CPURlimit
+	}
+	if available.MemoryMonitor && enforcement.Memory == EnforcementNone {
+		enforcement.Memory = EnforcementPartial
+	}
+	if available.CPUMonitor && enforcement.CPU == EnforcementNone {
+		enforcement.CPU = EnforcementPartial
 	}
 	return enforcement
 }

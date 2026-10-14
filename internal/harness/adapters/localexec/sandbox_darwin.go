@@ -6,10 +6,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
-	"sync"
 	"syscall"
-
-	"golang.org/x/sys/unix"
 )
 
 // seatbeltExecutable is hardcoded to the system path rather than resolved
@@ -199,113 +196,22 @@ func seatbeltCommandArgv(workspace string, target []string) (name string, argv [
 	return seatbeltExecutable, seatbeltArgv(workspace, target)
 }
 
-// rlimitEnforcementLevel reports the enforcement level RLIMIT_AS provides
-// for the Memory effect: always "partial" on Darwin once this file is
-// built in, since it is applied unconditionally, independent of whether
-// Seatbelt itself is available.
-func rlimitEnforcementLevel() EnforcementLevel { return EnforcementPartial }
+// No process-wide rlimit is changed. Darwin CPU and resident-memory
+// protection is supplied by the probed external monitor and reported partial.
+func rlimitEnforcementLevel() EnforcementLevel    { return EnforcementNone }
+func cpuRlimitEnforcementLevel() EnforcementLevel { return EnforcementNone }
 
-// cpuRlimitEnforcementLevel reports the enforcement level RLIMIT_CPU
-// provides for the CPU effect: always "full" on Darwin once this file is
-// built in (CPU quota design §1.5) — unlike RLIMIT_AS for memory, which
-// bounds address space rather than resident memory and is rated only
-// "partial", RLIMIT_CPU's own accounting (CPU time actually consumed) has
-// no equivalent imprecision in what it bounds. Applied unconditionally,
-// independent of whether Seatbelt itself is available.
-func cpuRlimitEnforcementLevel() EnforcementLevel { return EnforcementFull }
-
-// DefaultCPUSoftSeconds and DefaultCPUHardSeconds configure RLIMIT_CPU
-// (Darwin only). DefaultCPUSoftSeconds is chosen to numerically match
-// application.DefaultExecTimeout (30s): localexec is a lower-level
-// adapter and internal/harness/architecture's own dependency-boundary
-// rules forbid it from importing internal/harness/application, so this
-// cannot be a compiler-enforced reference the way an import would be —
-// if DefaultExecTimeout ever changes, this constant needs a matching,
-// disclosed update; nothing links the two automatically. The 1-second
-// gap to DefaultCPUHardSeconds exists for signal disambiguation, not
-// grace (CPU quota design §4): the kernel sends SIGXCPU at the soft
-// limit, then SIGKILL at the hard one if the process is still running,
-// so a process terminated by SIGXCPU specifically is attributable to
-// this quota with high confidence.
-// These are vars, not consts, solely so a same-package test can lower them
-// temporarily for a fast, real integration test instead of waiting out a
-// full 30s soft limit; production code never changes them (the same
-// reasoning seatbeltExecutable's own var-not-const already documents in
-// this file).
+// Legacy defaults retained for source compatibility. The soft value is now
+// the sampled CPU-time kill budget. The hard value validates the pair; it
+// does not claim or configure a kernel hard kill on Darwin.
 var (
 	DefaultCPUSoftSeconds uint64 = 30
 	DefaultCPUHardSeconds uint64 = 31
 )
 
-// beginRlimitBracket lowers this process's own RLIMIT_AS and RLIMIT_CPU,
-// holding mu for the duration, and returns a func that restores the
-// original limits and releases mu. Both rlimits are inherited by a child
-// at fork; Go's os/exec gives no hook to set either only in the child
-// between fork and exec, so both are bracketed around the parent's own
-// Start() call instead — the standard technique for this constraint,
-// bounding the window during which the harness's own process (and any
-// concurrent Run call's own Start) is briefly bound by the same lowered
-// ceilings. The two rlimits fail independently: if reading either
-// original limit fails, that one is left untouched while the other is
-// still bracketed (CPU quota design §1.1/§3, applying the same
-// independent-failure principle Task 1 established for the two cgroup
-// controllers on Linux, to the two rlimits here).
-//
-// RLIMIT_AS is best-effort: it bounds virtual address space, not
-// resident memory, and a breach surfaces as the child's own allocator
-// getting ENOMEM, not a clean external kill (design doc §4) — it does
-// not set ResourceLimited. RLIMIT_CPU is a real kill: the kernel
-// terminates the process itself once its own accounted CPU time crosses
-// the hard limit; Runner.Run's own signal-inspection code path (CPU
-// quota design §4) is what turns that into ResourceLimited.
-func beginRlimitBracket(mu sync.Locker, limitBytes uint64) func() {
-	mu.Lock()
-	var originalAS unix.Rlimit
-	asOK := unix.Getrlimit(unix.RLIMIT_AS, &originalAS) == nil
-	if asOK {
-		lowered := unix.Rlimit{Cur: limitBytes, Max: originalAS.Max}
-		if originalAS.Max != unix.RLIM_INFINITY && lowered.Cur > originalAS.Max {
-			lowered.Cur = originalAS.Max
-		}
-		_ = unix.Setrlimit(unix.RLIMIT_AS, &lowered)
-	}
-	var originalCPU unix.Rlimit
-	cpuOK := unix.Getrlimit(unix.RLIMIT_CPU, &originalCPU) == nil
-	if cpuOK {
-		lowered := unix.Rlimit{Cur: DefaultCPUSoftSeconds, Max: DefaultCPUHardSeconds}
-		if originalCPU.Max != unix.RLIM_INFINITY && lowered.Max > originalCPU.Max {
-			lowered.Max = originalCPU.Max
-			if lowered.Cur > lowered.Max {
-				lowered.Cur = lowered.Max
-			}
-		}
-		_ = unix.Setrlimit(unix.RLIMIT_CPU, &lowered)
-	}
-	return func() {
-		if asOK {
-			_ = unix.Setrlimit(unix.RLIMIT_AS, &originalAS)
-		}
-		if cpuOK {
-			_ = unix.Setrlimit(unix.RLIMIT_CPU, &originalCPU)
-		}
-		mu.Unlock()
-	}
-}
-
-// isCPUResourceLimitExit reports whether waitErr's underlying exit status
-// shows the process was terminated by SIGXCPU — the kernel's own
-// soft-limit signal for RLIMIT_CPU, and, deliberately, the *only* signal
-// this project treats as attributable to the CPU quota (CPU quota design
-// §4). A bare SIGKILL is not treated as attributable on its own, even
-// though it is what the kernel sends at the hard limit if a process
-// somehow survives SIGXCPU: an unrelated external SIGKILL arriving in the
-// same narrow window this function is checked in cannot be distinguished
-// from the hard limit's own kill, and the overwhelming majority of real
-// commands (which install no custom signal handling for SIGXCPU) already
-// die from the soft limit's SIGXCPU well before the hard limit's SIGKILL
-// would ever fire — this is a disclosed, accepted residual gap for the
-// rare program that specifically catches or ignores SIGXCPU, not an
-// oversight.
+// An inherited kernel CPU limit may still produce SIGXCPU. A bare SIGKILL
+// alone never proves a resource cause; the external monitor attributes its
+// own kills through explicit state. No rlimit is set by this Runner.
 func isCPUResourceLimitExit(waitErr error) bool {
 	var exitErr *exec.ExitError
 	if !errors.As(waitErr, &exitErr) {

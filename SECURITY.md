@@ -75,18 +75,19 @@ today, stated with their limits.
   per-invocation cgroup that bounds memory also gets `cpu.max` set to one
   full core's worth of scheduled bandwidth per 100ms period — a
   kernel-enforced throttle, not a kill, reported via
-  `CommandResult.Throttled`. On macOS, `RLIMIT_CPU` (soft 30s / hard 31s)
-  is bracketed around the same window as the existing `RLIMIT_AS` bound;
-  a process terminated by `SIGXCPU` specifically sets
-  `CommandResult.ResourceLimited` — a bare `SIGKILL` alone is not
-  attributed to this quota, since it cannot be distinguished from an
-  unrelated external kill in the same narrow window. No macOS host has
-  run this for real in this repository's own history; it is verified
-  only by cross-compilation and code review. See [Tool
-  runtime](docs/architecture/tool-runtime.md) and the [exec sandboxing
-  and resource quotas evidence
-  ledger](docs/architecture/exec-sandboxing-resource-quotas-evidence.md)'s
-  CPU quota extension section.
+  `CommandResult.Throttled`. On macOS, an external 25ms sampler bounds
+  observed aggregate CPU time (default 30s) and resident memory (default
+  768 MiB) by killing the owned process group. This is **partial monitored
+  protection**, not a kernel hard boundary: samples may overshoot, miss
+  rapidly exiting workers, or lose descendants that leave the group; RSS
+  summation may count shared pages twice. PID/start-time identities detect
+  reuse and refuse an unproven signal target, but check-and-signal is not an
+  atomic kernel capability. Full CPU/memory requirements passed to
+  `localexec.NewWithOptions` are refused on Darwin before a command starts.
+  Sampler setup or runtime failure is an explicit error; it never silently
+  disables protection. No parent RLIMIT is changed. `Run`, prepared
+  `ConfinedCommand.Start`, and managed stdio share this monitor. See the
+  [Mac resource repair and native evidence](docs/validation/mac-mini-resource-repair.md).
 - **The browser trajectory UI bridge (`cmd/acp-web-bridge`) is
   loopback-only and gated by two independent checks.** It binds
   `127.0.0.1` only, hardcoded, with no flag to change it. Every
