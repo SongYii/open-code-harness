@@ -17,3 +17,8 @@ func platformResourceSampler(options Options) (groupSampler, resourceBudget, err
 func signalResourceGroup(pid int, _ uint64, _ map[processIdentity]bool, _ syscall.Signal) error {
 	return killProcessGroup(pid)
 }
+
+const allowUnmonitoredGroupSignals = true
+
+func platformProcessUsage(int) (processUsage, error) { return processUsage{}, ErrResourceMonitoring }
+func platformGroupUsage(int) ([]processUsage, error) { return nil, ErrResourceMonitoring }

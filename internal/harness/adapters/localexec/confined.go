@@ -80,10 +80,12 @@ type ConfinedCommand struct {
 	cmd     *exec.Cmd
 	tempDir string
 
-	mu         sync.Mutex
-	registered int
-	closed     bool
-	monitor    *resourceMonitor
+	mu          sync.Mutex
+	registered  int
+	closed      bool
+	monitor     *resourceMonitor
+	startupWait *commandWait
+	closeErr    error
 }
 
 var errConfinedClosed = errors.New("localexec: confined command is closed")
@@ -139,9 +141,9 @@ func (c *ConfinedCommand) Start() error {
 		return err
 	}
 	if err := c.registerLocked(c.cmd.Process.Pid); err != nil {
-		_ = killProcessGroup(c.cmd.Process.Pid)
-		_ = c.cmd.Wait()
-		return err
+		var stopErr error
+		c.startupWait, stopErr = c.runner.failedStart(c.cmd, c.monitor, err)
+		return stopErr
 	}
 	return nil
 }
@@ -149,7 +151,11 @@ func (c *ConfinedCommand) Start() error {
 func (c *ConfinedCommand) Register(pid int) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.registerLocked(pid)
+	err := c.registerLocked(pid)
+	if errors.Is(err, ErrResourceMonitoring) {
+		c.startupWait, err = c.runner.failedStart(c.cmd, c.monitor, err)
+	}
+	return err
 }
 
 func (c *ConfinedCommand) registerLocked(pid int) error {
@@ -170,12 +176,11 @@ func (c *ConfinedCommand) registerLocked(pid int) error {
 		}
 		return errors.New("localexec: command already registered")
 	}
-	monitor, err := c.runner.startResourceMonitor(pid)
+	monitor, err := c.runner.startResourceMonitor(c.cmd.Process)
+	c.monitor = monitor
 	if err != nil {
-		_ = killProcessGroup(pid)
 		return err
 	}
-	c.monitor = monitor
 	_ = c.runner.cgroup.addProcess(pid)
 	c.registered = pid
 	return nil
@@ -192,7 +197,7 @@ func (c *ConfinedCommand) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return nil
+		return c.closeErr
 	}
 	c.closed = true
 	c.monitor.close()
@@ -201,8 +206,36 @@ func (c *ConfinedCommand) Close() error {
 		c.runner.cgroup.unregister(c.registered)
 		c.registered = 0
 	}
-	if c.tempDir == "" {
-		return monitorErr
+	if c.tempDir != "" {
+		monitorErr = errors.Join(monitorErr, os.RemoveAll(c.tempDir))
 	}
-	return errors.Join(monitorErr, os.RemoveAll(c.tempDir))
+	c.closeErr = monitorErr
+	return c.closeErr
+}
+
+// ResourceFailure notifies a prepared-command owner of a terminal Darwin
+// monitor event. Owners of raw protocol pipes must stop serving on this
+// notification and inspect ResourceError; StdioProcess does so automatically.
+// The channel is nil before registration or without a userspace monitor.
+func (c *ConfinedCommand) ResourceFailure() <-chan struct{} {
+	c.mu.Lock()
+	m := c.monitor
+	c.mu.Unlock()
+	return m.notification()
+}
+
+// ResourceError is the latched monitoring/setup error or resource kill cause.
+// Close still reports cleanup failures; it does not replace live notification.
+func (c *ConfinedCommand) ResourceError() error {
+	c.mu.Lock()
+	m := c.monitor
+	c.mu.Unlock()
+	limited, err := m.status()
+	if err != nil {
+		return err
+	}
+	if limited {
+		return ErrResourceLimitExceeded
+	}
+	return nil
 }

@@ -36,6 +36,7 @@ RUSAGE_INFO_V0 为96字节；CPU值是 Mach ticks，必须按宿主 mach_timebas
 本 Mac mini 实测为125/3。原生 libproc+mach_timebase_info 与独立 getrusage 交叉核对：
 换算后0.257291292 CPU秒，getrusage为0.257295000秒，相差约4微秒。
 Go 换算采用128位乘除并饱和，避免溢出回绕关闭预算。
+构造探针只读自身统计与组枚举，不要求读取共享shell组中其他用户的CI supervisor；实际受监管命令另建Setpgid组，对该组每个成员的读取拒绝仍明确失败。
 接口拒绝或 ABI 不兼容时明确失败；amd64 timebase 仍需原生 CI 验证，交叉构建不替代它。
 
 实现参考 Apple [libproc wrapper](https://github.com/apple-oss-distributions/xnu/blob/main/libsyscall/wrappers/libproc/libproc.c)、
@@ -67,3 +68,26 @@ Go 换算采用128位乘除并饱和，避免溢出回绕关闭预算。
 
 原始JSON/text、原生探针和失败日志只保存在任务本地 evidence/，不上传密钥、截图或设备配置。
 待完整回归完成后在此补入精确功能提交、soak／Context矩阵和远端CI结果。
+
+首个原生 Darwin CI 暴露构造探针过宽：共享runner组含其他UID的PID967，读取返回EPERM。
+该失败日志保留；随后将构造探针限定于自身统计+组枚举，未降低运行中受监管组的访问要求。
+旧SHA 1ea007a 的soak在337.3秒主动中断：33010实例、33包已通过、0失败；它不是完整验收。
+新SHA必须重新完成十轮soak和原生CI，不以这一中断结果冒充全绿。
+
+## 独立复核后的生命周期修复
+
+受控夹具先复现两项错误：监控与身份核对失败后stdio仍能收发after-fault；
+快速退出后的nil-monitor回退在模拟编号复用时向另一自有组发送TERM。
+另一个受控用例证实仅leader退出不能把初始空样本判为整组退出。
+失败日志均保留，随后新增了以下实现与强制回归：
+
+- 启动监控失败也采用同一个5秒有界收尾和single Wait；group／leader信号错误保留，未证明终止返回ErrProcessTeardownUnproven。
+- 取消、超时、输出／资源超限不仅等待leader，还核对同组已观察成员退出；负对照故意只杀leader，四个路径必须明确报unproven，不能宣称成功。
+- stdio实时观察monitor事件，Read／Write直接传播已锁存错误，关闭管道唤醒阻塞I/O，并立即启动有界收尾。
+- prepared owner可用ResourceFailure／ResourceError监听实时故障。若组归属无法确认，只对原有Go Process句柄尝试终止，不用新FindProcess或复用编号作盲目信号。
+- 初始空／已退出样本仍保留monitor身份对象，确认整组没有活动成员才记retired；retired组以后不按旧编号发信号。Darwin不再回退到无身份的组操作。
+
+完整资源包三轮在该轮修复后270实例通过，113.547秒；仅既有Seatbelt共6次skip。
+进一步的空组／实时故障／启动／终止／prepared专项三轮51实例通过，0失败、0skip，22.951秒。
+超时负对照冷启动窗口从350ms改为2秒，未移除后代存活、unproven或错误传播断言。
+最终提交的完整soak及CI仍待本页后续结果补齐，不能将中断的旧版本soak计为通过。

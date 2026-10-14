@@ -37,6 +37,9 @@ func TestDarwinResourceHelper(t *testing.T) {
 		return
 	}
 	switch mode {
+	case "sleep":
+		fmt.Println("ready")
+		time.Sleep(12 * time.Second)
 	case "cpu", "ignore-cpu":
 		if mode == "ignore-cpu" {
 			signal.Ignore(syscall.SIGXCPU)
@@ -87,6 +90,33 @@ func TestDarwinResourceHelper(t *testing.T) {
 			for i := 0; i < 10000; i++ {
 				runtime.KeepAlive(i)
 			}
+		}
+	case "lifecycle-tree", "lifecycle-overflow", "lifecycle-resource":
+		binary, _ := os.Executable()
+		var children []*exec.Cmd
+		for range 2 {
+			child := exec.Command(binary, "-test.run=^TestDarwinResourceHelper$", "--", "--och-resource-helper=sleep")
+			if err := child.Start(); err != nil {
+				os.Exit(3)
+			}
+			children = append(children, child)
+		}
+		if err := os.WriteFile("lifecycle.pids", []byte(fmt.Sprintf("%d %d", children[0].Process.Pid, children[1].Process.Pid)), 0600); err != nil {
+			os.Exit(3)
+		}
+		if mode == "lifecycle-overflow" {
+			fmt.Print(strings.Repeat("x", 128<<10))
+		}
+		if mode == "lifecycle-resource" {
+			deadline := time.Now().Add(12 * time.Second)
+			for time.Now().Before(deadline) {
+				for i := 0; i < 10000; i++ {
+					runtime.KeepAlive(i)
+				}
+			}
+		}
+		for _, child := range children {
+			_ = child.Wait()
 		}
 	case "tree-cpu", "tree-memory":
 		worker := "short-" + strings.TrimPrefix(mode, "tree-")
@@ -453,4 +483,34 @@ func TestDarwinRunCleansRemainingOwnedGroupAfterLeaderExit(t *testing.T) {
 		t.Fatalf("missing child identity: %q %v", data, err)
 	}
 	assertDarwinProcessInactive(t, pid)
+}
+
+func TestDarwinConstructorProbeDoesNotReadUnownedGroupPeers(t *testing.T) {
+	const self, otherUID, group = 41, 42, 40
+	var reads []int
+	read := func(pid int) (processUsage, error) {
+		reads = append(reads, pid)
+		if pid == otherUID {
+			return processUsage{}, syscall.EPERM
+		}
+		return processUsage{identity: processIdentity{pid: pid, start: 1}}, nil
+	}
+	list := func(gid int) ([]int, error) {
+		if gid != group {
+			t.Fatalf("wrong probe group %d", gid)
+		}
+		return []int{self, otherUID}, nil
+	}
+	if err := probeDarwinAccess(self, group, read, list); err != nil {
+		t.Fatalf("unowned supervisor broke constructor: %v", err)
+	}
+	if len(reads) != 1 || reads[0] != self {
+		t.Fatalf("constructor inspected unowned peers: %v", reads)
+	}
+	if err := probeDarwinAccess(self, group, read, func(int) ([]int, error) { return []int{otherUID}, nil }); err == nil {
+		t.Fatal("incomplete group enumeration was accepted")
+	}
+	if err := probeDarwinAccess(self, group, func(int) (processUsage, error) { return processUsage{}, syscall.EPERM }, list); !errors.Is(err, syscall.EPERM) {
+		t.Fatalf("self access failure was ignored: %v", err)
+	}
 }

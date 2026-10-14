@@ -3,6 +3,8 @@
 package localexec
 
 import (
+	"time"
+
 	"os"
 	"syscall"
 )
@@ -16,3 +18,5 @@ func killProcessGroup(pid int) error {
 	}
 	return proc.Kill()
 }
+
+func waitForCommandGroup(int, *resourceMonitor, time.Duration) error { return nil }

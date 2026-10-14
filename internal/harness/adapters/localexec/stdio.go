@@ -27,6 +27,7 @@ type StdioProcess struct {
 	waited    chan struct{}
 	closeOnce sync.Once
 	closeErr  error
+	failure   error
 }
 
 // NewStdioProcess shares Run's admission, confinement and environment. The
@@ -74,36 +75,95 @@ func (p *StdioProcess) Start(ctx context.Context) error {
 	// Stderr remains discarded, as on the former CommandTransport path.
 	err = p.command.Start()
 	if err != nil {
+		if p.command.startupWait != nil {
+			p.waited = p.command.startupWait.done
+		}
+		p.failure = err
 		return err
 	}
-	p.waited = make(chan struct{})
-	go func() {
-		// Exit status is not teardown proof; the channel plus process-group
-		// liveness is. Protocol errors remain the protocol consumer's job.
-		_ = cmd.Wait()
-		close(p.waited)
-	}()
+	waiter := waitCommand(cmd)
+	p.waited = waiter.done
+	go p.watchResourceMonitor(p.command.monitor, waiter.done)
 	return ctx.Err()
 }
 
+// Runtime resource failure terminates the transport immediately, including
+// already blocked reads/writes. Cleanup may continue for its bounded grace,
+// but a failed monitor cannot keep serving requests until an explicit Close.
+var ErrResourceLimitExceeded = errors.New("localexec: resource limit exceeded")
+
+func (p *StdioProcess) resourceFailure() error {
+	p.mu.Lock()
+	failure := p.failure
+	monitor := p.command.monitor
+	p.mu.Unlock()
+	if failure != nil {
+		return failure
+	}
+	limited, err := monitor.status()
+	if err != nil {
+		return err
+	}
+	if limited {
+		return ErrResourceLimitExceeded
+	}
+	return nil
+}
+func (p *StdioProcess) watchResourceMonitor(m *resourceMonitor, waited <-chan struct{}) {
+	if m == nil {
+		return
+	}
+	select {
+	case <-m.notification():
+	case <-waited:
+	}
+	failure := p.resourceFailure()
+	if failure == nil {
+		return
+	}
+	p.mu.Lock()
+	p.failure = failure
+	in, out := p.stdin, p.stdout
+	p.mu.Unlock()
+	if in != nil {
+		_ = in.Close()
+	}
+	if out != nil {
+		_ = out.Close()
+	}
+	_ = p.Close()
+}
 func (p *StdioProcess) Read(b []byte) (int, error) {
+	if err := p.resourceFailure(); err != nil {
+		return 0, err
+	}
 	p.mu.Lock()
 	r := p.stdout
 	p.mu.Unlock()
 	if r == nil {
 		return 0, io.ErrClosedPipe
 	}
-	return r.Read(b)
+	n, err := r.Read(b)
+	if failure := p.resourceFailure(); failure != nil {
+		return 0, failure
+	}
+	return n, err
 }
-
 func (p *StdioProcess) Write(b []byte) (int, error) {
+	if err := p.resourceFailure(); err != nil {
+		return 0, err
+	}
 	p.mu.Lock()
 	w := p.stdin
 	p.mu.Unlock()
 	if w == nil {
 		return 0, io.ErrClosedPipe
 	}
-	return w.Write(b)
+	n, err := w.Write(b)
+	if failure := p.resourceFailure(); failure != nil {
+		return 0, failure
+	}
+	return n, err
 }
 
 // Close first sends EOF, then escalates to the process group if necessary.
@@ -121,7 +181,7 @@ func (p *StdioProcess) Close() error {
 			_ = in.Close()
 		}
 		if waited != nil {
-			p.closeErr = stopStdioProcess(p.command.cmd.Process.Pid, waited, p.command.monitor)
+			p.closeErr = stopStdioProcess(p.command.cmd, waited, p.command.monitor, p.command.runner.stopGrace)
 		}
 		if out != nil {
 			_ = out.Close()

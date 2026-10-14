@@ -2,8 +2,13 @@
 
 package localexec
 
+import (
+	"os/exec"
+	"time"
+)
+
 const stdioProcessSupported = false
 
-func stopStdioProcess(int, <-chan struct{}, *resourceMonitor) error {
+func stopStdioProcess(*exec.Cmd, <-chan struct{}, *resourceMonitor, time.Duration) error {
 	return ErrProcessTeardownUnproven
 }

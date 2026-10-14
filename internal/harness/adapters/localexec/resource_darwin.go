@@ -45,7 +45,7 @@ func darwinProcessUsage(pid int) (processUsage, error) {
 	return processUsage{identity: processIdentity{pid: pid, start: usage.start}, cpu: ticksToNanos(saturatingAdd(usage.user, usage.system), timebase.numer, timebase.denom), resident: usage.resident, alive: usage.exit == 0}, nil
 }
 
-func darwinGroupUsage(pgid int) ([]processUsage, error) {
+func darwinGroupPIDs(pgid int) ([]int, error) {
 	for capacity := 32; capacity <= maxObservedProcesses; capacity *= 2 {
 		pids := make([]int32, capacity)
 		n, _, errno := syscall.Syscall6(syscall.SYS_PROC_INFO, 1, 2, uintptr(pgid), 0, uintptr(unsafe.Pointer(&pids[0])), uintptr(len(pids)*4))
@@ -59,35 +59,65 @@ func darwinGroupUsage(pgid int) ([]processUsage, error) {
 		if n == uintptr(len(pids)*4) {
 			continue
 		}
-		usages := make([]processUsage, 0, n/4)
+		result := make([]int, 0, n/4)
 		for _, raw := range pids[:n/4] {
-			pid := int(raw)
-			if pid <= 0 {
-				continue
-			}
-			usage, err := darwinProcessUsage(pid)
-			if processGoneError(err) {
-				continue
-			}
-			if err != nil {
-				return nil, fmt.Errorf("pid %d rusage: %w", pid, err)
-			}
-			// Membership may change between list and rusage. Never charge a
-			// reused/unrelated pid to this command's group.
-			group, err := syscall.Getpgid(pid)
-			if processGoneError(err) {
-				continue
-			}
-			if err != nil {
-				return nil, err
-			}
-			if group == pgid {
-				usages = append(usages, usage)
+			if raw > 0 {
+				result = append(result, int(raw))
 			}
 		}
-		return usages, nil
+		return result, nil
 	}
 	return nil, fmt.Errorf("process group exceeds %d sampled members", maxObservedProcesses)
+}
+
+func darwinGroupUsage(pgid int) ([]processUsage, error) {
+	pids, err := darwinGroupPIDs(pgid)
+	if err != nil {
+		return nil, err
+	}
+	usages := make([]processUsage, 0, len(pids))
+	for _, pid := range pids {
+		usage, err := darwinProcessUsage(pid)
+		if processGoneError(err) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("pid %d rusage: %w", pid, err)
+		}
+		// Membership may change between list and rusage. Never charge a
+		// reused/unrelated pid to this command's group.
+		group, err := syscall.Getpgid(pid)
+		if processGoneError(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if group == pgid {
+			usages = append(usages, usage)
+		}
+	}
+	return usages, nil
+}
+
+// The host's current group may include a CI supervisor with another UID.
+// Construction verifies only our own statistics and that group enumeration
+// works. It must not demand access to unowned peers. Started commands receive
+// a separate Setpgid group; every member there is still sampled or refused.
+func probeDarwinAccess(self, group int, read func(int) (processUsage, error), list func(int) ([]int, error)) error {
+	if _, err := read(self); err != nil {
+		return fmt.Errorf("self rusage: %w", err)
+	}
+	pids, err := list(group)
+	if err != nil {
+		return fmt.Errorf("group enumeration: %w", err)
+	}
+	for _, pid := range pids {
+		if pid == self {
+			return nil
+		}
+	}
+	return fmt.Errorf("group enumeration did not include current process %d", self)
 }
 
 func platformResourceSampler(options Options) (groupSampler, resourceBudget, error) {
@@ -105,11 +135,8 @@ func platformResourceSampler(options Options) (groupSampler, resourceBudget, err
 	if memory == 0 {
 		memory = DefaultMemoryHighBytes + DefaultMemoryHeadroomBytes
 	}
-	if _, err := darwinProcessUsage(os.Getpid()); err != nil {
-		return nil, resourceBudget{}, fmt.Errorf("%w: Darwin rusage probe: %w", ErrResourceMonitoring, err)
-	}
-	if _, err := darwinGroupUsage(syscall.Getpgrp()); err != nil {
-		return nil, resourceBudget{}, fmt.Errorf("%w: Darwin group probe: %w", ErrResourceMonitoring, err)
+	if err := probeDarwinAccess(os.Getpid(), syscall.Getpgrp(), darwinProcessUsage, darwinGroupPIDs); err != nil {
+		return nil, resourceBudget{}, fmt.Errorf("%w: Darwin sampler probe: %w", ErrResourceMonitoring, err)
 	}
 	return darwinGroupUsage, resourceBudget{cpu: uint64(cpu), resident: memory}, nil
 }
@@ -164,3 +191,8 @@ func signalResourceGroup(pid int, leaderStart uint64, known map[processIdentity]
 	}
 	return syscall.Kill(-pid, sig)
 }
+
+const allowUnmonitoredGroupSignals = false
+
+func platformProcessUsage(pid int) (processUsage, error) { return darwinProcessUsage(pid) }
+func platformGroupUsage(pid int) ([]processUsage, error) { return darwinGroupUsage(pid) }

@@ -48,6 +48,10 @@ type Runner struct {
 	seatbeltReason    string
 	resourceSampler   groupSampler
 	resourceBudget    resourceBudget
+	// Private dependency seams for controlled teardown failure regression.
+	groupSignal func(int, syscall.Signal) error
+	leaderKill  func(*os.Process) error
+	stopGrace   time.Duration
 }
 
 var errInvalidSpec = errors.New("localexec: invalid command spec")
@@ -147,19 +151,19 @@ func (runner *Runner) Run(ctx context.Context, spec tools.CommandSpec) (tools.Co
 	if startErr != nil {
 		return tools.CommandResult{}, startErr
 	}
-	monitor, err := runner.startResourceMonitor(cmd.Process.Pid)
+	monitor, err := runner.startResourceMonitor(cmd.Process)
 	if err != nil {
-		_ = killProcessGroup(cmd.Process.Pid)
-		_ = cmd.Wait()
-		return tools.CommandResult{}, err
+		_, startErr := runner.failedStart(cmd, monitor, err)
+		monitor.close()
+		return tools.CommandResult{}, errors.Join(startErr, ctx.Err())
 	}
 	defer monitor.close()
 	_ = runner.cgroup.addProcess(cmd.Process.Pid)
 	resourceLimited := runner.cgroup.register(cmd.Process.Pid)
 	defer runner.cgroup.unregister(cmd.Process.Pid)
 
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
+	waiter := waitCommand(cmd)
+	done := waiter.done
 
 	var timeout <-chan time.Time
 	if spec.Timeout > 0 {
@@ -169,29 +173,16 @@ func (runner *Runner) Run(ctx context.Context, spec tools.CommandSpec) (tools.Co
 	}
 
 	killAndWait := func() (error, error) {
-		var killErr error
-		if cmd.Process != nil {
-			if monitor != nil {
-				killErr = monitor.signal(syscall.SIGKILL)
-			} else {
-				killErr = killProcessGroup(cmd.Process.Pid)
-			}
+		err := runner.terminateCommand(cmd, monitor, waiter)
+		if err != nil {
+			return nil, err
 		}
-		timer := time.NewTimer(5 * time.Second)
-		defer timer.Stop()
-		select {
-		case waitErr := <-done:
-			if killErr != nil && !processGoneError(killErr) {
-				return waitErr, killErr
-			}
-			return waitErr, nil
-		case <-timer.C:
-			return nil, errors.Join(ErrProcessTeardownUnproven, killErr)
-		}
+		return waiter.err, nil
 	}
 
 	select {
-	case waitErr := <-done:
+	case <-done:
+		waitErr := waiter.err
 		if err := monitor.cleanupGroup(runner.resourceSampler); err != nil {
 			return tools.CommandResult{}, err
 		}
@@ -209,7 +200,10 @@ func (runner *Runner) Run(ctx context.Context, spec tools.CommandSpec) (tools.Co
 		return result, nil
 	case <-ctx.Done():
 		_, teardownErr := killAndWait()
-		return tools.CommandResult{}, errors.Join(ctx.Err(), teardownErr)
+		if teardownErr != nil {
+			return tools.CommandResult{}, errors.Join(ctx.Err(), teardownErr)
+		}
+		return tools.CommandResult{}, ctx.Err()
 	case <-timeout:
 		waitErr, teardownErr := killAndWait()
 		if teardownErr != nil {

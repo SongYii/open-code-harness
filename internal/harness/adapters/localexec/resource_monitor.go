@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"sync"
 	"syscall"
 	"time"
@@ -80,32 +81,66 @@ func saturatingAdd(a, b uint64) uint64 {
 }
 
 type resourceMonitor struct {
-	trigger     chan struct{}
-	stop        chan struct{}
-	done        chan struct{}
-	once        sync.Once
-	mu          sync.Mutex
-	limited     bool
-	err         error
-	pid         int
-	leaderStart uint64
-	known       map[processIdentity]bool
+	trigger      chan struct{}
+	stop         chan struct{}
+	done         chan struct{}
+	once         sync.Once
+	mu           sync.Mutex
+	limited      bool
+	err          error
+	pid          int
+	leaderStart  uint64
+	known        map[processIdentity]bool
+	retired      bool
+	signaler     func(int, syscall.Signal) error
+	process      *os.Process
+	leaderKiller func(*os.Process) error
 }
 
-func (runner *Runner) startResourceMonitor(pid int) (*resourceMonitor, error) {
+func (runner *Runner) startResourceMonitor(process *os.Process) (*resourceMonitor, error) {
+	pid := process.Pid
 	if runner.resourceSampler == nil {
 		return nil, nil
 	}
+	m := &resourceMonitor{trigger: make(chan struct{}), stop: make(chan struct{}), done: make(chan struct{}), pid: pid, known: make(map[processIdentity]bool), signaler: runner.groupSignal, process: process, leaderKiller: runner.leaderKill}
 	initial, err := runner.resourceSampler(pid)
 	if err != nil {
-		return nil, fmt.Errorf("%w: initial process-group sample: %w", ErrResourceMonitoring, err)
+		// Retain ownership state even on initial sampling failure. In particular
+		// prepared Close must never fall back to an unchecked Darwin group PID.
+		if leader, readErr := platformProcessUsage(pid); readErr == nil {
+			m.leaderStart = leader.identity.start
+			m.known[leader.identity] = true
+		}
+		m.err = fmt.Errorf("%w: initial process-group sample: %w", ErrResourceMonitoring, err)
+		close(m.trigger)
+		close(m.done)
+		return m, m.err
 	}
-	// A quick command may already have exited; no live resource remains to
-	// monitor. Registration after Wait is retained for old API consumers.
 	if len(initial) == 0 {
-		return nil, nil
+		// A dead leader is insufficient: another member may still own the
+		// original group. Confirm the whole group through the native control
+		// reader before permanently retiring its identity.
+		native, readErr := platformGroupUsage(pid)
+		if readErr == nil {
+			live := false
+			for _, u := range native {
+				m.known[u.identity] = true
+				if u.identity.pid == pid {
+					m.leaderStart = u.identity.start
+				}
+				live = live || u.alive
+			}
+			if !live {
+				m.retired = true
+				close(m.done)
+				return m, nil
+			}
+		}
+		m.err = fmt.Errorf("%w: initial sample omitted a live or unverified group: %v", ErrResourceMonitoring, readErr)
+		close(m.trigger)
+		close(m.done)
+		return m, m.err
 	}
-	m := &resourceMonitor{trigger: make(chan struct{}), stop: make(chan struct{}), done: make(chan struct{}), pid: pid, known: make(map[processIdentity]bool)}
 	for _, usage := range initial {
 		m.known[usage.identity] = true
 		if usage.identity.pid == pid {
@@ -124,7 +159,30 @@ func (runner *Runner) startResourceMonitor(pid int) (*resourceMonitor, error) {
 				live = live || usage.alive
 			}
 			if !live {
-				return
+				quiet, controlErr := m.groupQuiescent()
+				if controlErr != nil {
+					m.mu.Lock()
+					m.err = errors.Join(ErrResourceMonitoring, controlErr)
+					m.mu.Unlock()
+					_ = m.killOwnedGroup()
+					close(m.trigger)
+					return
+				}
+				if quiet {
+					return
+				}
+				// A fork/exit can straddle the sample. Refresh from the control reader
+				// instead of claiming a live descendant disappeared with its leader.
+				usages, controlErr = platformGroupUsage(pid)
+				if controlErr != nil {
+					m.mu.Lock()
+					m.err = errors.Join(ErrResourceMonitoring, controlErr)
+					m.mu.Unlock()
+					_ = m.killOwnedGroup()
+					close(m.trigger)
+					return
+				}
+				continue
 			}
 			m.mu.Lock()
 			owned := groupIdentityMatches(pid, m.leaderStart, m.known, usages)
@@ -138,6 +196,7 @@ func (runner *Runner) startResourceMonitor(pid int) (*resourceMonitor, error) {
 				m.mu.Lock()
 				m.err = errors.Join(ErrResourceMonitoring, ErrResourceOwnership)
 				m.mu.Unlock()
+				_ = m.killOwnedGroup()
 				close(m.trigger)
 				return
 			}
@@ -149,7 +208,7 @@ func (runner *Runner) startResourceMonitor(pid int) (*resourceMonitor, error) {
 				m.mu.Unlock()
 				// The monitor also supervises prepared/stdio commands whose
 				// owner does not select on trigger. SIGKILL cannot be ignored.
-				if killErr := m.signal(syscall.SIGKILL); killErr != nil && !processGoneError(killErr) {
+				if killErr := m.killOwnedGroup(); killErr != nil && !processGoneError(killErr) {
 					m.mu.Lock()
 					m.err = errors.Join(m.err, fmt.Errorf("%w: kill group: %w", ErrResourceMonitoring, killErr))
 					m.mu.Unlock()
@@ -167,7 +226,7 @@ func (runner *Runner) startResourceMonitor(pid int) (*resourceMonitor, error) {
 				m.mu.Lock()
 				m.err = fmt.Errorf("%w: process-group sample: %w", ErrResourceMonitoring, sampleErr)
 				m.mu.Unlock()
-				if killErr := m.signal(syscall.SIGKILL); killErr != nil && !processGoneError(killErr) {
+				if killErr := m.killOwnedGroup(); killErr != nil && !processGoneError(killErr) {
 					m.mu.Lock()
 					m.err = errors.Join(m.err, killErr)
 					m.mu.Unlock()
@@ -175,9 +234,7 @@ func (runner *Runner) startResourceMonitor(pid int) (*resourceMonitor, error) {
 				close(m.trigger)
 				return
 			}
-			if len(usages) == 0 {
-				return
-			}
+
 		}
 	}()
 	return m, nil
@@ -264,47 +321,86 @@ func groupIdentityMatches(pid int, leaderStart uint64, known map[processIdentity
 
 func (m *resourceMonitor) signal(sig syscall.Signal) error {
 	m.mu.Lock()
+	if m.retired {
+		m.mu.Unlock()
+		return syscall.ESRCH
+	}
+	signaler := m.signaler
 	known := make(map[processIdentity]bool, len(m.known))
 	for identity := range m.known {
 		known[identity] = true
 	}
 	pid, start := m.pid, m.leaderStart
 	m.mu.Unlock()
+	if signaler != nil {
+		return signaler(pid, sig)
+	}
 	return signalResourceGroup(pid, start, known, sig)
 }
 
 // Complete the invocation only after remaining owned group members have
 // stopped. This also covers descendants that closed inherited stdio before
 // their leader exited. A stale/unproven group is an error, never a blind kill.
-func (m *resourceMonitor) cleanupGroup(sampler groupSampler) error {
+func (m *resourceMonitor) cleanupGroup(_ groupSampler) error {
 	if m == nil {
 		return nil
 	}
 	if err := m.signal(syscall.SIGKILL); err != nil && !processGoneError(err) {
 		return errors.Join(ErrProcessTeardownUnproven, err)
 	}
-	deadline := time.Now().Add(time.Second)
-	for {
-		usages, err := sampler(m.pid)
-		if err != nil {
-			return errors.Join(ErrProcessTeardownUnproven, err)
+	return waitForCommandGroup(m.pid, m, time.Second)
+}
+
+func (m *resourceMonitor) groupQuiescent() (bool, error) {
+	m.mu.Lock()
+	if m.retired {
+		m.mu.Unlock()
+		return true, nil
+	}
+	known := make(map[processIdentity]bool, len(m.known))
+	for identity := range m.known {
+		known[identity] = true
+	}
+	pid, start := m.pid, m.leaderStart
+	m.mu.Unlock()
+	usages, err := platformGroupUsage(pid)
+	if err != nil {
+		return false, err
+	}
+	if !groupIdentityMatches(pid, start, known, usages) {
+		return false, ErrResourceOwnership
+	}
+	m.mu.Lock()
+	for _, u := range usages {
+		m.known[u.identity] = true
+	}
+	m.mu.Unlock()
+	for _, u := range usages {
+		if u.alive {
+			return false, nil
 		}
-		live := false
-		for _, usage := range usages {
-			live = live || usage.alive
+	}
+	m.mu.Lock()
+	m.retired = true
+	m.mu.Unlock()
+	return true, nil
+}
+
+func (m *resourceMonitor) killOwnedGroup() error {
+	err := m.signal(syscall.SIGKILL)
+	if err != nil && !processGoneError(err) {
+		var leaderErr error
+		if m.leaderKiller != nil {
+			leaderErr = m.leaderKiller(m.process)
+		} else {
+			leaderErr = m.process.Kill()
 		}
-		if !live {
-			return nil
+		if leaderErr != nil && !errors.Is(leaderErr, os.ErrProcessDone) {
+			err = errors.Join(err, leaderErr)
 		}
 		m.mu.Lock()
-		owned := groupIdentityMatches(m.pid, m.leaderStart, m.known, usages)
+		m.err = errors.Join(m.err, ErrResourceMonitoring, err)
 		m.mu.Unlock()
-		if !owned {
-			return errors.Join(ErrProcessTeardownUnproven, ErrResourceOwnership)
-		}
-		if time.Now().After(deadline) {
-			return ErrProcessTeardownUnproven
-		}
-		time.Sleep(5 * time.Millisecond)
 	}
+	return err
 }
