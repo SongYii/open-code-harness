@@ -118,3 +118,47 @@ func TestUnprovenCommandDoesNotAnnounceUncommittedFailure(t *testing.T) {
 		t.Fatalf("unknown terminal retry re-executed command: %v", retryErr)
 	}
 }
+
+type cancelWithUnprovenTeardown struct {
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (runner *cancelWithUnprovenTeardown) Run(ctx context.Context, _ tools.CommandSpec) (tools.CommandResult, error) {
+	runner.calls++
+	runner.cancel()
+	return tools.CommandResult{}, errors.Join(ctx.Err(), tools.ErrCommandTeardownUnproven)
+}
+
+func TestUnprovenCommandFailureSurvivesActualCallerCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	runner := &cancelWithUnprovenTeardown{cancel: cancel}
+	model := newSequenceModel([]engine.StreamEvent{{Type: engine.StreamEventToolCall, ToolCall: &engine.ToolCall{ID: "call-exec", Name: tools.NameExec, Arguments: `{"argv":["bin/tool"]}`}}, {Type: engine.StreamEventCompleted}})
+	approver := testkit.NewScriptedApprover(testkit.ScriptedApproval{Answer: tools.ApprovalAnswer{Granted: true}})
+	service, store := newToolService(t, model, testkit.NewMemFS("/workspace"), runner, approver, application.DefaultConfig())
+	created, err := service.CreateSession(ctx, application.CreateSessionRequest{WorkspaceRoot: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &testkit.RecordingSink{}
+	result, runErr := service.RunTurn(ctx, application.RunTurnRequest{SessionID: created.SessionID, RequestID: "actual-cancel-unproven", Input: "inspect", Sink: sink})
+	var typed *application.Error
+	if !errors.As(runErr, &typed) || typed.Code != application.CodeExecTeardownUnproven || typed.Category != application.CategoryInternal || !errors.Is(runErr, context.Canceled) || !result.TerminalCommitted || result.Status != domain.TurnStatusFailed {
+		t.Fatalf("result=%+v error=%v", result, runErr)
+	}
+	if runner.calls != 1 || len(model.Calls()) != 1 {
+		t.Fatal("unproven command retried after caller cancellation")
+	}
+	records, err := application.ReadWholeStreamPinned(t.Context(), store, created.SessionID, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if countEventType(records, domain.EventTurnFailed) != 1 || countEventType(records, domain.EventTurnInterrupted) != 0 {
+		t.Fatalf("terminal events=%v", turnEventTypes(records))
+	}
+	live := runtimeEventOfType(t, sink.Delivered(), engine.RuntimeToolExecutionFailed)
+	if live.Code != application.CodeExecTeardownUnproven {
+		t.Fatalf("late cancellation erased live failure: %+v", live)
+	}
+}

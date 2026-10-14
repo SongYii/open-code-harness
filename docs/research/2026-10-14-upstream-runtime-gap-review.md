@@ -29,7 +29,7 @@
 
 ## 本轮实现边界
 
-新增 tools 端口错误区分输出不完整、等待结果不明和回收不明。Application 将它们提交成一致的 ToolCallFailed + TurnFailed，给出固定代码；继续 Provider 的路径停止。重新构建 Service 后同 RequestID 读取原失败，不执行命令。回收闩锁作用于已有 Runner 的受管启动，不会清理一个未知外部进程，也不会在新进程重启后持久化该闩锁。确认残留资源和副作用后才能由操作者恢复执行环境。
+新增 tools 端口错误区分输出不完整、等待结果不明和回收不明。Application 将它们提交成一致的 ToolCallFailed + TurnFailed，给出固定代码；继续 Provider 的路径停止。重新构建 Service 后同 RequestID 读取原失败，不执行命令。ACP 的已提交 failed 结果优先于迟到取消，`TestCommittedPromptFailureCannotBecomeSuccessfulCancellation` 使用真实协议取消核对不会回成普通 cancelled。回收闩锁作用于已有 Runner 的受管启动，不会清理一个未知外部进程，也不会在新进程重启后持久化该闩锁。确认残留资源和副作用后才能由操作者恢复执行环境。
 
 公开引用的三次尝试共享 30 秒预算，仅重试 429/502/503/504 与临时网络错误；404、403、持续 503 仍失败。既有两项历史 dead-link 记录保留。新增 workflow_dispatch 可在功能分支启用 context-matrix/soak；手动验收不触发自动 nightly issue 通知；scheduled reporter 同时纳入 Darwin 原生资源 lane，避免漏报。gRPC 从 v1.83.1 升至修复版 v1.83.2（根模块及两个独立 SDK 示例），处理 [GO-2026-6443](https://pkg.go.dev/vuln/GO-2026-6443)；升级前本项目没有到达该问题符号的调用链。
 

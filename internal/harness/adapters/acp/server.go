@@ -644,6 +644,11 @@ func stopReason(result application.RunTurnResult, err error, ctx context.Context
 	if result.Status == domain.TurnStatusCompleted {
 		return stopReasonEndTurn, true
 	}
+	// A committed terminal failure is authoritative even when cancellation
+	// raced with teardown. Returning cancelled would hide the durable fault.
+	if result.Status == domain.TurnStatusFailed && result.TerminalCommitted {
+		return "", false
+	}
 	if result.Status == domain.TurnStatusInterrupted || application.IsCategory(err, application.CategoryCanceled) || ctx.Err() != nil {
 		return stopReasonCancelled, true
 	}
