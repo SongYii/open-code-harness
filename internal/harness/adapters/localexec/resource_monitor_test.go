@@ -10,12 +10,12 @@ func TestUsageLedgerRetainsDepartedCPUAndSeparatesPIDReuse(t *testing.T) {
 	ledger := make(usageLedger)
 	first := processIdentity{pid: 42, start: 1}
 	second := processIdentity{pid: 42, start: 2}
-	if cpu, rss, err := ledger.sample([]processUsage{{identity: first, cpu: 60, resident: 40}}); err != nil || cpu != 60 || rss != 40 {
+	if cpu, rss, err := ledger.sample([]processUsage{{identity: first, cpu: 60, resident: 40, alive: true}}); err != nil || cpu != 60 || rss != 40 {
 		t.Fatalf("first sample = %d/%d, %v", cpu, rss, err)
 	}
 	// Replacing a worker cannot reset its spent CPU time; departed RSS
 	// must nevertheless be released, not charged forever like CPU.
-	if cpu, rss, err := ledger.sample([]processUsage{{identity: second, cpu: 50, resident: 30}}); err != nil || cpu != 110 || rss != 30 {
+	if cpu, rss, err := ledger.sample([]processUsage{{identity: second, cpu: 50, resident: 30, alive: true}}); err != nil || cpu != 110 || rss != 30 {
 		t.Fatalf("reused PID sample = %d/%d, %v", cpu, rss, err)
 	}
 	if cpu, rss, err := ledger.sample(nil); err != nil || cpu != 110 || rss != 0 {
@@ -26,8 +26,8 @@ func TestUsageLedgerRetainsDepartedCPUAndSeparatesPIDReuse(t *testing.T) {
 func TestUsageLedgerOverflowCannotDisableAQuota(t *testing.T) {
 	ledger := make(usageLedger)
 	usages := []processUsage{
-		{identity: processIdentity{pid: 1}, cpu: math.MaxUint64, resident: math.MaxUint64},
-		{identity: processIdentity{pid: 2}, cpu: 10, resident: 10},
+		{identity: processIdentity{pid: 1}, cpu: math.MaxUint64, resident: math.MaxUint64, alive: true},
+		{identity: processIdentity{pid: 2}, cpu: 10, resident: 10, alive: true},
 	}
 	cpu, rss, err := ledger.sample(usages)
 	if err != nil || cpu != math.MaxUint64 || rss != math.MaxUint64 {
@@ -64,5 +64,16 @@ func TestGroupIdentityRejectsReusedOrUnprovenMembers(t *testing.T) {
 		if groupIdentityMatches(42, 1, known, []processUsage{{identity: identity}}) {
 			t.Fatalf("unrelated generation accepted: %+v", identity)
 		}
+	}
+}
+
+func TestUsageLedgerDoesNotChargeExitedResidentSnapshot(t *testing.T) {
+	ledger := make(usageLedger)
+	cpu, rss, err := ledger.sample([]processUsage{
+		{identity: processIdentity{pid: 1, start: 1}, cpu: 2, resident: 64, alive: false},
+		{identity: processIdentity{pid: 2, start: 2}, cpu: 3, resident: 20, alive: true},
+	})
+	if err != nil || cpu != 5 || rss != 20 {
+		t.Fatalf("exited RSS snapshot charged: CPU=%d RSS=%d err=%v", cpu, rss, err)
 	}
 }

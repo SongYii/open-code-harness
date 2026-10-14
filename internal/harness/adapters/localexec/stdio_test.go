@@ -53,8 +53,19 @@ func TestStdioProcessHelper(t *testing.T) {
 		signal.Ignore(syscall.SIGTERM)
 		fmt.Println("ready")
 		time.Sleep(time.Hour)
-	case "echo":
-		fmt.Println("ready")
+	case "orphan-stdio":
+		binary, _ := os.Executable()
+		child := exec.Command(binary, "-test.run=^TestStdioProcessHelper$", "--", "--och-stdio-helper=echo-child")
+		child.Stdin, child.Stdout = os.Stdin, os.Stdout
+		if err := child.Start(); err != nil {
+			os.Exit(3)
+		}
+		fmt.Printf("ready %d\n", child.Process.Pid)
+		time.Sleep(100 * time.Millisecond)
+	case "echo", "echo-child":
+		if mode == "echo" {
+			fmt.Println("ready")
+		}
 		_, _ = io.Copy(os.Stdout, os.Stdin)
 	case "tail":
 		fmt.Print(strings.Repeat("x", 128<<10))

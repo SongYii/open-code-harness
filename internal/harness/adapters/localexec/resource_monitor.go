@@ -62,7 +62,9 @@ type usageLedger map[processIdentity]uint64
 func (ledger usageLedger) sample(usages []processUsage) (cpu, resident uint64, err error) {
 	for _, usage := range usages {
 		ledger[usage.identity] = max(ledger[usage.identity], usage.cpu)
-		resident = saturatingAdd(resident, usage.resident)
+		if usage.alive {
+			resident = saturatingAdd(resident, usage.resident)
+		}
 	}
 	if len(ledger) > maxObservedProcesses {
 		return 0, 0, fmt.Errorf("%w: process accounting capacity exceeded", ErrResourceMonitoring)

@@ -300,3 +300,97 @@ func TestDarwinEmptyInitialSampleCannotRetireLiveDescendants(t *testing.T) {
 		t.Fatalf("omitted live group was not an explicit sampler error: %v", err)
 	}
 }
+
+func TestDarwinStdioFaultAfterLeaderWaitWakesBlockedDescendantRead(t *testing.T) {
+	p := stdioFixture(t, "orphan-stdio")
+	runner := p.command.runner
+	native := runner.resourceSampler
+	var fault atomic.Bool
+	runner.resourceSampler = func(pid int) ([]processUsage, error) {
+		if fault.Load() {
+			return nil, syscall.EPERM
+		}
+		return native(pid)
+	}
+	runner.groupSignal = func(int, syscall.Signal) error { return ErrResourceOwnership }
+	if err := p.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	stdioReady(t, p)
+	select {
+	case <-p.waited:
+	case <-time.After(3 * time.Second):
+		t.Fatal("leader did not exit")
+	}
+	// The descendant keeps both protocol ends; this Read starts while the
+	// monitor is healthy and must be awakened by the later terminal failure.
+	readDone := make(chan error, 1)
+	go func() { _, err := p.Read(make([]byte, 1)); readDone <- err }()
+	time.Sleep(20 * time.Millisecond)
+	fault.Store(true)
+	select {
+	case <-p.command.ResourceFailure():
+	case <-time.After(time.Second):
+		t.Fatal("monitor did not notify")
+	}
+	select {
+	case err := <-readDone:
+		if !errors.Is(err, ErrResourceMonitoring) {
+			t.Fatalf("blocked Read lost monitoring failure: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("leader exit ended watcher; descendant Read remained blocked after monitor failure")
+	}
+}
+
+func TestDarwinSignalGuardDoesNotResignalInactiveOwnedGroup(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "sleep 10 & wait")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer cmd.Wait()
+	u, err := darwinProcessUsage(cmd.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	known := map[processIdentity]bool{u.identity: true}
+	deadlineReady := time.Now().Add(time.Second)
+	for time.Now().Before(deadlineReady) {
+		members, e := darwinGroupUsage(cmd.Process.Pid)
+		if e == nil && len(members) > 1 {
+			for _, member := range members {
+				known[member.identity] = true
+			}
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if len(known) < 2 {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		t.Fatal("multi-member group did not start")
+	}
+	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	quiet := false
+	for time.Now().Before(deadline) {
+		members, e := darwinGroupUsage(cmd.Process.Pid)
+		quiet = e == nil
+		for _, member := range members {
+			quiet = quiet && !member.alive
+		}
+		if quiet {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !quiet {
+		t.Fatal("whole group did not become inactive")
+	}
+	if err := signalResourceGroup(cmd.Process.Pid, u.identity.start, known, syscall.SIGKILL); !processGoneError(err) {
+		t.Fatalf("inactive owned group was signalled again: %v", err)
+	}
+}

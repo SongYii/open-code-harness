@@ -189,6 +189,16 @@ func signalResourceGroup(pid int, leaderStart uint64, known map[processIdentity]
 	if !groupIdentityMatches(pid, leaderStart, known, usages) {
 		return ErrResourceOwnership
 	}
+	live := false
+	for _, usage := range usages {
+		live = live || usage.alive
+	}
+	// Darwin returns EPERM when only exited members remain. They consume no
+	// live resource and need no repeated signal; preserve permission errors
+	// for every group that still has an active member.
+	if !live {
+		return syscall.ESRCH
+	}
 	return syscall.Kill(-pid, sig)
 }
 

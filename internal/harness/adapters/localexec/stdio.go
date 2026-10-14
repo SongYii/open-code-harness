@@ -83,7 +83,7 @@ func (p *StdioProcess) Start(ctx context.Context) error {
 	}
 	waiter := waitCommand(cmd)
 	p.waited = waiter.done
-	go p.watchResourceMonitor(p.command.monitor, waiter.done)
+	go p.watchResourceMonitor(p.command.monitor)
 	return ctx.Err()
 }
 
@@ -109,14 +109,17 @@ func (p *StdioProcess) resourceFailure() error {
 	}
 	return nil
 }
-func (p *StdioProcess) watchResourceMonitor(m *resourceMonitor, waited <-chan struct{}) {
+func (p *StdioProcess) watchResourceMonitor(m *resourceMonitor) {
 	if m == nil {
 		return
 	}
 	select {
 	case <-m.notification():
-	case <-waited:
+	case <-m.done:
 	}
+	// A leader's Wait does not end group supervision: descendants may still
+	// hold protocol pipes. Only the monitor's terminal state or explicit
+	// Close ends this watcher.
 	failure := p.resourceFailure()
 	if failure == nil {
 		return
