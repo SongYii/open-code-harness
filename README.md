@@ -363,3 +363,5 @@ issues.
 ## License
 
 Licensed under the [Apache License 2.0](LICENSE).
+
+Execution evidence: [2026-10-14 pinned upstream comparison and command failure acceptance](docs/research/2026-10-14-upstream-runtime-gap-review.md). Unproven command output/wait/teardown ends the Turn with a durable failure; unproven teardown also blocks further managed starts on that Runner. Darwin resource sampling remains partial.

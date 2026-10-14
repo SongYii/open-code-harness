@@ -52,6 +52,8 @@ type Runner struct {
 	groupSignal func(int, syscall.Signal) error
 	leaderKill  func(*os.Process) error
 	stopGrace   time.Duration
+	admissionMu sync.Mutex
+	unsafeErr   error
 }
 
 var errInvalidSpec = errors.New("localexec: invalid command spec")
@@ -144,10 +146,14 @@ func (runner *Runner) Run(ctx context.Context, spec tools.CommandSpec) (tools.Co
 	defer os.RemoveAll(tmp)
 
 	out := newCapBuffer(maxBytes)
-	cmd.Stdout = out
-	cmd.Stderr = out
+	capture, err := captureCommandOutput(cmd, out)
+	if err != nil {
+		return tools.CommandResult{}, err
+	}
+	defer capture.close()
 
-	startErr := cmd.Start()
+	startErr := runner.startCommand(cmd)
+	_ = capture.writer.Close()
 	if startErr != nil {
 		return tools.CommandResult{}, startErr
 	}
@@ -162,7 +168,7 @@ func (runner *Runner) Run(ctx context.Context, spec tools.CommandSpec) (tools.Co
 	resourceLimited := runner.cgroup.register(cmd.Process.Pid)
 	defer runner.cgroup.unregister(cmd.Process.Pid)
 
-	waiter := waitCommand(cmd)
+	waiter := waitCommandOutput(cmd, capture)
 	done := waiter.done
 
 	var timeout <-chan time.Time
@@ -177,6 +183,9 @@ func (runner *Runner) Run(ctx context.Context, spec tools.CommandSpec) (tools.Co
 		if err != nil {
 			return nil, err
 		}
+		if err := unexpectedWaitError(waiter.err); err != nil {
+			return nil, err
+		}
 		return waiter.err, nil
 	}
 
@@ -184,13 +193,17 @@ func (runner *Runner) Run(ctx context.Context, spec tools.CommandSpec) (tools.Co
 	case <-done:
 		waitErr := waiter.err
 		if err := monitor.cleanupGroup(runner.resourceSampler); err != nil {
-			return tools.CommandResult{}, err
+			runner.rememberUnsafe(err)
+			return tools.CommandResult{}, errors.Join(err, unexpectedWaitError(waitErr))
 		}
 		result := finish(waitErr, out, false, runner.throttled())
 		monitor.close()
 		limited, monitorErr := monitor.status()
 		if monitorErr != nil {
-			return tools.CommandResult{}, monitorErr
+			return tools.CommandResult{}, errors.Join(tools.ErrCommandWaitUnproven, monitorErr)
+		}
+		if err := unexpectedWaitError(waitErr); err != nil {
+			return tools.CommandResult{}, err
 		}
 		// SIGXCPU may still arise from an inherited OS limit. The sampled
 		// monitor attributes its own SIGKILL via state, never by signal alone.
@@ -225,7 +238,7 @@ func (runner *Runner) Run(ctx context.Context, spec tools.CommandSpec) (tools.Co
 		}
 		limited, monitorErr := monitor.status()
 		if monitorErr != nil {
-			return tools.CommandResult{}, monitorErr
+			return tools.CommandResult{}, errors.Join(tools.ErrCommandWaitUnproven, monitorErr)
 		}
 		result := finish(waitErr, out, false, runner.throttled())
 		result.ResourceLimited = limited

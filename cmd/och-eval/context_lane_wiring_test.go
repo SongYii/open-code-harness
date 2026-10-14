@@ -190,7 +190,7 @@ func (job workflowJob) setsEnv(name string) bool {
 var (
 	jobHeader       = regexp.MustCompile(`^  ([A-Za-z][A-Za-z0-9_-]*):\s*$`)
 	goTestInvoke    = regexp.MustCompile(`go test [^\n]*`)
-	scheduleOnlyIf  = regexp.MustCompile(`(?m)^\s*if:\s*github\.event_name == 'schedule'\s*$`)
+	extendedLaneIf  = regexp.MustCompile(`(?m)^\s*if:\s*github\.event_name == 'schedule'(?: \|\| \(github\.event_name == 'workflow_dispatch' && inputs\.extended_validation\))?\s*$`)
 	wholeSuiteMatch = regexp.MustCompile(`go test [^\n]*\./\.\.\.`)
 )
 
@@ -236,7 +236,7 @@ func ciWorkflowJobs(t *testing.T) []workflowJob {
 
 // TestCIEnablesTheFullContextMatrixOnlyInAScheduledJob is the executable form
 // of the boundary three documents previously only asserted in prose.
-func TestCIEnablesTheFullContextMatrixOnlyInAScheduledJob(t *testing.T) {
+func TestCIEnablesTheFullContextMatrixOnlyInScheduledOrExplicitManualJob(t *testing.T) {
 	for _, problem := range scheduledContextEnvProblems(ciWorkflowText(t)) {
 		t.Error(problem)
 	}
@@ -258,9 +258,9 @@ func TestCIEnablesTheFullContextMatrixOnlyInAScheduledJob(t *testing.T) {
 	}
 	matrix := enabling[0]
 
-	if !scheduleOnlyIf.MatchString(matrix.text()) {
-		t.Errorf("job %q sets %s without `if: github.event_name == 'schedule'`, "+
-			"so the pull-request path would run the full matrix",
+	if !extendedLaneIf.MatchString(matrix.text()) {
+		t.Errorf("job %q sets %s without a schedule/explicit manual gate; "+
+			"the pull-request path must never run the full matrix",
 			matrix.name, scheduledContextMatrixEnv)
 	}
 
@@ -279,6 +279,21 @@ func TestCIEnablesTheFullContextMatrixOnlyInAScheduledJob(t *testing.T) {
 	if wholeSuiteMatch.MatchString(invocation) {
 		t.Errorf("job %q runs the whole suite (%q) with %s set; it must run only the focused lane",
 			matrix.name, invocation, scheduledContextMatrixEnv)
+	}
+}
+
+func TestExtendedContextGateRefusesAutomaticOrUnconditionalManualRuns(t *testing.T) {
+	for _, condition := range []string{
+		"github.event_name == 'push'",
+		"github.event_name == 'pull_request'",
+		"github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'",
+		"github.event_name == 'schedule' || inputs.extended_validation",
+		"github.event_name == 'schedule' || (github.event_name == 'pull_request' && inputs.extended_validation)",
+		"github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.extended_validation) || github.event_name == 'push'",
+	} {
+		if extendedLaneIf.MatchString("    if: " + condition + "\n") {
+			t.Fatalf("unsafe matrix gate accepted: %s", condition)
+		}
 	}
 }
 

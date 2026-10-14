@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"sync"
-	"time"
 
 	"github.com/SongYii/open-code-harness/internal/harness/tools"
 )
@@ -58,7 +57,7 @@ func (runner *Runner) buildConfinedCommand(spec tools.CommandSpec) (*exec.Cmd, s
 	cmd.SysProcAttr = sysProcAttr()
 	// A child that exits while a detached descendant retains a pipe must
 	// not keep Wait blocked forever. This bounds pipe drain, not CPU/RSS.
-	cmd.WaitDelay = 500 * time.Millisecond
+	cmd.WaitDelay = commandOutputDrainGrace
 	return cmd, tmp, nil
 }
 
@@ -137,7 +136,7 @@ func (c *ConfinedCommand) Start() error {
 	if c.closed {
 		return errConfinedClosed
 	}
-	if err := c.cmd.Start(); err != nil {
+	if err := c.runner.startCommand(c.cmd); err != nil {
 		return err
 	}
 	if err := c.registerLocked(c.cmd.Process.Pid); err != nil {

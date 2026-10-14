@@ -323,6 +323,12 @@ func (walk *requestWalk) stepOpenTool(records []domain.RecordedEvent, index int)
 		if err := walk.matchToolTerminal(event); err != nil {
 			return 0, err
 		}
+		if failed, ok := event.(domain.ToolCallFailed); ok && isUnprovenCommandCode(failed.Code) {
+			if err := walk.consumeFollowingTurnFailed(records, index+1, failed.Code, failed.Message); err != nil {
+				return 0, err
+			}
+			return index + 2, nil
+		}
 		walk.closeItem()
 		walk.state = reconstructIdleInTurn
 		return index + 1, nil
@@ -490,7 +496,7 @@ func allowedFailureCode(code string) bool {
 	case string(engine.CodeModelStartup), string(engine.CodeModelStream), string(engine.CodeOutputLimit), string(engine.CodeInvalidStream), "model_failure",
 		"provider_auth", "provider_quota", "provider_rate_limit", "provider_transient", "provider_permanent",
 		"capability_mismatch", "context_overflow", "empty_response",
-		CodeStepLimit, CodeEnvelopeLimit:
+		CodeStepLimit, CodeEnvelopeLimit, CodeExecOutputIncomplete, CodeExecWaitUnproven, CodeExecTeardownUnproven:
 		return true
 	default:
 		return false

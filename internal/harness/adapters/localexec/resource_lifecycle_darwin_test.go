@@ -250,6 +250,24 @@ func TestDarwinTerminationCannotClaimSuccessWhileGroupDescendantsLive(t *testing
 			if live == 0 {
 				t.Fatal("negative control did not leave live descendants")
 			}
+			// Even after the test itself reclaims the known workers, a Runner
+			// that could not prove teardown must not silently reset its latch.
+			marker := filepath.Join(spec.Cwd, "must-not-start")
+			laterSpec := tools.CommandSpec{Argv: []string{"sh", "-c", `echo started > "$1"`, "sh", marker}, Cwd: spec.Cwd}
+			if _, laterErr := runner.Run(t.Context(), laterSpec); !errors.Is(laterErr, ErrProcessTeardownUnproven) {
+				t.Fatalf("unproven Runner admitted a later command: %v", laterErr)
+			}
+			prepared, prepareErr := runner.NewConfinedCommand(laterSpec)
+			if prepareErr != nil {
+				t.Fatal(prepareErr)
+			}
+			if startErr := prepared.Start(); !errors.Is(startErr, ErrProcessTeardownUnproven) || prepared.Cmd().Process != nil {
+				t.Fatalf("prepared command bypassed latch: %v", startErr)
+			}
+			_ = prepared.Close()
+			if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+				t.Fatalf("rejected command created marker: %v", statErr)
+			}
 			if !errors.Is(err, ErrProcessTeardownUnproven) {
 				t.Fatalf("leader-only termination incorrectly succeeded for %s: %v", reason, err)
 			}

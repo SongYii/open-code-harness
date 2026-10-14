@@ -4,6 +4,12 @@ on:
   push:
     branches: [main, fix/mac-mini-ci]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      extended_validation:
+        description: Run the context matrix, repeated soak, and external citations on this ref
+        type: boolean
+        default: false
   schedule:
     # Nightly. The soak and citation lanes need time and network, so they run
     # here rather than on the pull-request path.
@@ -189,7 +195,7 @@ jobs:
   # cmd/och-eval and cmd/och do not embed the web bridge bundle, so this job
   # needs no npm step.
   context-matrix:
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.extended_validation)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -205,7 +211,7 @@ jobs:
 
   # Deeper repetition and the network-dependent citation gate. Nightly only.
   soak:
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.extended_validation)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -249,7 +255,7 @@ jobs:
   # paths (open, comment, close, no-op) were checked.
   nightly-report:
     if: always() && github.event_name == 'schedule'
-    needs: [go, exec-sandbox, cross-build, vulncheck, determinism, context-matrix, soak]
+    needs: [go, exec-sandbox, cross-build, darwin-resources, vulncheck, determinism, context-matrix, soak]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -263,6 +269,7 @@ jobs:
             go:${{ needs.go.result }}
             exec-sandbox:${{ needs.exec-sandbox.result }}
             cross-build:${{ needs.cross-build.result }}
+            darwin-resources:${{ needs.darwin-resources.result }}
             vulncheck:${{ needs.vulncheck.result }}
             determinism:${{ needs.determinism.result }}
             context-matrix:${{ needs.context-matrix.result }}

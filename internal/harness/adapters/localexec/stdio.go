@@ -12,7 +12,7 @@ import (
 
 // ErrProcessTeardownUnproven means the process tree could not be proven gone.
 // Callers must not treat it as successful resource release.
-var ErrProcessTeardownUnproven = errors.New("localexec: process teardown could not be proven")
+var ErrProcessTeardownUnproven = tools.ErrCommandTeardownUnproven
 
 // StdioProcess owns a long-lived confined process, its byte channel and its
 // single Wait. It knows nothing about the protocol carried on that channel.
@@ -190,6 +190,7 @@ func (p *StdioProcess) Close() error {
 			_ = out.Close()
 		}
 		p.closeErr = errors.Join(p.closeErr, p.command.Close())
+		p.command.runner.rememberUnsafe(p.closeErr)
 	})
 	return p.closeErr
 }

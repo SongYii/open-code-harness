@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"syscall"
 	"time"
+
+	"github.com/SongYii/open-code-harness/internal/harness/tools"
 )
 
 const defaultCommandTeardownGrace = 5 * time.Second
@@ -46,7 +48,8 @@ func (r *Runner) killLeader(cmd *exec.Cmd) error {
 	return cmd.Process.Kill()
 }
 
-func (r *Runner) terminateCommand(cmd *exec.Cmd, m *resourceMonitor, w *commandWait) error {
+func (r *Runner) terminateCommand(cmd *exec.Cmd, m *resourceMonitor, w *commandWait) (result error) {
+	defer func() { r.rememberUnsafe(result) }()
 	deadline := time.Now().Add(r.teardownGrace())
 	signalErr := r.signalCommandGroup(cmd, m, syscall.SIGKILL)
 	if processGoneError(signalErr) {
@@ -66,13 +69,55 @@ func (r *Runner) terminateCommand(cmd *exec.Cmd, m *resourceMonitor, w *commandW
 	select {
 	case <-w.done:
 		proofErr := waitForCommandGroup(cmd.Process.Pid, m, time.Until(deadline))
+		if signalErr != nil {
+			signalErr = errors.Join(tools.ErrCommandWaitUnproven, signalErr)
+		}
 		return errors.Join(signalErr, proofErr)
 	case <-timer.C:
 		return errors.Join(ErrProcessTeardownUnproven, signalErr)
 	}
 }
 
+// Serialize admission with the permanent safety latch. Already-running calls
+// retain their own lifetime; a failed teardown forbids new process starts.
+func (r *Runner) startCommand(cmd *exec.Cmd) error {
+	r.admissionMu.Lock()
+	defer r.admissionMu.Unlock()
+	if r.unsafeErr != nil {
+		return r.unsafeErr
+	}
+	return cmd.Start()
+}
+
+func (r *Runner) rememberUnsafe(err error) {
+	if !errors.Is(err, ErrProcessTeardownUnproven) {
+		return
+	}
+	r.admissionMu.Lock()
+	defer r.admissionMu.Unlock()
+	if r.unsafeErr == nil {
+		r.unsafeErr = err
+	}
+}
+
+func unexpectedWaitError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, tools.ErrCommandOutputIncomplete) {
+		return err
+	}
+	if errors.Is(err, exec.ErrWaitDelay) {
+		return errors.Join(tools.ErrCommandOutputIncomplete, err)
+	}
+	var exited *exec.ExitError
+	if errors.As(err, &exited) {
+		return nil
+	}
+	return errors.Join(tools.ErrCommandWaitUnproven, err)
+}
+
 func (r *Runner) failedStart(cmd *exec.Cmd, m *resourceMonitor, cause error) (*commandWait, error) {
 	w := waitCommand(cmd)
-	return w, errors.Join(cause, r.terminateCommand(cmd, m, w))
+	return w, errors.Join(tools.ErrCommandWaitUnproven, cause, r.terminateCommand(cmd, m, w))
 }

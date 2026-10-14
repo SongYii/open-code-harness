@@ -618,6 +618,22 @@ func (service *Service) cancelOwnedTurn(ctx context.Context, owned *ownedTurn, c
 	return service.commitTerminalAppend(cleanupCtx, ctx, owned, decided, domain.TurnStatusInterrupted, "", applicationError(CategoryCanceled, code, true, ctx.Err()))
 }
 
+func (service *Service) failUnprovenCommandTurn(ctx context.Context, owned *ownedTurn, code, message string, cause error) (RunTurnResult, error) {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), service.config.TerminalCommitTimeout)
+	defer cancel()
+	decided, err := domain.Decide(owned.state, service.failCommand(owned, code, message))
+	if err != nil {
+		return cloneRunTurnResult(owned.result), applicationError(CategoryInternal, "domain_transition_failed", false, err)
+	}
+	result, terminalErr := service.commitTerminalAppend(cleanupCtx, ctx, owned, decided, domain.TurnStatusFailed, "", applicationError(CategoryInternal, code, true, cause))
+	if result.TerminalCommitted {
+		// Durable failure precedes the live notification, including when the
+		// original caller canceled while teardown was being proved.
+		_ = owned.emitter.Emit(cleanupCtx, engine.RuntimePayload{Type: engine.RuntimeToolExecutionFailed, Code: code, Content: message})
+	}
+	return result, terminalErr
+}
+
 func (service *Service) failCommand(owned *ownedTurn, code, message string) domain.Command {
 	if item := activeItem(owned.state); item != nil {
 		if item.Kind == domain.ItemKindToolCall {

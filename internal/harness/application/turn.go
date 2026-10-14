@@ -333,6 +333,9 @@ func durableRequestTerminalError(result RunTurnResult) error {
 	// turn event wins: tool cancel has no assistant terminal
 	switch event := requestOutcomeEvent(result.Records).(type) {
 	case domain.TurnFailed:
+		if isUnprovenCommandCode(event.Code) {
+			return applicationError(CategoryInternal, event.Code, true, nil)
+		}
 		return applicationError(CategoryModel, event.Code, true, nil)
 	case domain.TurnInterrupted:
 		return applicationError(CategoryCanceled, event.Reason, true, nil)

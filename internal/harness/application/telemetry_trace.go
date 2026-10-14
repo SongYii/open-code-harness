@@ -32,6 +32,9 @@ func traceEnd(err error, attributes ...telemetry.Attribute) telemetry.End {
 	var appErr *Error
 	if errors.As(err, &appErr) && appErr != nil {
 		end.Code = appErr.Code
+		if isUnprovenCommandCode(appErr.Code) {
+			return end
+		}
 		if appErr.Category == CategoryCanceled {
 			end.Outcome = telemetry.OutcomeCanceled
 		}

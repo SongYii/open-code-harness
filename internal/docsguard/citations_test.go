@@ -1,6 +1,7 @@
 package docsguard_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -226,6 +227,14 @@ func TestExternalCitationsResolve(t *testing.T) {
 }
 
 func probeCitation(url string) citationResult {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return probeCitationContext(ctx, url, 200*time.Millisecond)
+}
+
+// Retry only temporary transport failures and explicit transient statuses.
+// All three attempts share one deadline; 404 and persistent failures stay red.
+func probeCitationContext(ctx context.Context, url string, retryDelay time.Duration) citationResult {
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 		CheckRedirect: func(request *http.Request, via []*http.Request) error {
@@ -235,7 +244,30 @@ func probeCitation(url string) citationResult {
 			return nil
 		},
 	}
-	request, err := http.NewRequest(http.MethodGet, url, nil)
+	var result citationResult
+	for attempt := 0; attempt < 3; attempt++ {
+		result = probeCitationAttempt(ctx, client, url)
+		retry := result.status == http.StatusTooManyRequests || result.status == http.StatusBadGateway || result.status == http.StatusServiceUnavailable || result.status == http.StatusGatewayTimeout
+		var temporary net.Error
+		if errors.As(result.err, &temporary) {
+			retry = temporary.Timeout() || temporary.Temporary()
+		}
+		if !retry || attempt == 2 || ctx.Err() != nil {
+			return result
+		}
+		timer := time.NewTimer(retryDelay * time.Duration(attempt+1))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return citationResult{url: url, err: ctx.Err()}
+		case <-timer.C:
+		}
+	}
+	return result
+}
+
+func probeCitationAttempt(ctx context.Context, client *http.Client, url string) citationResult {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return citationResult{url: url, err: err}
 	}

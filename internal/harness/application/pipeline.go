@@ -302,7 +302,21 @@ func (service *Service) runToolBody(ctx context.Context, owned *ownedTurn, spec 
 			toolEnd.Outcome = telemetry.OutcomeTimeout
 		}
 	}
+	commandCode, commandText := "", ""
+	if spec.Name == tools.NameExec {
+		// Teardown uncertainty outranks cancellation: a canceled caller is
+		// not evidence that its command stopped. Preserve the safe public
+		// code in durable history and stop automatic Provider continuation.
+		commandCode, commandText = classifyUnprovenCommand(execErr)
+		if commandCode != "" {
+			toolEnd.Outcome, toolEnd.Code = telemetry.OutcomeFailed, commandCode
+		}
+	}
 	toolSpan.End(toolEnd)
+	if commandCode != "" {
+		result, err := service.failUnprovenCommandTurn(ctx, owned, commandCode, commandText, execErr)
+		return true, result, err
+	}
 	if isCancelCause(execErr) || contextError(ctx) != nil {
 		result, err := service.cancelOwnedTurn(ctx, owned, domain.InterruptionCallerCanceled)
 		return true, result, err

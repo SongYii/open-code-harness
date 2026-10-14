@@ -3,6 +3,7 @@
 package localexec
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"math/bits"
@@ -179,7 +180,11 @@ func ticksToNanos(ticks uint64, numer, denom uint32) uint64 {
 }
 
 func signalResourceGroup(pid int, leaderStart uint64, known map[processIdentity]bool, sig syscall.Signal) error {
-	usages, err := darwinGroupUsage(pid)
+	return signalVerifiedDarwinGroup(pid, leaderStart, known, sig, darwinGroupUsage, syscall.Kill)
+}
+
+func signalVerifiedDarwinGroup(pid int, leaderStart uint64, known map[processIdentity]bool, sig syscall.Signal, sample groupSampler, signal func(int, syscall.Signal) error) error {
+	usages, err := sample(pid)
 	if err != nil {
 		return fmt.Errorf("%w: cannot verify signal target: %w", ErrResourceOwnership, err)
 	}
@@ -199,7 +204,27 @@ func signalResourceGroup(pid int, leaderStart uint64, known map[processIdentity]
 	if !live {
 		return syscall.ESRCH
 	}
-	return syscall.Kill(-pid, sig)
+	err = signal(-pid, sig)
+	if errors.Is(err, syscall.EPERM) {
+		// A concurrent monitor/teardown signal can stop the final live member
+		// after the sample above. Re-prove quiescence instead of reporting a
+		// permission failure for an all-exited group. Active, inaccessible or
+		// unrelated groups must still preserve the original permission error.
+		current, readErr := sample(pid)
+		if readErr == nil && len(current) == 0 {
+			return syscall.ESRCH
+		}
+		if readErr == nil && groupIdentityMatches(pid, leaderStart, known, current) {
+			active := false
+			for _, usage := range current {
+				active = active || usage.alive
+			}
+			if !active {
+				return syscall.ESRCH
+			}
+		}
+	}
+	return err
 }
 
 const allowUnmonitoredGroupSignals = false

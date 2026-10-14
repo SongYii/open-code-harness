@@ -50,6 +50,8 @@ type CommandResult struct {
 }
 
 type CommandRunner interface {
+	// Unproven output/wait/teardown errors must not become ordinary results
+	// or invalid-argument feedback that prompts an automatic model retry.
 	Run(ctx context.Context, spec CommandSpec) (CommandResult, error)
 }
 
