@@ -1,8 +1,35 @@
 # Mac mini CPU／内存资源修复
 
 日期：2026-10-14 UTC。中文为本轮权威验收说明。
-状态：实现及资源包三轮 race 已通过；完整十轮 soak 和新提交 CI 尚待完成。
+状态：最终功能提交的资源专项、完整十轮 race soak、九集合 Context fixture 矩阵及七个适用 CI job 均通过。严格内核资源请求仍明确拒绝，不把采样监控写成硬隔离。
 历史基线和失败结果保留于 [前一阶段报告](mac-mini-acceptance.md)。
+
+## 最终验收绑定
+
+功能提交：[f70a2134594d469e4051d68b17be89521ff3e1ec](https://github.com/SongYii/open-code-harness/commit/f70a2134594d469e4051d68b17be89521ff3e1ec)，分支fix/mac-mini-ci。
+下面全部运行在该SHA；后续验收说明提交只改文档，不改变此功能基线。
+
+| 检查 | 实际终态 |
+| --- | --- |
+| Mac mini完整十轮soak | `go test -json -race ./... -count=10 -timeout=40m`，1330.67秒，退出0，36包／41730测试实例通过，0失败，watchdog未触发 |
+| 原先失败的恢复回归 | `TestRlimitBracketSetsAndRestoresRLIMIT_CPU` 连续10轮通过；localexec整个包十轮通过，406.355秒 |
+| Context显式fixture矩阵 | 同SHA，9集合（4 in-process、5 ACP），54.17秒，退出0，11测试实例，0失败／0skip；没有真实模型调用 |
+| 精确功能SHA CI | [run 38501908168](https://github.com/SongYii/open-code-harness/actions/runs/38501908168) completed/success；7个适用job通过，含Linux全仓race与3轮repeat、漏洞、真实bwrap隔离、两种cross-build，以及原生Darwin资源包3轮 |
+| 原生Darwin CI范围 | macOS15.7.9 ARM64／Go1.26.9；282测试实例通过，包含leader已Wait后故障唤醒阻塞Read与退出RSS不计费；仅既有Seatbelt共6次skip，没有资源测试skip |
+| 静态／构建 | docsguard、全仓vet/native build、CGO_ENABLED=0 Darwin amd64／Windows amd64 build通过 |
+| 环境与工作区 | 父任务CPU／AS限额仍无限；原始main、GUI修复工作区均保持原SHA，无新GUI／手机／真实模型操作，无系统权限或VM安装、无合并部署 |
+
+soak额外有35分钟整体及6分钟单测试watchdog；Context矩阵在soak结束后单独运行，未叠加。
+原始JSON/text与探针在本地evidence/，未上传原始请求、密钥、截图或设备配置。
+
+### 尚未验证或不支持的范围
+
+- 本Mac及原生CI的两个真实Seatbelt测试仍因既有sandbox-exec探针SIGABRT跳过；资源通过不代表本机filesystem/network confinement通过。默认composition启动仍有既有sandbox admission要求。
+- Linux CI真实bwrap文件、网络与宿主进程隐藏通过；3个真实cgroup CPU／memory quota测试因宿主delegation不可用skip，不宣称这些实际quota已验收。
+- CI的context-matrix／soak／nightly-report是schedule-only，本次push未跑。Context与完整soak已有上述本机显式结果，不能把CI skip计为通过。
+- soak还有真实browser自动发现未找到Chrome、显式MCP未opt-in、外部citations未opt-in以及helper／sandbox条件guard的skip。没有添加Chrome路径、绕过浏览器sandbox或扩大外部应用范围。
+- Darwin amd64和Windows仅cross-build，未原生运行；原生证据限定于ARM64。
+- 保护仍为partial采样监控：超采样窗口、未观察到的快速退出worker、脱组后代、共享RSS及非原子身份核对边界见下文。任何full CPU／memory请求继续fail closed。
 
 ## 已实施的修复与合同
 
@@ -67,7 +94,7 @@ Go 换算采用128位乘除并饱和，避免溢出回绕关闭预算。
 - 原始 main 和 GUI 未修改，本轮不执行真实模型请求、GUI／Android／iPhone动作，不合并或部署。
 
 原始JSON/text、原生探针和失败日志只保存在任务本地 evidence/，不上传密钥、截图或设备配置。
-待完整回归完成后在此补入精确功能提交、soak／Context矩阵和远端CI结果。
+最终绑定与完整结果见下一节；历史中断和失败过程保留在后续记录，不作为当前通过依据。
 
 首个原生 Darwin CI 暴露构造探针过宽：共享runner组含其他UID的PID967，读取返回EPERM。
 该失败日志保留；随后将构造探针限定于自身统计+组枚举，未降低运行中受监管组的访问要求。
@@ -90,7 +117,7 @@ Go 换算采用128位乘除并饱和，避免溢出回绕关闭预算。
 完整资源包三轮在该轮修复后270实例通过，113.547秒；仅既有Seatbelt共6次skip。
 进一步的空组／实时故障／启动／终止／prepared专项三轮51实例通过，0失败、0skip，22.951秒。
 超时负对照冷启动窗口从350ms改为2秒，未移除后代存活、unproven或错误传播断言。
-最终提交的完整soak及CI仍待本页后续结果补齐，不能将中断的旧版本soak计为通过。
+该阶段记录时完整soak／CI尚待验收；现由上面的f70a213最终结果完成。中断的旧版本soak不计为通过。
 
 ## 十轮发现的终止竞态与补充复核
 
@@ -106,4 +133,4 @@ Go 换算采用128位乘除并饱和，避免溢出回绕关闭预算。
 watcher、组终止、RSS与多worker内存聚合专项30轮共150实例通过，0失败、0skip，85.121秒。
 macOS15.7.9 ARM64／Go1.26.9原生CI曾对e3f50cd运行完整资源包三轮，273实例通过、
 仅既有Seatbelt六次skip；这一CI成功不替代失败的本机十轮。
-最终新功能提交仍需重新绑定完整soak、Context fixture矩阵与精确SHA CI。
+之后的f70a213已重新完成完整soak、Context fixture矩阵与精确SHA CI，终态见本页最终验收表。
